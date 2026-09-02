@@ -33,8 +33,9 @@ open and tracked in `docs/roadmap.md`.
 
 ## P2-P4
 
-Open. The roadmap lists them under the hardening and verification milestones; the oracle gate (P2 18-19) is the
-first item after the hardening batch. The `codex_full_review.ps1` script no longer pushes on its own (P4 41):
+Mostly open. P2 19 (local-only image comparison) is started: `opensherwood_harness.compare` and the menu oracle
+test (`docs/harness.md`, "Oracle comparison"); the trace schema (P2 18) is not. The roadmap lists the rest under
+the hardening and verification milestones. The `codex_full_review.ps1` script no longer pushes on its own (P4 41):
 it writes the report and leaves committing to a human or the lead agent.
 
 ## Format-status corrections requested by the review

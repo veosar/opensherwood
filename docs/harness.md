@@ -87,9 +87,13 @@ corridor script. CI checks it on Linux, Windows and macOS; regenerate it deliber
 Local runs write under `harness/out/` (git-ignored). CI uploads only synthetic artifacts. Anything derived from
 game data stays on the machine that produced it.
 
-## Golden images (planned)
+## Oracle comparison (local only)
 
-Not implemented yet. The plan: `harness/goldens/` (git-ignored) holds reference PNGs generated from the player's
-copy plus a manifest with the content fingerprint; comparisons are exact hashes for decoded assets and a masked
-perceptual metric for composed scenes. Until then, data-backed tests check invariants and the maintainers inspect
-captures by eye (`harness/captures/original/` holds the analyst's screenshots of the original, git-ignored).
+`harness/captures/original/` (git-ignored) holds the analyst's screenshots of the original game, taken from
+the player's own copy with `harness/tools/original/rhcap.py`. `opensherwood_harness.compare.compare(ours,
+original, masks, diff_out)` computes the structural similarity (SSIM), the mean absolute difference and the
+fraction of pixels differing by more than 32 over the frame with the given rectangles masked, and writes a diff
+image. `harness/tests/data/test_oracle_menu.py` compares the engine's main menu with the original's capture
+(profile text, button column and cursor masked): SSIM 0.9995 on 2026-09-02. Tests skip when the capture is
+absent, so CI never needs game imagery. Scenes with a camera (missions) need an aligned capture first; the
+briefing and pause screens are next.
