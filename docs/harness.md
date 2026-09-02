@@ -32,6 +32,15 @@ Example session:
 
 Coordinates are logical pixels in 24.8 fixed point (`x256 = x * 256`).
 
+## Replays
+
+`replay.start {checkpoint_every}` (right after `reset`, at tick 0) records every canonical event of subsequent
+`step` calls plus a checkpoint of all hashes every N ticks; `replay.stop {path?}` returns the `ReplayV1` JSON Lines
+(and writes it under the artifact directory); `replay.play {jsonl | path, stop_on_divergence}` resets to the
+replay's scenario and seed, feeds the events tick by tick and compares every checkpoint, reporting the first
+diverging tick and the subsystem hashes that differ. Replays recorded with another ruleset, protocol, hash schema
+or game content are rejected.
+
 ## Scenarios
 
 | `reset` scenario | Needs game data | What it is |

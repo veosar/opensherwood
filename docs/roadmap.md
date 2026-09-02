@@ -12,7 +12,7 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 - [x] Headless app speaking JSON-RPC over stdio: `hello`, `reset`, `step`, `observe`, `snapshot`, `restore`, `capture`, `shutdown`
 - [x] Synthetic world (no game data) that replays, snapshots, restores, hashes and renders identically on every platform
 - [x] `ReplayV1` reader/writer (protocol crate); canonical state hash with subsystem hashes
-- [ ] Replay playback and recording through the app (`replay_play`, `replay_record`)
+- [x] Replay playback and recording through the app (`replay.start` / `replay.stop` / `replay.play`, checkpoints, first-divergence report)
 - [x] Python harness: RPC client, synthetic pytest suite, snapshot/restore fuzz
 - [ ] CI on Linux/Windows/macOS: fmt, clippy, nextest, pytest synthetic, skill sync check, no-assets check
 - [x] `opensherwood-tools inspect` for SRES / image blobs / RHS / chunk containers (already specified)

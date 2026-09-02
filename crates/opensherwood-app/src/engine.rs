@@ -11,7 +11,9 @@ use opensherwood_core::{
 };
 use opensherwood_protocol::{
     CaptureParams, CaptureResult, HelloResult, ObserveParams, ObserveResult, PROTOCOL_VERSION,
-    ResetParams, RestoreParams, RpcError, SnapshotResult, StepParams, StepResult,
+    Replay, ReplayCheckpoint, ReplayEvent, ReplayHeader, ReplayPlayParams, ReplayPlayResult,
+    ReplayStartParams, ReplayStopResult, ResetParams, RestoreParams, RngStreamInit, RpcError,
+    SnapshotResult, StepParams, StepResult,
 };
 use opensherwood_render::{Background, Framebuffer, NoSprites, SpriteFrame, SpriteSource, render};
 use serde_json::{Value, json};
@@ -95,6 +97,16 @@ pub struct Session {
     frame: Option<Framebuffer>,
     /// Window input waiting to be applied by the next `step` (controlled window mode).
     queued_input: Vec<InputEvent>,
+    /// Replay being recorded, if any.
+    recording: Option<Recording>,
+}
+
+/// Tick rate used by replays and the window (ticks per second).
+pub const TICK_RATE: (u32, u32) = (60, 1);
+
+struct Recording {
+    replay: Replay,
+    checkpoint_every: u64,
 }
 
 /// Limits that keep a hostile client from exhausting memory or time.
@@ -154,6 +166,63 @@ impl Session {
             next_snapshot: 0,
             frame: None,
             queued_input: Vec::new(),
+            recording: None,
+        }
+    }
+
+    fn replay_header(&self, world: &World) -> ReplayHeader {
+        let fingerprint = match world.scenario {
+            Scenario::Synthetic(_) => None,
+            _ => self.game.as_ref().map(GameDir::fingerprint),
+        };
+        ReplayHeader {
+            replay_version: 1,
+            protocol: PROTOCOL_VERSION,
+            ruleset: opensherwood_core::RULESET_VERSION,
+            content_fingerprint: fingerprint,
+            scenario: world.scenario.clone(),
+            viewport: world.viewport,
+            tick_rate: TICK_RATE,
+            hash_schema: opensherwood_core::hash::HASH_SCHEMA_VERSION,
+            seed: world.seed,
+            rng_streams: [(
+                "gameplay".to_string(),
+                RngStreamInit {
+                    algorithm: opensherwood_core::rng::Rng::ALGORITHM.to_string(),
+                    seed: world.rng.seed,
+                    stream: world.rng.stream,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    /// Run one tick, recording it if a replay is being recorded.
+    fn step_recorded(&mut self, events: &[InputEvent]) {
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
+        let tick = world.tick;
+        if let Some(rec) = self.recording.as_mut() {
+            for (i, e) in events.iter().enumerate() {
+                rec.replay.events.push(ReplayEvent {
+                    tick,
+                    sequence: i as u32,
+                    event: *e,
+                    intent: None,
+                });
+            }
+        }
+        world.step(events);
+        if let Some(rec) = self.recording.as_mut()
+            && rec.checkpoint_every > 0
+            && world.tick.is_multiple_of(rec.checkpoint_every)
+        {
+            rec.replay.checkpoints.push(ReplayCheckpoint {
+                tick: world.tick,
+                hashes: world.hashes(),
+            });
         }
     }
 
@@ -237,6 +306,7 @@ impl Session {
         self.frame = None;
         self.snapshots.clear();
         self.queued_input.clear();
+        self.recording = None;
         Ok(())
     }
 
@@ -246,6 +316,22 @@ impl Session {
             w.step(events);
             self.frame = None;
         }
+    }
+
+    /// Resolve a relative artifact path (rejecting absolute paths and `..`).
+    fn artifact_path(&self, rel: &str) -> Result<PathBuf, RpcError> {
+        if rel.contains("..") || PathBuf::from(rel).is_absolute() {
+            return Err(RpcError::new(
+                RpcError::INVALID_PARAMS,
+                "path must be relative",
+            ));
+        }
+        let path = self.artifacts.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
+        }
+        Ok(path)
     }
 
     /// The current frame, rendering it if needed.
@@ -320,7 +406,7 @@ impl Session {
                 let mut events = p.events;
                 events.sort_by_key(|e| (e.tick_offset, e.sequence));
                 let queued = std::mem::take(&mut self.queued_input);
-                let world = self.world()?;
+                self.world()?;
                 let mut per_tick = Vec::new();
                 let mut cursor = 0usize;
                 let mut tick_events: Vec<InputEvent> = Vec::new();
@@ -333,9 +419,9 @@ impl Session {
                         tick_events.push(events[cursor].event);
                         cursor += 1;
                     }
-                    world.step(&tick_events);
+                    self.step_recorded(&tick_events);
                     if p.hash_every_tick {
-                        per_tick.push(world.hashes());
+                        per_tick.push(self.world()?.hashes());
                     }
                 }
                 self.frame = None;
@@ -434,6 +520,139 @@ impl Session {
                     width: frame.width,
                     height: frame.height,
                     path: written,
+                })
+            }
+            "replay.start" => {
+                let p: ReplayStartParams = params(p)?;
+                let world = self
+                    .world
+                    .as_ref()
+                    .ok_or_else(|| engine_err("no world loaded; call reset first"))?;
+                if world.tick != 0 {
+                    return Err(engine_err(
+                        "replay recording must start at tick 0 (call reset first)",
+                    ));
+                }
+                let header = self.replay_header(world);
+                let mut replay = Replay {
+                    header,
+                    events: Vec::new(),
+                    checkpoints: Vec::new(),
+                };
+                replay.checkpoints.push(ReplayCheckpoint {
+                    tick: 0,
+                    hashes: world.hashes(),
+                });
+                self.recording = Some(Recording {
+                    replay,
+                    checkpoint_every: p.checkpoint_every,
+                });
+                ok(json!({ "recording": true }))
+            }
+            "replay.stop" => {
+                let p: CaptureParams = params(p)?;
+                let mut rec = self
+                    .recording
+                    .take()
+                    .ok_or_else(|| engine_err("no replay is being recorded"))?;
+                let world = self.world()?;
+                if rec
+                    .replay
+                    .checkpoints
+                    .last()
+                    .is_none_or(|c| c.tick != world.tick)
+                {
+                    rec.replay.checkpoints.push(ReplayCheckpoint {
+                        tick: world.tick,
+                        hashes: world.hashes(),
+                    });
+                }
+                // Checkpoint at tick 0 duplicates the header's guarantees; keep it only if alone.
+                if rec.replay.checkpoints.len() > 1 && rec.replay.checkpoints[0].tick == 0 {
+                    rec.replay.checkpoints.remove(0);
+                }
+                let jsonl = rec.replay.to_jsonl();
+                let mut written = None;
+                if let Some(rel) = p.path {
+                    let path = self.artifact_path(&rel)?;
+                    std::fs::write(&path, &jsonl)
+                        .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
+                    written = Some(path.to_string_lossy().to_string());
+                }
+                ok(ReplayStopResult {
+                    events: rec.replay.events.len(),
+                    checkpoints: rec.replay.checkpoints.len(),
+                    jsonl,
+                    path: written,
+                })
+            }
+            "replay.play" => {
+                let p: ReplayPlayParams = params(p)?;
+                let text = match (p.jsonl, p.path) {
+                    (Some(t), _) => t,
+                    (None, Some(rel)) => {
+                        let path = self.artifact_path(&rel)?;
+                        std::fs::read_to_string(&path)
+                            .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?
+                    }
+                    (None, None) => {
+                        return Err(RpcError::new(
+                            RpcError::INVALID_PARAMS,
+                            "jsonl or path required",
+                        ));
+                    }
+                };
+                let replay = Replay::from_jsonl(&text)
+                    .map_err(|e| RpcError::new(RpcError::INVALID_PARAMS, e))?;
+                if let Some(fp) = &replay.header.content_fingerprint
+                    && self.game.as_ref().map(GameDir::fingerprint).as_ref() != Some(fp)
+                {
+                    return Err(engine_err(
+                        "replay was recorded with different game content",
+                    ));
+                }
+                self.reset(replay.header.scenario.clone(), replay.header.seed)
+                    .map_err(engine_err)?;
+                let last = replay.last_tick();
+                let mut events = replay.events.iter().peekable();
+                let mut checkpoints = replay.checkpoints.iter().peekable();
+                let mut checkpoints_ok = 0usize;
+                let mut first_divergence = None;
+                let mut tick_events: Vec<InputEvent> = Vec::new();
+                for tick in 0..last {
+                    tick_events.clear();
+                    while let Some(e) = events.peek()
+                        && e.tick == tick
+                    {
+                        tick_events.push(e.event);
+                        events.next();
+                    }
+                    self.step_recorded(&tick_events);
+                    let hashes = self.world()?.hashes();
+                    while let Some(c) = checkpoints.peek()
+                        && c.tick <= tick + 1
+                    {
+                        if c.tick == tick + 1 {
+                            let diff = c.hashes.diff(&hashes);
+                            if diff.is_empty() {
+                                checkpoints_ok += 1;
+                            } else if first_divergence.is_none() {
+                                first_divergence = Some((c.tick, diff));
+                            }
+                        }
+                        checkpoints.next();
+                    }
+                    if first_divergence.is_some() && p.stop_on_divergence {
+                        break;
+                    }
+                }
+                self.frame = None;
+                let world = self.world()?;
+                ok(ReplayPlayResult {
+                    ticks: world.tick,
+                    checkpoints_ok,
+                    first_divergence,
+                    hashes: world.hashes(),
                 })
             }
             "shutdown" => ok(json!({ "ok": true })),

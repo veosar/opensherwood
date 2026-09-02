@@ -232,6 +232,54 @@ pub struct CaptureResult {
     pub path: Option<String>,
 }
 
+/// `replay.start` params.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReplayStartParams {
+    /// Record a checkpoint (all hashes) every N ticks (0 = only at stop).
+    #[serde(default)]
+    pub checkpoint_every: u64,
+}
+
+/// `replay.stop` result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayStopResult {
+    /// The replay as JSON Lines.
+    pub jsonl: String,
+    /// Events recorded.
+    pub events: usize,
+    /// Checkpoints recorded.
+    pub checkpoints: usize,
+    /// Path written, if `path` was given.
+    pub path: Option<String>,
+}
+
+/// `replay.play` params: the replay text (or a file under the artifact directory).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReplayPlayParams {
+    /// Replay JSON Lines.
+    #[serde(default)]
+    pub jsonl: Option<String>,
+    /// Relative path under the artifact directory.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Stop at the first checkpoint mismatch (default true).
+    #[serde(default = "default_true")]
+    pub stop_on_divergence: bool,
+}
+
+/// `replay.play` result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayPlayResult {
+    /// Ticks simulated.
+    pub ticks: u64,
+    /// Checkpoints that matched.
+    pub checkpoints_ok: usize,
+    /// First checkpoint that did not match: (tick, differing parts).
+    pub first_divergence: Option<(u64, Vec<String>)>,
+    /// Hashes at the end.
+    pub hashes: Hashes,
+}
+
 /// `ReplayV1` header line.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReplayHeader {
