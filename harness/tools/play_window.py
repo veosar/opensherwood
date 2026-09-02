@@ -30,16 +30,27 @@ sys.path.insert(0, str(HARNESS))
 from opensherwood_harness import Engine  # noqa: E402
 
 
-def find_window(title: str, timeout: float = 20.0):
-    import pygetwindow as gw
+def find_window(pid: int, timeout: float = 20.0) -> int:
+    """The top-level window owned by the engine process (never another process's window)."""
+    import win32gui
+    import win32process
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        wins = [w for w in gw.getWindowsWithTitle(title) if w.title == title]
-        if wins:
-            return wins[0]
+        found: list[int] = []
+
+        def visit(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd) and win32gui.GetParent(hwnd) == 0:
+                _, owner = win32process.GetWindowThreadProcessId(hwnd)
+                if owner == pid:
+                    found.append(hwnd)
+            return True
+
+        win32gui.EnumWindows(visit, None)
+        if found:
+            return found[0]
         time.sleep(0.2)
-    raise RuntimeError(f"window '{title}' not found")
+    raise RuntimeError(f"no visible window owned by pid {pid}")
 
 
 def letterbox(win_w: int, win_h: int, logical: tuple[int, int]) -> tuple[float, float, float]:
@@ -67,15 +78,46 @@ class Window:
         import win32gui
 
         self.eng = eng
-        win = find_window("OpenSherwood")
-        try:
-            win.activate()
-        except Exception:  # pygetwindow raises a spurious error 0 on Windows
-            pass
-        time.sleep(0.5)
-        self.hwnd = win._hWnd
+        self.degraded: list[str] = []
+        self.hwnd = find_window(eng.proc.pid)
+        self.bring_to_front()
+        self.refresh()
+
+    def bring_to_front(self) -> None:
+        """Give the engine window the foreground: Windows refuses SetForegroundWindow from a background
+        process unless an input event precedes it (the Alt trick), and a real click on the window is the
+        fallback; both are harmless on the menu."""
+        import ctypes
+
+        import pyautogui
+        import win32gui
+
+        u = ctypes.windll.user32
+        for attempt in range(3):
+            if win32gui.GetForegroundWindow() == self.hwnd:
+                return
+            try:
+                u.keybd_event(0x12, 0, 0, 0)  # Alt down
+                u.keybd_event(0x12, 0, 2, 0)  # Alt up
+                win32gui.SetForegroundWindow(self.hwnd)
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.3)
+            if win32gui.GetForegroundWindow() != self.hwnd and attempt >= 1:
+                _, _, w, h = win32gui.GetClientRect(self.hwnd)
+                x, y = win32gui.ClientToScreen(self.hwnd, (w // 2, h // 2))
+                pyautogui.click(x, y)
+                time.sleep(0.3)
+
+    def refresh(self) -> None:
+        """Re-read the window geometry, check nothing covers it, and re-read the logical frame size
+        (menus are 1024x768, the synthetic corridor 640x480). Called before every action."""
+        import win32gui
+
         _, _, self.client_w, self.client_h = win32gui.GetClientRect(self.hwnd)
         self.left, self.top = win32gui.ClientToScreen(self.hwnd, (0, 0))
+        if self.client_w < 2 or self.client_h < 2:
+            raise RuntimeError("engine window has no client area (minimised?)")
         # Refuse to click into another window (e.g. the original game run by the analyst).
         probe = (self.left + self.client_w // 2, self.top + self.client_h // 2)
         under = win32gui.WindowFromPoint(probe)
@@ -84,10 +126,8 @@ class Window:
                 f"another window covers the engine window at {probe}: "
                 f"'{win32gui.GetWindowText(under)}'. Close it and retry."
             )
-        self.refresh()
-
-    def refresh(self) -> None:
-        """Re-read the logical frame size (menus are 1024x768, the synthetic corridor 640x480)."""
+        if win32gui.GetForegroundWindow() != self.hwnd:
+            raise RuntimeError("engine window is not in the foreground; OS input would go elsewhere")
         cap = self.eng.capture()
         self.logical = (cap["width"], cap["height"])
         self.s, self.ox, self.oy = letterbox(self.client_w, self.client_h, self.logical)
@@ -98,6 +138,7 @@ class Window:
     def click(self, lx: float, ly: float, button: str = "left") -> None:
         import pyautogui
 
+        self.refresh()
         pyautogui.moveTo(*self.to_screen(lx, ly), duration=0.15)
         time.sleep(0.05)
         if button == "left":
@@ -113,8 +154,10 @@ class Window:
         the RPC instead so the test cannot trigger system chords."""
         import pyautogui
 
+        self.refresh()
         if modifiers_held():
             print(f"warning: Ctrl/Shift held at OS level, sending '{key}' through the RPC instead")
+            self.degraded.append(key)
             self.eng.step(
                 2,
                 [
@@ -167,7 +210,6 @@ def flow_menu(win: Window, eng: Engine) -> bool:
     ui = eng.observe(entities=False).get("ui")
     print("after Play!:", ui and (ui["screen"], ui.get("page")))
     ok &= bool(ui) and ui["screen"] == "briefing"
-    win.refresh()
     for _ in range(3):
         win.press("enter")
     obs = eng.observe()
@@ -231,15 +273,24 @@ def main() -> int:
         timeout=120,
     )
     ok = True
+    degraded: list[str] = []
     try:
         eng.hello()
         win = Window(eng)
         ok = flow_map(win, eng) if args.flow == "map" else flow_menu(win, eng)
+        degraded = win.degraded
         eng.shutdown()
     finally:
         eng.close()
-    print("PASS" if ok else "FAIL")
-    return 0 if ok else 1
+    if not ok:
+        print("FAIL")
+        return 1
+    if degraded:
+        # The mouse path was exercised, the keyboard path was not: not a full OS-level pass.
+        print(f"DEGRADED: {len(degraded)} key presses went through the RPC (modifiers held at OS level)")
+        return 2
+    print("PASS")
+    return 0
 
 
 if __name__ == "__main__":

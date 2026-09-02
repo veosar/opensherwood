@@ -73,8 +73,10 @@ snapshot handles (ADR-0004, "Envelope and validation"). Both are refused while a
 mode and prints where the PNGs went; agents use it to look at the engine after a change.
 `harness/tools/play_window.py --flow menu` plays the real window with OS-level mouse and keyboard input
 (main menu, Play!, briefing, selection, walk order, pause menu, quit confirmation) and verifies every step
-over the RPC; it is the end-to-end check of the window path (Windows only; refuses to click into other windows
-and routes keys through the RPC when Ctrl or Shift is physically held).
+over the RPC; it is the end-to-end check of the window path (Windows only). It binds the window to the spawned
+process id, re-checks geometry, overlap and foreground before every action, and exits 0 (PASS), 1 (FAIL) or 2
+(DEGRADED: keys went through the RPC because Ctrl or Shift is physically held, so only the mouse path was
+exercised).
 
 ## Determinism fixture
 
