@@ -105,6 +105,44 @@ pub struct MapInfo {
     pub height: u32,
 }
 
+/// Which side an actor is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Team {
+    /// Player-controlled.
+    Player,
+    /// Hostile.
+    Enemy,
+    /// Neutral civilian.
+    Civilian,
+}
+
+/// One actor of a mission, as decoded by the app from the mission file (plain data; core does no I/O).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorSpec {
+    /// Sprite profile name (`RobinHood`, `Soldier A00`, ...); must exist in the attached catalog to be drawn.
+    pub profile: String,
+    /// Team.
+    pub team: Team,
+    /// Start position in map pixels.
+    pub x: i32,
+    /// Start position.
+    pub y: i32,
+    /// Facing in 1/256 turns.
+    pub facing256: i32,
+    /// Patrol waypoints in map pixels (guards).
+    pub patrol: Vec<(i32, i32)>,
+}
+
+/// A mission ready to be simulated: map size plus actors. Built by the app from the retail files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionSpec {
+    /// Map size in pixels.
+    pub map: MapInfo,
+    /// Actors in file order (order is authoritative).
+    pub actors: Vec<ActorSpec>,
+}
+
 /// Serialisable snapshot of the whole authoritative state, with the versions it was made under.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -210,6 +248,62 @@ impl World {
                 "mission '{name}' cannot be loaded yet (milestone M2)"
             )),
         }
+    }
+
+    /// Create a mission world from a decoded mission spec. Actors become player / guard entities
+    /// with a walking speed and selection radius matching the synthetic ones until the real
+    /// movement rules are specified.
+    pub fn new_mission(scenario: Scenario, seed: u64, spec: &MissionSpec) -> Result<Self, String> {
+        if !matches!(scenario, Scenario::Mission(_)) {
+            return Err("not a mission scenario".into());
+        }
+        if spec.map.width == 0
+            || spec.map.height == 0
+            || spec.map.width > MAX_MAP_SIZE
+            || spec.map.height > MAX_MAP_SIZE
+        {
+            return Err(format!(
+                "map size {}x{} out of range",
+                spec.map.width, spec.map.height
+            ));
+        }
+        if spec.actors.len() > MAX_ENTITIES {
+            return Err(format!("{} actors exceed the limit", spec.actors.len()));
+        }
+        let mut world = Self::build(scenario, seed, Some(spec.map));
+        world.entities.clear();
+        world.goal = (Fixed::from_int(-1000), Fixed::from_int(-1000));
+        let f = Fixed::from_int;
+        for (i, a) in spec.actors.iter().enumerate() {
+            let kind = match a.team {
+                Team::Player => EntityKind::Player,
+                Team::Enemy | Team::Civilian => EntityKind::Guard,
+            };
+            world.entities.push(Entity {
+                id: EntityId {
+                    index: i as u32,
+                    generation: 1,
+                },
+                kind,
+                x: f(a.x),
+                y: f(a.y),
+                size: f(12),
+                speed: if kind == EntityKind::Player {
+                    Fixed::from_raw(3 * 256 / 2)
+                } else {
+                    Fixed::from_int(1)
+                },
+                target: None,
+                patrol: a.patrol.iter().map(|&(x, y)| (f(x), f(y))).collect(),
+                patrol_index: 0,
+                wait_ticks: 0,
+                facing256: a.facing256.rem_euclid(256),
+                alive: true,
+                anim: Some(AnimState::new(a.profile.clone(), 0)),
+            });
+        }
+        world.validate()?;
+        Ok(world)
     }
 
     /// Create a map-view world; the app resolved and decoded the background already.
@@ -320,13 +414,19 @@ impl World {
     ) {
         self.catalog = catalog;
         for e in &mut self.entities {
-            let set = match e.kind {
+            let default = match e.kind {
                 EntityKind::Player => player_set,
                 EntityKind::Guard => guard_set,
                 EntityKind::Obstacle => None,
             };
-            e.anim = set.and_then(|name| {
-                let s = self.catalog.sets.get(name)?;
+            // A mission actor already names its profile; synthetic units get the defaults.
+            let name = e
+                .anim
+                .as_ref()
+                .map(|a| a.set.clone())
+                .or_else(|| default.map(str::to_string));
+            e.anim = name.and_then(|name| {
+                let s = self.catalog.sets.get(&name)?;
                 Some(AnimState::new(name, s.idle[direction_of(e.facing256)]))
             });
         }
@@ -973,6 +1073,41 @@ mod tests {
         snap.version += 1;
         assert!(w.restore(&snap).is_err());
         assert_eq!(w.hashes(), before);
+    }
+
+    #[test]
+    fn mission_spec_builds_actors_in_order() {
+        let spec = MissionSpec {
+            map: MapInfo {
+                width: 1000,
+                height: 800,
+            },
+            actors: vec![
+                ActorSpec {
+                    profile: "RobinHood".into(),
+                    team: Team::Player,
+                    x: 100,
+                    y: 200,
+                    facing256: 64,
+                    patrol: vec![],
+                },
+                ActorSpec {
+                    profile: "Soldier A00".into(),
+                    team: Team::Enemy,
+                    x: 300,
+                    y: 200,
+                    facing256: -32,
+                    patrol: vec![(300, 200), (300, 400)],
+                },
+            ],
+        };
+        let w = World::new_mission(Scenario::Mission("EmbTut".into()), 1, &spec).unwrap();
+        assert_eq!(w.entities.len(), 2);
+        assert_eq!(w.entities[0].kind, EntityKind::Player);
+        assert_eq!(w.entities[1].facing256, 224);
+        assert_eq!(w.entities[1].patrol.len(), 2);
+        assert_eq!(w.entities[0].anim.as_ref().unwrap().set, "RobinHood");
+        assert!(World::new_mission(Scenario::Synthetic("x".into()), 1, &spec).is_err());
     }
 
     #[test]

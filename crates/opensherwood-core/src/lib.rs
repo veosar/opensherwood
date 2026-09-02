@@ -18,7 +18,10 @@ pub use anim::{AnimSet, AnimState, Catalog, FrameSpec, direction_of};
 pub use fixed::Fixed;
 pub use hash::Hashes;
 pub use input::{Button, InputEvent, Key};
-pub use world::{Entity, EntityId, EntityKind, MapInfo, Observation, Scenario, Snapshot, World};
+pub use world::{
+    ActorSpec, Entity, EntityId, EntityKind, MapInfo, MissionSpec, Observation, Scenario, Snapshot,
+    Team, World,
+};
 
 /// Ruleset version: bump when simulation semantics change so old replays/hashes are not compared.
 pub const RULESET_VERSION: u32 = 2;
