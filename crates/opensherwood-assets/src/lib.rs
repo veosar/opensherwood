@@ -514,7 +514,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0)).unwrap();
+            std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o000)).unwrap();
             if std::fs::File::open(&victim).is_ok() {
                 // Running as root: permissions do not bite, nothing to verify here.
                 return;
