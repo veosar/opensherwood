@@ -1179,9 +1179,15 @@ impl Session {
 
     /// Make a freshly built world the session's world: the screen is the world, the session tick
     /// is 0, and snapshot handles, queued input and any recording belonged to the previous world.
-    fn install(&mut self, world: World, background: Option<Background>) {
+    fn install(&mut self, mut world: World, background: Option<Background>) {
         self.screen = Screen::World;
         self.current = Some((world.scenario.clone(), world.seed));
+        // The script reads the player's money (native 236) rather than setting it: it is campaign
+        // state, seeded from the profile (the default profile's starting money until profiles exist).
+        // Done before any tick, so replays and snapshots see it from tick 0.
+        if let Some(vm) = world.vm.as_mut() {
+            vm.money = i32::try_from(ProfileSummary::default().money).unwrap_or(0);
+        }
         if let Scenario::Mission(name) = &world.scenario {
             let name = name.clone();
             self.load_mission_texts(&name);
@@ -1256,7 +1262,14 @@ impl Session {
                         None => render(world, self.background.as_ref(), &mut NoSprites),
                     };
                     if in_mission && let Some(a) = self.ui_assets.as_ref() {
-                        crate::ui::draw_hud(&mut frame, a, &self.hud);
+                        // The money counter follows the script's player money (natives 236 / 237,
+                        // initialised by the mission script); the profile default only stands in
+                        // before the script sets it.
+                        let mut hud = self.hud.clone();
+                        if let Some(vm) = world.vm.as_ref() {
+                            hud.money = u32::try_from(vm.money).unwrap_or(0);
+                        }
+                        crate::ui::draw_hud(&mut frame, a, &hud);
                         if let Some((text, _)) = &self.notice {
                             crate::ui::draw_notice(&mut frame, a, text);
                         }
