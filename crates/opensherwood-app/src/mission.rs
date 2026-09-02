@@ -26,9 +26,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use opensherwood_assets::{GameDir, SpriteBank};
+use opensherwood_core::ai::DEFAULT_HIT_POINTS;
 use opensherwood_core::natives::{NativeStatus, native_status};
 use opensherwood_core::{ActorSpec, Geometry, Instruction, MapInfo, MissionSpec, Team};
-use opensherwood_formats::cpf::{self, ProfileTable};
+use opensherwood_formats::cpf::{self, ProfileTable, SoldierProfile};
 use opensherwood_formats::rhm::{self, ActorGroup, Command, CommandTable, Mission, RailPoint};
 use opensherwood_formats::scb;
 use opensherwood_script::{MissionBinding, map_element_count, translate_with_report};
@@ -309,6 +310,25 @@ fn index<T>(table: &[T], i: u32) -> Option<&T> {
     usize::try_from(i).ok().and_then(|i| table.get(i))
 }
 
+/// `(hit points, knock-out resistance)` of an SD record: `unknown_pre` read as `u16 p0 .. p4,
+/// u8 pole, u16 q0 .. q4` with `p0` = hit points and `p4` = knock-out resistance
+/// (`docs/formats/profile.md`, "Stat field hypotheses"; both hypotheses). A record with `p0 = 0`
+/// (no such retail record) gets the default.
+#[must_use]
+pub fn soldier_stats(profile: &SoldierProfile) -> (i32, i32) {
+    let word = |at: usize| {
+        i32::from(u16::from_le_bytes([
+            profile.unknown_pre[at],
+            profile.unknown_pre[at + 1],
+        ]))
+    };
+    let hit_points = match word(0) {
+        0 => DEFAULT_HIT_POINTS,
+        v => v,
+    };
+    (hit_points, word(8))
+}
+
 /// The sprite of a non-player actor: the table entry when it exists and its profile is
 /// available, else the kind's default (counted as a fallback).
 fn npc_sprite<'a>(
@@ -406,6 +426,8 @@ pub fn build_spec_with_stats(
                         patrol: Vec::new(),
                         program: Vec::new(),
                         active: pc.placement.unknown_0x08 != HIDDEN_PC_FLAG,
+                        hit_points: DEFAULT_HIT_POINTS,
+                        knockout_resistance: 0,
                     });
                 }
             }
@@ -415,10 +437,11 @@ pub fn build_spec_with_stats(
                         .ok()
                         .and_then(|r| rails.get(r).cloned())
                         .unwrap_or_default();
-                    let entry = table
-                        .and_then(|t| index(&t.soldiers, npc.profile))
-                        .map(|p| p.sprite.as_str());
+                    let record = table.and_then(|t| index(&t.soldiers, npc.profile));
+                    let entry = record.map(|p| p.sprite.as_str());
                     let sprite = npc_sprite(loaded, entry, NPC_PROFILE, &mut stats);
+                    let (hit_points, knockout_resistance) =
+                        record.map_or((DEFAULT_HIT_POINTS, 0), soldier_stats);
                     actors.push(ActorSpec {
                         profile: use_profile(sprite),
                         team: Team::Enemy,
@@ -428,6 +451,8 @@ pub fn build_spec_with_stats(
                         patrol: Vec::new(),
                         program,
                         active: true,
+                        hit_points,
+                        knockout_resistance,
                     });
                 }
             }
@@ -446,6 +471,8 @@ pub fn build_spec_with_stats(
                         patrol: Vec::new(),
                         program: Vec::new(),
                         active: true,
+                        hit_points: DEFAULT_HIT_POINTS,
+                        knockout_resistance: 0,
                     });
                 }
             }
@@ -464,6 +491,8 @@ pub fn build_spec_with_stats(
                         patrol: Vec::new(),
                         program: Vec::new(),
                         active: true,
+                        hit_points: DEFAULT_HIT_POINTS,
+                        knockout_resistance: 0,
                     });
                 }
             }
@@ -998,6 +1027,61 @@ mod tests {
             player_characters: vec![pc("RobinHood"), pc("RobinTown")],
             ..ProfileTable::default()
         }
+    }
+
+    #[test]
+    fn soldier_stats_read_the_first_and_fifth_words() {
+        use opensherwood_formats::cpf::SoldierProfile;
+        let mut pre = [0u8; 21];
+        pre[0..2].copy_from_slice(&80u16.to_le_bytes());
+        pre[8..10].copy_from_slice(&35u16.to_le_bytes());
+        let profile = SoldierProfile {
+            sprite: "Guard A00".into(),
+            sequence: String::new(),
+            label: String::new(),
+            unknown_pre: pre,
+            voice: "XX01".into(),
+            unknown_post: [0; 55],
+        };
+        assert_eq!(soldier_stats(&profile), (80, 35));
+        let blank = SoldierProfile {
+            unknown_pre: [0; 21],
+            ..profile
+        };
+        assert_eq!(soldier_stats(&blank), (DEFAULT_HIT_POINTS, 0));
+        // The spec builder carries them into the actor specs.
+        let mut table = synthetic_table();
+        table.soldiers[0].unknown_pre = pre;
+        let mission = synthetic_mission();
+        let loaded = LoadedMission {
+            mission: mission.clone(),
+            profiles: Some(table.clone()),
+            available_sprites: referenced_sprites(&mission, &table),
+            script: None,
+        };
+        let (spec, _, _) = build_spec_with_stats(
+            &loaded,
+            MapInfo {
+                width: 100,
+                height: 100,
+            },
+            Geometry::default(),
+        );
+        let stats: Vec<(i32, i32)> = spec
+            .actors
+            .iter()
+            .map(|a| (a.hit_points, a.knockout_resistance))
+            .collect();
+        assert_eq!(
+            stats,
+            [
+                (80, 35),
+                (DEFAULT_HIT_POINTS, 0),
+                (DEFAULT_HIT_POINTS, 0),
+                (DEFAULT_HIT_POINTS, 0),
+                (DEFAULT_HIT_POINTS, 0)
+            ]
+        );
     }
 
     #[test]

@@ -29,7 +29,7 @@ fn count(map: &mut std::collections::BTreeMap<u32, u64>, id: u32) {
     let c = map.entry(id).or_insert(0);
     *c = c.saturating_add(1);
 }
-use crate::world::{EntityKind, World};
+use crate::world::{EntityKind, Gait, World};
 
 /// Natives that are elements of a sequence when called between natives 30 and 31 (observed:
 /// these ids are followed by the sync native 32 in the retail scripts; `docs/formats/scb.md`).
@@ -43,28 +43,26 @@ pub const SEQUENCE_ELEMENTS: &[u32] = &[
 /// and the ids whose recorded result is a policy value, [`STUB_POLICY_VALUES`]).
 pub const STUB_NATIVES: &[u32] = &[
     7, 18, 20, 24, 29, 35, 38, 39, 41, 42, 46, 47, 49, 50, 51, 52, 53, 54, 55, 59, 62, 69, 70, 72,
-    73, 80, 81, 87, 88, 89, 92, 99, 101, 102, 103, 112, 119, 125, 126, 128, 130, 137, 140, 143,
-    149, 150, 152, 156, 163, 164, 172, 173, 177, 178, 180, 182, 186, 187, 188, 189, 191, 195, 197,
-    198, 199, 200, 205, 210, 212, 213, 214, 215, 218, 219, 220, 221, 222, 223, 224, 226, 228, 229,
-    231, 232, 234, 235, 240, 243, 244, 246, 247, 248, 253, 254, 255, 256, 258, 261, 264,
+    73, 80, 81, 88, 89, 92, 99, 101, 102, 103, 112, 119, 125, 126, 130, 137, 143, 149, 150, 152,
+    156, 163, 164, 172, 173, 177, 178, 180, 182, 186, 187, 188, 189, 191, 195, 197, 198, 199, 200,
+    205, 210, 212, 213, 214, 215, 218, 219, 220, 221, 222, 223, 224, 226, 228, 229, 231, 232, 234,
+    235, 243, 244, 246, 247, 248, 253, 254, 255, 256, 258, 261, 264,
 ];
 
 /// Stub natives whose recorded result is not 0: the value the stub policy table of the spec
 /// ("Natives at load per mission") requires so the scripts branch sanely, each pinned by
-/// `policy_values_of_the_stub_table_are_pinned`. 128 (actor able to act, medium-low) and 240
-/// (actor present, medium-low) return 1: with 0 no zone would react and every "all enemies out of
-/// action" helper would succeed at once. 253 / 255 (campaign character alive / present,
+/// `policy_values_of_the_stub_table_are_pinned`. 253 / 255 (campaign character alive / present,
 /// medium-low) return 1: with 0 every `CheckVictoryCondition` that tests them loses at tick 1.
 /// 205 (i-th actor inside a zone, medium) returns -1 (no actor): 0 would be a map element handed
-/// to 80 / 81 / 99 / 243.
-pub const STUB_POLICY_VALUES: &[(u32, i32)] = &[(128, 1), (205, -1), (240, 1), (253, 1), (255, 1)];
+/// to 80 / 81 / 99 / 243. (128 and 240 read the real states since the stealth layer exists.)
+pub const STUB_POLICY_VALUES: &[(u32, i32)] = &[(205, -1), (253, 1), (255, 1)];
 
 /// Natives the engine implements (acting on the world or the VM state).
 pub const IMPLEMENTED_NATIVES: &[u32] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 13, 26, 27, 28, 30, 31, 32, 33, 34, 43, 44, 45, 48, 56, 64,
-    74, 75, 79, 85, 86, 90, 93, 94, 95, 96, 97, 98, 109, 110, 111, 113, 114, 117, 118, 132, 133,
-    134, 135, 144, 145, 159, 160, 161, 192, 193, 194, 196, 202, 203, 204, 211, 216, 217, 233, 236,
-    237, 245, 250,
+    74, 75, 79, 85, 86, 87, 90, 93, 94, 95, 96, 97, 98, 109, 110, 111, 113, 114, 117, 118, 128,
+    132, 133, 134, 135, 140, 144, 145, 159, 160, 161, 192, 193, 194, 196, 202, 203, 204, 211, 216,
+    217, 233, 236, 237, 240, 245, 250,
 ];
 
 /// Facing units per sixteenth of a turn: the scripts' sixteen directions (natives 93 / 94 / 133,
@@ -333,12 +331,69 @@ impl World {
                 Some(i) => i32::from(!self.entities[i].alive || !self.entities[i].active),
                 None => 0,
             },
-            // 90 (actor) -> bool: out of action (medium): dead or knocked out; until combat
-            // exists only `alive` can say so.
-            90 => match self.entity_of(arg(args, 0)) {
-                Some(i) => i32::from(!self.entities[i].alive),
+            // 87 (actor) -> bool: dead (medium): the `Dead` state or `alive` cleared (no damage
+            // model kills anyone yet). 88 / 89 (tied up, netted / captured: unknown / low) stay
+            // stubs returning 0: no such state exists.
+            87 => match self.entity_of(arg(args, 0)) {
+                Some(i) => {
+                    let e = &self.entities[i];
+                    i32::from(!e.alive || e.ai_state == crate::ai::AiState::Dead)
+                }
                 None => 0,
             },
+            // 90 (actor) -> bool: out of action (medium): dead, or knocked down / lying knocked
+            // out (`crate::ai::AiState::out_of_action`; a soldier getting up is back: hypothesis).
+            // Counted in `counters.out_of_action_true` when it reports 1 (diagnostic).
+            90 => match self.entity_of(arg(args, 0)) {
+                Some(i) => {
+                    let e = &self.entities[i];
+                    let out = !e.alive || e.ai_state.out_of_action();
+                    if out && let Some(vm) = self.vm.as_mut() {
+                        vm.counters.out_of_action_true =
+                            vm.counters.out_of_action_true.saturating_add(1);
+                    }
+                    i32::from(out)
+                }
+                None => 0,
+            },
+            // 128 (actor) -> bool: able to act (medium-low): alive, active and on its feet
+            // (`crate::ai::AiState::standing`); elements that are not actors can act (the policy
+            // table's 1: with 0 no zone would react).
+            128 => match self.entity_of(arg(args, 0)) {
+                Some(i) => {
+                    let e = &self.entities[i];
+                    i32::from(e.alive && e.active && e.ai_state.standing())
+                }
+                None => 1,
+            },
+            // 240 (actor) -> bool: present on the map (medium-low): the entity's `active` flag;
+            // other elements are present unless deactivated (113).
+            240 => {
+                if let Some(i) = self.entity_of(arg(args, 0)) {
+                    i32::from(self.entities[i].active)
+                } else {
+                    let handle = arg(args, 0);
+                    i32::from(
+                        self.vm
+                            .as_ref()
+                            .is_none_or(|vm| !vm.inactive_elements.contains(&handle)),
+                    )
+                }
+            }
+            // 140 (actor, 0 / 1 / 2): the gait of the actor's patrol walks (low; the reading
+            // 0 walk / 1 run / 2 sprint is the hypothesis of `stealth-and-combat.md` 2.5; the
+            // engine plays a sprint as a run). Applied to the walks the waypoint program issues
+            // from now on; a walk under way keeps its gait.
+            140 => {
+                if let Some(i) = self.entity_of(arg(args, 0)) {
+                    self.entities[i].npc_gait = if arg(args, 1) == 0 {
+                        Gait::Walk
+                    } else {
+                        Gait::Run
+                    };
+                }
+                0
+            }
             // 95 (actor) -> location: location of an actor (high): its position, packed.
             95 => match self.element_position(arg(args, 0)) {
                 Some((x, y)) => location_of_point(x, y),

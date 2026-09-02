@@ -48,11 +48,23 @@ impl SpriteSource for Sprites {
 
 /// Build the core's animation set from a parsed profile using the documented block layout
 /// (`docs/formats/sprite-animations.md`): 16-direction blocks per action; idle = action 0,
-/// walk = action 6, run = action 7, crouched idle = 14, crouched walk (sneak) = 16. A profile
-/// without a run or crouch block (soldiers and civilians have no crouch set) names its standing
-/// block for it. Falls back to the first animations when the profile has no table.
+/// walk = action 6, run = action 7, crouched idle = 14, crouched walk (sneak) = 16, the alert
+/// set 140 / 141 / 142 / 143 / 151, the fall set 41 / 44 / 47 / 48 / 49 and the knock-out blow
+/// 123 (`docs/original/stealth-and-combat.md`). A profile without a block names the fallback
+/// `AnimSet` documents (soldiers and civilians have no crouch set, civilians and heroes no
+/// alert set, only Robin and the big man the blow). Falls back to the first animations when the
+/// profile has no table.
 fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSet {
-    use opensherwood_formats::anim_table::{AnimationTable, Direction};
+    use opensherwood_formats::anim_table::{ActionId, AnimationTable, Direction};
+    // Action ids of the alert, fall and knock-out sets (`docs/formats/sprite-animations.md`,
+    // "Combat, state and stealth ids").
+    const ALERT_IDLE: ActionId = ActionId(140);
+    const NOTICED: ActionId = ActionId(141);
+    const ALARM: ActionId = ActionId(142);
+    const ALERT_WALK: ActionId = ActionId(143);
+    const ALERT_RUN: ActionId = ActionId(151);
+    const LYING_BACK: ActionId = ActionId(48);
+    const PUNCH: ActionId = ActionId(123);
     // Frame anchors are relative to a canvas whose origin (the entity position) is the sequence's
     // `origin_x/origin_y` (150,150 for characters); see docs/formats/sprites.md.
     let animations: Vec<Vec<FrameSpec>> = profile
@@ -79,17 +91,45 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
     let mut run = [0u32; 8];
     let mut crouch_idle = [0u32; 8];
     let mut crouch_walk = [0u32; 8];
+    let mut alert_idle = [0u32; 8];
+    let mut noticed = [0u32; 8];
+    let mut alarm = [0u32; 8];
+    let mut alert_walk = [0u32; 8];
+    let mut alert_run = [0u32; 8];
+    let mut knocked_down = [0u32; 8];
+    let mut knocked_down_back = [0u32; 8];
+    let mut lying = [0u32; 8];
+    let mut lying_back = [0u32; 8];
+    let mut get_up = [0u32; 8];
+    let mut punch = [0u32; 8];
     let table = AnimationTable::from_profile(profile);
     for o in 0..8 {
         let dir = Direction::from_octant(o);
         let lookup = |f: fn(&AnimationTable, Direction) -> Option<usize>| {
             table.as_ref().and_then(|t| f(t, dir)).map(|a| a as u32)
         };
+        let action = |id: ActionId| {
+            table
+                .as_ref()
+                .and_then(|t| t.animation(id, dir))
+                .map(|a| a as u32)
+        };
         idle[o] = lookup(AnimationTable::idle).unwrap_or(o as u32 % n);
         walk[o] = lookup(AnimationTable::walk).unwrap_or((8 + o as u32) % n);
         run[o] = lookup(AnimationTable::run).unwrap_or(walk[o]);
         crouch_idle[o] = lookup(AnimationTable::crouch_idle).unwrap_or(idle[o]);
         crouch_walk[o] = lookup(AnimationTable::sneak).unwrap_or(walk[o]);
+        alert_idle[o] = action(ALERT_IDLE).unwrap_or(idle[o]);
+        noticed[o] = action(NOTICED).unwrap_or(idle[o]);
+        alarm[o] = action(ALARM).unwrap_or(idle[o]);
+        alert_walk[o] = action(ALERT_WALK).unwrap_or(walk[o]);
+        alert_run[o] = action(ALERT_RUN).unwrap_or(run[o]);
+        knocked_down[o] = action(ActionId::KNOCKED_DOWN).unwrap_or(idle[o]);
+        knocked_down_back[o] = action(ActionId::KNOCKED_DOWN_BACK).unwrap_or(knocked_down[o]);
+        lying[o] = action(ActionId::LYING).unwrap_or(knocked_down[o]);
+        lying_back[o] = action(LYING_BACK).unwrap_or(lying[o]);
+        get_up[o] = action(ActionId::GET_UP).unwrap_or(idle[o]);
+        punch[o] = action(PUNCH).unwrap_or(idle[o]);
     }
     AnimSet {
         animations,
@@ -98,6 +138,18 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
         run,
         crouch_idle,
         crouch_walk,
+        alert_idle,
+        noticed,
+        alarm,
+        alert_walk,
+        alert_run,
+        knocked_down,
+        knocked_down_back,
+        lying,
+        lying_back,
+        get_up,
+        punch,
+        has_punch: table.as_ref().is_some_and(|t| t.has(PUNCH)),
     }
 }
 
