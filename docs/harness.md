@@ -80,7 +80,7 @@ the text at the front of the queue through `World::vm_dismiss_text` when the bri
 dismissal per page); the harness does the same through `debug.vm {"dismiss_text": true}`, which is an inspection
 method, not a canonical input: a test that claims a player dismissed a page must do it through the screen.
 
-`debug.vm` returns `{present, dismissed, classes, elements, locations, objectives, texts, mission_won,
+`debug.vm` (counters, objectives, pending texts, scrolls with positions and activity) returns `{present, dismissed, classes, elements, locations, objectives, texts, mission_won,
 sequence_active, sequences, faulted, lenient, unknown_calls, pending_messages, camera_target, debriefing,
 mission_vars, counters, rng_draws}`; `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
 `traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives` and
