@@ -1,0 +1,16 @@
+[package]
+name = "opensherwood-formats"
+description = "Bounded readers for the data formats of Robin Hood: The Legend of Sherwood (clean-room)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+flate2.workspace = true
+bzip2.workspace = true
+
+[lints]
+workspace = true

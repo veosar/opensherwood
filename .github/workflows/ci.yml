@@ -46,7 +46,7 @@ jobs:
       - run: cargo build --workspace --release
       - run: python -m pytest harness/tests/synthetic -q
         env:
-          LOCKSLEY_BIN: target/release/locksley
+          OPENSHERWOOD_BIN: target/release/opensherwood
       - name: Upload synthetic artifacts
         if: always()
         uses: actions/upload-artifact@v4

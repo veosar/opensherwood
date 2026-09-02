@@ -1,0 +1,22 @@
+[package]
+name = "opensherwood-tools"
+description = "Inspect and export the game's data files (local use; never commit the output)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "opensherwood-tools"
+path = "src/main.rs"
+
+[dependencies]
+opensherwood-formats.workspace = true
+opensherwood-assets.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+png.workspace = true
+
+[lints]
+workspace = true

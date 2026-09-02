@@ -10,7 +10,7 @@ for the subsystem you analyse. If you have read disassembly in this session, do 
 
 ## Setup
 
-- Work on a private copy of the game (`LOCKSLEY_GAME_DIR`), never on the store installation.
+- Work on a private copy of the game (`OPENSHERWOOD_GAME_DIR`), never on the store installation.
 - cnc-ddraw `ddraw.ini`: `windowed=true`, `fullscreen=false`, `renderer=gdi` or `opengl`, `maxfps=60`,
   `devmode=true` (does not lock the cursor) so screenshots and injection are easy.
 - The community developer-console executable (rhmods.com) enables F11; the retail build has the same commands

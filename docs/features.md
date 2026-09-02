@@ -1,4 +1,4 @@
-# Feature research: what the original has, what open engines add, what Locksley will add
+# Feature research: what the original has, what open engines add, what OpenSherwood will add
 
 This is the backlog of modern features and quality-of-life improvements, ordered by milestone. It is informed by
 what comparable projects shipped (OpenMW, Julius/Augustus, OpenRCT2/OpenLoco, DevilutionX, OpenXcom, CorsixTH,
@@ -7,9 +7,9 @@ fheroes2, VCMI) and by what the original executable already contains (developer 
 ## Already in the original (to expose, not invent)
 
 - Developer console with 60+ commands including debug overlays (`docs/original/console-commands.md`): becomes
-  Locksley's built-in console and debug overlay toggles, available to modders from day one.
+  OpenSherwood's built-in console and debug overlay toggles, available to modders from day one.
 - Three fixed resolutions (640x480, 800x600, 1024x768); the profile stores a float resolution pair that the
-  community patched to 1920x1080, so the renderer already scales the play area: Locksley renders at any resolution
+  community patched to 1920x1080, so the renderer already scales the play area: OpenSherwood renders at any resolution
   natively with correct UI layout.
 - Two key sets (`keyset1/2.cfg`), difficulty and unit statistics in the profile (`profile.cpf`).
 - Day / Night / Fog ambiances per map with separate prerendered backgrounds and animation sets.

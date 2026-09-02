@@ -17,13 +17,16 @@ The likely encoding is RGB565 (the original renders through DirectDraw in 16-bit
 console command prints "Current display bit depth"). RGB565 vs. ARGB1555 is to be confirmed by rendering
 a `.map` and comparing with an in-game screenshot.
 
+A `.pak` file is several blobs concatenated without an index: read blobs until end of file.
+
 ## Where it is used
 
 | File | Example dimensions | Compression |
 |---|---|---|
 | `Levels/{Day,Night,Fog,Custom*}/<map>.map` | 1408x960 (Croisement01); cities are larger | bzip2 |
 | `Levels/.../<map>.min` (minimap) | 225x183 | bzip2 |
-| `Interface/Loading.pak`, `Interface/Start.sxt`, `Slideshow_in.pak` | 1024x768 | bzip2 |
+| `Interface/Start.sxt` | 1024x768 | bzip2 |
+| `Interface/Loading.pak` (2 blobs back to back), `<lang>/data/Interface/Slideshow_in.pak` (many 640x480 slides back to back) | 1024x768 / 640x480 | bzip2 |
 | `Savegame/Profile_xxx/*_t` (thumbnails) | 160x120 | bzip2 |
 | SRES `PIC ` / `PICC` / `BTTN` items | 8x4 .. 400x200 | zlib in `DEFAULT.RES`, bzip2 in `Level.res` |
 

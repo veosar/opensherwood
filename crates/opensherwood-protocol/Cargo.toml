@@ -1,0 +1,16 @@
+[package]
+name = "opensherwood-protocol"
+description = "JSON-RPC, replay and observation schemas shared by the OpenSherwood engine and its harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+opensherwood-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

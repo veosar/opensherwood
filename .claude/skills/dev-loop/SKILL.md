@@ -1,6 +1,6 @@
 ---
 name: dev-loop
-description: The mandatory build -> run -> verify -> document loop for any code change in Locksley. Use before claiming any task is done, after every non-trivial edit, and when setting up a fresh machine.
+description: The mandatory build -> run -> verify -> document loop for any code change in OpenSherwood. Use before claiming any task is done, after every non-trivial edit, and when setting up a fresh machine.
 ---
 
 # Development loop
@@ -26,7 +26,7 @@ python scripts/sync_skills.py --check
 python scripts/check_no_assets.py
 ```
 
-If the change touches parsers, rendering, simulation or assets and `LOCKSLEY_GAME_DIR` is set:
+If the change touches parsers, rendering, simulation or assets and `OPENSHERWOOD_GAME_DIR` is set:
 
 ```
 python -m pytest harness/tests/data -q -k <area>

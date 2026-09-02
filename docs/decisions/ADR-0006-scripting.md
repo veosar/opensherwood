@@ -2,7 +2,7 @@
 
 Date: 2026-09-02. Status: accepted.
 
-1. The retail campaign runs on the original `.scb` bytecode through our own VM (`locksley-script`). This is the
+1. The retail campaign runs on the original `.scb` bytecode through our own VM (`opensherwood-script`). This is the
    only way to play the original missions unchanged.
 2. Modding uses Lua. One Lua 5.1-compatible interpreter (vendored PUC Lua through `mlua`) on every platform, so
    mods behave identically everywhere. A JIT may be offered later as an explicitly non-authoritative option.

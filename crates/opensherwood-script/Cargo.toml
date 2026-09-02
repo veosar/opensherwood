@@ -1,0 +1,14 @@
+[package]
+name = "opensherwood-script"
+description = "SCB bytecode VM for OpenSherwood (placeholder until the instruction set is specified)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+opensherwood-formats.workspace = true
+
+[lints]
+workspace = true

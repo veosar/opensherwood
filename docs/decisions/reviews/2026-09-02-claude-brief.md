@@ -84,27 +84,27 @@ Bink video: port a decoder (FFmpeg's bink.c is LGPL → compatible) or use NihAV
 
 ### Workspace layout
 ```
-locksley/                     (working name; neutral, "the locksley" of the public-domain ballads)
+opensherwood/                     (working name; neutral, "the opensherwood" of the public-domain ballads)
   AGENTS.md                    canonical agent instructions (Codex reads it)
   CLAUDE.md                    "@AGENTS.md" import + Claude-specific notes
   .agents/skills/<name>/SKILL.md   canonical skills (Codex reads .agents/skills)
   .claude/skills/<name>/SKILL.md   mirror kept in sync by scripts/sync_skills.py (CI checks equality)
   docs/                        formats/*.md (specs), architecture.md, roadmap.md, legal.md, decisions/ADR-*.md, oracle.md
-  crates/locksley-formats            parsers: sres, pak(bz2), rhs/dic/bks sprites, rhp, rhm, scb, map/min, bfn/tfn, sfk/fxg/neuf, cpf, savegame
-  crates/locksley-sim                deterministic simulation (fixed tick, own RNG, entities, pathfinding, AI, stimulus, orders) — no I/O
-  crates/locksley-script             SCB bytecode VM + Lua API (Spellforge-compatible names where sensible)
-  crates/locksley-render             software compositor → RGBA framebuffer (backgrounds, sprites, shadows, light zones, fog)
-  crates/locksley-audio              mixer, FMOD-ish behaviour (positional, music states D/NF/Alarm/Fight)
-  crates/locksley-app                the game binary: window, input, dev console, JSON-RPC server (--headless, --rpc PORT, --script file)
-  crates/locksley-cli                asset inspector/extractor (dump chunks, export sprites to PNG for local inspection only), replay tools
-  crates/locksley-editor             later: egui map/mission editor
+  crates/opensherwood-formats            parsers: sres, pak(bz2), rhs/dic/bks sprites, rhp, rhm, scb, map/min, bfn/tfn, sfk/fxg/neuf, cpf, savegame
+  crates/opensherwood-sim                deterministic simulation (fixed tick, own RNG, entities, pathfinding, AI, stimulus, orders) — no I/O
+  crates/opensherwood-script             SCB bytecode VM + Lua API (Spellforge-compatible names where sensible)
+  crates/opensherwood-render             software compositor → RGBA framebuffer (backgrounds, sprites, shadows, light zones, fog)
+  crates/opensherwood-audio              mixer, FMOD-ish behaviour (positional, music states D/NF/Alarm/Fight)
+  crates/opensherwood-app                the game binary: window, input, dev console, JSON-RPC server (--headless, --rpc PORT, --script file)
+  crates/opensherwood-cli                asset inspector/extractor (dump chunks, export sprites to PNG for local inspection only), replay tools
+  crates/opensherwood-editor             later: egui map/mission editor
   harness/                     Python: rpc client, pytest suites (smoke, replay, golden), image diff (SSIM), oracle (frida scripts)
   scripts/                     sync_skills.py, find_game_dir.py, ci helpers
   .github/workflows/ci.yml     build+test matrix; tests needing game data are skipped in CI unless GW_GAME_DIR is provided
 ```
 
 ### Test/verification loop (the core requirement)
-1. `locksley-app --headless --rpc 4711 --game-dir <path>`; JSON-RPC methods: load_mission, tick(n), input events (mouse/keys at engine-level),
+1. `opensherwood-app --headless --rpc 4711 --game-dir <path>`; JSON-RPC methods: load_mission, tick(n), input events (mouse/keys at engine-level),
    select_unit, order (move/attack/queue action), dump_state (JSON), screenshot(png path), checksum_state, save/load, console(cmd).
 2. Determinism: fixed timestep, seeded RNG, replay files (.gwr) with input log; test = same replay → same state hash; save/load mid-replay
    must not change outcome.
@@ -115,9 +115,9 @@ locksley/                     (working name; neutral, "the locksley" of the publ
 5. Smoke gates in CI: boots headless 100 ticks; loads mission 1 (with game data on a self-hosted runner or locally); unit moves; mission completable by scripted bot.
 
 ### Roadmap (milestones with exit criteria)
-- M0 (now): repo, legal docs, AGENTS/CLAUDE, skills, workspace skeleton, locksley-app stub with RPC + headless + screenshot, harness test_boots green in CI.
+- M0 (now): repo, legal docs, AGENTS/CLAUDE, skills, workspace skeleton, opensherwood-app stub with RPC + headless + screenshot, harness test_boots green in CI.
 - M1: formats. SRES, PAK/SXT, RED, fonts, RHP/RHM chunk maps, SCB disassembler, MAP/MIN images, sprite bank (RHS/DIC/BKS: the hard one, custom compression).
-  Exit: `locksley-cli` extracts every file type; round-trip tests; docs/formats/*.md written.
+  Exit: `opensherwood-cli` extracts every file type; round-trip tests; docs/formats/*.md written.
 - M2: render one map with static sprites at correct positions/depth; pixel-diff vs original screenshot (SSIM ≥ 0.98 target for background layer).
 - M3: selection, camera, movement, pathfinding on the RHP motion graph, view cones. Exit: walk Robin across Sherwood in headless replay.
 - M4: AI (patrols, stimuli, alarm), combat, items, SCB VM executing mission 1 scripts, win/lose. Exit: bot completes mission 1 (tutorial).
@@ -127,7 +127,7 @@ locksley/                     (working name; neutral, "the locksley" of the publ
 ## Questions for you (answer all, be adversarial and concrete)
 1. Rust vs C++20 for this project given agent-driven development and the cross-platform targets. Decide and justify.
 2. Presentation stack: winit+wgpu (software compositor uploaded as texture) vs SDL3. Consider Android/wasm, and input fidelity for a click-heavy RTT.
-3. Is the workspace split right? What would you merge/split? What is missing (e.g. a `locksley-oracle` crate, a tick-hash design, an ECS or not)?
+3. Is the workspace split right? What would you merge/split? What is missing (e.g. a `opensherwood-oracle` crate, a tick-hash design, an ECS or not)?
 4. Harness design: what JSON-RPC surface is *minimal but sufficient* for an agent to play the game? How should replays, state hashing and
    savestate fuzzing be structured so they work from M0 and don't need rewrites at M4?
 5. Oracle strategy: Frida hooks on MSVC6 thiscall methods vs memory-scanning known structs vs using the game's own console output.
@@ -138,7 +138,7 @@ locksley/                     (working name; neutral, "the locksley" of the publ
    press notes say "a new system of compression for sprites" was introduced vs Desperados). What would you try first?
 8. AGENTS.md / CLAUDE.md / skills format that both agents read. Codex reads `AGENTS.md` and `.agents/skills`; Claude reads `CLAUDE.md`
    (supports `@file` imports) and `.claude/skills`. Propose the concrete convention and the CI check.
-9. Project name: "Locksley" is proposed. Any trademark or collision concern? Alternatives?
+9. Project name: "OpenSherwood" is proposed. Any trademark or collision concern? Alternatives?
 10. Anything in the roadmap ordering you would change? What is the single biggest risk you see, and the mitigation?
 
 Output: a structured markdown review with numbered answers, a list of concrete disagreements with Claude's plan, and your proposed

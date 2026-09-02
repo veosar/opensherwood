@@ -6,7 +6,7 @@ This file is the single source of truth for how work is done in this repository.
 
 ## What this project is
 
-Locksley: a clean-room, GPLv3, asset-free reimplementation of the engine of *Robin Hood: The Legend of Sherwood*
+OpenSherwood: a clean-room, GPLv3, asset-free reimplementation of the engine of *Robin Hood: The Legend of Sherwood*
 (2002). Goal order: (1) play the full original campaign from the player's own data, (2) modern platform and QoL,
 (3) modding: maps, missions, campaigns, characters, skins, scripts, (4) new modes, co-op, other games of the same
 engine family. Non-goals: shipping any original content; matching the original's binary layout; a general-purpose
@@ -24,7 +24,7 @@ game engine.
 
 ## Determinism rules (see `docs/architecture.md`, ADR-0004)
 
-- Simulation advances in fixed ticks; all randomness through named seeded RNG streams in `locksley-core`.
+- Simulation advances in fixed ticks; all randomness through named seeded RNG streams in `opensherwood-core`.
 - No `HashMap` iteration order, wall clock, thread timing, float formatting or platform behaviour may influence
   simulation state.
 - Everything authoritative is in `snapshot()`, restored by `restore()`, and covered by the canonical hash.
@@ -32,9 +32,9 @@ game engine.
 
 ## Layout and dependency direction
 
-`locksley-formats` <- `locksley-assets` <- `locksley-core` <- `locksley-script` <- `locksley-render` <-
-`locksley-protocol` <- `locksley-app` / `locksley-tools`. Lower crates never depend on higher ones. Platform,
-FFI and `unsafe` code only in `locksley-app`. Python harness in `harness/`, helper scripts in `scripts/`.
+`opensherwood-formats` <- `opensherwood-assets` <- `opensherwood-core` <- `opensherwood-script` <- `opensherwood-render` <-
+`opensherwood-protocol` <- `opensherwood-app` / `opensherwood-tools`. Lower crates never depend on higher ones. Platform,
+FFI and `unsafe` code only in `opensherwood-app`. Python harness in `harness/`, helper scripts in `scripts/`.
 
 ## Approved commands
 
@@ -43,12 +43,12 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace            # or cargo test --workspace
 python -m pytest harness/tests/synthetic
-python -m pytest harness/tests/data      # only with LOCKSLEY_GAME_DIR set; local
+python -m pytest harness/tests/data      # only with OPENSHERWOOD_GAME_DIR set; local
 python scripts/sync_skills.py --check    # --write after editing .agents/skills
 python scripts/check_no_assets.py
 ```
 
-Game data for local tests: set `LOCKSLEY_GAME_DIR` to a *copy* of the installation, never to the store install.
+Game data for local tests: set `OPENSHERWOOD_GAME_DIR` to a *copy* of the installation, never to the store install.
 
 ## Definition of done
 

@@ -18,4 +18,4 @@ description: Diagnose a determinism failure - a replay whose state hash differs 
 6. **Fix at the source**, add a regression test with the minimal replay, and note the class of bug in
    `docs/architecture.md` (Determinism contract) if it is new.
 7. Never "fix" by regenerating the expected hash unless the change is an intended ruleset change, in which case
-   bump the ruleset version in `locksley-protocol` and say so in the commit.
+   bump the ruleset version in `opensherwood-protocol` and say so in the commit.

@@ -35,7 +35,7 @@ properties (wasp nests, nets, plants, legs, ales, apples, stones, money).
 
 ## Plan
 
-Write a disassembler in `locksley-cli` that dumps the function table and raw opcode stream; correlate opcodes across the
+Write a disassembler in `opensherwood-cli` that dumps the function table and raw opcode stream; correlate opcodes across the
 39 scripts and with observable mission behaviour; then specify the VM. The community's Lua layer (Spellforge)
 replaces `.scb` with `.lua`, so a Lua API compatible with theirs is the modding target; the SCB VM is needed only to
 run the retail campaign unchanged.

@@ -7,18 +7,20 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 
 - [x] Repository, GPLv3, legal policy, provenance rules, ADRs
 - [x] Format specs for everything observed so far (`docs/formats/`)
-- [ ] `AGENTS.md`, `CLAUDE.md`, skills mirrored and CI-checked
-- [ ] Cargo workspace: formats, assets, core, script, render, protocol, app, tools
-- [ ] Headless app speaking JSON-RPC over stdio: `hello`, `reset`, `step`, `observe`, `snapshot`, `restore`, `capture`, `shutdown`
-- [ ] Synthetic world (no game data) that replays, snapshots, restores, hashes and renders identically on every platform
-- [ ] `ReplayV1` reader/writer; canonical state hash with subsystem hashes
-- [ ] Python harness: RPC client, synthetic pytest suite, snapshot/restore fuzz
+- [x] `AGENTS.md`, `CLAUDE.md`, skills mirrored and CI-checked
+- [x] Cargo workspace: formats, assets, core, script, render, protocol, app, tools
+- [x] Headless app speaking JSON-RPC over stdio: `hello`, `reset`, `step`, `observe`, `snapshot`, `restore`, `capture`, `shutdown`
+- [x] Synthetic world (no game data) that replays, snapshots, restores, hashes and renders identically on every platform
+- [x] `ReplayV1` reader/writer (protocol crate); canonical state hash with subsystem hashes
+- [ ] Replay playback and recording through the app (`replay_play`, `replay_record`)
+- [x] Python harness: RPC client, synthetic pytest suite, snapshot/restore fuzz
 - [ ] CI on Linux/Windows/macOS: fmt, clippy, nextest, pytest synthetic, skill sync check, no-assets check
-- [ ] `locksley-tools inspect` for SRES / image blobs / RHS / chunk containers (already specified)
+- [x] `opensherwood-tools inspect` for SRES / image blobs / RHS / chunk containers (already specified)
 
 ## M1: Feasibility gates
 
-- [ ] Exact decode of `.map` / `.min` / `.pak` / `.sxt` (pixel-exact vs decompressed data; channel order verified against a screenshot)
+- [x] Exact decode of `.map` / `.min` / `.pak` / `.sxt` containers to 16-bit pixels (all 48+ files)
+- [ ] Channel order of the 16-bit pixels verified against a screenshot of the original
 - [ ] SRES pictures decoded and viewable locally
 - [ ] Sprite bank: one independently verified frame, then all frames of one profile, then Day/Night/Fog variants
 - [ ] SCB disassembler consumes the tutorial script with every unknown explicitly listed

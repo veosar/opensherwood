@@ -26,16 +26,16 @@ cargo build --workspace --release  # release
 
 ```
 # headless RPC server (what the harness uses)
-cargo run -p locksley-app -- --rpc stdio --headless
+cargo run -p opensherwood-app -- --rpc stdio --headless
 
 # game window (M2+)
-cargo run -p locksley-app --release -- --game-dir "C:\GOG Games\Robin Hood - The Legend of Sherwood"
+cargo run -p opensherwood-app --release -- --game-dir "C:\GOG Games\Robin Hood - The Legend of Sherwood"
 
 # inspect game files
-cargo run -p locksley-tools -- inspect "C:\GOG Games\Robin Hood - The Legend of Sherwood\DATA\Interface\DEFAULT.RES"
+cargo run -p opensherwood-tools -- inspect "C:\GOG Games\Robin Hood - The Legend of Sherwood\DATA\Interface\DEFAULT.RES"
 ```
 
-`--game-dir` may be omitted if `LOCKSLEY_GAME_DIR` is set or the GOG / Steam installation is found automatically.
+`--game-dir` may be omitted if `OPENSHERWOOD_GAME_DIR` is set or the GOG / Steam installation is found automatically.
 
 ## Test
 
@@ -44,7 +44,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace          # or: cargo test --workspace
 python -m pytest harness/tests/synthetic
-LOCKSLEY_GAME_DIR=... python -m pytest harness/tests/data     # local only
+OPENSHERWOOD_GAME_DIR=... python -m pytest harness/tests/data     # local only
 python scripts/sync_skills.py --check
 python scripts/check_no_assets.py
 ```
@@ -55,6 +55,6 @@ python scripts/check_no_assets.py
 
 | Variable | Meaning |
 |---|---|
-| `LOCKSLEY_GAME_DIR` | path to the game installation used by data-backed tests and tools |
-| `LOCKSLEY_ARTIFACTS` | where `capture` writes PNGs (default `harness/out`) |
-| `RUST_LOG` | tracing filter, e.g. `locksley_core=debug` |
+| `OPENSHERWOOD_GAME_DIR` | path to the game installation used by data-backed tests and tools |
+| `OPENSHERWOOD_ARTIFACTS` | where `capture` writes PNGs (default `harness/out`) |
+| `RUST_LOG` | tracing filter, e.g. `opensherwood_core=debug` |

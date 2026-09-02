@@ -1,0 +1,15 @@
+[package]
+name = "opensherwood-core"
+description = "Deterministic simulation core for OpenSherwood"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+blake3.workspace = true
+
+[lints]
+workspace = true

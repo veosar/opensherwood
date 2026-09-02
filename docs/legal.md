@@ -5,7 +5,7 @@ AI agent working in this repository must follow the rules in the "Hard rules" se
 
 ## Summary
 
-Locksley is a clean-room, open-source reimplementation of the game engine behind
+OpenSherwood is a clean-room, open-source reimplementation of the game engine behind
 *Robin Hood: The Legend of Sherwood* (Spellbound Entertainment, 2002). It is a new program that
 reads the data files of a copy of the game the player already owns. It does not contain, and must
 never contain, any part of the original game: no executable code, no graphics, no sound, no text,
@@ -28,7 +28,7 @@ obtained by analysing the files of a legally purchased GOG copy for the purpose 
    in our own words, and tests that check our implementation against observable behaviour of the
    original. Every spec file in `docs/formats/` records how the knowledge was obtained (see
    "Provenance").
-3. **No trademarks in the project name.** The project is called Locksley. The game title is used
+3. **No trademarks in the project name.** The project is called OpenSherwood. The game title is used
    only descriptively ("an engine for the data files of Robin Hood: The Legend of Sherwood").
 4. **GPLv3.** All code and documentation in this repository is licensed under the GNU General Public
    License version 3 (see `LICENSE`). Third-party dependencies must be GPLv3-compatible.

@@ -1,21 +1,30 @@
-# ADR-0005: Project name "Locksley"
+# ADR-0005: Project name "OpenSherwood"
 
-Date: 2026-09-02. Status: accepted, revisit before the first public release announcement.
+Date: 2026-09-02. Status: accepted; revisit with a trademark search before the first public release.
 
-## Options considered
+## History
 
-- **Greenwood** (first proposal): generic, collides with an existing JavaScript framework and historical game-sector use.
-- **Yewglass** (Codex's suggestion): distinctive, no collisions, but meaningless and hard to connect to the project.
-- **Open&lt;title word&gt;**: reuses words of the registered title; rejected.
-- **Locksley** (chosen): Robin of Locksley is public-domain folklore, the word does not appear in the game's title,
-  it is short, memorable, and follows the codename convention of Julius / Exult / CorsixTH. GitHub search shows no
-  game or engine of that name.
+1. "Greenwood" (first proposal): generic, collides with an existing JavaScript framework. Rejected.
+2. "Locksley" (used for the first hours): neutral folklore codename in the Julius / Exult style. Codex advised
+   against thematic names; the maintainer asked for the `Open<Game>` convention of OpenMW / OpenJK / OpenRCT2 instead.
+3. "Yewglass" (Codex's suggestion): distinctive but meaningless; rejected by the maintainer.
+4. **"OpenSherwood"** (chosen, 2026-09-02).
 
-## Dissent
+## Reasoning
 
-Codex advised against thematic names ("avoid Loxley, Merry Men, Nottingham") to stay far from the title's
-subject matter, and recommended a formal trademark search before the public brand is fixed. We accept the
-residual risk for the codename phase; renaming a repository and crate prefix is cheap until release. A trademark
-search (EUIPO, WIPO, USPTO, crates.io, domains) is a release-checklist item.
+- It follows the naming convention the community recognises for engine reimplementations (OpenMW = Morrowind,
+  OpenJK = Jedi Knight, OpenRCT2, OpenTTD, OpenXcom, OpenRA, OpenLoco). Those projects use an abbreviation or
+  a part of the game's name nominatively, to say which game's data the engine reads; none reproduces a full
+  registered title.
+- "Sherwood" is a geographic name (Sherwood Forest) used by many unrelated games and companies, which makes
+  exclusive rights in the word alone weak. The registered title is the composite
+  "Robin Hood – The Legend of Sherwood", which we do not reproduce.
+- No GitHub, crates.io or domain collisions were found for "OpenSherwood".
 
-The README states that Locksley is an independent project not affiliated with or endorsed by the rights holders.
+## Risk and mitigation
+
+Using a word from the title carries more risk than a neutral codename. Mitigations: an explicit non-affiliation
+disclaimer in the README; the game title used only descriptively; no logos or artwork of the game; a formal
+trademark search (EUIPO, WIPO, USPTO) on the release checklist; and readiness to rename (repository, crate prefix
+`opensherwood-`, environment variable `OPENSHERWOOD_GAME_DIR`) if the rights holder objects. Renaming is a mechanical
+search-and-replace, as the two earlier renames showed.

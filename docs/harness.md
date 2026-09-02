@@ -5,10 +5,10 @@ The harness is how agents (and CI) verify that the engine works without a human 
 ## Layers
 
 1. **Rust unit and property tests** (`cargo nextest run --workspace`): parsers, core determinism, hashing.
-2. **Synthetic end-to-end tests** (`pytest harness/tests/synthetic`): start `locksley --rpc stdio --headless`,
+2. **Synthetic end-to-end tests** (`pytest harness/tests/synthetic`): start `opensherwood --rpc stdio --headless`,
    load a synthetic scenario (no game data), drive it with canonical input events, check state hashes, snapshot /
    restore invariants and framebuffer hashes. These run in CI on every platform.
-3. **Data-backed tests** (`pytest harness/tests/data`): need `LOCKSLEY_GAME_DIR`. Load real missions, compare decoded
+3. **Data-backed tests** (`pytest harness/tests/data`): need `OPENSHERWOOD_GAME_DIR`. Load real missions, compare decoded
    backgrounds pixel-exactly, compare composed scenes with local golden screenshots (never committed), run recorded
    replays and compare hashes. Skipped when the variable is unset. Run locally and on a trusted self-hosted runner.
 4. **Oracle comparisons** (`harness/oracle`): compare our tick traces with traces recorded from the original game.
@@ -17,8 +17,8 @@ The harness is how agents (and CI) verify that the engine works without a human 
 ## Protocol
 
 JSON-RPC 2.0, one JSON object per line, request on stdin, response on stdout, logs on stderr.
-Methods and schemas: see ADR-0004 and the Rust types in `crates/locksley-protocol/src/`. The Python client is
-`harness/locksley_harness/rpc.py`.
+Methods and schemas: see ADR-0004 and the Rust types in `crates/opensherwood-protocol/src/`. The Python client is
+`harness/opensherwood_harness/rpc.py`.
 
 Example session:
 

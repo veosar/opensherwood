@@ -1,0 +1,19 @@
+[package]
+name = "opensherwood-assets"
+description = "Game directory discovery, overlay VFS and content fingerprint for OpenSherwood"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+opensherwood-formats.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempdir = "0.3"

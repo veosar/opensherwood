@@ -8,7 +8,7 @@ description: Checklist of which documents must change with which kind of code ch
 | If you changed... | Update |
 |---|---|
 | a CLI flag, env var, binary name | `docs/build.md`, `README.md` (short version), `AGENTS.md` approved commands |
-| an RPC method, event kind, replay field, hash component | `docs/harness.md`, ADR-0004 (if the contract changes), `harness/locksley_harness/rpc.py` docstrings |
+| an RPC method, event kind, replay field, hash component | `docs/harness.md`, ADR-0004 (if the contract changes), `harness/opensherwood_harness/rpc.py` docstrings |
 | a parser or a format finding | `docs/formats/<format>.md` (status, tables, Provenance), `docs/formats/README.md` status column |
 | a fact about the original game's behaviour | `docs/original/*.md` |
 | crate layout or dependency direction | `docs/architecture.md`, `AGENTS.md` layout section |

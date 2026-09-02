@@ -103,14 +103,14 @@ I recommend:
 
 ```text
 crates/
-  locksley-formats       bounded readers and format models
-  locksley-assets        VFS, install discovery, overlays, fingerprints, caches
-  locksley-core          authoritative world, scheduler, AI, orders, pathfinding
-  locksley-script        SCB parser/VM and script-native boundary
-  locksley-render        deterministic CPU compositor
-  locksley-protocol      RPC, replay, observation, snapshot and hash schemas
-  locksley-app           headless and interactive binaries
-  locksley-tools         inspectors/exporters; editor added later
+  opensherwood-formats       bounded readers and format models
+  opensherwood-assets        VFS, install discovery, overlays, fingerprints, caches
+  opensherwood-core          authoritative world, scheduler, AI, orders, pathfinding
+  opensherwood-script        SCB parser/VM and script-native boundary
+  opensherwood-render        deterministic CPU compositor
+  opensherwood-protocol      RPC, replay, observation, snapshot and hash schemas
+  opensherwood-app           headless and interactive binaries
+  opensherwood-tools         inspectors/exporters; editor added later
 harness/
   Python RPC client, tests, image/state comparisons
 oracle/
@@ -121,11 +121,11 @@ testdata/
 
 Specific changes:
 
-- Add `locksley-assets`. It must implement explicit path override, GOG/Steam discovery, case-insensitive lookup on case-sensitive systems, language/edition overlays, mod overlays, and a content fingerprint. The `2047/data` overlay behavior belongs here, not in individual parsers.
+- Add `opensherwood-assets`. It must implement explicit path override, GOG/Steam discovery, case-insensitive lookup on case-sensitive systems, language/edition overlays, mod overlays, and a content fingerprint. The `2047/data` overlay behavior belongs here, not in individual parsers.
 - Keep all formats as modules inside one crate until compile time or dependency direction proves a split necessary.
 - Split SCB execution from Lua modding. Lua is not needed until the engine has a stable native gameplay API.
-- Delay `locksley-audio` and `locksley-editor`; empty crates are architectural ceremony.
-- Do not create a shipping `locksley-oracle` crate. Frida/Ghidra integration is Windows-only research tooling. Put the shared trace types in `locksley-protocol`; keep the version-specific oracle adapter on the analysis side of the clean-room boundary.
+- Delay `opensherwood-audio` and `opensherwood-editor`; empty crates are architectural ceremony.
+- Do not create a shipping `opensherwood-oracle` crate. Frida/Ghidra integration is Windows-only research tooling. Put the shared trace types in `opensherwood-protocol`; keep the version-specific oracle adapter on the analysis side of the clean-room boundary.
 - Add a synthetic test-world module or test-support crate only when multiple crates need it.
 
 Do not use a general ECS initially. Use stable generational entity IDs, typed component stores/arenas, explicit systems, and deterministic iteration order. A general ECS makes serialization, state hashing, and behavior tracing harder, while this game has a modest and well-defined entity taxonomy.
@@ -414,14 +414,14 @@ The mirror should contain a generated marker, and CI must fail on extra as well 
 
 ## 9. Project name
 
-“Locksley” does not reproduce the title mark, but I would not choose it as the final public name.
+“OpenSherwood” does not reproduce the title mark, but I would not choose it as the final public name.
 
 Problems:
 
 - extremely generic and weak in search results;
-- prior game-sector use, including the historical Locksley Entertainment name;
+- prior game-sector use, including the historical OpenSherwood Entertainment name;
 - likely collisions across repositories, packages, companies, and domains;
-- `locksley-*` crate prefixes are also generic.
+- `opensherwood-*` crate prefixes are also generic.
 
 Use it only as an internal codename until a proper GitHub, crates.io, domain, EUIPO/WIPO/USPTO, and general commercial search is complete.
 
@@ -471,12 +471,12 @@ The largest technical risk after that is SCB-plus-gameplay semantics, not BKS. A
 - State hashing must be explicitly canonical and componentized from M0.
 - Original tick-to-new tick parity must be measured, not assumed.
 - A general ECS is unnecessary and hazardous to deterministic ordering.
-- `locksley-assets` is missing and more important than early audio/editor crates.
-- A shipping `locksley-oracle` crate is the wrong boundary.
+- `opensherwood-assets` is missing and more important than early audio/editor crates.
+- A shipping `opensherwood-oracle` crate is the wrong boundary.
 - `softbuffer` is premature duplication.
 - LuaJIT desktop plus Lua elsewhere creates avoidable behavioral divergence.
 - Round-trip writers are not an early requirement for read-only game-data support.
 - SSIM is the wrong criterion for a directly decoded background.
 - Original-save compatibility should not gate campaign completion.
 - A general campaign-playing bot is unnecessary; deterministic per-mission input scripts are sufficient.
-- Locksley is acceptable as a codename but weak as a public brand.
+- OpenSherwood is acceptable as a codename but weak as a public brand.

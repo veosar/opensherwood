@@ -1,10 +1,11 @@
-# Locksley
+# OpenSherwood
 
-Locksley is a free, open-source game engine that plays *Robin Hood: The Legend of Sherwood* (Spellbound
+OpenSherwood is a free, open-source game engine that plays *Robin Hood: The Legend of Sherwood* (Spellbound
 Entertainment, 2002) from the data files of a copy you already own. It is a clean-room reimplementation in the
 tradition of OpenMW, Julius and OpenRCT2: the original game's assets are read, never shipped.
 
-**Status: pre-alpha, milestone M0 (project setup and test harness).** Nothing is playable yet. See
+**Status: pre-alpha, milestone M0 nearly complete (workspace, deterministic synthetic world, headless JSON-RPC
+harness, first format parsers).** Nothing is playable yet. See
 [docs/roadmap.md](docs/roadmap.md) for what comes next and [docs/formats/](docs/formats/) for what we already know
 about the game's file formats.
 
@@ -20,7 +21,7 @@ about the game's file formats.
 
 ## You need the original game
 
-Locksley contains no game content. Buy the game on GOG or Steam and point Locksley at the installation
+OpenSherwood contains no game content. Buy the game on GOG or Steam and point OpenSherwood at the installation
 directory (it looks for `Robin Hood.exe` and `DATA/robinhood.bks`). See [docs/legal.md](docs/legal.md).
 
 ## Building and running
@@ -29,10 +30,10 @@ See [docs/build.md](docs/build.md). Short version:
 
 ```
 cargo build --release
-cargo run --release -p locksley -- --game-dir "C:\GOG Games\Robin Hood - The Legend of Sherwood"
+cargo run --release -p opensherwood -- --game-dir "C:\GOG Games\Robin Hood - The Legend of Sherwood"
 ```
 
-Tests that need game data read the directory from the `LOCKSLEY_GAME_DIR` environment variable and are skipped
+Tests that need game data read the directory from the `OPENSHERWOOD_GAME_DIR` environment variable and are skipped
 when it is not set.
 
 ## Repository map
@@ -56,5 +57,5 @@ screenshot, compare with the original. Humans are welcome; read [CONTRIBUTING.md
 ## License
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
-Robin Hood: The Legend of Sherwood is a trademark of its respective owners; Locksley is not affiliated with or
+Robin Hood: The Legend of Sherwood is a trademark of its respective owners; OpenSherwood is not affiliated with or
 endorsed by Microids, Spellbound Entertainment or their successors.

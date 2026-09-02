@@ -1,6 +1,6 @@
 ---
 name: format-investigation
-description: How to reverse engineer a game data file format legally (observation-based) and turn it into a spec in docs/formats plus a parser in locksley-formats. Use when a format is stub/partial, when a parser fails on a real file, or when a new file type is found.
+description: How to reverse engineer a game data file format legally (observation-based) and turn it into a spec in docs/formats plus a parser in opensherwood-formats. Use when a format is stub/partial, when a parser fails on a real file, or when a new file type is found.
 ---
 
 # Format investigation (clean-room, observation-based)
@@ -29,10 +29,10 @@ analyst session; write down the exact open question in the spec.
 8. **Spec**: update `docs/formats/<name>.md`: status, layout tables with offsets/types, every unknown as
    `unknown_<offset>`, examples of values (counts, dimensions), and the Provenance section describing exactly how
    each claim was established. Do not paste game strings beyond a few short identifiers needed to explain a field.
-9. **Parser**: implement in `crates/locksley-formats/src/<name>.rs` with a bounded reader; return typed structures;
-   keep `unknown_*` fields; add a data-backed test (skipped without `LOCKSLEY_GAME_DIR`) that parses every file
+9. **Parser**: implement in `crates/opensherwood-formats/src/<name>.rs` with a bounded reader; return typed structures;
+   keep `unknown_*` fields; add a data-backed test (skipped without `OPENSHERWOOD_GAME_DIR`) that parses every file
    of the type and asserts the invariants you found; add a fuzz-safe test with truncated/garbage input.
-10. **Tools**: expose it in `locksley-tools inspect` so the next investigator can see it.
+10. **Tools**: expose it in `opensherwood-tools inspect` so the next investigator can see it.
 
 ## Statistics helpers
 
