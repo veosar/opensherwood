@@ -1,10 +1,99 @@
 //! `SRES` resource archives. Spec: `docs/formats/sres.md`.
+//!
+//! Pictures are decompressed eagerly, so the parser enforces archive-wide budgets ([`Limits`]) on
+//! top of the per-picture caps of `image_blob`: a hostile archive cannot amplify a few KiB of input
+//! into gigabytes of decoded pixels.
 
 use crate::image_blob::{self, Image16};
 use crate::reader::{FormatError, Reader, tag_string};
 
 /// Archive header version seen in retail data.
 pub const VERSION: u32 = 0x100;
+
+/// Archive-wide budgets. The retail maxima, measured over the four retail archives (GOG build,
+/// 2026-09-02): 508 entries (`Level.res`), 1,134 pictures and 21.7 MiB of decoded pixels
+/// (`DEFAULT.RES`), 128 pictures in one collection. [`Limits::RETAIL`] leaves generous headroom
+/// while keeping the worst case a hostile archive can request at a few hundred MiB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// Most top-level entries.
+    pub max_entries: u32,
+    /// Most pictures in one `PICC` collection or `CUR ` cursor.
+    pub max_pictures_per_entry: u32,
+    /// Most pictures in the whole archive (every `PIC `, collection, widget and cursor frame).
+    pub max_images: usize,
+    /// Most decoded picture bytes (16-bit pixels, `width * height * 2` per picture) in the whole
+    /// archive. Checked from the picture header before anything is decompressed.
+    pub max_decoded_bytes: usize,
+}
+
+impl Limits {
+    /// Retail-safe policy: 65,536 entries, 4,096 pictures per entry, 16,384 pictures and 256 MiB
+    /// of decoded pixels per archive.
+    pub const RETAIL: Self = Self {
+        max_entries: 65_536,
+        max_pictures_per_entry: 4096,
+        max_images: 16_384,
+        max_decoded_bytes: 256 * 1024 * 1024,
+    };
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self::RETAIL
+    }
+}
+
+/// Running totals of one parse, checked against [`Limits`] before each picture is decompressed.
+struct Budget<'l> {
+    limits: &'l Limits,
+    images: usize,
+    decoded_bytes: usize,
+}
+
+impl Budget<'_> {
+    /// Parse one picture at the reader's position, after charging its header to the budget.
+    fn picture(&mut self, r: &mut Reader<'_>) -> Result<Image16, FormatError> {
+        let offset = r.pos();
+        let header = image_blob::parse_header(&mut r.clone())?;
+        let bytes = usize::from(header.width) * usize::from(header.height) * 2;
+        self.images += 1;
+        if self.images > self.limits.max_images {
+            return Err(FormatError::Invalid {
+                offset,
+                what: "SRES picture count",
+                value: format!(
+                    "more than {} pictures in the archive",
+                    self.limits.max_images
+                ),
+            });
+        }
+        self.decoded_bytes = self.decoded_bytes.saturating_add(bytes);
+        if self.decoded_bytes > self.limits.max_decoded_bytes {
+            return Err(FormatError::Invalid {
+                offset,
+                what: "SRES decoded size",
+                value: format!(
+                    "{} bytes exceeds the archive budget of {}",
+                    self.decoded_bytes, self.limits.max_decoded_bytes
+                ),
+            });
+        }
+        image_blob::parse(r)
+    }
+
+    /// Check a per-entry picture count against the policy.
+    fn count(&self, n: u32, offset: usize, what: &'static str) -> Result<(), FormatError> {
+        if n > self.limits.max_pictures_per_entry {
+            return Err(FormatError::Invalid {
+                offset,
+                what,
+                value: n.to_string(),
+            });
+        }
+        Ok(())
+    }
+}
 
 /// One entry of an archive.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,12 +206,30 @@ impl Archive {
     }
 }
 
-/// Parse an archive. Pictures are decompressed eagerly.
+/// Parse an archive under [`Limits::RETAIL`]. Pictures are decompressed eagerly.
 pub fn parse(data: &[u8]) -> Result<Archive, FormatError> {
+    parse_with(data, &Limits::RETAIL)
+}
+
+/// [`parse`] under an explicit budget.
+pub fn parse_with(data: &[u8], limits: &Limits) -> Result<Archive, FormatError> {
     let mut r = Reader::new(data);
     r.expect(b"SRES", "SRES magic")?;
     let version = r.u32("SRES version")?;
     let count = r.u32("SRES entry count")?;
+    // Every entry is at least 12 bytes, so a count the data cannot hold is rejected up front.
+    if count > limits.max_entries || count as usize > r.remaining() / 12 {
+        return Err(FormatError::Invalid {
+            offset: r.pos() - 4,
+            what: "SRES entry count",
+            value: count.to_string(),
+        });
+    }
+    let mut budget = Budget {
+        limits,
+        images: 0,
+        decoded_bytes: 0,
+    };
     let mut entries = Vec::new();
     for _ in 0..count {
         let offset = r.pos();
@@ -130,19 +237,13 @@ pub fn parse(data: &[u8]) -> Result<Archive, FormatError> {
         let id = r.u32("SRES entry id")?;
         let unknown_0x08 = r.u32("SRES entry unknown_0x08")?;
         let body = match &tag {
-            b"PIC " => Body::Picture(image_blob::parse(&mut r)?),
+            b"PIC " => Body::Picture(budget.picture(&mut r)?),
             b"PICC" => {
                 let n = r.u32("SRES picture count")?;
-                if n > 4096 {
-                    return Err(FormatError::Invalid {
-                        offset: r.pos() - 4,
-                        what: "SRES picture count",
-                        value: n.to_string(),
-                    });
-                }
+                budget.count(n, r.pos() - 4, "SRES picture count")?;
                 let mut pics = Vec::with_capacity(n as usize);
                 for _ in 0..n {
-                    pics.push(image_blob::parse(&mut r)?);
+                    pics.push(budget.picture(&mut r)?);
                 }
                 Body::PictureCollection(pics)
             }
@@ -156,7 +257,7 @@ pub fn parse(data: &[u8]) -> Result<Archive, FormatError> {
                 let states = r.u32("SRES widget states")?;
                 let mut pictures = Vec::with_capacity(states.count_ones() as usize);
                 for _ in 0..states.count_ones() {
-                    pictures.push(image_blob::parse(&mut r)?);
+                    pictures.push(budget.picture(&mut r)?);
                 }
                 Body::Widget {
                     kind,
@@ -170,16 +271,10 @@ pub fn parse(data: &[u8]) -> Result<Archive, FormatError> {
                 let hotspot_y = r.u16("SRES cursor hotspot y")?;
                 let unknown_0x12 = r.u16("SRES cursor unknown_0x12")?;
                 let n = r.u32("SRES cursor frame count")?;
-                if n > 4096 {
-                    return Err(FormatError::Invalid {
-                        offset: r.pos() - 4,
-                        what: "SRES cursor frame count",
-                        value: n.to_string(),
-                    });
-                }
+                budget.count(n, r.pos() - 4, "SRES cursor frame count")?;
                 let mut frames = Vec::with_capacity(n as usize);
                 for _ in 0..n {
-                    frames.push(image_blob::parse(&mut r)?);
+                    frames.push(budget.picture(&mut r)?);
                 }
                 Body::Cursor {
                     unknown_0x0c,
@@ -307,5 +402,75 @@ mod tests {
             data.extend((0..n).map(|i| (i * 53 % 251) as u8));
             let _ = parse(&data);
         }
+    }
+
+    /// A valid zlib image blob of `w` x `h` zero pixels.
+    fn blob(w: u16, h: u16) -> Vec<u8> {
+        use std::io::Write as _;
+        let raw = vec![0u8; usize::from(w) * usize::from(h) * 2];
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&raw).unwrap();
+        let payload = enc.finish().unwrap();
+        let mut b = Vec::new();
+        b.extend_from_slice(&w.to_le_bytes());
+        b.extend_from_slice(&h.to_le_bytes());
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        b.extend_from_slice(&payload);
+        b
+    }
+
+    /// An archive of `entries` x `PICC` collections, each holding `per_entry` pictures of `w` x `h`.
+    fn picc_archive(entries: u32, per_entry: u32, w: u16, h: u16) -> Vec<u8> {
+        let pic = blob(w, h);
+        let mut f = Vec::new();
+        f.extend_from_slice(b"SRES");
+        f.extend_from_slice(&VERSION.to_le_bytes());
+        f.extend_from_slice(&entries.to_le_bytes());
+        for id in 0..entries {
+            f.extend_from_slice(b"PICC");
+            f.extend_from_slice(&id.to_le_bytes());
+            f.extend_from_slice(&0u32.to_le_bytes());
+            f.extend_from_slice(&per_entry.to_le_bytes());
+            for _ in 0..per_entry {
+                f.extend_from_slice(&pic);
+            }
+        }
+        f
+    }
+
+    #[test]
+    fn archive_budgets_stop_amplification() {
+        let tight = Limits {
+            max_entries: 4,
+            max_pictures_per_entry: 8,
+            max_images: 10,
+            max_decoded_bytes: 10 * 4 * 4 * 2,
+        };
+        // Within every budget: 2 entries x 5 pictures of 4x4 = 10 pictures, 320 bytes.
+        let ok = picc_archive(2, 5, 4, 4);
+        assert_eq!(parse_with(&ok, &tight).unwrap().entries.len(), 2);
+        assert_eq!(parse(&ok).unwrap().entries.len(), 2);
+        // One picture too many across the archive, although each entry is within its own cap.
+        let too_many = picc_archive(2, 6, 4, 4);
+        let err = parse_with(&too_many, &tight).unwrap_err();
+        assert!(err.to_string().contains("picture count"), "{err}");
+        // Same picture count but bigger pictures: the decoded-byte budget trips (from the header,
+        // before decompression, so the offending blob does not even need a valid payload).
+        let mut too_big = picc_archive(2, 5, 4, 4);
+        let last_blob = too_big.len() - blob(4, 4).len();
+        too_big[last_blob..last_blob + 2].copy_from_slice(&8u16.to_le_bytes());
+        let err = parse_with(&too_big, &tight).unwrap_err();
+        assert!(err.to_string().contains("decoded size"), "{err}");
+        // Entry count above the policy, and a count the data cannot hold.
+        let err = parse_with(&picc_archive(5, 1, 4, 4), &tight).unwrap_err();
+        assert!(err.to_string().contains("entry count"), "{err}");
+        let mut absurd = picc_archive(1, 1, 4, 4);
+        absurd[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+        let err = parse(&absurd).unwrap_err();
+        assert!(err.to_string().contains("entry count"), "{err}");
+        // Per-entry cap.
+        let err = parse_with(&picc_archive(1, 9, 4, 4), &tight).unwrap_err();
+        assert!(err.to_string().contains("picture count"), "{err}");
     }
 }

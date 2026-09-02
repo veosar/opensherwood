@@ -288,6 +288,50 @@ impl Framebuffer {
 
     /// Blit an RGBA image: alpha 0 skipped, alpha 255 copied, other alphas blended (integer math).
     /// Ignored when `rgba` is shorter than `w * h * 4`.
+    /// Like `blit_rgba`, but a destination pixel is written only when `visible(x, y)` holds for its
+    /// screen position (used to hide the parts of a character standing behind an occluder).
+    pub fn blit_rgba_masked(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        rgba: &[u8],
+        visible: impl Fn(i32, i32) -> bool,
+    ) {
+        if rgba.len() < w as usize * h as usize * 4 {
+            return;
+        }
+        for sy in 0..h as i32 {
+            let dy = y + sy;
+            if dy < 0 || dy >= self.height as i32 {
+                continue;
+            }
+            for sx in 0..w as i32 {
+                let dx = x + sx;
+                if dx < 0 || dx >= self.width as i32 {
+                    continue;
+                }
+                let si = ((sy as u32 * w + sx as u32) * 4) as usize;
+                if rgba[si + 3] == 0 || !visible(dx, dy) {
+                    continue;
+                }
+                let a = u32::from(rgba[si + 3]);
+                let di = ((dy as u32 * self.width + dx as u32) * 4) as usize;
+                if a == 255 {
+                    self.rgba[di..di + 3].copy_from_slice(&rgba[si..si + 3]);
+                } else {
+                    for c in 0..3 {
+                        let sc = u32::from(rgba[si + c]);
+                        let dc = u32::from(self.rgba[di + c]);
+                        self.rgba[di + c] = ((sc * a + dc * (255 - a)) / 255) as u8;
+                    }
+                }
+                self.rgba[di + 3] = 255;
+            }
+        }
+    }
+
     pub fn blit_rgba(&mut self, x: i32, y: i32, w: u32, h: u32, rgba: &[u8]) {
         if rgba.len() < w as usize * h as usize * 4 {
             return;
@@ -430,72 +474,91 @@ pub fn render(
         16,
         palette::GOAL,
     );
-    // Sprites drawn this frame: (feet map x, feet map y, screen rect) for occlusion.
-    let mut drawn: Vec<DrawnSprite> = Vec::new();
-    for e in &world.entities {
-        if !e.alive {
+    // Ground markers first (target lines, selection circles), then sprites in depth order.
+    for e in world.entities.iter().filter(|e| e.alive) {
+        if e.kind == EntityKind::Obstacle {
+            let (hw, hh) = (e.patrol[0].0, e.patrol[0].1);
+            fb.fill_rect(
+                px(e.x - hw, cx),
+                px(e.y - hh, cy),
+                px(e.x + hw, cx),
+                px(e.y + hh, cy),
+                palette::OBSTACLE,
+            );
             continue;
         }
-        match e.kind {
-            EntityKind::Obstacle => {
-                let (hw, hh) = (e.patrol[0].0, e.patrol[0].1);
-                fb.fill_rect(
-                    px(e.x - hw, cx),
-                    px(e.y - hh, cy),
-                    px(e.x + hw, cx),
-                    px(e.y + hh, cy),
-                    palette::OBSTACLE,
-                );
-            }
-            EntityKind::Player | EntityKind::Guard => {
-                let c = if e.kind == EntityKind::Player {
-                    palette::PLAYER
-                } else {
-                    palette::GUARD
-                };
-                let sprite = e
-                    .anim
-                    .as_ref()
-                    .and_then(|a| a.current(&world.catalog))
-                    .and_then(|spec| sprites.frame(spec.frame).map(|f| (spec, f)));
-                match sprite {
-                    Some((spec, frame)) => {
-                        let x = px(e.x, cx) + spec.offset_x;
-                        let y = px(e.y, cy) + spec.offset_y;
-                        fb.blit_rgba(x, y, frame.width, frame.height, &frame.rgba);
-                        drawn.push((
-                            e.x.round(),
-                            e.y.round(),
-                            (x, y, frame.width as i32, frame.height as i32),
-                        ));
-                    }
-                    None => fb.fill_circle(px(e.x, cx), px(e.y, cy), e.size.round(), c),
-                }
-                if let Some((tx, ty)) = e.target {
-                    fb.line(
-                        px(e.x, cx),
-                        px(e.y, cy),
-                        px(tx, cx),
-                        px(ty, cy),
-                        palette::TARGET,
-                    );
-                }
-                if world.selected == Some(e.id) {
-                    fb.circle(
-                        px(e.x, cx),
-                        px(e.y, cy),
-                        e.size.round() + 3,
-                        palette::SELECTION,
-                    );
-                }
-            }
+        if let Some((tx, ty)) = e.target {
+            fb.line(
+                px(e.x, cx),
+                px(e.y, cy),
+                px(tx, cx),
+                px(ty, cy),
+                palette::TARGET,
+            );
+        }
+        if world.selected == Some(e.id) {
+            fb.circle(
+                px(e.x, cx),
+                px(e.y, cy),
+                e.size.round() + 3,
+                palette::SELECTION,
+            );
         }
     }
-    if let Some(bg) = background {
-        apply_occluders(&mut fb, bg, (cx, cy), &drawn);
-    }
-    if let Some(bg) = background {
-        apply_occluders(&mut fb, bg, (cx, cy), &drawn);
+    // Painter's order: characters lower on the map (larger feet y) are nearer the viewer and drawn
+    // last; ties are broken by entity index so the order is deterministic.
+    let mut order: Vec<(i32, usize)> = world
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.alive && e.kind != EntityKind::Obstacle)
+        .map(|(i, e)| (e.y.round(), i))
+        .collect();
+    order.sort_unstable();
+    for (_, i) in order {
+        let e = &world.entities[i];
+        let c = if e.kind == EntityKind::Player {
+            palette::PLAYER
+        } else {
+            palette::GUARD
+        };
+        let sprite = e
+            .anim
+            .as_ref()
+            .and_then(|a| a.current(&world.catalog))
+            .and_then(|spec| sprites.frame(spec.frame).map(|f| (spec, f)));
+        let Some((spec, frame)) = sprite else {
+            fb.fill_circle(px(e.x, cx), px(e.y, cy), e.size.round(), c);
+            continue;
+        };
+        let x = px(e.x, cx) + spec.offset_x;
+        let y = px(e.y, cy) + spec.offset_y;
+        let (fx, fy) = (e.x.round(), e.y.round());
+        // Occluders the character stands behind and whose mask overlaps the sprite rectangle.
+        let behind: Vec<&Occluder> = background
+            .map(|bg| {
+                bg.occluders
+                    .iter()
+                    .filter(|o| fy < o.depth_y(fx))
+                    .filter(|o| {
+                        let (ox0, oy0) = (o.x - cx, o.y - cy);
+                        let (ox1, oy1) = (ox0 + o.width as i32, oy0 + o.height as i32);
+                        x < ox1
+                            && x + frame.width as i32 > ox0
+                            && y < oy1
+                            && y + frame.height as i32 > oy0
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if behind.is_empty() {
+            fb.blit_rgba(x, y, frame.width, frame.height, &frame.rgba);
+        } else {
+            fb.blit_rgba_masked(x, y, frame.width, frame.height, &frame.rgba, |sx, sy| {
+                let (mx, my) = (sx + cx, sy + cy);
+                !behind.iter().any(|o| o.covers(mx, my))
+            });
+        }
     }
     let (mx, my) = (
         Fixed::from_raw(world.pointer.0).round(),
@@ -504,47 +567,6 @@ pub fn render(
     fb.line(mx - 4, my, mx + 4, my, palette::POINTER);
     fb.line(mx, my - 4, mx, my + 4, palette::POINTER);
     fb
-}
-
-/// A sprite drawn this frame: feet position in map pixels and its screen rectangle.
-type DrawnSprite = (i32, i32, (i32, i32, i32, i32));
-
-/// Restore background pixels of every occluder over the sprites standing behind it.
-fn apply_occluders(
-    fb: &mut Framebuffer,
-    bg: &Background,
-    (cx, cy): (i32, i32),
-    drawn: &[DrawnSprite],
-) {
-    for occ in &bg.occluders {
-        let (ox0, oy0) = (occ.x - cx, occ.y - cy);
-        let (ox1, oy1) = (ox0 + occ.width as i32, oy0 + occ.height as i32);
-        for &(fx, fy, (sx, sy, sw, sh)) in drawn {
-            if fy >= occ.depth_y(fx) {
-                continue; // in front of the object
-            }
-            let (x0, y0) = (sx.max(ox0).max(0), sy.max(oy0).max(0));
-            let (x1, y1) = (
-                (sx + sw).min(ox1).min(fb.width as i32),
-                (sy + sh).min(oy1).min(fb.height as i32),
-            );
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let (mx, my) = (x + cx, y + cy);
-                    if occ.covers(mx, my)
-                        && mx >= 0
-                        && my >= 0
-                        && (mx as u32) < bg.width
-                        && (my as u32) < bg.height
-                    {
-                        let si = ((my as u32 * bg.width + mx as u32) * 4) as usize;
-                        let di = ((y as u32 * fb.width + x as u32) * 4) as usize;
-                        fb.rgba[di..di + 4].copy_from_slice(&bg.rgba[si..si + 4]);
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -561,6 +583,89 @@ mod tests {
         assert_eq!(a.rgba.len(), 640 * 480 * 4);
         let png = a.encode_png().unwrap();
         assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
+    }
+
+    #[test]
+    fn overlapping_actors_compose_in_depth_order_with_occluders() {
+        use opensherwood_core::{AnimSet, AnimState, FrameSpec};
+        // Two 8x8 sprites: a red one whose feet are at y = 20 (behind the occluder line at y = 30)
+        // and a blue one at y = 40 (in front). Their rectangles overlap the occluder's mask.
+        struct Src;
+        impl SpriteSource for Src {
+            fn frame(&mut self, index: u32) -> Option<Arc<SpriteFrame>> {
+                let c = if index == 0 {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 0, 255, 255]
+                };
+                Some(Arc::new(SpriteFrame {
+                    width: 8,
+                    height: 8,
+                    rgba: c.repeat(64),
+                }))
+            }
+        }
+        let mut w = World::new(Scenario::Synthetic("corridor".into()), 1).unwrap();
+        w.entities.truncate(2);
+        let mut set = |i: usize, frame: u32, x: i32, y: i32| {
+            let e = &mut w.entities[i];
+            e.kind = EntityKind::Guard;
+            e.x = Fixed::from_int(x);
+            e.y = Fixed::from_int(y);
+            e.target = None;
+            e.anim = Some(AnimState::new(format!("s{i}"), 0));
+            let mut anim = AnimSet::default();
+            anim.animations.push(vec![FrameSpec {
+                frame,
+                duration: 1,
+                offset_x: -4,
+                offset_y: -8,
+            }]);
+            w.catalog.sets.insert(format!("s{i}"), anim);
+        };
+        set(0, 1, 20, 40); // blue, in front, listed first
+        set(1, 0, 20, 20); // red, behind
+        w.selected = None;
+        let mut bg = Background {
+            width: 64,
+            height: 64,
+            rgba: [0, 255, 0, 255].repeat(64 * 64),
+            occluders: vec![Occluder {
+                x: 10,
+                y: 10,
+                width: 20,
+                height: 30,
+                bits: vec![0xFF; 3 * 30],
+                line: Some(((10, 30), (30, 30))),
+            }],
+        };
+        bg.occluders[0].bits.truncate(3 * 30);
+        let fb = render(&w, Some(&bg), &mut Src);
+        let px = |x: i32, y: i32| {
+            let i = ((y as u32 * fb.width + x as u32) * 4) as usize;
+            [fb.rgba[i], fb.rgba[i + 1], fb.rgba[i + 2]]
+        };
+        // Red sprite covers (16..24, 12..20): fully inside the mask -> background shows.
+        assert_eq!(px(18, 15), [0, 255, 0]);
+        // Blue sprite covers (16..24, 32..40): overlaps the mask rows 32..40 but stands in front.
+        assert_eq!(px(18, 35), [0, 0, 255]);
+        // Depth order: move red (listed second) below blue so their rectangles overlap; red now has
+        // the larger feet y and must be drawn on top, whatever the slot order.
+        w.entities[1].y = Fixed::from_int(44);
+        w.entities[1].x = Fixed::from_int(50);
+        w.entities[0].x = Fixed::from_int(50);
+        let fb2 = render(&w, Some(&bg), &mut Src);
+        let px2 = |x: i32, y: i32| {
+            let i = ((y as u32 * fb2.width + x as u32) * 4) as usize;
+            [fb2.rgba[i], fb2.rgba[i + 1], fb2.rgba[i + 2]]
+        };
+        assert_eq!(px2(50, 38), [255, 0, 0]); // overlap rows 36..40: red on top
+        assert_eq!(px2(50, 33), [0, 0, 255]); // only blue
+        // Swapping the feet order swaps the winner.
+        w.entities[1].y = Fixed::from_int(36);
+        let fb3 = render(&w, Some(&bg), &mut Src);
+        let i = ((34u32 * fb3.width + 50) * 4) as usize;
+        assert_eq!(&fb3.rgba[i..i + 3], &[0, 0, 255]);
     }
 
     #[test]

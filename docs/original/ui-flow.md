@@ -49,9 +49,10 @@ grey/dark plate = disabled, teal plate = normal, orange plate = hovered (the lab
 labels use the "Disabled" font). The column is right-aligned:
 
 - x = 664..831 (168 px), row pitch **41 px**, plate height 39.
-- Row k (k = 0..6) has y = **345 + 41*k**: 345, 386, 427, 468, 509, 550, 591. Every screen fills the column
-  (implementer's note: measuring the plate's top edge on `menu_main.png` at x=668 gives **339 + 41*k**; the engine
-  uses 339).
+- Row k (k = 0..6) has plate top y = **339 + 41*k**: 339, 380, 421, 462, 503, 544, 585 (measured on
+  `menu_main.png` and `pause_menu.png` at x = 668: bright frame rows 339..342, 380..383, ..., 615..617; an
+  earlier reading of 345 in this document was the label baseline area, not the plate top). Row y values quoted
+  elsewhere in this file as 345 + 41*k are the earlier reading and mean the same rows. Every screen fills the column
   from the bottom (`Back`/`Cancel`/`Quit`/`OK` always on the last row, y = 591).
 - Label text centred, y-centre = row y + 19.
 
@@ -113,13 +114,15 @@ selected profile (`DATA/Savegame/Profiles`, see `docs/formats/savegame.md`).
 
 ### 4.1 Graphical options (`options_graphics.png`)
 
-Title "Graphical options". Two groups of full-width option bars (x = 227..639, 413 px wide; a bar is 26 px
+Screen title (TEXT 1000507 string 28). Two groups of full-width option bars (x = 227..639, 413 px wide; a bar is 26 px
 high, pitch 41; orange = selected / enabled, teal = not selected):
 
 | Group label (y) | Bars (y of bar top) | Default |
 |---|---|---|
-| screen-resolution group (233) | 4:3 (249), 16:9 (290), 16:10 (331) | 4:3 |
-| special-effects group (383) | alpha view cones (400), transparent shadows (441), effect animations (482), background animations (523) | all enabled |
+| resolution group, string 42 (233) | ratio bars, strings 43..45 (249, 290, 331) | first |
+| effects group, string 46 (383) | four toggles, strings 47..50 (400, 441, 482, 523) | all enabled |
+
+(Option labels are `Level.res` TEXT 1000507 strings; indices are given instead of the wording.)
 
 The GOG/Ready2Play build offers **aspect ratios instead of resolutions** here (the retail game listed
 640x480 / 800x600 / 1024x768 according to its strings; *inferred* that the patched build maps the ratio to a
@@ -129,39 +132,28 @@ resolution). OK (550) applies, Cancel (591) / Escape discards.
 
 | Control | y | Values / default |
 |---|---|---|
-| Stereo sound / 3D sound | 220 / 261 | Stereo selected; 3D sound greyed out (unavailable on this machine) |
-| High resolution / Low resolution | 320 / 361 | High resolution selected |
-| FX volume | label 424, slider 433..447 | 10 cells of 27 px (x = 226 + 42*i, i = 0..9), value = index of the orange cell; default 10/10 |
-| Dialogue volume | label 464, slider 473 | default 10/10 |
-| Music volume | label 504, slider 513 | default 10/10 |
-| Comments volume | label 544, slider 553 | default 10/10 |
-| Comments frequency | label 584, slider 593 | default 6/10 |
+| output mode bars (strings 51, 53) | 220 / 261 | first selected; the 3D one greyed out (unavailable on this machine) |
+| quality bars (strings 54, 55) | 320 / 361 | first selected |
+| volume 1 (string 56) | label 424, slider 433..447 | 10 cells of 27 px (x = 226 + 42*i, i = 0..9), value = index of the orange cell; default 10/10 |
+| volume 2 (string 57) | label 464, slider 473 | default 10/10 |
+| volume 3 (string 58) | label 504, slider 513 | default 10/10 |
+| volume 4 (string 59) | label 544, slider 553 | default 10/10 |
+| frequency (string 60) | label 584, slider 593 | default 6/10 |
 
 Slider widget = `DEFAULT.RES` `SLID` id 201 (6 pictures, 25x21 knobs) on a 10-cell track (*inferred*). OK / Cancel.
 
 ### 4.3 Shortcuts (`options_shortcuts.png`)
 
 A two-column table over the dungeon background, actions at x = 226, keys right-aligned to x = 590, 15 px line
-pitch starting at y = 161. Buttons: OK, Default 1, Default 2, User defined (orange = active set), Cancel. The
-manual (p.31) gives both default sets; "Default 1" (observed values):
-
-| Action | Default 1 | Default 2 (manual) |
-|---|---|---|
-| Zoom In / Zoom Out | Num + / Num - | Num + / Num - |
-| Scroll up / down / left / right | arrow keys | arrow keys |
-| Open / close Minimap | `;` | Num * |
-| Select first..fifth character | 1..5 | Num 1..5 |
-| Select all / Unselect all | q / d | Num 6 / Num 0 |
-| Crouch down / Get up | c / s | Next Page / Prev. Page |
-| Go behind house (key + click) | Left Shift | Right Shift |
-| Display outlines | Caps Lock | Caps Lock |
-| Action 1 / 2 / 3 | g / h / j | Num 7 / 8 / 9 |
-| Move during action (key + click) | Left Ctrl | Right Ctrl |
-| Save QuickAction | a | Return |
-| Start QuickActions | Space | Space |
-| Clear QuickActions | Backspace | Backspace |
-| Display field of vision | Alt | Alt Gr |
-| Quick Savegame / Quick Load | F1 / F5 | F1 / F5 |
+pitch starting at y = 161. Buttons: OK, default set 1, default set 2, user defined (orange = active set),
+Cancel (strings 15, 21, 22, 23, 16). The manual (p.31) gives both default sets. Observed bindings of set 1,
+by function (the action names are TEXT 1000507 strings and are not reproduced): zoom in/out = numpad +/-;
+scroll = arrow keys; minimap = `;`; select character 1..5 = digits 1..5; select all / none = q / d; crouch /
+stand = c / s; go-behind modifier = left Shift; outlines = Caps Lock; action 1/2/3 = g / h / j; move-during-
+action modifier = left Ctrl; save quick action = a; start quick actions = Space; clear = Backspace; field of
+vision = Alt; quick save / quick load = F1 / F5. Set 2 (manual) moves most of these to the numpad (1..5, 6 / 0,
+7 / 8 / 9, *), Page Up/Down for crouch / stand, right Shift / right Ctrl for the modifiers, Return for the quick
+action save and AltGr for the field of vision.
 
 The active set is stored in `DATA/Configuration/keyset1.cfg` / `keyset2.cfg` (76 bytes each) and in the profile.
 
@@ -196,8 +188,8 @@ Clicking the thumbnail was not tested. Escape returns to the main menu.
 
 ## 8. Credits (`menu_credits.png`, `menu_credits_later.png`)
 
-Full-frame dark forest (`PIC` 309, 1024x768), white credits scrolling upwards ("spellbound studios" logo,
-"Producer & CEO Armin Gessert", "Creative Director Jean-Marc Haessig", ...). The text is *probably* the long
+Full-frame dark forest (`PIC` 309, 1024x768), white credits scrolling upwards (studio logo, then the team
+by role). The text is *probably* the long
 strip `PIC` 308 (400x7659) scrolled at about 20 px/s (from the two frames 6 s apart: roughly 120 px). Escape
 returns to the main menu.
 
@@ -257,18 +249,18 @@ only when the mission is won; the tutorial text of mission 1 calls it "the top r
 
 ### 9.5 Pause menu (`pause_menu.png`)
 
-Escape pauses: the scene is tinted green, the current objective is written at (210,150) in a small white font
-("Robin must get into the castle to find Godwin."), and the button column Continue / Load / Save / Options /
-Restart / Quit appears (rows y = 386..591). Escape again continues. Quit asks "Are you sure you want to leave
-the game ?" on a horizontal scroll with V / X seals (observed once, screenshot lost); Options opens the same
-Options screen as the main menu (Graphics / Sounds / Shortcuts / Back) with the forest background.
+Escape pauses: the scene is tinted green, the current objective (short briefing, `Level.res` 1000283 string 0
+for mission 1) is written at (210,150) in a small white font, and the button column continue / load / save /
+options / restart / quit appears (strings 9..14; rows k = 1..6). Escape again continues. Quit asks the
+leave-the-game question (string 31) on a horizontal scroll with V / X seals (observed once, screenshot lost);
+Options opens the same Options screen as the main menu with the forest background.
 
 ### 9.6 Win / lose
 
 Not reached. Per manual p.10: when the objectives are met a message says the mission is won and a seal appears
 at the top right of the screen to leave; a mission is lost when a main character dies. The debriefing texts of
-mission 1 are Level.res 1000349 (won) and 1000350 (lost). The manual (p.37) documents the developer console:
-"make sure one of your characters is standing, place the pointer over the Kneel icon, then press F11", codes
+mission 1 are Level.res 1000349 (won) and 1000350 (lost). The manual (p.37) documents the developer console
+(with a standing character selected, hover the kneel icon and press F11), codes
 `goodluck`, `cash`, `bingo`, `immunity`, `merryman`, `timeless`, `pam`, `unblip`, `winner` (win mission) - so the
 retail build should be able to show the win screen through `winner` (untested, see `console-commands.md`).
 

@@ -5,7 +5,10 @@
 //! All lookups are case-insensitive on every platform (see `docs/architecture.md`).
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use thiserror::Error;
 
@@ -135,6 +138,24 @@ fn normalise(logical: &str) -> String {
         .to_lowercase()
 }
 
+/// Version tag mixed into the content fingerprint; bump whenever what is hashed changes.
+const FINGERPRINT_VERSION: &[u8] = b"opensherwood-content-fingerprint-v3\0";
+
+/// Read buffer of the streaming digest.
+const DIGEST_CHUNK: usize = 1 << 20;
+
+/// What the per-file digest cache remembers about a file: the metadata it was hashed under and
+/// the digest. A file whose size or modification time changed is hashed again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedDigest {
+    size: u64,
+    modified: Option<SystemTime>,
+    digest: [u8; 32],
+}
+
+/// Per-file digest cache keyed by real path, shared by every clone of a [`GameDir`].
+type DigestCache = Arc<Mutex<BTreeMap<PathBuf, CachedDigest>>>;
+
 /// The player's installation plus overlays.
 #[derive(Debug, Clone)]
 pub struct GameDir {
@@ -142,6 +163,8 @@ pub struct GameDir {
     pub root: PathBuf,
     /// Layers in lookup order (highest priority first).
     pub layers: Vec<Layer>,
+    /// Full-content digests of files already hashed by [`GameDir::fingerprint`].
+    digest_cache: DigestCache,
 }
 
 impl GameDir {
@@ -191,7 +214,11 @@ impl GameDir {
             layers.push(Layer::build(format!("lang:{name}"), p, &data_name)?);
         }
         layers.push(base);
-        Ok(Self { root, layers })
+        Ok(Self {
+            root,
+            layers,
+            digest_cache: DigestCache::default(),
+        })
     }
 
     /// Discover the installation: explicit path, then `OPENSHERWOOD_GAME_DIR`, then well-known locations.
@@ -240,46 +267,84 @@ impl GameDir {
     }
 
     /// Content fingerprint: BLAKE3 over layer names (in precedence order), logical paths, sizes and
-    /// a content digest of every file: the whole file for files up to 1 MiB, otherwise the first and
-    /// last 64 KiB. Large retail files are immutable in practice; this stays fast (< 1 s) while any
-    /// edited, added or replaced file changes the fingerprint.
-    #[must_use]
-    pub fn fingerprint(&self) -> String {
-        const FULL_LIMIT: u64 = 1 << 20;
-        const EDGE: usize = 64 * 1024;
+    /// the full-content BLAKE3 digest of every indexed file, so any edited, added, removed or
+    /// replaced byte changes the fingerprint. Every file is streamed in full; the per-file digests
+    /// are cached in memory by real path, size and modification time, so the first call reads the
+    /// whole installation (about 1 GiB for retail, a few seconds) and later calls only stat the
+    /// files unless one changed. A file that cannot be opened or read makes the whole fingerprint
+    /// an error: a partial or silently degraded fingerprint would defeat its purpose (replays and
+    /// goldens must never be compared across different data).
+    pub fn fingerprint(&self) -> Result<String, AssetError> {
         let mut h = blake3::Hasher::new();
-        h.update(b"opensherwood-content-fingerprint-v2\0");
+        h.update(FINGERPRINT_VERSION);
+        let mut buf = vec![0u8; DIGEST_CHUNK];
         for layer in &self.layers {
             h.update(layer.name.as_bytes());
             h.update(b"\0");
-            for (p, size) in layer.paths() {
+            for (p, _) in layer.paths() {
+                let real = layer
+                    .resolve(p)
+                    .expect("every indexed path resolves in its own layer");
+                let (size, digest) = self.file_digest(real, &mut buf)?;
                 h.update(p.as_bytes());
                 h.update(b"\0");
                 h.update(&size.to_le_bytes());
-                let Some(real) = layer.resolve(p) else {
-                    continue;
-                };
-                let mut fh = blake3::Hasher::new();
-                if size <= FULL_LIMIT {
-                    if let Ok(bytes) = std::fs::read(real) {
-                        fh.update(&bytes);
-                    }
-                } else if let Ok(mut f) = std::fs::File::open(real) {
-                    use std::io::{Read, Seek, SeekFrom};
-                    let mut buf = vec![0u8; EDGE];
-                    if let Ok(n) = f.read(&mut buf) {
-                        fh.update(&buf[..n]);
-                    }
-                    if f.seek(SeekFrom::End(-(EDGE as i64))).is_ok()
-                        && let Ok(n) = f.read(&mut buf)
-                    {
-                        fh.update(&buf[..n]);
-                    }
-                }
-                h.update(fh.finalize().as_bytes());
+                h.update(&digest);
             }
         }
-        h.finalize().to_hex().to_string()
+        Ok(h.finalize().to_hex().to_string())
+    }
+
+    /// Current size and full BLAKE3 digest of one file, the digest from the cache when the size
+    /// and modification time are unchanged since it was hashed.
+    fn file_digest(&self, real: &Path, buf: &mut [u8]) -> Result<(u64, [u8; 32]), AssetError> {
+        let io = |source| AssetError::Io {
+            path: real.to_path_buf(),
+            source,
+        };
+        let meta = std::fs::metadata(real).map_err(io)?;
+        let size = meta.len();
+        let modified = meta.modified().ok();
+        if let Some(c) = self
+            .digest_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(real)
+            && c.size == size
+            && c.modified == modified
+        {
+            return Ok((size, c.digest));
+        }
+        let mut f = std::fs::File::open(real).map_err(io)?;
+        let mut fh = blake3::Hasher::new();
+        let mut total = 0u64;
+        loop {
+            let n = f.read(buf).map_err(io)?;
+            if n == 0 {
+                break;
+            }
+            fh.update(&buf[..n]);
+            total += n as u64;
+        }
+        if total != size {
+            // The file changed underneath us: neither the metadata nor the digest can be trusted.
+            return Err(io(std::io::Error::other(format!(
+                "size changed while hashing ({size} -> {total} bytes)"
+            ))));
+        }
+        let digest = *fh.finalize().as_bytes();
+        self.digest_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                real.to_path_buf(),
+                CachedDigest {
+                    size,
+                    modified,
+                    digest,
+                },
+            );
+        Ok((size, digest))
     }
 }
 
@@ -336,9 +401,51 @@ mod tests {
         assert_eq!(g.read("Data\\TEXT\\level.RES").unwrap(), b"lang");
         assert_eq!(g.read("data/text/ACTORS.res").unwrap(), b"base");
         assert!(g.read("data/nope").is_err());
-        let fp = g.fingerprint();
+        let fp = g.fingerprint().unwrap();
         assert_eq!(fp.len(), 64);
-        assert_eq!(fp, GameDir::open(&root).unwrap().fingerprint());
+        assert_eq!(fp, GameDir::open(&root).unwrap().fingerprint().unwrap());
+    }
+
+    #[test]
+    fn fingerprint_sees_every_byte_and_uses_the_cache() {
+        let (_td, root) = fake_install();
+        // A file larger than the digest chunk with an edit in the middle only (same size).
+        let big = root.join("DATA/big.bin");
+        let mut data = vec![7u8; 3 * DIGEST_CHUNK + 123];
+        std::fs::write(&big, &data).unwrap();
+        let g = GameDir::open(&root).unwrap();
+        let before = g.fingerprint().unwrap();
+        // Cached: a second call returns the same value without re-reading.
+        assert_eq!(g.fingerprint().unwrap(), before);
+        assert!(g.digest_cache.lock().unwrap().contains_key(&big));
+        data[DIGEST_CHUNK + DIGEST_CHUNK / 2] = 8;
+        // Force a distinguishable mtime even on coarse filesystems.
+        std::fs::write(&big, &data).unwrap();
+        let far = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&big)
+            .unwrap()
+            .set_modified(far)
+            .unwrap();
+        let after = g.fingerprint().unwrap();
+        assert_ne!(
+            before, after,
+            "a same-size middle edit must change the fingerprint"
+        );
+        // A fresh GameDir (empty cache) agrees with the cached one.
+        assert_eq!(GameDir::open(&root).unwrap().fingerprint().unwrap(), after);
+    }
+
+    #[test]
+    fn fingerprint_fails_when_a_file_cannot_be_read() {
+        let (_td, root) = fake_install();
+        let g = GameDir::open(&root).unwrap();
+        // Replace an indexed file by a directory of the same name: opening it for reading fails.
+        let victim = root.join("DATA/Text/actors.res");
+        std::fs::remove_file(&victim).unwrap();
+        std::fs::create_dir(&victim).unwrap();
+        assert!(matches!(g.fingerprint(), Err(AssetError::Io { .. })));
     }
 
     #[test]

@@ -50,9 +50,12 @@ pub fn run(
         rpc: rpc.then(rpc::spawn_stdin_reader),
         gpu: None,
         viewport: (vw, vh),
-        scale: presentation.scale.max(1),
+        // Bounded so `viewport * scale` cannot overflow or request an absurd surface.
+        scale: presentation.scale.clamp(1, MAX_SCALE),
         windowed: presentation.windowed,
         pending: Vec::new(),
+        held_keys: std::collections::BTreeSet::new(),
+        held_buttons: std::collections::BTreeSet::new(),
         last_tick: Instant::now(),
         accumulator: Duration::ZERO,
         pointer: (0.0, 0.0),
@@ -74,6 +77,9 @@ struct Gpu {
     tex_size: (u32, u32),
 }
 
+/// Largest integer window scale accepted from the command line.
+const MAX_SCALE: u32 = 8;
+
 struct App {
     session: Session,
     rpc: Option<Receiver<String>>,
@@ -82,6 +88,9 @@ struct App {
     scale: u32,
     windowed: bool,
     pending: Vec<InputEvent>,
+    /// Keys and buttons currently held, released synthetically when the window loses focus.
+    held_keys: std::collections::BTreeSet<Key>,
+    held_buttons: std::collections::BTreeSet<Button>,
     last_tick: Instant,
     accumulator: Duration,
     pointer: (f64, f64),
@@ -347,7 +356,21 @@ impl App {
 
     fn drain_rpc(&mut self, event_loop: &ActiveEventLoop) {
         let Some(rx) = &self.rpc else { return };
-        let lines: Vec<String> = rx.try_iter().collect();
+        let mut lines: Vec<String> = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(l) => lines.push(l),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // The client closed stdin: leave controlled mode and tick autonomously again.
+                    eprintln!("opensherwood: rpc client disconnected, resuming autonomous ticking");
+                    self.rpc = None;
+                    self.last_tick = Instant::now();
+                    self.accumulator = Duration::ZERO;
+                    break;
+                }
+            }
+        }
         for line in lines {
             let handled = rpc::handle_line(&mut self.session, &line);
             if let Some(resp) = &handled.response
@@ -509,6 +532,18 @@ impl ApplicationHandler for App {
                 if let Some(g) = self.gpu.as_mut() {
                     g.resize(size.width, size.height);
                 }
+                // A stationary pointer maps to a different logical position after a resize.
+                let (x256, y256) = self.to_logical(self.pointer);
+                self.pending.push(InputEvent::PointerMove { x256, y256 });
+            }
+            WindowEvent::Focused(false) => {
+                // Held keys and buttons would stay "down" forever once focus is gone.
+                for key in std::mem::take(&mut self.held_keys) {
+                    self.pending.push(InputEvent::KeyUp { key });
+                }
+                for button in std::mem::take(&mut self.held_buttons) {
+                    self.pending.push(InputEvent::PointerUp { button });
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let PhysicalPosition { x, y } = position;
@@ -531,8 +566,14 @@ impl ApplicationHandler for App {
                     _ => return,
                 };
                 self.pending.push(match state {
-                    ElementState::Pressed => InputEvent::PointerDown { button },
-                    ElementState::Released => InputEvent::PointerUp { button },
+                    ElementState::Pressed => {
+                        self.held_buttons.insert(button);
+                        InputEvent::PointerDown { button }
+                    }
+                    ElementState::Released => {
+                        self.held_buttons.remove(&button);
+                        InputEvent::PointerUp { button }
+                    }
                 });
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -548,22 +589,30 @@ impl ApplicationHandler for App {
                 if event.repeat {
                     return;
                 }
-                if event.state == ElementState::Pressed
-                    && event.physical_key == PhysicalKey::Code(KeyCode::F11)
-                    && let Some(g) = &self.gpu
-                {
-                    let fullscreen = g.window.fullscreen().is_none();
-                    g.window.set_fullscreen(
-                        fullscreen.then_some(winit::window::Fullscreen::Borderless(None)),
-                    );
+                if event.physical_key == PhysicalKey::Code(KeyCode::F11) {
+                    // Presentation toggle: neither the press nor the release reaches the simulation.
+                    if event.state == ElementState::Pressed
+                        && let Some(g) = &self.gpu
+                    {
+                        let fullscreen = g.window.fullscreen().is_none();
+                        g.window.set_fullscreen(
+                            fullscreen.then_some(winit::window::Fullscreen::Borderless(None)),
+                        );
+                    }
                     return;
                 }
                 if let PhysicalKey::Code(code) = event.physical_key
                     && let Some(key) = map_key(code)
                 {
                     self.pending.push(match event.state {
-                        ElementState::Pressed => InputEvent::KeyDown { key },
-                        ElementState::Released => InputEvent::KeyUp { key },
+                        ElementState::Pressed => {
+                            self.held_keys.insert(key);
+                            InputEvent::KeyDown { key }
+                        }
+                        ElementState::Released => {
+                            self.held_keys.remove(&key);
+                            InputEvent::KeyUp { key }
+                        }
                     });
                 }
             }

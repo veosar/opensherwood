@@ -17,6 +17,20 @@ fheroes2, VCMI) and by what the original executable already contains (developer 
 - Command-line switches (`-NOSCRIPT`, `-SIMULATE`, `-GAMEPAD`, `-SOUNDDEVICE`) hinting at a scriptless test mode,
   a simulation-only mode and gamepad support that were never surfaced.
 
+## Engine behaviour implemented so far (reference for what the harness can exercise)
+
+- **NPC waypoint programs.** Every mission NPC with a rail (`BORG.rail`) executes a deterministic program
+  translated from the rail's per-waypoint command programs (`docs/formats/rhm.md`, "Rail programs"): it walks the
+  rail back and forth with the engine's pathfinding, and at each point runs the table for its travel direction as
+  a percentage choice over the point's blocks: face a 16-way direction, wait (operand read as hundredths of a
+  second), glance left / right, jump to another point of the rail (a `02(0)` on the last point makes the walk a
+  loop) or stop for good. Commands whose meaning is not established are no-ops; the loader logs one line per
+  mission with the translated / unknown counts. NPCs without a rail (and all civilians) stand idle in their
+  placement direction. Programs and program counters are part of the snapshot and of the `actors` hash; the
+  probabilistic choices draw from the gameplay RNG stream, so runs are reproducible from the seed. Not yet:
+  reactions to the player (view cones, alarms), synchronisation between patrols (`CheckForSync`), scripted
+  rails, carts.
+
 ## Target for "1.0" (the maintainer's definition of done)
 
 The complete retail game runs unchanged: every mission and cutscene, all menus, settings, profiles and saves,

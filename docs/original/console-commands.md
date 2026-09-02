@@ -59,8 +59,8 @@ script zones, light zones, seek points, rails, projection areas) without any dis
 
 `-NOSCRIPT`, `-SIMULATE`, `-GAMEPAD`, `-SOUNDDEVICE`, `-SETREG`, `-CHECKSOUNDDATA`, `-GENERATESKIPDATA`,
 `-EXTRACTHUNK`, `-GETMAJORVER`, `-GETMINORVER`, `-GETBUILRHER`. The engine also accepts a character name on the
-command line ("Unknown character specified on the command line": Robin des bois, Petit Jean, Frere Tuck, Stutely,
-Will Ecarlate, Lady Marianne, Paysan A/B/C) and reports "Invalid arguments %s on command line".
+command line (an error names the accepted French character identifiers: Robin, Little John, Friar Tuck, Stutely,
+Will Scarlet, Marian, peasants A/B/C) and reports invalid arguments with a generic message.
 The Linux port (RuneSoft) adds `-NOINPUTGRAB`, `-NOFULLSCREEN`, `-FULLSCREEN`.
 
 ## Provenance

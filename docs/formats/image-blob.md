@@ -38,3 +38,13 @@ and `Levels/Custom1..4` (mission-specific variants). Not every map exists in eve
 ## Provenance
 
 Observation (hexdumps of all files of these types, decompression with zlib/bzip2, size arithmetic).
+
+## UI colour key (observation, 2026-09-02)
+
+Pictures of `DEFAULT.RES` that are composited over other content (button plates `BTTN` 190, seals 145/146,
+parchments `PIC` 147 and 38, cursor 284, HUD pieces) carry the RGB565 value `0x07C0` (pure green) in the areas
+that the original shows transparent (plate corners, parchment margins, cursor surround). Evidence: the engine's
+main menu drawn with `0x07C0` keyed out matches the original's `menu_main.png` outside the text areas; the
+1024x512 backgrounds (186..189) and the 1024x768 credits background are drawn opaque. Whether the original
+uses a shadow key in UI pictures is unknown; the engine applies none there (`ui_assets.rs`).
+

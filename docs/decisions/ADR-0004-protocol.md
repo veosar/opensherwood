@@ -2,8 +2,9 @@
 
 Date: 2026-09-02. Status: accepted.
 
-Versions in force (2026-09-02 evening): protocol 2, ruleset 2, hash schema 4 (walkable geometry under `pathfinding`, path waypoints under `orders`),
-snapshot schema 3.
+Versions in force (2026-09-02 night): protocol 3 (`ui` observation, `menu` scenario, optional world fields),
+ruleset 3 (1024x768 viewport for retail scenarios, camera on the hero), hash schema 4 (walkable geometry under
+`pathfinding`, path waypoints under `orders`), snapshot schema 4 (`menu` scenario variant).
 Any change to canonical bytes bumps the ruleset or hash schema and regenerates
 `harness/fixtures/synthetic_corridor.json` (see `docs/decisions/reviews/2026-09-02-codex-m0-review-disposition.md`).
 
@@ -18,7 +19,7 @@ Logs go to stderr only. No fixed TCP port in tests (an optional loopback socket 
 |---|---|
 | `hello` | protocol version, capabilities, build and ruleset version, content fingerprint |
 | `reset` | load a synthetic scenario or a mission with seed and configuration |
-| `step` | atomically enqueue canonical input events and advance exactly N ticks |
+| `step` | atomically enqueue canonical input events and advance exactly N ticks; while a screen (menu, briefing, pause) is shown the events drive the screen and the world does not tick, so `tick_offset` counts frames of the screen, not world ticks |
 | `observe` | filtered structured state, UI state, objectives, subsystem hashes |
 | `snapshot` / `restore` | authoritative internal checkpoint |
 | `capture` | framebuffer hash; optionally write a PNG under the artifact directory |
@@ -47,6 +48,13 @@ stable id, deterministic ordering, no caches / handles / clocks / audio state / 
 explicitly normalised numbers, RNG algorithm + state + stream + draw count, script VM state, scheduler queues,
 pending stimuli) hashed with BLAKE3 per subsystem (`world`, `actors`, `orders`, `pathfinding`, `scripts`,
 `scheduler`, `rng`, `campaign`) and in total, so the first divergence is diagnosable.
+
+## Screens and the world
+
+Menus, briefings and the pause menu are session state of the app, not of the world: they never enter world hashes,
+and `snapshot`, `restore`, `replay.start` and `replay.play` are refused while a screen is shown (error
+`screen shown`), so a snapshot always describes a directly played world. The harness dismisses screens with the
+same events a player would use before taking snapshots.
 
 ## Snapshot / restore invariant
 

@@ -13,22 +13,22 @@ Progress 0 %). Then:
 |---|---|---|---|
 | click **Play!** (748,364) | 0 | main menu disappears | `play_000_000.9s.png` |
 | | ~0.9-2.5 | **loading screen**: painting of Robin drawing his bow, progress bar y = 700, "v1.1" top right | `play_001_001.8s.png`, `play_002_002.2s.png` |
-[original game text removed]
+| | ~2.6 | mission 1 (level HA) is loaded, shown green-tinted and paused, **briefing page 1** on a parchment | `m1_brief_page1.png` |
 | V seal (508,552) or Enter | | briefing page 2 | `m1_brief_page2.png` |
 | V seal / Enter | | briefing page 3 | `m1_brief_page3.png` |
 | V seal / Enter | | parchment closes, game unpauses, camera on Robin outside the gate of Lincoln castle; HUD shows Money L100, Clover 0, Robin's portrait | `m1_brief_page1.png` (background), `pause_menu.png` |
 
 There is **no intro video, no cutscene, no campaign map and no Sherwood camp** before the first mission; the
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
+manual (p.9, campaign planning section) confirms it: the first mission is played with Robin alone, the second
+launches automatically after it, and Sherwood Forest becomes reachable only after the second. An earlier run
+with the shipped profile (Progress 0 %, auto-saves `Continue` / `Restart` present) went from Play! straight
+into the same mission as well (a short "mission loaded" style message in white outlined text at about
+(512,620)).
 
 ### The first mission
 
-[original game text removed]
-[original game text removed]
+- Title: `2047/data/Text/Level.res` TEXT id **1000017** string 0 (strings 1 and 2 are placeholders). It is
+  the first id in `DATA/Text/RHLevelHA.red`, so the level is **HA** =
   `DATA/Levels/H01_Lin_VL.rhm` (Lincoln, proto-level `Lincoln`), day ambiance (*inferred* from the file names and
   the first `.red` value; the mission file was not verified by loading it).
 - Player characters: Robin Hood only. Start position: in front of the castle gate on a muddy yard with a pig
@@ -66,19 +66,11 @@ There is **no intro video, no cutscene, no campaign map and no Sherwood camp** b
 ## 2. After the first mission (*manual* p.9-14, `Level.res`, not observed)
 
 1. Mission 2 launches automatically after the debriefing of mission 1. By the `.red` order the second story
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
+   mission is **HB** (title TEXT 1000018, briefing list 1000122, level `H02_Not_EC`, Nottingham). The H series
+   (story missions HA..HI) titles are TEXT 1000017..1000025 in `.red` order; HQ = the Sherwood camp (title
+   1000034, 37 texts). S series (secondary, 5 missions), A series (assaults, 3), D series (defences, 4), E series
+   (ambushes, 1000042.., about 26 with T = tactical variants), VI / VO = intro / outro (1000056, 1000057). The
+   titles themselves are not reproduced here; read them from `Level.res` with `harness/tools/original/sres_text.py`.
 2. After mission 2 the **Sherwood Forest camp** (level `Sherwood.rhm`) becomes the hub: new recruits appear,
    workshops (arrows, feast, archery training, combat training) produce items between missions, hovering a
    character shows a small parchment with his sword / bow ability icons.

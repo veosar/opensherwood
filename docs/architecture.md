@@ -38,8 +38,10 @@ nearest-neighbour. Headless mode never creates a window; `capture` writes the CP
 
 `opensherwood-assets` owns the notion of "the game directory". Lookup order for a logical path such as
 `Data/Text/Level.res`: mod overlays (in configured order) > language overlay (`<langid>/data/...`) > base `DATA/`.
-Lookups are case-insensitive on every platform. The content fingerprint (hash of file list + sizes + a few file
-hashes) is reported by `hello` and stored in replays so a replay is never compared across different data sets.
+Lookups are case-insensitive on every platform. The content fingerprint (BLAKE3 over the layer list, every logical
+path and size, and the full-content digest of every indexed file, cached in memory by path, size and mtime; a file
+that cannot be read makes the fingerprint an error, never a partial hash) is reported by `hello` and stored in
+replays so a replay is never compared across different data sets.
 
 ## Original-game oracle
 

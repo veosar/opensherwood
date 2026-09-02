@@ -1,11 +1,16 @@
 //! Screens outside the simulation, laid out like the original at 1024x768
-//! (`docs/original/ui-flow.md`): the main menu (background picture, 3-state plate buttons, retail fonts,
-//! profile summary) and the mission briefing parchment shown over the paused, green-tinted scene.
-//! Driven by the same canonical input events as the world so the harness can click through them.
+//! (`docs/original/ui-flow.md`): the main menu and pause menu (background picture, 3-state plate buttons,
+//! retail fonts and strings), confirmation dialogs, the mission briefing parchment over the paused,
+//! green-tinted scene, and the in-mission HUD. Driven by the same canonical input events as the world so the
+//! harness can click through them. All text comes from the player's files; the fallbacks are neutral
+//! identifiers for runs without game data.
 
 use opensherwood_core::{Button, Fixed, InputEvent, Key};
+pub use opensherwood_protocol::{UiItem, UiState as MenuState};
 use opensherwood_render::{FontAtlas, Framebuffer, SpriteFrame};
 use serde::Serialize;
+
+use crate::ui_assets::texts as t;
 
 /// Logical frame of every menu screen.
 pub const MENU_FRAME: (u32, u32) = (1024, 768);
@@ -18,8 +23,14 @@ const BTN_PITCH: i32 = 41;
 const BTN_H: i32 = 39;
 /// Background picture position inside the frame.
 const BG_Y: i32 = 128;
+/// Seal button rectangles (`ui-flow.md` 2.3, 9.2): 41x44 plates.
+const SEAL_BRIEFING: (i32, i32, i32, i32) = (488, 530, 41, 44);
+const SEAL_YES: (i32, i32, i32, i32) = (463, 411, 41, 44);
+const SEAL_NO: (i32, i32, i32, i32) = (521, 411, 41, 44);
+/// Horizontal dialog scroll (`PIC` 38, 400x200) position.
+const DIALOG_POS: (i32, i32) = (312, 288);
 
-/// Menu entries of the main menu, top to bottom (rows 0..6).
+/// Everything a menu entry or dialog seal can do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MenuAction {
@@ -35,12 +46,24 @@ pub enum MenuAction {
     ShowMovies,
     /// Credits (not implemented).
     Credits,
-    /// Quit.
+    /// Quit the program.
     Exit,
+    /// Resume the mission.
+    Continue,
+    /// Save (not implemented).
+    Save,
+    /// Restart the mission.
+    Restart,
+    /// Leave the mission for the main menu.
+    Quit,
+    /// Confirm a dialog.
+    Yes,
+    /// Cancel a dialog.
+    No,
 }
 
 impl MenuAction {
-    const ALL: [MenuAction; 7] = [
+    const MAIN: [MenuAction; 7] = [
         MenuAction::Play,
         MenuAction::Load,
         MenuAction::SelectPlayer,
@@ -49,18 +72,53 @@ impl MenuAction {
         MenuAction::Credits,
         MenuAction::Exit,
     ];
+    const PAUSE: [MenuAction; 6] = [
+        MenuAction::Continue,
+        MenuAction::Load,
+        MenuAction::Save,
+        MenuAction::Options,
+        MenuAction::Restart,
+        MenuAction::Quit,
+    ];
 
     /// Index of the entry's label in the interface string table (`ui_assets::texts::INTERFACE`).
     fn label_index(self) -> usize {
         match self {
             MenuAction::Play => 0,
-            MenuAction::Load => 10,
             MenuAction::SelectPlayer => 1,
-            MenuAction::Options => 12,
             MenuAction::ShowMovies => 2,
             MenuAction::Credits => 3,
             MenuAction::Exit => 4,
+            MenuAction::Continue => 9,
+            MenuAction::Load => 10,
+            MenuAction::Save => 11,
+            MenuAction::Options => 12,
+            MenuAction::Restart => 13,
+            MenuAction::Quit => 14,
+            MenuAction::Yes => 15,
+            MenuAction::No => 16,
         }
+    }
+
+    /// Entries that do something in this build; the others are drawn on the disabled plate.
+    fn implemented(self) -> bool {
+        !matches!(
+            self,
+            MenuAction::Load
+                | MenuAction::SelectPlayer
+                | MenuAction::Options
+                | MenuAction::ShowMovies
+                | MenuAction::Credits
+                | MenuAction::Save
+        )
+    }
+
+    /// Protocol identifier (`snake_case` of the variant).
+    fn id(self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default()
     }
 
     /// Neutral identifier shown when the player's string table is unavailable (synthetic runs).
@@ -73,11 +131,17 @@ impl MenuAction {
             MenuAction::ShowMovies => "movies",
             MenuAction::Credits => "credits",
             MenuAction::Exit => "exit",
+            MenuAction::Continue => "continue",
+            MenuAction::Save => "save",
+            MenuAction::Restart => "restart",
+            MenuAction::Quit => "quit",
+            MenuAction::Yes => "yes",
+            MenuAction::No => "no",
         }
     }
 }
 
-/// One clickable line.
+/// One clickable element.
 #[derive(Debug, Clone, Serialize)]
 pub struct MenuItem {
     /// Action.
@@ -90,6 +154,21 @@ pub struct MenuItem {
     pub enabled: bool,
 }
 
+impl MenuItem {
+    fn to_protocol(&self) -> UiItem {
+        UiItem {
+            action: self.action.id(),
+            label: self.label.clone(),
+            rect: [self.rect.0, self.rect.1, self.rect.2, self.rect.3],
+            enabled: self.enabled,
+        }
+    }
+}
+
+fn items_to_protocol(items: &[MenuItem]) -> Vec<UiItem> {
+    items.iter().map(MenuItem::to_protocol).collect()
+}
+
 /// Pictures and fonts the menus need, decoded from the player's `DEFAULT.RES` and font files.
 pub struct UiAssets {
     /// Main menu background (`PIC` 187, 1024x512).
@@ -98,27 +177,51 @@ pub struct UiAssets {
     pub button: Vec<SpriteFrame>,
     /// Vertical parchment (`PIC` 147) for briefings.
     pub parchment: Option<SpriteFrame>,
+    /// Horizontal dialog scroll (`PIC` 38).
+    pub dialog: Option<SpriteFrame>,
     /// Blue V seal (`BTTN` 145) states.
     pub seal_ok: Vec<SpriteFrame>,
+    /// Red X seal (`BTTN` 146) states.
+    pub seal_cancel: Vec<SpriteFrame>,
     /// Arrow cursor (`PIC` 284).
     pub cursor: Option<SpriteFrame>,
+    /// HUD pictures, see `HudAssets`.
+    pub hud: HudAssets,
     /// Fonts.
     pub font_button: Option<FontAtlas>,
     /// Disabled button face.
     pub font_button_disabled: Option<FontAtlas>,
     /// Screen titles / profile name.
     pub font_title: Option<FontAtlas>,
-    /// Menu text (profile summary).
+    /// Menu text (profile summary, HUD counters).
     pub font_text: Option<FontAtlas>,
     /// Briefing parchment text.
     pub font_debrief: Option<FontAtlas>,
+    /// Objective line of the pause menu.
+    pub font_objective: Option<FontAtlas>,
     /// Interface strings (`Level.res` TEXT 1000507), indexed as in `ui_assets::texts`.
     pub strings: Vec<String>,
 }
 
-/// Interface string by index, or a neutral fallback.
-fn text<'a>(strings: &'a [String], index: usize, fallback: &'a str) -> &'a str {
-    strings.get(index).map_or(fallback, String::as_str)
+/// HUD pictures (`ui-flow.md` 9.3 and 10; positions are matched by eye to the original's captures).
+#[derive(Default)]
+pub struct HudAssets {
+    /// Foliage pictures with their positions (bushes, strips, corners).
+    pub foliage: Vec<(SpriteFrame, i32, i32)>,
+    /// Robin's eyes in the leaves (`BTTN` 60).
+    pub eyes: Option<SpriteFrame>,
+    /// Map scroll (`BTTN` 61).
+    pub map_scroll: Option<SpriteFrame>,
+    /// Towers, zoom (`BTTN` 4).
+    pub towers: Option<SpriteFrame>,
+    /// Standing figure (`BTTN` 3).
+    pub stand: Option<SpriteFrame>,
+    /// Plan scroll (`BTTN` 251).
+    pub plan: Option<SpriteFrame>,
+    /// Hero portrait face (`PIC` 136).
+    pub portrait: Option<SpriteFrame>,
+    /// Small scroll behind the portrait (`PIC` 133; the original's frame is not identified).
+    pub portrait_scroll: Option<SpriteFrame>,
 }
 
 impl std::fmt::Debug for UiAssets {
@@ -126,8 +229,14 @@ impl std::fmt::Debug for UiAssets {
         f.debug_struct("UiAssets")
             .field("menu_background", &self.menu_background.is_some())
             .field("button_states", &self.button.len())
+            .field("strings", &self.strings.len())
             .finish_non_exhaustive()
     }
+}
+
+/// Interface string by index, or a neutral fallback.
+fn text<'a>(strings: &'a [String], index: usize, fallback: &'a str) -> &'a str {
+    strings.get(index).map_or(fallback, String::as_str)
 }
 
 /// Profile summary shown left of the buttons.
@@ -163,63 +272,46 @@ impl Default for ProfileSummary {
     }
 }
 
-/// The main menu.
+/// The shared button column with pointer and keyboard handling.
 #[derive(Debug)]
-pub struct MainMenu {
+struct ButtonColumn {
     items: Vec<MenuItem>,
     hovered: Option<usize>,
     pointer: (i32, i32),
-    pending: Option<MenuAction>,
-    /// Profile summary.
-    pub profile: ProfileSummary,
 }
 
-/// Observation of a screen for the harness.
-#[derive(Debug, Clone, Serialize)]
-pub struct MenuState {
-    /// Screen name (`main_menu`, `briefing`).
-    pub screen: String,
-    /// Items.
-    pub items: Vec<MenuItem>,
-    /// Hovered item index.
-    pub hovered: Option<usize>,
-    /// Briefing page (1-based) and page count when on the briefing screen.
-    pub page: Option<(usize, usize)>,
-}
-
-impl MainMenu {
-    /// Build the menu with the original's button column; labels come from the interface string table.
-    #[must_use]
-    pub fn new(profile: ProfileSummary, strings: &[String]) -> Self {
-        let items = MenuAction::ALL
+impl ButtonColumn {
+    fn new(actions: &[MenuAction], first_row: usize, strings: &[String]) -> Self {
+        let items = actions
             .iter()
             .enumerate()
-            .map(|(row, &action)| MenuItem {
+            .map(|(i, &action)| MenuItem {
                 action,
                 label: text(strings, action.label_index(), action.fallback_label()).to_string(),
-                rect: (BTN_X, BTN_ROW0_Y + row as i32 * BTN_PITCH, BTN_W, BTN_H),
-                // The original shows every entry enabled; unimplemented ones only log.
-                enabled: true,
+                rect: (
+                    BTN_X,
+                    BTN_ROW0_Y + (first_row + i) as i32 * BTN_PITCH,
+                    BTN_W,
+                    BTN_H,
+                ),
+                // The original shows every entry enabled; entries this build cannot serve are drawn
+                // on the disabled plate so the screen does not promise more than it does.
+                enabled: action.implemented(),
             })
             .collect();
         Self {
             items,
             hovered: None,
             pointer: (0, 0),
-            pending: None,
-            profile,
         }
     }
 
     fn hit(&self, x: i32, y: i32) -> Option<usize> {
-        self.items.iter().position(|it| {
-            let (ix, iy, w, h) = it.rect;
-            (ix..ix + w).contains(&x) && (iy..iy + h).contains(&y)
-        })
+        self.items.iter().position(|it| hit(it.rect, x, y))
     }
 
-    /// Apply input; returns an action when one was chosen.
-    pub fn handle(&mut self, event: InputEvent) -> Option<MenuAction> {
+    /// Apply input; returns the chosen action.
+    fn handle(&mut self, event: InputEvent) -> Option<MenuAction> {
         match event {
             InputEvent::PointerMove { x256, y256 } => {
                 self.pointer = (Fixed::from_raw(x256).round(), Fixed::from_raw(y256).round());
@@ -231,7 +323,7 @@ impl MainMenu {
                 if let Some(i) = self.hit(self.pointer.0, self.pointer.1)
                     && self.items[i].enabled
                 {
-                    self.pending = Some(self.items[i].action);
+                    return Some(self.items[i].action);
                 }
             }
             InputEvent::KeyDown { key } => match key {
@@ -246,33 +338,17 @@ impl MainMenu {
                     if let Some(i) = self.hovered
                         && self.items[i].enabled
                     {
-                        self.pending = Some(self.items[i].action);
+                        return Some(self.items[i].action);
                     }
                 }
-                Key::Escape => self.pending = Some(MenuAction::Exit),
                 _ => {}
             },
             _ => {}
         }
-        self.pending.take()
+        None
     }
 
-    /// Current state for `observe`.
-    #[must_use]
-    pub fn state(&self) -> MenuState {
-        MenuState {
-            screen: "main_menu".into(),
-            items: self.items.clone(),
-            hovered: self.hovered,
-            page: None,
-        }
-    }
-
-    /// Render the menu frame.
-    #[must_use]
-    pub fn render(&self, assets: Option<&UiAssets>) -> Framebuffer {
-        let mut fb = Framebuffer::new(MENU_FRAME.0, MENU_FRAME.1);
-        fb.clear([0, 0, 0, 255]);
+    fn draw(&self, fb: &mut Framebuffer, assets: Option<&UiAssets>) {
         let Some(a) = assets else {
             for (i, it) in self.items.iter().enumerate() {
                 let c = if self.hovered == Some(i) {
@@ -288,12 +364,8 @@ impl MainMenu {
                     c,
                 );
             }
-            draw_pointer(&mut fb, self.pointer, None);
-            return fb;
+            return;
         };
-        if let Some(bg) = &a.menu_background {
-            fb.blit_rgba(0, BG_Y, bg.width, bg.height, &bg.rgba);
-        }
         for (i, it) in self.items.iter().enumerate() {
             let state = if !it.enabled {
                 0
@@ -313,50 +385,313 @@ impl MainMenu {
             if let Some(font) = font {
                 let cx = it.rect.0 + it.rect.2 / 2;
                 let cy = it.rect.1 + 19 - font.height() as i32 / 2;
-                font.draw_centered(&mut fb, &it.label, cx, cy);
+                font.draw_centered(fb, &it.label, cx, cy);
             }
         }
-        // Profile summary, centred at x = 432 (ui-flow.md section 3).
-        if let Some(title) = &a.font_title {
-            title.draw_centered(
-                &mut fb,
-                &self.profile.name,
-                432,
-                254 - title.height() as i32 / 2,
-            );
+    }
+}
+
+fn hit((x, y, w, h): (i32, i32, i32, i32), px: i32, py: i32) -> bool {
+    (x..x + w).contains(&px) && (y..y + h).contains(&py)
+}
+
+/// A yes/no dialog on the horizontal scroll (`ui-flow.md` 2.3).
+#[derive(Debug)]
+pub struct Confirm {
+    question: String,
+    items: Vec<MenuItem>,
+    pointer: (i32, i32),
+}
+
+impl Confirm {
+    fn new(question_index: usize, fallback: &str, strings: &[String]) -> Self {
+        Self {
+            question: text(strings, question_index, fallback).to_string(),
+            items: vec![
+                MenuItem {
+                    action: MenuAction::Yes,
+                    label: text(strings, MenuAction::Yes.label_index(), "yes").to_string(),
+                    rect: SEAL_YES,
+                    enabled: true,
+                },
+                MenuItem {
+                    action: MenuAction::No,
+                    label: text(strings, MenuAction::No.label_index(), "no").to_string(),
+                    rect: SEAL_NO,
+                    enabled: true,
+                },
+            ],
+            pointer: (0, 0),
         }
-        if let Some(font) = &a.font_text {
-            use crate::ui_assets::texts as t;
-            let s = &a.strings;
-            let p = &self.profile;
-            let difficulty = text(
-                s,
-                t::DIFFICULTY_NAMES + usize::from(p.difficulty.min(2)),
-                ["easy", "medium", "hard"][usize::from(p.difficulty.min(2))],
+    }
+
+    /// Returns `Some(true)` for yes, `Some(false)` for no.
+    fn handle(&mut self, event: InputEvent) -> Option<bool> {
+        match event {
+            InputEvent::PointerMove { x256, y256 } => {
+                self.pointer = (Fixed::from_raw(x256).round(), Fixed::from_raw(y256).round());
+                None
+            }
+            InputEvent::PointerDown {
+                button: Button::Left,
+            } => {
+                if hit(SEAL_YES, self.pointer.0, self.pointer.1) {
+                    Some(true)
+                } else if hit(SEAL_NO, self.pointer.0, self.pointer.1) {
+                    Some(false)
+                } else {
+                    None
+                }
+            }
+            InputEvent::KeyDown {
+                key: Key::Enter | Key::Space,
+            } => Some(true),
+            InputEvent::KeyDown { key: Key::Escape } => Some(false),
+            _ => None,
+        }
+    }
+
+    fn draw(&self, fb: &mut Framebuffer, assets: Option<&UiAssets>) {
+        let Some(a) = assets else {
+            fb.fill_rect(
+                DIALOG_POS.0,
+                DIALOG_POS.1,
+                DIALOG_POS.0 + 400,
+                DIALOG_POS.1 + 200,
+                [220, 200, 150, 255],
             );
-            let lines = [
-                format!("{} : {difficulty}", text(s, t::DIFFICULTY, "difficulty")),
-                text(s, t::MONEY_FORMAT, "money: %i").replace("%i", &p.money.to_string()),
-                format!("{} : {}", text(s, t::SCORE, "score"), p.score),
-                format!(
-                    "{} : {} %",
-                    text(s, t::SPARED_LIVES, "spared lives"),
-                    p.spared_lives
-                ),
-                format!("{} : {} %", text(s, t::PROGRESS, "progress"), p.progress),
-                format!(
-                    "{} : {}",
-                    text(s, t::GAME_LENGTH, "game length"),
-                    p.game_length
-                ),
-            ];
-            for (k, line) in lines.iter().enumerate() {
-                let y = 278 + 20 * k as i32 - font.height() as i32 / 2;
-                font.draw_centered(&mut fb, line, 432, y);
+            return;
+        };
+        if let Some(p) = &a.dialog {
+            fb.blit_rgba(DIALOG_POS.0, DIALOG_POS.1, p.width, p.height, &p.rgba);
+        }
+        if let Some(font) = a.font_debrief.as_ref().or(a.font_text.as_ref()) {
+            let mut y = DIALOG_POS.1 + 45;
+            for line in wrap(font, &self.question, 340) {
+                font.draw_centered(fb, &line, 512, y);
+                y += font.height() as i32 + 2;
             }
         }
-        draw_pointer(&mut fb, self.pointer, a.cursor.as_ref());
+        for (seal, rect) in [(&a.seal_ok, SEAL_YES), (&a.seal_cancel, SEAL_NO)] {
+            let hovered = hit(rect, self.pointer.0, self.pointer.1);
+            let state = if hovered { 2 } else { 1 };
+            if let Some(s) = seal.get(state.min(seal.len().saturating_sub(1))) {
+                fb.blit_rgba(rect.0, rect.1, s.width, s.height, &s.rgba);
+            }
+        }
+    }
+
+    fn state(&self) -> MenuState {
+        MenuState {
+            screen: "dialog".into(),
+            items: items_to_protocol(&self.items),
+            hovered: None,
+            page: None,
+        }
+    }
+}
+
+/// The main menu.
+#[derive(Debug)]
+pub struct MainMenu {
+    column: ButtonColumn,
+    confirm: Option<Confirm>,
+    strings: Vec<String>,
+    /// Profile summary.
+    pub profile: ProfileSummary,
+}
+
+impl MainMenu {
+    /// Build the menu with the original's button column; labels come from the interface string table.
+    #[must_use]
+    pub fn new(profile: ProfileSummary, strings: &[String]) -> Self {
+        Self {
+            column: ButtonColumn::new(&MenuAction::MAIN, 0, strings),
+            confirm: None,
+            strings: strings.to_vec(),
+            profile,
+        }
+    }
+
+    /// Apply input; returns an action when one was chosen (`Exit` only after confirmation).
+    pub fn handle(&mut self, event: InputEvent) -> Option<MenuAction> {
+        if let Some(c) = self.confirm.as_mut() {
+            return match c.handle(event) {
+                Some(true) => {
+                    self.confirm = None;
+                    Some(MenuAction::Exit)
+                }
+                Some(false) => {
+                    self.confirm = None;
+                    None
+                }
+                None => None,
+            };
+        }
+        let chosen = match event {
+            InputEvent::KeyDown { key: Key::Escape } => Some(MenuAction::Exit),
+            e => self.column.handle(e),
+        };
+        match chosen {
+            Some(MenuAction::Exit) => {
+                self.confirm = Some(Confirm::new(t::CONFIRM_QUIT, "quit?", &self.strings));
+                None
+            }
+            other => other,
+        }
+    }
+
+    /// Current state for `observe`.
+    #[must_use]
+    pub fn state(&self) -> MenuState {
+        if let Some(c) = &self.confirm {
+            return c.state();
+        }
+        MenuState {
+            screen: "main_menu".into(),
+            items: items_to_protocol(&self.column.items),
+            hovered: self.column.hovered,
+            page: None,
+        }
+    }
+
+    /// Render the menu frame.
+    #[must_use]
+    pub fn render(&self, assets: Option<&UiAssets>) -> Framebuffer {
+        let mut fb = Framebuffer::new(MENU_FRAME.0, MENU_FRAME.1);
+        fb.clear([0, 0, 0, 255]);
+        if let Some(bg) = assets.and_then(|a| a.menu_background.as_ref()) {
+            fb.blit_rgba(0, BG_Y, bg.width, bg.height, &bg.rgba);
+        }
+        self.column.draw(&mut fb, assets);
+        if let Some(a) = assets {
+            // Profile summary, centred at x = 432 (ui-flow.md section 3).
+            if let Some(title) = &a.font_title {
+                title.draw_centered(
+                    &mut fb,
+                    &self.profile.name,
+                    432,
+                    254 - title.height() as i32 / 2,
+                );
+            }
+            if let Some(font) = &a.font_text {
+                let s = &a.strings;
+                let p = &self.profile;
+                let d = usize::from(p.difficulty.min(2));
+                let difficulty = text(s, t::DIFFICULTY_NAMES + d, ["easy", "medium", "hard"][d]);
+                let lines = [
+                    format!("{} : {difficulty}", text(s, t::DIFFICULTY, "difficulty")),
+                    text(s, t::MONEY_FORMAT, "money: %i").replace("%i", &p.money.to_string()),
+                    format!("{} : {}", text(s, t::SCORE, "score"), p.score),
+                    format!(
+                        "{} : {} %",
+                        text(s, t::SPARED_LIVES, "spared lives"),
+                        p.spared_lives
+                    ),
+                    format!("{} : {} %", text(s, t::PROGRESS, "progress"), p.progress),
+                    format!(
+                        "{} : {}",
+                        text(s, t::GAME_LENGTH, "game length"),
+                        p.game_length
+                    ),
+                ];
+                for (k, line) in lines.iter().enumerate() {
+                    let y = 278 + 20 * k as i32 - font.height() as i32 / 2;
+                    font.draw_centered(&mut fb, line, 432, y);
+                }
+            }
+        }
+        if let Some(c) = &self.confirm {
+            c.draw(&mut fb, assets);
+        }
+        let pointer = self
+            .confirm
+            .as_ref()
+            .map_or(self.column.pointer, |c| c.pointer);
+        draw_pointer(&mut fb, pointer, assets.and_then(|a| a.cursor.as_ref()));
         fb
+    }
+}
+
+/// The pause menu over the green-tinted, paused mission (`ui-flow.md` 9.5).
+#[derive(Debug)]
+pub struct PauseMenu {
+    column: ButtonColumn,
+    confirm: Option<Confirm>,
+    strings: Vec<String>,
+    objective: String,
+}
+
+impl PauseMenu {
+    /// New pause menu showing the current objective.
+    #[must_use]
+    pub fn new(objective: String, strings: &[String]) -> Self {
+        Self {
+            column: ButtonColumn::new(&MenuAction::PAUSE, 1, strings),
+            confirm: None,
+            strings: strings.to_vec(),
+            objective,
+        }
+    }
+
+    /// Apply input; `Quit` is returned only after confirmation, Escape continues.
+    pub fn handle(&mut self, event: InputEvent) -> Option<MenuAction> {
+        if let Some(c) = self.confirm.as_mut() {
+            return match c.handle(event) {
+                Some(true) => {
+                    self.confirm = None;
+                    Some(MenuAction::Quit)
+                }
+                Some(false) => {
+                    self.confirm = None;
+                    None
+                }
+                None => None,
+            };
+        }
+        let chosen = match event {
+            InputEvent::KeyDown { key: Key::Escape } => Some(MenuAction::Continue),
+            e => self.column.handle(e),
+        };
+        match chosen {
+            Some(MenuAction::Quit) => {
+                self.confirm = Some(Confirm::new(t::CONFIRM_LEAVE, "leave?", &self.strings));
+                None
+            }
+            other => other,
+        }
+    }
+
+    /// Current state for `observe`.
+    #[must_use]
+    pub fn state(&self) -> MenuState {
+        if let Some(c) = &self.confirm {
+            return c.state();
+        }
+        MenuState {
+            screen: "pause_menu".into(),
+            items: items_to_protocol(&self.column.items),
+            hovered: self.column.hovered,
+            page: None,
+        }
+    }
+
+    /// Draw over the (already rendered) scene.
+    pub fn render(&self, scene: &mut Framebuffer, assets: Option<&UiAssets>) {
+        tint_green(scene);
+        if let Some(font) = assets.and_then(|a| a.font_objective.as_ref().or(a.font_text.as_ref()))
+        {
+            font.draw(scene, &self.objective, 210, 150 - font.height() as i32 / 2);
+        }
+        self.column.draw(scene, assets);
+        if let Some(c) = &self.confirm {
+            c.draw(scene, assets);
+        }
+        let pointer = self
+            .confirm
+            .as_ref()
+            .map_or(self.column.pointer, |c| c.pointer);
+        draw_pointer(scene, pointer, assets.and_then(|a| a.cursor.as_ref()));
     }
 }
 
@@ -370,9 +705,6 @@ pub struct Briefing {
     pointer: (i32, i32),
     done: bool,
 }
-
-/// Seal button rectangle (`ui-flow.md` 9.2: blue V at (508,552), 41x44).
-const SEAL_RECT: (i32, i32, i32, i32) = (488, 530, 41, 44);
 
 impl Briefing {
     /// New briefing over `pages`.
@@ -395,10 +727,7 @@ impl Briefing {
             }
             InputEvent::PointerDown {
                 button: Button::Left,
-            } => {
-                let (x, y, w, h) = SEAL_RECT;
-                next = (x..x + w).contains(&self.pointer.0) && (y..y + h).contains(&self.pointer.1);
-            }
+            } => next = hit(SEAL_BRIEFING, self.pointer.0, self.pointer.1),
             InputEvent::KeyDown {
                 key: Key::Enter | Key::Space,
             } => next = true,
@@ -419,14 +748,14 @@ impl Briefing {
     pub fn state(&self) -> MenuState {
         MenuState {
             screen: "briefing".into(),
-            items: vec![MenuItem {
-                action: MenuAction::Play,
+            items: items_to_protocol(&[MenuItem {
+                action: MenuAction::Yes,
                 label: "ok".into(),
-                rect: SEAL_RECT,
+                rect: SEAL_BRIEFING,
                 enabled: true,
-            }],
+            }]),
             hovered: None,
-            page: Some((self.page + 1, self.pages.len().max(1))),
+            page: Some([self.page + 1, self.pages.len().max(1)]),
         }
     }
 
@@ -442,8 +771,8 @@ impl Briefing {
         }
         if let Some(seal) = a.seal_ok.get(1).or(a.seal_ok.first()) {
             scene.blit_rgba(
-                SEAL_RECT.0,
-                SEAL_RECT.1,
+                SEAL_BRIEFING.0,
+                SEAL_BRIEFING.1,
                 seal.width,
                 seal.height,
                 &seal.rgba,
@@ -457,6 +786,57 @@ impl Briefing {
             }
         }
         draw_pointer(scene, self.pointer, a.cursor.as_ref());
+    }
+}
+
+/// In-mission HUD values.
+#[derive(Debug, Clone, Default)]
+pub struct HudState {
+    /// Campaign money.
+    pub money: u32,
+    /// Clover charms.
+    pub clover: u32,
+    /// Selected hero's name lines.
+    pub hero_name: Vec<String>,
+}
+
+/// Draw the HUD over the scene (`ui-flow.md` 9.3). Positions matched by eye to the original's captures;
+/// the portrait frame picture is not identified yet, so a small scroll stands in for it.
+pub fn draw_hud(scene: &mut Framebuffer, assets: &UiAssets, hud: &HudState) {
+    let h = &assets.hud;
+    for (pic, x, y) in &h.foliage {
+        scene.blit_rgba(*x, *y, pic.width, pic.height, &pic.rgba);
+    }
+    if let Some(p) = &h.eyes {
+        scene.blit_rgba(950, 0, p.width, p.height, &p.rgba);
+    }
+    if let Some(p) = &h.towers {
+        scene.blit_rgba(998, 8, p.width, p.height, &p.rgba);
+    }
+    if let Some(p) = &h.map_scroll {
+        scene.blit_rgba(935, 40, p.width, p.height, &p.rgba);
+    }
+    if let Some(p) = &h.stand {
+        scene.blit_rgba(5, 690, p.width, p.height, &p.rgba);
+    }
+    if let Some(p) = &h.plan {
+        scene.blit_rgba(950, 700, p.width, p.height, &p.rgba);
+    }
+    if let Some(p) = &h.portrait_scroll {
+        scene.blit_rgba(70, 640, p.width, p.height, &p.rgba);
+    }
+    if let Some(p) = &h.portrait {
+        scene.blit_rgba(88, 660, p.width, p.height, &p.rgba);
+    }
+    if let Some(font) = &assets.font_text {
+        let s = &assets.strings;
+        let money = text(s, t::MONEY_FORMAT, "money: %i").replace("%i", &hud.money.to_string());
+        let clover = text(s, t::CLOVER_FORMAT, "clover: %i").replace("%i", &hud.clover.to_string());
+        font.draw(scene, &money, 4, 4);
+        font.draw(scene, &clover, 4, 20);
+        for (i, line) in hud.hero_name.iter().enumerate() {
+            font.draw(scene, line, 140, 665 + 18 * i as i32);
+        }
     }
 }
 
@@ -505,49 +885,77 @@ fn draw_pointer(fb: &mut Framebuffer, (mx, my): (i32, i32), cursor: Option<&Spri
 mod tests {
     use super::*;
 
+    fn mv(x: i32, y: i32) -> InputEvent {
+        InputEvent::PointerMove {
+            x256: x * 256,
+            y256: y * 256,
+        }
+    }
+
+    fn click() -> InputEvent {
+        InputEvent::PointerDown {
+            button: Button::Left,
+        }
+    }
+
     #[test]
     fn menu_rows_match_the_original_column() {
         let m = MainMenu::new(ProfileSummary::default(), &[]);
-        assert_eq!(m.items.len(), 7);
-        assert_eq!(m.items[0].label, "play");
+        assert_eq!(m.column.items.len(), 7);
+        assert_eq!(m.column.items[0].label, "play");
+        assert_eq!(m.column.items[0].rect, (664, 339, 168, 39));
+        assert_eq!(m.column.items[6].rect, (664, 585, 168, 39));
+        assert_eq!(m.column.items[6].action, MenuAction::Exit);
         let named = MainMenu::new(ProfileSummary::default(), &["Go".to_string()]);
-        assert_eq!(named.items[0].label, "Go");
-        assert_eq!(m.items[0].rect, (664, 339, 168, 39));
-        assert_eq!(m.items[6].rect, (664, 585, 168, 39));
-        assert_eq!(m.items[6].action, MenuAction::Exit);
+        assert_eq!(named.column.items[0].label, "Go");
+        let p = PauseMenu::new(String::new(), &[]);
+        assert_eq!(p.column.items[0].rect.1, 380);
+        assert_eq!(p.column.items[5].action, MenuAction::Quit);
     }
 
     #[test]
     fn click_on_play_starts_and_keyboard_navigates() {
         let mut m = MainMenu::new(ProfileSummary::default(), &[]);
-        assert_eq!(
-            m.handle(InputEvent::PointerMove {
-                x256: 748 * 256,
-                y256: 364 * 256
-            }),
-            None
-        );
-        assert_eq!(m.hovered, Some(0));
-        assert_eq!(
-            m.handle(InputEvent::PointerDown {
-                button: Button::Left
-            }),
-            Some(MenuAction::Play)
-        );
+        assert_eq!(m.handle(mv(748, 364)), None);
+        assert_eq!(m.column.hovered, Some(0));
+        assert_eq!(m.handle(click()), Some(MenuAction::Play));
         let mut m = MainMenu::new(ProfileSummary::default(), &[]);
         m.handle(InputEvent::KeyDown { key: Key::Up });
-        assert_eq!(m.hovered, Some(6));
+        assert_eq!(m.column.hovered, Some(6));
+        // Exit asks for confirmation: Enter on the dialog confirms.
+        assert_eq!(m.handle(InputEvent::KeyDown { key: Key::Enter }), None);
+        assert_eq!(m.state().screen, "dialog");
         assert_eq!(
             m.handle(InputEvent::KeyDown { key: Key::Enter }),
             Some(MenuAction::Exit)
         );
         // Between two plates nothing is hovered.
         let mut m = MainMenu::new(ProfileSummary::default(), &[]);
-        m.handle(InputEvent::PointerMove {
-            x256: 748 * 256,
-            y256: 379 * 256,
-        });
-        assert_eq!(m.hovered, None);
+        m.handle(mv(748, 379));
+        assert_eq!(m.column.hovered, None);
+    }
+
+    #[test]
+    fn pause_menu_quits_only_after_confirmation() {
+        let mut p = PauseMenu::new("goal".into(), &[]);
+        p.handle(mv(748, 600));
+        assert_eq!(p.column.hovered, Some(5));
+        assert_eq!(p.handle(click()), None);
+        assert_eq!(p.state().screen, "dialog");
+        // The red X cancels.
+        p.handle(mv(541, 433));
+        assert_eq!(p.handle(click()), None);
+        assert_eq!(p.state().screen, "pause_menu");
+        // Escape resumes.
+        assert_eq!(
+            p.handle(InputEvent::KeyDown { key: Key::Escape }),
+            Some(MenuAction::Continue)
+        );
+        // Quit via the blue V.
+        p.handle(mv(748, 600));
+        p.handle(click());
+        p.handle(mv(483, 433));
+        assert_eq!(p.handle(click()), Some(MenuAction::Quit));
     }
 
     #[test]
@@ -555,13 +963,8 @@ mod tests {
         let mut b = Briefing::new(vec!["one".into(), "two".into()]);
         assert!(!b.handle(InputEvent::KeyDown { key: Key::Enter }));
         assert_eq!(b.page, 1);
-        b.handle(InputEvent::PointerMove {
-            x256: 508 * 256,
-            y256: 552 * 256,
-        });
-        assert!(b.handle(InputEvent::PointerDown {
-            button: Button::Left
-        }));
+        b.handle(mv(508, 552));
+        assert!(b.handle(click()));
         let fb = MainMenu::new(ProfileSummary::default(), &[]).render(None);
         assert_eq!((fb.width, fb.height), MENU_FRAME);
     }

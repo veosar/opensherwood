@@ -82,7 +82,87 @@ pub struct Entity {
     pub alive: bool,
     /// Sprite animation state, if the entity is drawn with a sprite.
     pub anim: Option<AnimState>,
+    /// Waypoint program this entity executes (index into [`World::programs`]); `None` = the
+    /// legacy patrol over `patrol` (synthetic guards) or idle.
+    #[serde(default)]
+    pub program: Option<u32>,
+    /// Program counter: index of the next instruction to execute.
+    #[serde(default)]
+    pub pc: u32,
 }
+
+/// One instruction of an NPC waypoint program. Programs are plain data translated by the app
+/// from the mission's rail programs (`docs/formats/rhm.md`, "Rail programs"); the core only
+/// executes them. Everything is integer: positions in map pixels, durations in ticks, facings in
+/// 1/256 turns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Instruction {
+    /// Walk to a map point using pathfinding. Blocks until the entity arrives (or the walk fails,
+    /// which skips the instruction after a short pause).
+    GoTo {
+        /// Target x in map pixels.
+        x: i32,
+        /// Target y in map pixels.
+        y: i32,
+    },
+    /// Stand still for this many ticks.
+    Wait {
+        /// Ticks.
+        ticks: u32,
+    },
+    /// Face an absolute direction.
+    Face {
+        /// Facing in 1/256 turns.
+        facing256: i32,
+    },
+    /// Turn relative to the current facing.
+    Turn {
+        /// Delta in 1/256 turns (positive = clockwise on screen).
+        delta256: i32,
+    },
+    /// Continue at another instruction.
+    Jump {
+        /// Target instruction index.
+        pc: u32,
+    },
+    /// Roll a percentage (0..100) on the gameplay RNG and jump to the first arm whose cumulative
+    /// percentage exceeds the roll; when no arm matches, fall through to the next instruction.
+    Choose {
+        /// `(percent, pc)` arms, in file order.
+        arms: Vec<(u8, u32)>,
+    },
+    /// End of program: the entity stands where it is (idle) forever.
+    Stop,
+    /// A command of the original whose meaning is not established: does nothing.
+    Nop {
+        /// The original opcode, for inspection.
+        opcode: u8,
+    },
+}
+
+impl Instruction {
+    /// Stable tag for canonical encodings (never derived from declaration order).
+    #[must_use]
+    pub fn tag(&self) -> u8 {
+        match self {
+            Instruction::GoTo { .. } => 1,
+            Instruction::Wait { .. } => 2,
+            Instruction::Face { .. } => 3,
+            Instruction::Turn { .. } => 4,
+            Instruction::Jump { .. } => 5,
+            Instruction::Choose { .. } => 6,
+            Instruction::Stop => 7,
+            Instruction::Nop { .. } => 8,
+        }
+    }
+}
+
+/// Most instructions a program may execute in one tick before it yields (guards against
+/// programs made only of jumps).
+pub const PROGRAM_STEPS_PER_TICK: u32 = 32;
+/// Largest number of instructions in one program.
+pub const MAX_PROGRAM_LEN: usize = 1 << 16;
 
 /// Scenario selection for `reset`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,8 +217,12 @@ pub struct ActorSpec {
     pub y: i32,
     /// Facing in 1/256 turns.
     pub facing256: i32,
-    /// Patrol waypoints in map pixels (guards).
+    /// Patrol waypoints in map pixels (guards without a program walk between them; retail
+    /// missions leave this empty and use `program`).
     pub patrol: Vec<(i32, i32)>,
+    /// Waypoint program (empty = none: the actor stands idle unless it has a `patrol`).
+    #[serde(default)]
+    pub program: Vec<Instruction>,
 }
 
 /// A mission ready to be simulated: map size, walkable geometry and actors. Built by the app from
@@ -241,6 +325,10 @@ pub struct World {
     pub objective_reached: bool,
     /// Walkable geometry (authoritative: it decides movement).
     pub geometry: Geometry,
+    /// Waypoint programs referenced by `Entity::program` (authoritative; deduplicated at load,
+    /// in first-use order).
+    #[serde(default)]
+    pub programs: Vec<Vec<Instruction>>,
     /// Navigation grid derived from `geometry` and `map_size` (cache; rebuilt on load).
     #[serde(skip)]
     pub nav: Option<NavGrid>,
@@ -250,7 +338,7 @@ pub struct World {
 }
 
 /// Snapshot schema version.
-pub const SNAPSHOT_VERSION: u32 = 4;
+pub const SNAPSHOT_VERSION: u32 = 5;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -301,6 +389,23 @@ impl World {
                 Team::Player => EntityKind::Player,
                 Team::Enemy | Team::Civilian => EntityKind::Guard,
             };
+            // Programs are shared: identical rails give one entry, in first-use order.
+            let program = if kind == EntityKind::Guard && !a.program.is_empty() {
+                if a.program.len() > MAX_PROGRAM_LEN {
+                    return Err(format!("actor {i} program too long"));
+                }
+                let idx = world
+                    .programs
+                    .iter()
+                    .position(|p| *p == a.program)
+                    .unwrap_or_else(|| {
+                        world.programs.push(a.program.clone());
+                        world.programs.len() - 1
+                    });
+                Some(idx as u32)
+            } else {
+                None
+            };
             world.entities.push(Entity {
                 id: EntityId {
                     index: i as u32,
@@ -323,6 +428,8 @@ impl World {
                 facing256: a.facing256.rem_euclid(256),
                 alive: true,
                 anim: Some(AnimState::new(a.profile.clone(), 0)),
+                program,
+                pc: 0,
             });
         }
         // The original opens a mission with the camera on the hero.
@@ -452,6 +559,8 @@ impl World {
             facing256: 0,
             alive: true,
             anim: None,
+            program: None,
+            pc: 0,
         });
         entities.push(Entity {
             id: id(1),
@@ -468,6 +577,8 @@ impl World {
             facing256: 64,
             alive: true,
             anim: None,
+            program: None,
+            pc: 0,
         });
         let obstacles: &[(i32, i32, i32, i32)] = if map.is_some() {
             &[]
@@ -490,6 +601,8 @@ impl World {
                 facing256: 0,
                 alive: true,
                 anim: None,
+                program: None,
+                pc: 0,
             });
         }
         World {
@@ -509,6 +622,7 @@ impl World {
             goal: (f(600), f(240)),
             objective_reached: false,
             geometry: Geometry::default(),
+            programs: Vec::new(),
             nav: None,
             catalog: Catalog::default(),
         }
@@ -573,6 +687,32 @@ impl World {
         if self.geometry.vertex_count() > MAX_GEOMETRY_VERTICES {
             return Err("geometry has too many vertices".into());
         }
+        if self.programs.len() > MAX_ENTITIES {
+            return Err(format!("{} programs exceed the limit", self.programs.len()));
+        }
+        for (i, p) in self.programs.iter().enumerate() {
+            if p.len() > MAX_PROGRAM_LEN {
+                return Err(format!("program {i} too long"));
+            }
+            let in_range = |pc: u32| (pc as usize) < p.len();
+            for (j, ins) in p.iter().enumerate() {
+                let ok = match ins {
+                    Instruction::Jump { pc } => in_range(*pc),
+                    Instruction::Choose { arms } => {
+                        arms.len() <= 256 && arms.iter().all(|&(_, pc)| in_range(pc))
+                    }
+                    Instruction::Face { facing256 } => (0..256).contains(facing256),
+                    Instruction::Turn { delta256 } => delta256.abs() < 256,
+                    Instruction::GoTo { x, y } => {
+                        x.unsigned_abs() <= MAX_MAP_SIZE && y.unsigned_abs() <= MAX_MAP_SIZE
+                    }
+                    Instruction::Wait { .. } | Instruction::Stop | Instruction::Nop { .. } => true,
+                };
+                if !ok {
+                    return Err(format!("program {i} instruction {j} out of range"));
+                }
+            }
+        }
         let mut ids = BTreeSet::new();
         for e in &self.entities {
             if !ids.insert(e.id) {
@@ -600,6 +740,14 @@ impl World {
                     if !e.patrol.is_empty() && e.patrol_index as usize >= e.patrol.len() {
                         return Err(format!("entity {:?} patrol index out of range", e.id));
                     }
+                }
+            }
+            if let Some(p) = e.program {
+                let Some(program) = self.programs.get(p as usize) else {
+                    return Err(format!("entity {:?} program {p} does not exist", e.id));
+                };
+                if e.pc as usize > program.len() {
+                    return Err(format!("entity {:?} pc out of range", e.id));
                 }
             }
             if e.path.len() > MAX_ENTITIES {
@@ -743,23 +891,41 @@ impl World {
             Fixed::from_int(self.map_size.0 as i32),
             Fixed::from_int(self.map_size.1 as i32),
         );
-        // Guards pick their next patrol point (path planning needs &mut self, so collect first).
+        // Idle guards run their waypoint program, or pick their next legacy patrol point (path
+        // planning needs &mut self, so collect first).
         let mut to_plan: Vec<(usize, (Fixed, Fixed))> = Vec::new();
+        let programs = &self.programs;
+        let rng = &mut self.rng;
         for (i, e) in self.entities.iter_mut().enumerate() {
-            if e.alive && e.kind == EntityKind::Guard && e.target.is_none() {
-                if e.wait_ticks > 0 {
-                    e.wait_ticks -= 1;
-                } else if !e.patrol.is_empty() {
+            if !(e.alive && e.kind == EntityKind::Guard && e.target.is_none()) {
+                continue;
+            }
+            if e.wait_ticks > 0 {
+                e.wait_ticks -= 1;
+                continue;
+            }
+            match e.program.and_then(|p| programs.get(p as usize)) {
+                Some(program) => {
+                    if let Some(t) = run_program(e, program, rng) {
+                        to_plan.push((i, t));
+                    }
+                }
+                None if !e.patrol.is_empty() => {
                     to_plan.push((i, e.patrol[e.patrol_index as usize % e.patrol.len()]));
                 }
+                None => {}
             }
         }
         for (i, t) in to_plan {
             self.plan_path(i, t);
             if self.entities[i].target.is_none() {
-                // Unreachable patrol point: skip it.
+                // Unreachable point: skip it.
                 let e = &mut self.entities[i];
-                e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
+                if e.program.is_some() {
+                    e.pc = e.pc.saturating_add(1);
+                } else {
+                    e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
+                }
                 e.wait_ticks = 10;
             }
         }
@@ -789,6 +955,10 @@ impl World {
                 e.path.clear();
                 if e.kind == EntityKind::Guard {
                     e.wait_ticks = 10;
+                    if e.program.is_some() {
+                        // The walk failed: the program moves on after the pause.
+                        e.pc = e.pc.saturating_add(1);
+                    }
                 }
                 continue;
             }
@@ -801,8 +971,13 @@ impl World {
                 if e.path.is_empty() && (e.x, e.y) == (fx, fy) {
                     e.target = None;
                     if e.kind == EntityKind::Guard {
-                        e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
-                        e.wait_ticks = 20 + self.rng.below(20);
+                        if e.program.is_some() {
+                            // Arrived: the `GoTo` is complete.
+                            e.pc = e.pc.saturating_add(1);
+                        } else {
+                            e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
+                            e.wait_ticks = 20 + self.rng.below(20);
+                        }
                     }
                 }
             }
@@ -952,6 +1127,34 @@ impl World {
                     .u32(st.elapsed),
                 None => a.u8(0),
             };
+            match e.program {
+                Some(p) => a.u8(1).u32(p),
+                None => a.u8(0),
+            };
+            a.u32(e.pc);
+        }
+        a.u32(self.programs.len() as u32);
+        for p in &self.programs {
+            a.u32(p.len() as u32);
+            for ins in p {
+                a.u8(ins.tag());
+                match ins {
+                    Instruction::GoTo { x, y } => a.i32(*x).i32(*y),
+                    Instruction::Wait { ticks } => a.u32(*ticks),
+                    Instruction::Face { facing256 } => a.i32(*facing256),
+                    Instruction::Turn { delta256 } => a.i32(*delta256),
+                    Instruction::Jump { pc } => a.u32(*pc),
+                    Instruction::Choose { arms } => {
+                        a.u32(arms.len() as u32);
+                        for &(percent, pc) in arms {
+                            a.u8(percent).u32(pc);
+                        }
+                        &mut a
+                    }
+                    Instruction::Stop => &mut a,
+                    Instruction::Nop { opcode } => a.u8(*opcode),
+                };
+            }
         }
         parts.insert("actors".into(), a.finish());
 
@@ -1007,6 +1210,52 @@ impl World {
         parts.insert("total".into(), t);
         Hashes { parts }
     }
+}
+
+/// Execute an idle entity's program until it blocks: on a `GoTo` the target is returned for path
+/// planning (the pc stays on the `GoTo` until the walk ends), on `Wait` / `Stop` / end of program
+/// or after [`PROGRAM_STEPS_PER_TICK`] instructions nothing is returned.
+fn run_program(e: &mut Entity, program: &[Instruction], rng: &mut Rng) -> Option<(Fixed, Fixed)> {
+    for _ in 0..PROGRAM_STEPS_PER_TICK {
+        let ins = program.get(e.pc as usize)?;
+        match ins {
+            Instruction::GoTo { x, y } => {
+                return Some((Fixed::from_int(*x), Fixed::from_int(*y)));
+            }
+            Instruction::Wait { ticks } => {
+                e.pc += 1;
+                if *ticks > 0 {
+                    e.wait_ticks = ticks - 1;
+                    return None;
+                }
+            }
+            Instruction::Face { facing256 } => {
+                e.facing256 = facing256.rem_euclid(256);
+                e.pc += 1;
+            }
+            Instruction::Turn { delta256 } => {
+                e.facing256 = (e.facing256 + delta256).rem_euclid(256);
+                e.pc += 1;
+            }
+            Instruction::Jump { pc } => e.pc = *pc,
+            Instruction::Choose { arms } => {
+                let roll = rng.below(100);
+                let mut acc = 0u32;
+                let mut next = e.pc + 1;
+                for &(percent, pc) in arms {
+                    acc += u32::from(percent);
+                    if roll < acc {
+                        next = pc;
+                        break;
+                    }
+                }
+                e.pc = next;
+            }
+            Instruction::Stop => return None,
+            Instruction::Nop { .. } => e.pc += 1,
+        }
+    }
+    None
 }
 
 /// Facing from a direction vector: 8-way quantised to 1/256 turns, exact and deterministic.
@@ -1114,7 +1363,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "57e3e8a567e922fcdb0caf1d0e21a2b2819b33a158a93dbe70585eecc2dfccb4";
+        "51537eb4571d5f3b42d3aae69068f5044167779718d9cfbd8fbeaecfe36dc907";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -1143,6 +1392,18 @@ mod tests {
         let mut w = base.clone();
         w.entities[0].anim = Some(AnimState::new("x", 0));
         variants.push(("anim", w));
+        let mut w = base.clone();
+        w.entities[1].pc = 3;
+        variants.push(("pc", w));
+        let mut w = base.clone();
+        w.programs.push(vec![Instruction::Stop]);
+        variants.push(("programs", w));
+        let mut w = base.clone();
+        w.programs.push(vec![Instruction::Stop]);
+        w.entities[1].program = Some(0);
+        let mut w2 = base.clone();
+        w2.programs.push(vec![Instruction::Stop]);
+        assert_ne!(w.hashes().total(), w2.hashes().total(), "program ref");
         for (name, v) in variants {
             assert_ne!(
                 v.hashes().total(),
@@ -1264,6 +1525,7 @@ mod tests {
                     y: 200,
                     facing256: 64,
                     patrol: vec![],
+                    program: vec![],
                 },
                 ActorSpec {
                     profile: "Soldier A00".into(),
@@ -1272,6 +1534,7 @@ mod tests {
                     y: 200,
                     facing256: -32,
                     patrol: vec![(300, 200), (300, 400)],
+                    program: vec![],
                 },
             ],
         };
@@ -1301,6 +1564,201 @@ mod tests {
         // A target inside the obstacle is moved to its edge.
         w.plan_path(0, (Fixed::from_int(200), Fixed::from_int(200)));
         assert!(w.entities[0].target.is_some());
+    }
+
+    /// An open 1000x800 mission with one player and guards running the given programs.
+    fn programmed_mission(programs: &[Vec<Instruction>]) -> World {
+        let mut actors = vec![ActorSpec {
+            profile: "RobinHood".into(),
+            team: Team::Player,
+            x: 100,
+            y: 100,
+            facing256: 0,
+            patrol: vec![],
+            program: vec![],
+        }];
+        for (i, p) in programs.iter().enumerate() {
+            actors.push(ActorSpec {
+                profile: "Soldier A00".into(),
+                team: Team::Enemy,
+                x: 300 + 100 * i as i32,
+                y: 300,
+                facing256: 0,
+                patrol: vec![],
+                program: p.clone(),
+            });
+        }
+        let spec = MissionSpec {
+            map: MapInfo {
+                width: 1000,
+                height: 800,
+            },
+            geometry: Geometry {
+                boundary: vec![(0, 0), (1000, 0), (1000, 800), (0, 800)],
+                obstacles: vec![],
+            },
+            actors,
+        };
+        World::new_mission(Scenario::Mission("T".into()), 9, &spec).unwrap()
+    }
+
+    #[test]
+    fn program_wait_goto_face_and_loop() {
+        use Instruction::*;
+        let program = vec![
+            Face { facing256: 128 },
+            Wait { ticks: 30 },
+            GoTo { x: 300, y: 400 },
+            Turn { delta256: -32 },
+            Wait { ticks: 10 },
+            GoTo { x: 300, y: 300 },
+            Jump { pc: 0 },
+        ];
+        let mut w = programmed_mission(&[program.clone(), vec![]]);
+        assert_eq!(w.programs, vec![program]);
+        assert_eq!(w.entities[1].program, Some(0));
+        assert_eq!(w.entities[2].program, None, "empty program = idle guard");
+        // Tick 0: Face executes, Wait starts; the guard stands for 30 ticks facing west.
+        w.step(&[]);
+        let g = &w.entities[1];
+        assert_eq!((g.facing256, g.pc, g.wait_ticks), (128, 2, 29));
+        for _ in 0..29 {
+            w.step(&[]);
+            assert_eq!(w.entities[1].y.round(), 300);
+        }
+        // Tick 30: GoTo is issued; the guard walks 100 px south at 1 px/tick.
+        w.step(&[]);
+        let g = &w.entities[1];
+        assert!(g.target.is_some());
+        assert_eq!(g.pc, 2, "pc stays on the GoTo while walking");
+        for _ in 0..99 {
+            w.step(&[]);
+        }
+        let g = &w.entities[1];
+        assert_eq!((g.x.round(), g.y.round()), (300, 400));
+        assert!(g.target.is_none());
+        assert_eq!(g.facing256, 64, "walking south faces south");
+        // Next tick: Turn (64 - 32) and the 10-tick wait; then it walks back and loops.
+        w.step(&[]);
+        assert_eq!(w.entities[1].facing256, 32);
+        for _ in 0..120 {
+            w.step(&[]);
+        }
+        let g = &w.entities[1];
+        assert_eq!((g.x.round(), g.y.round()), (300, 300));
+        assert_eq!(g.facing256, 128, "looped back to the Face at pc 0");
+        // The idle guard never moved and never drew from the RNG.
+        let idle = &w.entities[2];
+        assert_eq!((idle.x.round(), idle.y.round(), idle.pc), (400, 300, 0));
+        assert_eq!(w.rng.draws, 0);
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn program_choose_stop_nop_and_step_budget() {
+        use Instruction::*;
+        // 50 % face east, 50 % face west, then stop; Nops are skipped.
+        let choose = vec![
+            Nop { opcode: 0x42 },
+            Choose {
+                arms: vec![(50, 3), (50, 5)],
+            },
+            Jump { pc: 7 },
+            Face { facing256: 0 },
+            Jump { pc: 7 },
+            Face { facing256: 128 },
+            Jump { pc: 7 },
+            Stop,
+        ];
+        // A single 25 % arm that never matches falls through to the Wait.
+        let fallthrough = vec![
+            Choose { arms: vec![(0, 2)] },
+            Wait { ticks: 5 },
+            Face { facing256: 64 },
+            Stop,
+        ];
+        // Only jumps: must yield after the per-tick budget instead of spinning.
+        let spin = vec![Jump { pc: 1 }, Jump { pc: 0 }];
+        let mut w = programmed_mission(&[choose, fallthrough, spin]);
+        w.step(&[]);
+        assert_eq!(w.rng.draws, 2, "two Choose rolls");
+        assert_eq!(w.entities[1].pc, 7);
+        assert!(matches!(w.entities[1].facing256, 0 | 128));
+        assert_eq!((w.entities[2].pc, w.entities[2].wait_ticks), (2, 4));
+        for _ in 0..10 {
+            w.step(&[]);
+        }
+        assert_eq!((w.entities[2].pc, w.entities[2].facing256), (3, 64));
+        assert_eq!(w.entities[1].pc, 7, "Stop holds the pc");
+        assert_eq!(w.rng.draws, 2);
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn programs_survive_snapshot_restore_and_are_validated() {
+        use Instruction::*;
+        let program = vec![
+            Choose {
+                arms: vec![(50, 2), (50, 4)],
+            },
+            Jump { pc: 6 },
+            GoTo { x: 500, y: 300 },
+            Jump { pc: 6 },
+            GoTo { x: 300, y: 500 },
+            Jump { pc: 6 },
+            Wait { ticks: 7 },
+            GoTo { x: 300, y: 300 },
+            Jump { pc: 0 },
+        ];
+        let run = |snap_at: Option<u64>| {
+            let mut w = programmed_mission(&[program.clone(), program.clone()]);
+            let mut saved = None;
+            for t in 0..900u64 {
+                if Some(t) == snap_at {
+                    saved = Some(w.snapshot());
+                }
+                w.step(&[]);
+                if snap_at.is_some_and(|s| t == s + 40) {
+                    w.restore(saved.as_ref().unwrap()).unwrap();
+                    for _ in 0..41 {
+                        w.step(&[]);
+                    }
+                }
+            }
+            assert!(w.rng.draws > 0);
+            w.hashes()
+        };
+        let a = run(None);
+        assert_eq!(a, run(None));
+        let c = run(Some(333));
+        assert_eq!(
+            a.total(),
+            c.total(),
+            "restore changed the outcome: {:?}",
+            a.diff(&c)
+        );
+        // Snapshot JSON round trip keeps programs and counters.
+        let mut w = programmed_mission(std::slice::from_ref(&program));
+        for _ in 0..50 {
+            w.step(&[]);
+        }
+        let json = serde_json::to_string(&w.snapshot()).unwrap();
+        let snap: Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = programmed_mission(&[]);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.programs, w.programs);
+        assert_eq!(w2.entities[1].pc, w.entities[1].pc);
+        assert_eq!(w2.hashes(), w.hashes());
+        // Invalid programs and counters are rejected.
+        let mut snap = w.snapshot();
+        snap.world.entities[1].pc = 99;
+        assert!(w.restore(&snap).unwrap_err().contains("pc"));
+        let mut snap = w.snapshot();
+        snap.world.entities[1].program = Some(5);
+        assert!(w.restore(&snap).is_err());
+        let mut snap = w.snapshot();
+        snap.world.programs[0][1] = Jump { pc: 1000 };
+        assert!(w.restore(&snap).is_err());
     }
 
     #[test]

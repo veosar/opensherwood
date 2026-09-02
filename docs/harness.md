@@ -24,7 +24,7 @@ Example session:
 
 ```
 -> {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"pytest"}}
-<- {"jsonrpc":"2.0","id":1,"result":{"protocol":3,"build":"0.1.0","ruleset":3,"capabilities":["synthetic","capture","mission","replay"],"content_fingerprint":null}}
+<- {"jsonrpc":"2.0","id":1,"result":{"protocol":3,"build":"0.1.0","ruleset":4,"capabilities":["synthetic","capture","mission","replay"],"content_fingerprint":null}}
 -> {"jsonrpc":"2.0","id":2,"method":"reset","params":{"scenario":{"synthetic":"corridor"},"seed":42}}
 -> {"jsonrpc":"2.0","id":3,"method":"step","params":{"ticks":10,"events":[{"tick_offset":0,"sequence":0,"kind":"pointer_move","x256":25600,"y256":19200},{"tick_offset":0,"sequence":1,"kind":"pointer_down","button":"right"},{"tick_offset":0,"sequence":2,"kind":"pointer_up","button":"right"}]}}
 <- {"jsonrpc":"2.0","id":3,"result":{"tick":10,"hashes":{"total":"...","actors":"..."}}}
@@ -41,14 +41,23 @@ replay's scenario and seed, feeds the events tick by tick and compares every che
 diverging tick and the subsystem hashes that differ. Replays recorded with another ruleset, protocol, hash schema
 or game content are rejected.
 
+Limits. A request line is at most 16 MiB; a longer line is answered with "request too large" and the rest of it is
+skipped through the reader's buffer without being stored. A replay file is at most 64 MiB, 2^20 events, 2^16
+checkpoints and 2^24 ticks (`opensherwood_protocol::replay_limits`); `replay.play` checks the file size before
+reading it and refuses replays that run past 1,000,000 ticks (about 4.6 hours at 60 Hz) before resetting the
+session. The recorder enforces the same quotas cumulatively: a `step` that would push the active recording over
+the event, checkpoint or tick quota is refused before anything moves (`replay.stop` first), and a recording that
+crosses a quota outside `step` (window mode) is discarded with an error at `replay.stop` rather than written as a
+file the parser would reject.
+
 ## Scenarios
 
 | `reset` scenario | Needs game data | What it is |
 |---|---|---|
 | `{"synthetic": "corridor"}` | no | 640x480 room, a player, a patrolling guard, three obstacles, a goal |
 | `{"map_view": {"map": "sherwood", "ambiance": "Day"}}` | yes | the retail background of that map with the synthetic units on it and a scrollable camera |
-| `{"mission": "<name>"}` | yes | the retail mission's background, walkable geometry, occluders and actors (default soldier sprite for NPCs until the profile table is decoded); no scripts or AI yet; viewport 1024x768 |
-| `{"menu": "main"}` | yes | the original main menu; `observe` returns a `ui` object (screen, items with rectangles, hovered index) while a menu or briefing is shown; clicking Play! loads the first mission behind its briefing |
+| `{"mission": "<name>"}` | yes | the retail mission's background, walkable geometry, occluders and actors (default soldier sprite for NPCs until the profile table is decoded); NPCs follow their rail programs (walk the rail back and forth, face, wait, glance, loop; see `docs/formats/rhm.md` "Rail programs"), NPCs without a rail stand idle; no scripts or reactive AI yet; viewport 1024x768 |
+| `{"menu": "main"}` | yes | the original main menu; `observe` returns a `ui` object (`screen` = `main_menu`, `briefing`, `pause_menu` or `dialog`; `items` with actions and rectangles; `hovered`; briefing `page`) while a screen is shown; clicking Play! loads the first mission behind its briefing; Escape in a mission opens the pause menu (Continue / Restart / Quit with confirmation); menus never tick the world |
 
 `harness/tools/drive.py` runs a short scripted session (select, order, scroll, capture) in headless or window
 mode and prints where the PNGs went; agents use it to look at the engine after a change.
