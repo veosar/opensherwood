@@ -80,3 +80,20 @@ def test_walking_into_an_obstacle_stops_and_occluders_hide_the_sprite(binary, ga
         assert p["target"] is None
         assert abs(p["x"] // 256 - (rx - 260)) < 60, "did not get near the target"
         assert p["x"] // 256 < rx - 150, "did not move far enough"
+
+
+def test_guards_follow_their_rail_programs(binary, game_dir):
+    """H01 (Lincoln): NPCs with a rail walk it; the run is deterministic across processes."""
+    totals = []
+    moved = 0
+    for _ in range(2):
+        with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
+            e.reset({"mission": "H01_Lin_VL"}, seed=5)
+            before = {x["id"]["index"]: (x["x"], x["y"]) for x in e.observe()["entities"] if x["kind"] == "guard"}
+            assert len(before) >= 30
+            r = e.step(600)
+            totals.append(r["hashes"]["total"])
+            after = {x["id"]["index"]: (x["x"], x["y"]) for x in e.observe()["entities"] if x["kind"] == "guard"}
+            moved = sum(1 for k, p in before.items() if after[k] != p)
+    assert moved >= 5, f"only {moved} guards moved in 600 ticks"
+    assert totals[0] == totals[1]

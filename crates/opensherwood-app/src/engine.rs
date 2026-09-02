@@ -7,18 +7,18 @@ use std::sync::Arc;
 
 use opensherwood_assets::{GameDir, SpriteBank};
 use opensherwood_core::{
-    AnimSet, Catalog, FrameSpec, InputEvent, MapInfo, Scenario, Snapshot, World,
+    AnimSet, Catalog, EntityKind, FrameSpec, InputEvent, Key, MapInfo, Scenario, Snapshot, World,
 };
 
 use crate::mission;
-use crate::ui::{Briefing, MainMenu, MenuAction, ProfileSummary, UiAssets};
+use crate::ui::{Briefing, HudState, MainMenu, MenuAction, PauseMenu, ProfileSummary, UiAssets};
 use crate::ui_assets;
 use opensherwood_core::Geometry;
 use opensherwood_protocol::{
     CaptureParams, CaptureResult, HelloResult, ObserveParams, ObserveResult, PROTOCOL_VERSION,
     Replay, ReplayCheckpoint, ReplayEvent, ReplayHeader, ReplayPlayParams, ReplayPlayResult,
     ReplayStartParams, ReplayStopResult, ResetParams, RestoreParams, RngStreamInit, RpcError,
-    SnapshotResult, StepParams, StepResult,
+    SnapshotResult, StepParams, StepResult, replay_limits,
 };
 use opensherwood_render::Occluder;
 use opensherwood_render::{Background, Framebuffer, NoSprites, SpriteFrame, SpriteSource, render};
@@ -113,6 +113,10 @@ pub struct Session {
     ui_assets: Option<UiAssets>,
     /// The window should close (Exit chosen in the menu).
     pub exit_requested: bool,
+    /// Current objective text (pause menu).
+    objective: String,
+    /// HUD values.
+    hud: HudState,
 }
 
 /// What the player is looking at.
@@ -124,6 +128,8 @@ enum Screen {
     Menu(MainMenu),
     /// Briefing parchment over the paused mission.
     Briefing(Briefing),
+    /// Pause menu over the paused mission.
+    Pause(PauseMenu),
 }
 
 /// The mission `Play!` starts with a fresh profile (`docs/original/campaign-flow.md`).
@@ -135,12 +141,19 @@ pub const TICK_RATE: (u32, u32) = (60, 1);
 struct Recording {
     replay: Replay,
     checkpoint_every: u64,
+    /// Set when a recording quota (`replay_limits`) was hit outside an RPC `step` (window mode);
+    /// nothing more is recorded and `replay.stop` reports the error instead of a replay.
+    failed: Option<String>,
 }
 
-/// Limits that keep a hostile client from exhausting memory or time.
+/// Limits that keep a hostile client from exhausting memory or time. Recording quotas are the
+/// `replay_limits` of the protocol crate: the recorder never produces a replay its parser rejects.
 pub mod limits {
     /// Most ticks in one `step`.
     pub const MAX_TICKS: u32 = 100_000;
+    /// Most ticks one `replay.play` simulates synchronously (about 4.6 hours at 60 Hz; the
+    /// replay format itself allows 2^24). Longer replays are rejected before the session is reset.
+    pub const MAX_REPLAY_PLAY_TICKS: u64 = 1_000_000;
     /// Most ticks per `step` when per-tick hashes are requested.
     pub const MAX_HASHED_TICKS: u32 = 10_000;
     /// Most events in one `step`.
@@ -199,6 +212,8 @@ impl Session {
             screen: Screen::World,
             ui_assets: None,
             exit_requested: false,
+            objective: String::new(),
+            hud: HudState::default(),
         }
     }
 
@@ -217,8 +232,7 @@ impl Session {
         let strings = self
             .ui_assets
             .as_ref()
-            .map(|a| a.strings.as_slice())
-            .unwrap_or(&[]);
+            .map_or(&[][..], |a| a.strings.as_slice());
         self.screen = Screen::Menu(MainMenu::new(ProfileSummary::default(), strings));
         self.frame = None;
         self.start_scenario_music();
@@ -242,8 +256,64 @@ impl Session {
         } else {
             Screen::Briefing(Briefing::new(pages))
         };
+        self.objective = self
+            .game
+            .as_ref()
+            .and_then(|g| {
+                ui_assets::level_texts(g, ui_assets::texts::FIRST_MISSION_OBJECTIVES)
+                    .into_iter()
+                    .next()
+            })
+            .unwrap_or_default();
+        self.hud = HudState {
+            money: 100,
+            clover: 0,
+            hero_name: self.hero_name_lines(),
+        };
         self.frame = None;
         Ok(())
+    }
+
+    /// The selected hero's name, split in two lines like the original's portrait ("Robin" / "Hood").
+    fn hero_name_lines(&self) -> Vec<String> {
+        let name = self
+            .world
+            .as_ref()
+            .and_then(|w| w.entities.iter().find(|e| e.kind == EntityKind::Player))
+            .and_then(|e| e.anim.as_ref().map(|a| a.set.clone()))
+            .unwrap_or_default();
+        // Profile names are CamelCase ("RobinHood"); split at the case changes.
+        let mut lines: Vec<String> = Vec::new();
+        for ch in name.chars() {
+            if ch.is_uppercase() || lines.is_empty() {
+                lines.push(ch.to_string());
+            } else if let Some(last) = lines.last_mut() {
+                last.push(ch);
+            }
+        }
+        lines
+    }
+
+    /// Snapshots and replays describe a directly played world (ADR-0004, "Screens and the world").
+    fn require_world_screen(&self) -> Result<(), RpcError> {
+        if matches!(self.screen, Screen::World) {
+            Ok(())
+        } else {
+            Err(engine_err(
+                "screen shown: dismiss the menu, briefing or pause screen first",
+            ))
+        }
+    }
+
+    /// Escape in a mission opens the pause menu.
+    fn open_pause(&mut self) {
+        let _ = self.ui_assets();
+        let strings = self
+            .ui_assets
+            .as_ref()
+            .map_or(&[][..], |a| a.strings.as_slice());
+        self.screen = Screen::Pause(PauseMenu::new(self.objective.clone(), strings));
+        self.frame = None;
     }
 
     /// Advance one tick: menus consume the events without ticking the world; the briefing pauses
@@ -262,7 +332,9 @@ impl Session {
                 match chosen {
                     Some(MenuAction::Play) => {
                         if let Err(e) = self.start_campaign() {
+                            // Stay on the menu rather than leaving the player with nothing.
                             eprintln!("opensherwood: cannot start the campaign: {e}");
+                            self.open_menu();
                         }
                     }
                     Some(MenuAction::Exit) => self.exit_requested = true,
@@ -283,16 +355,58 @@ impl Session {
                     self.screen = Screen::World;
                 }
             }
-            Screen::World => self.step_recorded(events),
+            Screen::Pause(p) => {
+                let mut chosen = None;
+                for e in events {
+                    if let Some(a) = p.handle(*e) {
+                        chosen = Some(a);
+                        break;
+                    }
+                }
+                self.frame = None;
+                match chosen {
+                    Some(MenuAction::Continue) => self.screen = Screen::World,
+                    Some(MenuAction::Restart) => {
+                        if let Err(e) = self.start_campaign() {
+                            eprintln!("opensherwood: cannot restart: {e}");
+                        }
+                    }
+                    Some(MenuAction::Quit) => {
+                        if let Err(e) = self.reset(Scenario::Menu("main".into()), 0) {
+                            eprintln!("opensherwood: cannot open the menu: {e}");
+                        }
+                    }
+                    Some(other) => {
+                        eprintln!("opensherwood: pause action {other:?} not implemented");
+                    }
+                    None => {}
+                }
+            }
+            Screen::World => {
+                let in_mission = matches!(
+                    self.world.as_ref().map(|w| &w.scenario),
+                    Some(Scenario::Mission(_))
+                );
+                let escape_at = events.iter().position(|e| {
+                    in_mission && matches!(e, InputEvent::KeyDown { key: Key::Escape })
+                });
+                match escape_at {
+                    // Escape wins the tick: the world does not advance and the tick's other events
+                    // are dropped, so the pause always lands on the state the player saw.
+                    Some(_) => self.open_pause(),
+                    None => self.step_recorded(events),
+                }
+            }
         }
     }
 
     /// Screen state for `observe`.
-    fn ui_state(&self) -> Option<Value> {
+    fn ui_state(&self) -> Option<opensherwood_protocol::UiState> {
         match &self.screen {
             Screen::World => None,
-            Screen::Menu(m) => serde_json::to_value(m.state()).ok(),
-            Screen::Briefing(b) => serde_json::to_value(b.state()).ok(),
+            Screen::Menu(m) => Some(m.state()),
+            Screen::Briefing(b) => Some(b.state()),
+            Screen::Pause(p) => Some(p.state()),
         }
     }
 
@@ -320,7 +434,11 @@ impl Session {
             return;
         };
         let track = match self.world.as_ref().map(|w| &w.scenario) {
-            Some(Scenario::Mission(_)) => return, // mission music states are not modelled yet
+            Some(Scenario::Mission(_)) => {
+                // Mission music states are not modelled yet; the menu theme must not carry on.
+                audio.stop_music();
+                return;
+            }
             Some(Scenario::MapView { map, ambiance }) => {
                 let base = match map.to_lowercase().as_str() {
                     "sherwood" => "Sherwood".to_string(),
@@ -356,12 +474,22 @@ impl Session {
         }
     }
 
-    fn replay_header(&self, world: &World) -> ReplayHeader {
+    /// Fingerprint of the loaded game content (`None` without game data). A file that cannot be
+    /// hashed is an error, never a partial fingerprint.
+    fn content_fingerprint(&self) -> Result<Option<String>, RpcError> {
+        self.game
+            .as_ref()
+            .map(GameDir::fingerprint)
+            .transpose()
+            .map_err(|e| RpcError::new(RpcError::INTERNAL, format!("content fingerprint: {e}")))
+    }
+
+    fn replay_header(&self, world: &World) -> Result<ReplayHeader, RpcError> {
         let fingerprint = match world.scenario {
             Scenario::Synthetic(_) => None,
-            _ => self.game.as_ref().map(GameDir::fingerprint),
+            _ => self.content_fingerprint()?,
         };
-        ReplayHeader {
+        Ok(ReplayHeader {
             replay_version: 1,
             protocol: PROTOCOL_VERSION,
             ruleset: opensherwood_core::RULESET_VERSION,
@@ -381,34 +509,90 @@ impl Session {
             )]
             .into_iter()
             .collect(),
-        }
+        })
     }
 
-    /// Run one tick, recording it if a replay is being recorded.
+    /// Reject a `step` that would push the active recording over the `replay_limits` quotas
+    /// (event count, checkpoint count, highest tick). Checked before anything is mutated so a
+    /// refused step leaves both the world and the recording untouched.
+    fn check_recording_quota(&self, ticks: u32, new_events: usize) -> Result<(), RpcError> {
+        let (Some(rec), Some(world)) = (self.recording.as_ref(), self.world.as_ref()) else {
+            return Ok(());
+        };
+        let quota = |what: &str| {
+            RpcError::new(
+                RpcError::INVALID_PARAMS,
+                format!("step would exceed the replay recording quota ({what}); call replay.stop"),
+            )
+        };
+        if world.tick + u64::from(ticks) > replay_limits::MAX_TICK {
+            return Err(quota(&format!("tick {}", replay_limits::MAX_TICK)));
+        }
+        if rec.replay.events.len() + new_events > replay_limits::MAX_EVENTS {
+            return Err(quota(&format!("{} events", replay_limits::MAX_EVENTS)));
+        }
+        let planned = u64::from(ticks)
+            .checked_div(rec.checkpoint_every)
+            .map_or(0, |n| n + 1);
+        // `replay.stop` may append one final checkpoint: keep room for it.
+        if rec.replay.checkpoints.len() as u64 + planned + 1 > replay_limits::MAX_CHECKPOINTS as u64
+        {
+            return Err(quota(&format!(
+                "{} checkpoints",
+                replay_limits::MAX_CHECKPOINTS
+            )));
+        }
+        Ok(())
+    }
+
+    /// Run one tick, recording it if a replay is being recorded. Recording stops (and the
+    /// recording is marked failed) at the `replay_limits` quotas; RPC `step` refuses such a step
+    /// up front through [`Session::check_recording_quota`], this is the backstop for window mode.
     fn step_recorded(&mut self, events: &[InputEvent]) {
         let Some(world) = self.world.as_mut() else {
             return;
         };
         let tick = world.tick;
-        if let Some(rec) = self.recording.as_mut() {
-            for (i, e) in events.iter().enumerate() {
-                rec.replay.events.push(ReplayEvent {
-                    tick,
-                    sequence: i as u32,
-                    event: *e,
-                    intent: None,
-                });
+        if let Some(rec) = self.recording.as_mut()
+            && rec.failed.is_none()
+        {
+            if tick >= replay_limits::MAX_TICK {
+                rec.failed = Some(format!("tick quota {} reached", replay_limits::MAX_TICK));
+            } else if rec.replay.events.len() + events.len() > replay_limits::MAX_EVENTS {
+                rec.failed = Some(format!(
+                    "event quota {} exceeded at tick {tick}",
+                    replay_limits::MAX_EVENTS
+                ));
+            } else {
+                for (i, e) in events.iter().enumerate() {
+                    rec.replay.events.push(ReplayEvent {
+                        tick,
+                        sequence: i as u32,
+                        event: *e,
+                        intent: None,
+                    });
+                }
             }
         }
         world.step(events);
         if let Some(rec) = self.recording.as_mut()
+            && rec.failed.is_none()
             && rec.checkpoint_every > 0
             && world.tick.is_multiple_of(rec.checkpoint_every)
         {
-            rec.replay.checkpoints.push(ReplayCheckpoint {
-                tick: world.tick,
-                hashes: world.hashes(),
-            });
+            // Keep room for the final checkpoint `replay.stop` appends.
+            if rec.replay.checkpoints.len() + 1 >= replay_limits::MAX_CHECKPOINTS {
+                rec.failed = Some(format!(
+                    "checkpoint quota {} exceeded at tick {}",
+                    replay_limits::MAX_CHECKPOINTS,
+                    world.tick
+                ));
+            } else {
+                rec.replay.checkpoints.push(ReplayCheckpoint {
+                    tick: world.tick,
+                    hashes: world.hashes(),
+                });
+            }
         }
     }
 
@@ -633,17 +817,26 @@ impl Session {
                     };
                     menu.render(self.ui_assets.as_ref())
                 }
-                Screen::Briefing(_) | Screen::World => {
+                Screen::Briefing(_) | Screen::Pause(_) | Screen::World => {
+                    let in_mission = matches!(
+                        self.world.as_ref().map(|w| &w.scenario),
+                        Some(Scenario::Mission(_))
+                    );
+                    if in_mission {
+                        let _ = self.ui_assets();
+                    }
                     let world = self.world.as_ref()?;
                     let mut frame = match self.sprites.as_mut() {
                         Some(s) => render(world, self.background.as_ref(), s),
                         None => render(world, self.background.as_ref(), &mut NoSprites),
                     };
-                    if matches!(self.screen, Screen::Briefing(_)) {
-                        let _ = self.ui_assets();
-                        if let Screen::Briefing(b) = &self.screen {
-                            b.render(&mut frame, self.ui_assets.as_ref());
-                        }
+                    if in_mission && let Some(a) = self.ui_assets.as_ref() {
+                        crate::ui::draw_hud(&mut frame, a, &self.hud);
+                    }
+                    match &self.screen {
+                        Screen::Briefing(b) => b.render(&mut frame, self.ui_assets.as_ref()),
+                        Screen::Pause(p) => p.render(&mut frame, self.ui_assets.as_ref()),
+                        _ => {}
                     }
                     frame
                 }
@@ -673,8 +866,9 @@ impl Session {
                     "map_view".into(),
                     "mission".into(),
                     "replay".into(),
+                    "menu".into(),
                 ],
-                content_fingerprint: self.game.as_ref().map(GameDir::fingerprint),
+                content_fingerprint: self.content_fingerprint()?,
             }),
             "reset" => {
                 let p: ResetParams = params_required(p)?;
@@ -718,6 +912,7 @@ impl Session {
                 }
                 let mut events = p.events;
                 events.sort_by_key(|e| (e.tick_offset, e.sequence));
+                self.check_recording_quota(p.ticks, events.len() + self.queued_input.len())?;
                 let queued = std::mem::take(&mut self.queued_input);
                 if self.world.is_none() && matches!(self.screen, Screen::World) {
                     return Err(engine_err("no world loaded; call reset first"));
@@ -757,16 +952,17 @@ impl Session {
             "observe" => {
                 let p: ObserveParams = params(p)?;
                 let ui = self.ui_state();
-                match self.world.as_ref() {
-                    Some(world) => ok(ObserveResult {
-                        observation: world.observe(p.entities),
-                        hashes: world.hashes(),
-                        ui,
-                    }),
-                    None => ok(json!({ "tick": 0, "ui": ui, "hashes": {} })),
-                }
+                ok(ObserveResult {
+                    observation: self.world.as_ref().map(|w| w.observe(p.entities)),
+                    hashes: self
+                        .world
+                        .as_ref()
+                        .map_or_else(opensherwood_core::Hashes::default, World::hashes),
+                    ui,
+                })
             }
             "snapshot" => {
+                self.require_world_screen()?;
                 let world = self.world()?;
                 let snapshot = world.snapshot();
                 let hashes = world.hashes();
@@ -787,6 +983,7 @@ impl Session {
                 })
             }
             "restore" => {
+                self.require_world_screen()?;
                 let p: RestoreParams = params_required(p)?;
                 let snap = match (p.snapshot, p.id) {
                     (Some(s), _) => s,
@@ -850,6 +1047,7 @@ impl Session {
                 })
             }
             "replay.start" => {
+                self.require_world_screen()?;
                 let p: ReplayStartParams = params(p)?;
                 let world = self
                     .world
@@ -860,7 +1058,7 @@ impl Session {
                         "replay recording must start at tick 0 (call reset first)",
                     ));
                 }
-                let header = self.replay_header(world);
+                let header = self.replay_header(world)?;
                 let mut replay = Replay {
                     header,
                     events: Vec::new(),
@@ -873,6 +1071,7 @@ impl Session {
                 self.recording = Some(Recording {
                     replay,
                     checkpoint_every: p.checkpoint_every,
+                    failed: None,
                 });
                 ok(json!({ "recording": true }))
             }
@@ -882,6 +1081,9 @@ impl Session {
                     .recording
                     .take()
                     .ok_or_else(|| engine_err("no replay is being recorded"))?;
+                if let Some(why) = rec.failed {
+                    return Err(engine_err(format!("recording discarded: {why}")));
+                }
                 let world = self.world()?;
                 if rec
                     .replay
@@ -914,11 +1116,25 @@ impl Session {
                 })
             }
             "replay.play" => {
+                self.require_world_screen()?;
                 let p: ReplayPlayParams = params(p)?;
                 let text = match (p.jsonl, p.path) {
                     (Some(t), _) => t,
                     (None, Some(rel)) => {
                         let path = self.artifact_path(&rel)?;
+                        // Size first: the parser's cap must never be reached by reading the file.
+                        let len = std::fs::metadata(&path)
+                            .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?
+                            .len();
+                        if len > replay_limits::MAX_BYTES as u64 {
+                            return Err(RpcError::new(
+                                RpcError::INVALID_PARAMS,
+                                format!(
+                                    "replay file is {len} bytes; at most {} are accepted",
+                                    replay_limits::MAX_BYTES
+                                ),
+                            ));
+                        }
                         std::fs::read_to_string(&path)
                             .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?
                     }
@@ -931,8 +1147,18 @@ impl Session {
                 };
                 let replay = Replay::from_jsonl(&text)
                     .map_err(|e| RpcError::new(RpcError::INVALID_PARAMS, e))?;
+                let last = replay.last_tick();
+                if last > limits::MAX_REPLAY_PLAY_TICKS {
+                    return Err(RpcError::new(
+                        RpcError::INVALID_PARAMS,
+                        format!(
+                            "replay runs to tick {last}; at most {} ticks are played in one call",
+                            limits::MAX_REPLAY_PLAY_TICKS
+                        ),
+                    ));
+                }
                 if let Some(fp) = &replay.header.content_fingerprint
-                    && self.game.as_ref().map(GameDir::fingerprint).as_ref() != Some(fp)
+                    && self.content_fingerprint()?.as_ref() != Some(fp)
                 {
                     return Err(engine_err(
                         "replay was recorded with different game content",
@@ -940,7 +1166,6 @@ impl Session {
                 }
                 self.reset(replay.header.scenario.clone(), replay.header.seed)
                     .map_err(engine_err)?;
-                let last = replay.last_tick();
                 let mut events = replay.events.iter().peekable();
                 let mut checkpoints = replay.checkpoints.iter().peekable();
                 let mut checkpoints_ok = 0usize;
@@ -1016,5 +1241,118 @@ impl Session {
                 format!("unknown method '{method}'"),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod replay_limit_tests {
+    use super::*;
+
+    fn session(name: &str) -> (Session, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "opensherwood-replay-limits-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        (Session::new(None, dir.clone()), dir)
+    }
+
+    fn corridor(s: &mut Session) {
+        s.dispatch(
+            "reset",
+            Some(json!({ "scenario": { "synthetic": "corridor" }, "seed": 1 })),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn step_refuses_to_exceed_the_recording_quotas() {
+        let (mut s, _dir) = session("quota");
+        corridor(&mut s);
+        s.dispatch("replay.start", Some(json!({ "checkpoint_every": 1 })))
+            .unwrap();
+        // 100,000 checkpoints would exceed the format's 65,536: refused before anything moves.
+        let err = s
+            .dispatch("step", Some(json!({ "ticks": limits::MAX_TICKS })))
+            .unwrap_err();
+        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert!(err.message.contains("checkpoints"), "{}", err.message);
+        assert_eq!(s.world.as_ref().unwrap().tick, 0);
+        assert_eq!(s.recording.as_ref().unwrap().replay.checkpoints.len(), 1);
+        // A step within the quota records normally.
+        s.dispatch("step", Some(json!({ "ticks": 10 }))).unwrap();
+        // Event quota: pretend the recording already holds the maximum.
+        let rec = s.recording.as_mut().unwrap();
+        let filler = ReplayEvent {
+            tick: 0,
+            sequence: 0,
+            event: InputEvent::PointerMove { x256: 0, y256: 0 },
+            intent: None,
+        };
+        rec.replay
+            .events
+            .resize(replay_limits::MAX_EVENTS, filler.clone());
+        let err = s
+            .dispatch(
+                "step",
+                Some(json!({
+                    "ticks": 1,
+                    "events": [{ "tick_offset": 0, "sequence": 0, "kind": "pointer_move", "x256": 0, "y256": 0 }]
+                })),
+            )
+            .unwrap_err();
+        assert!(err.message.contains("events"), "{}", err.message);
+        assert_eq!(s.world.as_ref().unwrap().tick, 10);
+        // The window-mode backstop: stepping directly past the quota marks the recording failed
+        // and `replay.stop` reports it instead of returning a replay the parser would reject.
+        s.step_recorded(&[filler.event]);
+        assert!(s.recording.as_ref().unwrap().failed.is_some());
+        let err = s.dispatch("replay.stop", Some(json!({}))).unwrap_err();
+        assert!(err.message.contains("discarded"), "{}", err.message);
+        assert!(s.recording.is_none());
+    }
+
+    #[test]
+    fn play_rejects_long_replays_and_oversized_files() {
+        let (mut s, dir) = session("play");
+        corridor(&mut s);
+        s.dispatch("replay.start", Some(json!({ "checkpoint_every": 0 })))
+            .unwrap();
+        s.dispatch("step", Some(json!({ "ticks": 5 }))).unwrap();
+        let stopped = s.dispatch("replay.stop", Some(json!({}))).unwrap();
+        let jsonl = stopped["jsonl"].as_str().unwrap();
+        // Move the final checkpoint far beyond the playback budget (still a valid replay).
+        let long: String = jsonl
+            .lines()
+            .map(|line| {
+                let mut v: Value = serde_json::from_str(line).unwrap();
+                if v["type"] == "checkpoint" {
+                    v["tick"] = json!(limits::MAX_REPLAY_PLAY_TICKS + 1);
+                }
+                v.to_string() + "\n"
+            })
+            .collect();
+        let err = s
+            .dispatch("replay.play", Some(json!({ "jsonl": long })))
+            .unwrap_err();
+        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert!(err.message.contains("ticks are played"), "{}", err.message);
+        // Rejected before the session was reset: the world is still at tick 5.
+        assert_eq!(s.world.as_ref().unwrap().tick, 5);
+        // A file above the parser cap is refused by its size, before it is read.
+        std::fs::create_dir_all(dir.join("replays")).unwrap();
+        let huge = dir.join("replays/huge.jsonl");
+        std::fs::File::create(&huge)
+            .unwrap()
+            .set_len(replay_limits::MAX_BYTES as u64 + 1)
+            .unwrap();
+        let err = s
+            .dispatch("replay.play", Some(json!({ "path": "replays/huge.jsonl" })))
+            .unwrap_err();
+        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert!(err.message.contains("bytes"), "{}", err.message);
+        assert_eq!(s.world.as_ref().unwrap().tick, 5);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

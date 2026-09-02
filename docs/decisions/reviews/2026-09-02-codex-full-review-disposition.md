@@ -22,7 +22,12 @@ open and tracked in `docs/roadmap.md`.
 | 7 | Menu integration incomplete | **Done.** `Scenario::Menu` is parsed and reset; `observe`/`reset` return `ui`; `step`/`capture` work without a world while a menu is open; end-to-end menu tests in `harness/tests/data/test_menu.py`. |
 | 8 | Version bumps | **Done.** Ruleset 3 (viewport 1024x768 for retail scenarios, camera on the hero), snapshot 4 (new scenario variant), protocol 3 (`ui` field, `menu` scenario). Fixture regenerated. |
 | 9 | Green from a fresh build | **Done** locally (fmt, clippy `-D warnings`, Rust tests, 28 harness tests with game data). CI runs on push. |
-| 10-17 | Decode limits, SRES budgets, RPC drain, replay quotas, geometry bounds, full content digest, transactional restore, snapshot validation | **Open.** Next hardening batch; ordered as in the review. |
+| 10 | Shared sprite decode limits | **Done.** `sprite_decode::DecodeLimits` (4096 per side, 32 MiB decoded, 64 MiB stream; checked arithmetic, `try_reserve`) is applied by every public decode function, by `SpriteBank` and by `export-frame`. |
+| 11 | SRES cumulative budgets | **Done.** `sres::Limits` (65,536 entries, 4,096 pictures per entry, 16,384 pictures and 256 MiB decoded per archive, charged from the picture header before decompression); retail archives still parse. |
+| 12 | Oversized RPC line drain | **Done.** The remainder of an oversized line is skipped through the `BufRead` buffer (`discard_rest_of_line`), nothing is allocated for it. |
+| 13 | Replay resource limits | **Done.** `replay.play` checks the file size against the 64 MiB cap before reading and refuses replays past 1,000,000 ticks before resetting; recording enforces the format quotas (2^20 events, 2^16 checkpoints, tick 2^24) cumulatively, refusing a `step` up front and discarding a window-mode recording that crosses them. |
+| 14, 16, 17 | Geometry bounds, transactional restore, snapshot validation | **Open.** Next hardening batch; ordered as in the review. |
+| 15 | Full content digest | **Done.** `GameDir::fingerprint` streams every indexed file through BLAKE3 (v3 tag), caches per-file digests by path, size and mtime, and returns an error when any file cannot be read; about 0.8 s for the 1 GiB retail install when cached by the OS. |
 
 ## P2-P4
 

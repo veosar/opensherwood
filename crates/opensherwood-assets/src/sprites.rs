@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use opensherwood_formats::dic::{self, FrameRecord};
 use opensherwood_formats::rhs;
-use opensherwood_formats::sprite_decode::{self, Pages};
+use opensherwood_formats::sprite_decode::{self, DecodeLimits, Pages};
 
 use crate::{AssetError, GameDir};
 
@@ -24,10 +24,13 @@ pub struct SpriteImage {
     pub rgba: Vec<u8>,
 }
 
+/// Decode policy applied to every frame record when the bank is opened and again when a frame
+/// is decoded (the same [`DecodeLimits::RETAIL`] the format crate and the tools use).
+pub const LIMITS: DecodeLimits = DecodeLimits::RETAIL;
 /// Largest frame dimension accepted (retail maximum is 674x583).
-pub const MAX_FRAME_DIMENSION: u16 = 4096;
+pub const MAX_FRAME_DIMENSION: u16 = LIMITS.max_dimension;
 /// Largest frame stream accepted, in bytes (a 4096x4096 span frame is at most ~33 MiB).
-pub const MAX_STREAM_BYTES: u32 = 64 * 1024 * 1024;
+pub const MAX_STREAM_BYTES: u32 = LIMITS.max_stream_bytes;
 
 /// The open sprite bank.
 pub struct SpriteBank {
@@ -80,11 +83,12 @@ impl SpriteBank {
             });
         }
         for (i, f) in frames.iter().enumerate() {
+            LIMITS.check_record(f).map_err(|e| AssetError::Format {
+                path: "Data/robinhood.dic".into(),
+                message: format!("frame record {i}: {e}"),
+            })?;
             let end = u64::from(f.offset) + u64::from(f.length);
-            let bad = f.width > MAX_FRAME_DIMENSION
-                || f.height > MAX_FRAME_DIMENSION
-                || f.length > MAX_STREAM_BYTES
-                || end > bks_len
+            let bad = end > bks_len
                 || (f.page != dic::NO_PAGE && usize::from(f.page) >= pages.pages.len());
             if bad {
                 return Err(AssetError::Format {
@@ -144,12 +148,13 @@ impl SpriteBank {
                 path: self.bks_path.clone(),
                 source,
             })?;
-        let img = sprite_decode::decode_frame(&rec, &stream, &self.pages).map_err(|e| {
-            AssetError::Format {
-                path: format!("sprite frame {index}"),
-                message: e.to_string(),
-            }
-        })?;
+        let img =
+            sprite_decode::decode_frame_with(&rec, &stream, &self.pages, &LIMITS).map_err(|e| {
+                AssetError::Format {
+                    path: format!("sprite frame {index}"),
+                    message: e.to_string(),
+                }
+            })?;
         let sprite = Arc::new(SpriteImage {
             width: u32::from(img.width),
             height: u32::from(img.height),

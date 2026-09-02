@@ -203,7 +203,7 @@ handful of tables (`100`; `50 50`; `25 50 25`; `25 25 25 25`; `60 40`; `70 30`; 
 `75`): a block is executed with that probability.
 
 Commands are `u8 opcode` + fixed-size operands (sizes established by exhaustive parse of all 2879 programs;
-meanings are not):
+meanings are not: the engine's interpretation of six of them is an inference, see "Rail programs" below):
 
 | Opcode | Operands | Count | Observed operand values |
 |---|---|---|---|
@@ -230,6 +230,54 @@ meanings are not):
 The executable names eight waypoint commands (`Bend`, `LookLeft`, `LookRight`, `CheckFor`, `CheckForSync`,
 `PatrolStart`, `PatrolDirection`, `PatrolStop`) and "mobile element waypoint commands"; 0x81/0x82 with floats
 appear only on the cart paths and are the mobile commands. Which opcode is which name is **not** established.
+
+### Rail programs: structure observed across the 39 files
+
+Counts below are over all 1638 rails (542 of them assigned to a `BORG` actor through `rail`; the rest are
+referenced by scripts). Status: **inferred from data layout only**, not verified against the original's behaviour.
+
+*Table ids select the travel direction.* Where a point has a single table its id is 0 on 2361 points; ids 1 and 2
+are placed asymmetrically: id 2 alone on 137 first points, 155 middle points and 1 last point; id 1 alone on 146
+last points, 67 middle points and 1 first point; both ids on 11 points (3 first, 7 middle, 1 last). Single-point
+rails (802) only ever carry table 0. A rail is therefore walked back and forth (`0, 1, .., n-1, n-2, .., 1, 0, ...`):
+you can only reach the last point travelling forward and the first point travelling backward, so **id 1 = program
+run when arriving forward, id 2 = when arriving backward, id 0 = either direction**. A point that only has the
+table of the other direction runs nothing on that arrival.
+
+*Command pairs.* The most frequent block shapes are `03 04` (721 blocks), `04` (696), `03 07` (289), `03 04 03 04`
+(129) and `03 04 0b 04 0c 04` (27, plus longer repetitions of the same triple). The bigram `03 -> 04` occurs 1816
+times; `0b` and `0c` (364 each) are almost always followed by `04` (291 and 298 times) and appear as a pair in one
+block, in either order, after a `03 04`.
+
+*0x02 operand is a point index.* In all 122 occurrences the operand is smaller than the rail's point count (rails
+with 3, 5, 7 ... points included); it is 0 on 79 last points (72 times as the last command of the block) and a
+larger index in the remaining cases, e.g. `H04_Lei_VL` rail 9 (36 points): point 0 has `02(12)` and point 35 has
+`02(22)`; `H12_Not_MP` rail 1 (7 points): point 2 jumps to 4 and point 4 to 2.
+
+*0x07 ends a program.* It is always the last command of its block (370 of 370), on single-point rails (284), last
+points (62) or first points (23), never on a middle point; 343 of the 370 are on rails that no actor is assigned
+to (script-driven walks that end at the point).
+
+*0x00 / 0x01 / 0x09 / 0x0a and the operand opcodes 0x05, 0x06, 0x08, 0x0d* have no positional pattern that suggests
+a meaning; `0x00` is a whole block by itself 113 times, `0x09` ends blocks (`03 04 09`, 43 middle points).
+
+### Rail programs: engine interpretation
+
+`crates/opensherwood-app/src/mission.rs` (`compile_rail`) translates each rail assigned to an actor into a core
+waypoint program that walks the points back and forth as above, running the arrival table as a probabilistic
+choice over its blocks (a roll no block covers runs nothing). The per-opcode mapping, with its status:
+
+| Opcode | Engine behaviour | Status |
+|---|---|---|
+| 0x03 `dir` | face the 16-way direction (same convention as Placement) | inferred (operand range 0..=15, precedes waits) |
+| 0x04 `n` | stand for `n` hundredths of a second (`n * tick rate / 100` ticks) | inferred: the value set 10, 12, 25, 50, 75, 100 ... 500 reads as 1/100 s; unit **not verified** |
+| 0x02 `p` | continue the patrol at point `p` of the same rail, walking forward if `p` is a later point and backward if earlier (`02(0)` on the last point turns the back-and-forth walk into a loop) | inferred (operand always a point index) |
+| 0x07 | stop: stand here for good | inferred (always terminal) |
+| 0x0b / 0x0c | glance 45 degrees to one side / the other of the block's last 0x03 facing (relative to the current facing if there is none) | inferred; which one is left is **not** established, the choice only mirrors the glance order |
+| all others (0x00, 0x01, 0x05, 0x06, 0x08, 0x09, 0x0a, 0x0d, 0x0e, 0x0f, 0x10, 0x81, 0x82) | no-op, counted and logged at load (`opensherwood: mission ...: N translated, M unknown`) | unknown |
+
+Coverage at load of `H01_Lin_VL` (18 rails assigned to actors): 113 commands, 102 translated, 11 unknown
+(`0x00` x1, `0x01` x2, `0x05` x4, `0x0d` x4); the tutorial `EmbTut_FoC_EC`: 3 rails, 3 commands, all translated.
 
 ## `SKRO` (version 4): scrolls
 

@@ -44,6 +44,15 @@ After the last entry (optional; absent in `DEFAULT.RES`): an offset table of `en
 order (the first is always 12, the end of the header) followed by the offset of the table itself, so that
 `offset[i+1] - offset[i]` is the size of entry `i`. Sequential readers verify it; random-access readers use it.
 
+## Limits
+
+Pictures are decompressed eagerly, so `sres::parse` enforces archive-wide budgets on top of the per-picture caps of
+[image-blob.md](image-blob.md) (8192 per side, 128 MiB decoded). Defaults (`sres::Limits::RETAIL`; `parse_with`
+takes another policy): at most 65,536 entries (and never more than the data can hold at 12 bytes each), 4,096
+pictures per `PICC`/`CUR ` entry, 16,384 pictures per archive and 256 MiB of decoded pixels per archive, the last
+two charged from each picture header before its payload is decompressed. Retail maxima for comparison: 508 entries
+(`Level.res`), 1,134 pictures and 21.7 MiB decoded (`DEFAULT.RES`), 128 pictures in one collection.
+
 ## Provenance
 
 Observation only (a Python parser walked every entry of all three files to the exact end of data and decompressed

@@ -1,7 +1,7 @@
 """Main menu and mission start, the way a player does it (needs OPENSHERWOOD_GAME_DIR).
 
-Geometry from ``docs/original/ui-flow.md`` / ``campaign-flow.md``: Play! at (748,364) starts
-"The Godfather" (H01_Lin_VL) behind a three page briefing confirmed with Enter or the V seal.
+Geometry from ``docs/original/ui-flow.md`` / ``campaign-flow.md``: Play! at (748,364) starts mission 1
+(H01_Lin_VL, Lincoln) behind a three page briefing confirmed with Enter or the V seal.
 """
 
 from __future__ import annotations
@@ -68,3 +68,50 @@ def test_keyboard_reaches_exit(binary, game_dir):
         e.reset({"menu": "main"}, seed=0)
         e.step(1, [key("up")])
         assert e.observe(entities=False)["ui"]["hovered"] == 6
+
+
+def test_escape_opens_the_pause_menu_and_quit_returns_to_the_main_menu(binary, game_dir, tmp_path):
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=120) as e:
+        e.reset({"menu": "main"}, seed=0)
+        e.step(1, pointer_click(748, 364, "left"))
+        for _ in range(3):
+            e.step(1, [key("enter")])
+        assert "ui" not in e.observe(entities=False)
+        e.step(5)
+        tick0 = e.observe(entities=False)["tick"]
+        hashes0 = e.observe(entities=False)["hashes"]["total"]
+        e.capture(path="mission_hud.png")
+        # Escape pauses: the world stops, the pause column shows six entries starting one row down.
+        e.step(1, [key("escape")])
+        ui = e.observe(entities=False)["ui"]
+        assert ui["screen"] == "pause_menu"
+        assert [it["action"] for it in ui["items"]] == ["continue", "load", "save", "options", "restart", "quit"]
+        assert ui["items"][0]["rect"][1] == 380
+        e.step(20, [pointer_move(748, 400, 0, 0)])
+        assert e.observe(entities=False)["tick"] == tick0
+        assert e.observe(entities=False)["hashes"]["total"] == hashes0, "menus must not touch the world"
+        e.capture(path="pause_menu.png")
+        # Escape again continues; the world ticks.
+        e.step(1, [key("escape")])
+        assert "ui" not in e.observe(entities=False)
+        e.step(3)
+        assert e.observe(entities=False)["tick"] == tick0 + 3
+        # Quit asks for confirmation; the red X cancels, the blue V leaves for the main menu.
+        e.step(1, [key("escape")])
+        e.step(1, pointer_click(748, 604, "left"))
+        assert e.observe(entities=False)["ui"]["screen"] == "dialog"
+        e.capture(path="quit_dialog.png")
+        e.step(1, pointer_click(541, 433, "left"))
+        assert e.observe(entities=False)["ui"]["screen"] == "pause_menu"
+        e.step(1, pointer_click(748, 604, "left"))
+        e.step(1, pointer_click(483, 433, "left"))
+        assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
+
+
+def test_exit_needs_confirmation(binary, game_dir):
+    with Engine(binary=binary, game_dir=game_dir) as e:
+        e.reset({"menu": "main"}, seed=0)
+        e.step(1, [key("escape")])
+        assert e.observe(entities=False)["ui"]["screen"] == "dialog"
+        e.step(1, [key("escape")])
+        assert e.observe(entities=False)["ui"]["screen"] == "main_menu"

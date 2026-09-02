@@ -1,0 +1,14 @@
+# Disposition of Codex review 3 (menu, briefing, mission start)
+
+Review: `2026-09-02-codex-review-3.md`, verdict fix-then-merge. Answered by the lead the same night.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Copied game text still in the tree | **Done.** Manual quotes, the mission-title catalog, option / shortcut / sound tables, credits names, the objective sentence, dialog wording, executable message strings and the title in tests / roadmap / status were replaced by text ids, string indices, key bindings by function and paraphrases. Short functional labels (yes / no / ok fallbacks) stay. The pushed history keeps the maintainer's decision open (full-review disposition, P0 4). |
+| 2 | Briefing state outside the snapshot | **Done (by refusal).** `snapshot`, `restore`, `replay.start` and `replay.play` return `screen shown` while a menu, briefing, pause menu or dialog is up; the harness dismisses screens first. Documented in ADR-0004 ("Screens and the world"). A session snapshot that includes screens is not planned until saves are designed. |
+| 3 | Sprite converter used for UI pictures | **Done.** `ui_assets.rs` decodes UI pictures with its own rule: RGB565 to RGBA, `0x07C0` transparent only for composited widgets, backgrounds opaque, no shadow key. The observation backing the key is recorded in `docs/formats/image-blob.md` ("UI colour key"). The pause tint remains an approximation, stated as such in the status report (an aligned oracle capture is needed to fit it). |
+| 4 | Protocol modelling of menus | **Mostly done.** Typed `UiState` / `UiItem` in the protocol crate, `ObserveResult.observation` optional (flattened) without a world, `menu` capability advertised, ADR-0004 versions corrected and the `step` semantics while a screen is shown documented. `Scenario::Menu` stays in core for now (the protocol's scenario type is core's; a separate session target type is deferred to the saves design). |
+| 5 | Menu behaviour misleading | **Done.** Exit and Quit ask for confirmation on the original's dialog scroll with V / X seals; entries this build cannot serve (load, select player, options, movies, credits, save) are drawn on the disabled plate. The default profile and the missing briefing picture are listed as not implemented in the status report. |
+| 6 | Geometry locked before verification | **Done.** Button row tops remeasured on two captures (339 + 41k) and the spec normalised; the first-mission mapping is documented as inferred from the `.red` order and checked by the harness (Lincoln map, Robin alone). |
+| 7 | Non-transactional Play! | **Done (fallback).** A failed campaign start reopens the main menu and logs the error. Full temporaries-then-commit construction of the world is deferred with the transactional-restore item (full review P1 16). |
+| 8 | Menu music into the mission | **Done.** Entering a mission stops the current track (mission music states are still unmodelled). |

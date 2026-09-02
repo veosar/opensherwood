@@ -41,8 +41,9 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 - [x] Characters drawn from the sprite bank with the documented idle/walk animation blocks and canvas origins
 - [x] Audio: Ogg Vorbis music per map / menu theme, PCM effects channel (`opensherwood-audio`)
 - [x] Borderless fullscreen by default, F11 toggle, letterboxed logical viewport
-- [x] Main menu from the player's files (background, plate buttons, fonts, strings; geometry from `docs/original/ui-flow.md`), Play! loads the first mission ("The Godfather", `H01_Lin_VL`) behind its briefing pages, camera on the hero; menus and briefings are driven by canonical input and observable over RPC (`ui`)
-- [ ] Pause menu (Escape), HUD (portraits, money, action bar, minimap), quit confirmation dialog
+- [x] Main menu from the player's files (background, plate buttons, fonts, strings; geometry from `docs/original/ui-flow.md`), Play! loads the first mission (`H01_Lin_VL`, Lincoln) behind its briefing pages, camera on the hero; menus and briefings are driven by canonical input and observable over RPC (`ui`)
+- [x] Pause menu (Escape: continue, restart, quit with confirmation), quit confirmation in the main menu, HUD frame (foliage, portrait scroll, money / clover) from the player's files
+- [ ] HUD interactions: action icons, minimap, crouch, counters; briefing character picture; verified pause tint
 - [ ] Options, profiles (select/new/rename/delete), load/save screens, movies, credits
 
 - [ ] VFS resolves base + language overlay (`2047/data`) + mod overlays; content fingerprint

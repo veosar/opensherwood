@@ -106,11 +106,28 @@ fn read_line_capped(reader: &mut impl BufRead) -> std::io::Result<Option<String>
     }
     if buf.len() > MAX_LINE_BYTES {
         // Drain the rest of the oversized line so the stream stays in sync.
-        let mut sink = Vec::new();
-        reader.read_until(b'\n', &mut sink)?;
+        drop(buf);
+        discard_rest_of_line(reader)?;
         return Err(std::io::Error::other("line exceeds MAX_LINE_BYTES"));
     }
     Ok(Some(String::from_utf8_lossy(&buf).trim_end().to_string()))
+}
+
+/// Skip input up to and including the next `\n` (or EOF) without allocating: the discarded bytes
+/// only ever pass through the reader's own buffer, however long the line is.
+fn discard_rest_of_line(reader: &mut impl BufRead) -> std::io::Result<()> {
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        if let Some(i) = available.iter().position(|&b| b == b'\n') {
+            reader.consume(i + 1);
+            return Ok(());
+        }
+        let n = available.len();
+        reader.consume(n);
+    }
 }
 
 /// Serve requests from stdin until EOF or `shutdown` (headless mode).
@@ -161,4 +178,38 @@ pub fn spawn_stdin_reader() -> mpsc::Receiver<String> {
         }
     });
     rx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufReader, Cursor};
+
+    #[test]
+    fn oversized_line_is_discarded_without_allocating_it() {
+        // A 48 MiB line (three times the cap) is produced lazily by `repeat`, so the only place it
+        // could ever be materialised is inside the reader; then a normal line must still arrive.
+        let long = std::io::repeat(b'a').take(3 * MAX_LINE_BYTES as u64);
+        let tail = Cursor::new(b"\n{\"ok\":1}\nlast".to_vec());
+        let mut reader = BufReader::with_capacity(8 * 1024, long.chain(tail));
+        let err = read_line_capped(&mut reader).unwrap_err();
+        assert!(err.to_string().contains("MAX_LINE_BYTES"));
+        assert_eq!(
+            read_line_capped(&mut reader).unwrap().as_deref(),
+            Some("{\"ok\":1}")
+        );
+        assert_eq!(
+            read_line_capped(&mut reader).unwrap().as_deref(),
+            Some("last")
+        );
+        assert_eq!(read_line_capped(&mut reader).unwrap(), None);
+    }
+
+    #[test]
+    fn oversized_line_at_eof_is_discarded() {
+        let long = std::io::repeat(b'x').take(MAX_LINE_BYTES as u64 + 1);
+        let mut reader = BufReader::new(long);
+        assert!(read_line_capped(&mut reader).is_err());
+        assert_eq!(read_line_capped(&mut reader).unwrap(), None);
+    }
 }

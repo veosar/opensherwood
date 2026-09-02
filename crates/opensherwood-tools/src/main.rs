@@ -295,13 +295,23 @@ fn main() -> anyhow::Result<()> {
             let rec = d
                 .frame(frame_index)
                 .with_context(|| format!("table has {} frames", d.frames.len()))?;
+            // The same policy the engine applies: a hostile record is refused before the stream
+            // buffer exists, and the buffer itself is obtained with `try_reserve`.
+            let limits = sprite_decode::DecodeLimits::RETAIL;
+            limits
+                .check_record(rec)
+                .with_context(|| format!("frame {frame_index} record"))?;
             let mut f =
                 std::fs::File::open(&bks).with_context(|| format!("opening {}", bks.display()))?;
-            let mut stream = vec![0u8; rec.length as usize];
+            let mut stream = Vec::new();
+            stream.try_reserve_exact(rec.length as usize).map_err(|_| {
+                anyhow::anyhow!("frame {frame_index}: cannot allocate {} bytes", rec.length)
+            })?;
+            stream.resize(rec.length as usize, 0);
             f.seek(SeekFrom::Start(u64::from(rec.offset)))?;
             f.read_exact(&mut stream)
                 .with_context(|| format!("reading frame {frame_index} stream"))?;
-            let img = sprite_decode::decode_frame(rec, &stream, &pages)?;
+            let img = sprite_decode::decode_frame_with(rec, &stream, &pages, &limits)?;
             write_png(
                 &out,
                 u32::from(img.width),
@@ -456,7 +466,7 @@ fn main() -> anyhow::Result<()> {
                     l.paths().count()
                 );
             }
-            println!("fingerprint: {}", g.fingerprint());
+            println!("fingerprint: {}", g.fingerprint()?);
             Ok(())
         }
     }

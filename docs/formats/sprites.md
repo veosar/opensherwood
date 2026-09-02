@@ -134,6 +134,15 @@ frame 1394 ("picvert01") a green woodpecker on a trunk; frame 286393 (`RobinHood
 archer in green with a bow, standing on a blue `0x001F` blob; frames 2603/2604 (span encoded, 419x363 and
 117x133) a stone building and a stone wall.
 
+## Limits
+
+Every public decode route (`sprite_decode::decode_frame` and friends, the engine's `SpriteBank`, the `export-frame`
+tool) validates a frame record against one shared policy, `sprite_decode::DecodeLimits`, before allocating:
+at most 4096 per side (retail maximum 674x583), 32 MiB of decoded 16-bit pixels (4096 x 4096 x 2; the RGBA8
+preview is twice that) and 64 MiB per `.bks` stream (a 4096x4096 span frame is `2*w*h + 4*h` bytes). Sizes are
+computed with checked arithmetic and pixel buffers are obtained with `try_reserve`, so a hostile `.dic` yields a
+`FormatError` rather than an abort. The `_with` variants take another policy.
+
 ## Provenance
 
 Observation only; no executable analysis. Scripts under `harness/tools/re/` (`spritebank.py` loader;

@@ -191,17 +191,45 @@ fn default_true() -> bool {
     true
 }
 
-/// `observe` result.
+/// `observe` result. The world fields are flattened and absent while no world is loaded (main menu).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObserveResult {
-    /// Observation.
-    #[serde(flatten)]
-    pub observation: Observation,
-    /// Hashes.
+    /// Observation of the world, if one is loaded.
+    #[serde(flatten, default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<Observation>,
+    /// Hashes of the world (all empty strings without a world).
     pub hashes: Hashes,
-    /// Active app screen (`main_menu`, `briefing`), `None` while the world is played directly.
+    /// Active app screen, `None` while the world is played directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ui: Option<Value>,
+    pub ui: Option<UiState>,
+}
+
+/// A clickable element of a screen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiItem {
+    /// Action identifier (`play`, `load`, `continue`, `quit`, `yes`, `no`, ...).
+    pub action: String,
+    /// Label as displayed (from the player's files).
+    pub label: String,
+    /// Rectangle in logical pixels: x, y, width, height.
+    pub rect: [i32; 4],
+    /// Whether the element reacts to clicks.
+    pub enabled: bool,
+}
+
+/// State of the screen shown over (or instead of) the world.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiState {
+    /// `main_menu`, `pause_menu`, `briefing` or `dialog`.
+    pub screen: String,
+    /// Elements.
+    pub items: Vec<UiItem>,
+    /// Hovered element index.
+    #[serde(default)]
+    pub hovered: Option<usize>,
+    /// Briefing page (1-based) and page count.
+    #[serde(default)]
+    pub page: Option<[usize; 2]>,
 }
 
 /// `snapshot` result.
