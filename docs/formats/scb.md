@@ -393,6 +393,16 @@ What a first VM needs for this mission: the calling convention above; natives 0-
 (30 / 32 / 31 with blocking elements). Natives 103, 130 and 137 are used by this mission but have no table
 row yet (single uses; effect unknown).
 
+## Engine notes
+
+Sequence scheduling and scroll pickup (engine hypotheses, 2026-09-02): every sequence advances independently
+each tick (one per element, like the original's sequence manager); running them one after another queued a
+scroll's popup behind the archery-training sequences of the first mission. A player character within 24 map
+pixels of an active scroll bound to a class triggers `IsTaken` once per approach; a non-zero result takes the
+scroll (it becomes inactive). Observed in the engine: the third-nearest scroll of the first mission shows a
+text page, the two nearer ones activate their areas without text. Natives implemented and stubbed are listed
+in `crates/opensherwood-core/src/natives.rs` (`IMPLEMENTED_NATIVES`, `STUB_NATIVES`).
+
 ## Cross-references
 
 - Class names == mission element names of the paired `.rhm` (100 % both ways, see [rhm.md](rhm.md)).
