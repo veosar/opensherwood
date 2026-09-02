@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from opensherwood_harness import Engine
+from opensherwood_harness import Engine, pointer_click
 
 FIRST_MISSION = "H01_Lin_VL"
 
@@ -88,3 +88,59 @@ def test_every_mission_script_translates(binary, game_dir):
             except Exception as ex:  # noqa: BLE001 - collect everything, report once
                 failures.append(f"{name}: {ex}")
     assert not failures, "\n".join(failures)
+
+
+def walk_to(e, tx, ty, max_steps=400):
+    """Order the selected player to (tx, ty) with right clicks (re-issued if the camera moved the
+    point off screen) and step until the order completes or the step limit is reached."""
+    for _ in range(max_steps):
+        o = e.observe()
+        if o.get("ui"):
+            return o
+        p = next(x for x in o["entities"] if x["kind"] == "player")
+        if p["target"] is None:
+            if abs(p["x"] // 256 - tx) < 6 and abs(p["y"] // 256 - ty) < 6:
+                return o
+            cam = o["camera"]
+            sx, sy = tx - cam[0], ty - cam[1]
+            if 0 <= sx < 1024 and 0 <= sy < 768:
+                e.step(1, pointer_click(sx, sy, "right"))
+            else:
+                key = "right" if sx >= 1024 else "left" if sx < 0 else "down" if sy >= 768 else "up"
+                e.step(40, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": key}])
+                e.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "key_up", "key": key}])
+        else:
+            e.step(10)
+    return e.observe()
+
+
+def test_walking_onto_a_scroll_shows_its_text(binary, game_dir):
+    """Scroll pickup (`IsTaken`): Robin walks to the reachable scrolls of the first mission, nearest
+    first; the tutorial scrolls show a text page (native 202 / 203), so one appears within a few."""
+    with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
+        e.reset({"mission": "H01_Lin_VL"}, seed=0)
+        e.skip_briefing()
+        obs = e.observe()
+        robin = next(x for x in obs["entities"] if x["kind"] == "player")
+        rx, ry = robin["x"] // 256, robin["y"] // 256
+        cam = obs["camera"]
+        e.step(2, pointer_click(rx - cam[0], ry - cam[1], "left"))
+        assert e.observe(entities=False)["selected"] is not None
+        scrolls = [s for s in e.call("debug.vm", {})["scrolls"] if s["active"]]
+        reachable = []
+        for s in scrolls:
+            nav = e.call("debug.nav", {"x": rx, "y": ry, "to": [s["x"], s["y"]]})
+            if nav["path_cells"]:
+                reachable.append((nav["path_cells"], s))
+        assert reachable, "no scroll reachable from the start"
+        taken = []
+        for _, s in sorted(reachable, key=lambda t: t[0])[:5]:
+            o = walk_to(e, s["x"], s["y"])
+            vm = e.call("debug.vm", {})
+            still = next(x for x in vm["scrolls"] if x["element"] == s["element"])
+            taken.append((s["element"], not still["active"], bool(o.get("ui"))))
+            if o.get("ui"):
+                assert o["ui"]["screen"] == "briefing"
+                print("scroll", s["element"], "showed a text page; visited:", taken)
+                return
+        raise AssertionError(f"no text page after visiting scrolls {taken}")

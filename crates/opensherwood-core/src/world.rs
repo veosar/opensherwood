@@ -443,7 +443,7 @@ pub struct World {
 }
 
 /// Snapshot schema version (7: script VM state and entity `active` / `ai_locked` flags).
-pub const SNAPSHOT_VERSION: u32 = 7;
+pub const SNAPSHOT_VERSION: u32 = 8;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -1582,7 +1582,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "9c949d3a37e74397dcb19e1049a46948fd1d805cb4a231d6bdc31d59e5fb6c84";
+        "0660868f2b2be1d690da3200e2263dead12e89deaa077c9dd3eb429f40eb5089";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {

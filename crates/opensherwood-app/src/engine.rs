@@ -1494,6 +1494,21 @@ impl Session {
                     "locations": vm.program.locations.len(),
                     "objectives": vm.objectives,
                     "texts": vm.pending_texts(),
+                    "scrolls": vm
+                        .program
+                        .elements
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, e)| match e {
+                            opensherwood_core::vm::Element::Scroll { x, y } => Some(json!({
+                                "element": i,
+                                "x": x,
+                                "y": y,
+                                "active": !vm.inactive_elements.contains(&(i as i32)),
+                            })),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
                     "mission_won": vm.mission_won,
                     "sequence_active": !vm.sequences.is_empty(),
                     "sequences": vm.sequences.len(),

@@ -36,6 +36,9 @@ pub const MAX_TABLE: usize = 1 << 14;
 pub const MAX_CODE: usize = 1 << 20;
 /// Handle value meaning "none" (element, location, path): `n6(-1)`, `n3(-1)` in the scripts.
 pub const NONE_HANDLE: i32 = -1;
+
+/// Distance (map pixels) within which a player character picks up a scroll (hypothesis).
+pub const SCROLL_PICKUP_RADIUS: i64 = 24;
 /// Bit set in a location value that packs an actor position (see [`location_of_point`]).
 pub const LOCATION_POINT_BIT: i32 = 1 << 30;
 /// RNG stream id of the `script` stream (the gameplay stream is 1).
@@ -841,6 +844,10 @@ pub struct VmState {
     pub inactive_elements: BTreeSet<i32>,
     /// `(class, entity)` pairs currently inside the class's zone.
     pub zone_presence: BTreeSet<(u32, u32)>,
+    /// `(class, entity)` pairs currently within pickup range of the class's scroll (so `IsTaken`
+    /// fires once per approach when the handler declines the pickup).
+    #[serde(default)]
+    pub scroll_presence: BTreeSet<(u32, u32)>,
     /// Program index (into `World::programs`) per `RAIL` index (native 9 / 132).
     pub paths: Vec<Option<u32>>,
     /// Lenient natives (`MissionSpec::lenient_natives`): an unknown native is a recorded no-op
@@ -894,6 +901,7 @@ impl VmState {
             states: BTreeMap::new(),
             inactive_elements: BTreeSet::new(),
             zone_presence: BTreeSet::new(),
+            scroll_presence: BTreeSet::new(),
             paths,
             lenient,
             faulted: false,
@@ -940,6 +948,7 @@ impl VmState {
             || self.patches.len() > MAX_QUEUE
             || self.actions.len() > MAX_QUEUE
             || self.zone_presence.len() > MAX_QUEUE * 16
+            || self.scroll_presence.len() > MAX_QUEUE * 16
             || self.arg_stack.len() > MAX_QUEUE
             || self.param_stack.len() > MAX_QUEUE
         {
@@ -970,6 +979,11 @@ impl VmState {
         for &(c, e) in &self.zone_presence {
             if c as usize >= self.program.classes.len() || e as usize >= entity_count {
                 return Err("vm zone presence out of range".into());
+            }
+        }
+        for &(c, e) in &self.scroll_presence {
+            if c as usize >= self.program.classes.len() || e as usize >= entity_count {
+                return Err("vm scroll presence out of range".into());
             }
         }
         if self.paths.len() > MAX_TABLE
@@ -1111,6 +1125,10 @@ impl VmState {
         };
         e.u32(self.zone_presence.len() as u32);
         for (c, en) in &self.zone_presence {
+            e.u32(*c).u32(*en);
+        }
+        e.u32(self.scroll_presence.len() as u32);
+        for (c, en) in &self.scroll_presence {
             e.u32(*c).u32(*en);
         }
         e.u32(self.frames.len() as u32);
@@ -1420,6 +1438,7 @@ impl World {
             self.vm_callback(class, callbacks::HOURGLASS, &[time]);
         }
         self.vm_zones();
+        self.vm_scrolls();
         self.vm_advance_sequences();
         if let Some(CallOutcome::Returned(1)) = self.vm_callback(0, callbacks::CHECK_VICTORY, &[])
             && let Some(vm) = self.vm.as_mut()
@@ -1487,32 +1506,100 @@ impl World {
         }
     }
 
-    /// Run the first sequence until it blocks or ends; finished sequences make way for the next.
+    /// `IsTaken` for every player character coming within pickup range of an active scroll bound to
+    /// a class. A handler that returns non-zero takes the scroll (it becomes inactive); one that
+    /// returns zero leaves it, and the character has to walk away and back to try again. The pickup
+    /// radius is a hypothesis (`SCROLL_PICKUP_RADIUS`); the original's rule is not observed yet.
+    fn vm_scrolls(&mut self) {
+        let Some(vm) = self.vm.as_ref() else { return };
+        let mut events: Vec<(u32, u32, i32, bool)> = Vec::new();
+        for (ci, c) in vm.program.classes.iter().enumerate() {
+            let Some(handle) = c.element else { continue };
+            let Some(Element::Scroll { x, y }) = vm.program.elements.get(handle as usize) else {
+                continue;
+            };
+            let active = !vm.inactive_elements.contains(&(handle as i32));
+            for (ei, e) in self.entities.iter().enumerate() {
+                if e.kind != EntityKind::Player || !e.alive || !e.active {
+                    continue;
+                }
+                let dx = i64::from(e.x.round()) - i64::from(*x);
+                let dy = i64::from(e.y.round()) - i64::from(*y);
+                let near =
+                    active && dx * dx + dy * dy <= SCROLL_PICKUP_RADIUS * SCROLL_PICKUP_RADIUS;
+                let was = vm.scroll_presence.contains(&(ci as u32, ei as u32));
+                if near != was {
+                    events.push((ci as u32, ei as u32, handle as i32, near));
+                }
+            }
+        }
+        for (class, entity, handle, near) in events {
+            let actor = self
+                .vm
+                .as_ref()
+                .map_or(NONE_HANDLE, |vm| vm.program.element_of_entity(entity));
+            if let Some(vm) = self.vm.as_mut() {
+                if near {
+                    vm.scroll_presence.insert((class, entity));
+                } else {
+                    vm.scroll_presence.remove(&(class, entity));
+                }
+            }
+            if !near {
+                continue;
+            }
+            let taken = matches!(self.vm_is_taken(class, actor), Some(v) if v != 0);
+            if taken && let Some(vm) = self.vm.as_mut() {
+                vm.inactive_elements.insert(handle);
+            }
+        }
+    }
+
+    /// Advance every sequence this tick: each runs until its own wait (ticks or a text page) or its
+    /// end, independently of the others (the original's sequence manager keeps one sequence per
+    /// element; running them one after another would queue a scroll's popup behind unrelated
+    /// timed sequences such as the archery-training loop). Finished sequences are removed.
     pub(crate) fn vm_advance_sequences(&mut self) {
+        let mut i = 0;
+        while i < self.vm.as_ref().map_or(0, |vm| vm.sequences.len()) {
+            if self.vm_advance_sequence(i) {
+                if let Some(vm) = self.vm.as_mut() {
+                    vm.sequences.remove(i);
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Run sequence `i` until it blocks; returns true when it has finished.
+    fn vm_advance_sequence(&mut self, i: usize) -> bool {
         loop {
             let el = {
-                let Some(vm) = self.vm.as_mut() else { return };
-                let Some(seq) = vm.sequences.first_mut() else {
-                    return;
+                let Some(vm) = self.vm.as_mut() else {
+                    return true;
+                };
+                let texts_pending: Vec<u64> = vm.texts.iter().map(|t| t.id).collect();
+                let Some(seq) = vm.sequences.get_mut(i) else {
+                    return true;
                 };
                 match seq.wait {
                     // `Wait(n)` holds the sequence for exactly n ticks: the tick that brings the
                     // count to zero runs the next element.
                     SeqWait::Ticks(n) if n > 1 => {
                         seq.wait = SeqWait::Ticks(n - 1);
-                        return;
+                        return false;
                     }
                     SeqWait::Text(id) => {
-                        if vm.texts.iter().any(|t| t.id == id) {
-                            return;
+                        if texts_pending.contains(&id) {
+                            return false;
                         }
                         seq.wait = SeqWait::None;
                     }
                     SeqWait::Ticks(_) | SeqWait::None => seq.wait = SeqWait::None,
                 }
                 let Some(el) = seq.elements.get(seq.next as usize).cloned() else {
-                    vm.sequences.remove(0);
-                    continue;
+                    return true;
                 };
                 seq.next += 1;
                 el
@@ -1521,19 +1608,18 @@ impl World {
                 SeqElement::Text(t) => {
                     if let Some(vm) = self.vm.as_mut() {
                         let id = vm.show_text(t, true);
-                        if let Some(seq) = vm.sequences.first_mut() {
+                        if let Some(seq) = vm.sequences.get_mut(i) {
                             seq.wait = SeqWait::Text(id);
                         }
                     }
-                    return;
+                    return false;
                 }
                 SeqElement::Wait(n) => {
                     if n > 0 {
-                        if let Some(seq) = self.vm.as_mut().and_then(|vm| vm.sequences.first_mut())
-                        {
+                        if let Some(seq) = self.vm.as_mut().and_then(|vm| vm.sequences.get_mut(i)) {
                             seq.wait = SeqWait::Ticks(n);
                         }
-                        return;
+                        return false;
                     }
                 }
                 SeqElement::Camera(loc) => self.vm_camera(loc),
@@ -2302,6 +2388,52 @@ pub(crate) mod tests {
         w.entities[1].y = Fixed::from_int(500);
         w.step(&[]);
         assert_eq!(w.vm.as_ref().unwrap().class_vars[1], vec![0, 1, 1]);
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn scrolls_fire_is_taken_once_per_approach_and_vanish_when_taken() {
+        // IsTaken(actor): cv0 += 1; returns cv1 (0 = leave the scroll, 1 = take it).
+        let body = vec![
+            Instr::LoadInt {
+                dst: tv(1),
+                value: 1,
+            },
+            Instr::Binary {
+                op: BinOp::Add,
+                dst: cv(0),
+                a: cv(0),
+                b: tv(1),
+            },
+            Instr::SetResult { src: cv(1) },
+        ];
+        let level = class("StartUp", 0, &[("Initialize", 0, false, 0, 0, vec![])]);
+        let mut scroll = class("Scroll", 2, &[("IsTaken", 1, true, 0, 4, body)]);
+        scroll.element = Some(2); // the scroll at (700, 700) of `program`
+        let mut w = mission_world(1, Some(program(vec![level, scroll], 1)));
+        w.step(&[]);
+        assert_eq!(w.vm.as_ref().unwrap().class_vars[1], vec![0, 0]);
+        // Walk in: the handler runs once and declines; standing still does not repeat it.
+        w.entities[0].x = Fixed::from_int(700);
+        w.entities[0].y = Fixed::from_int(710);
+        w.step(&[]);
+        w.step(&[]);
+        assert_eq!(w.vm.as_ref().unwrap().class_vars[1][0], 1);
+        assert!(!w.vm.as_ref().unwrap().inactive_elements.contains(&2));
+        // Leave, accept next time: the scroll is taken and inactive.
+        w.entities[0].x = Fixed::from_int(100);
+        w.step(&[]);
+        w.vm.as_mut().unwrap().class_vars[1][1] = 1;
+        w.entities[0].x = Fixed::from_int(700);
+        w.step(&[]);
+        assert_eq!(w.vm.as_ref().unwrap().class_vars[1][0], 2);
+        assert!(w.vm.as_ref().unwrap().inactive_elements.contains(&2));
+        // An inactive scroll never fires again.
+        w.entities[0].x = Fixed::from_int(100);
+        w.step(&[]);
+        w.entities[0].x = Fixed::from_int(700);
+        w.step(&[]);
+        assert_eq!(w.vm.as_ref().unwrap().class_vars[1][0], 2);
         w.validate().unwrap();
     }
 
