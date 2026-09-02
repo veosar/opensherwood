@@ -14,6 +14,7 @@ use crate::fixed::Fixed;
 use crate::geom::Geometry;
 use crate::hash::{Encoder, HASH_SCHEMA_VERSION, Hashes, total};
 use crate::input::{Button, InputEvent, Key, button_tag, encode_key};
+use crate::nav::NavGrid;
 use crate::rng::Rng;
 
 /// Stable entity identifier (index + generation).
@@ -64,8 +65,11 @@ pub struct Entity {
     pub size: Fixed,
     /// Movement speed per tick.
     pub speed: Fixed,
-    /// Current movement target.
+    /// Current movement target (the final destination).
     pub target: Option<(Fixed, Fixed)>,
+    /// Remaining path waypoints towards the target (map pixels, 24.8), first = next.
+    #[serde(default)]
+    pub path: Vec<(Fixed, Fixed)>,
     /// Patrol waypoints (guards); half extents for obstacles (exactly one entry).
     pub patrol: Vec<(Fixed, Fixed)>,
     /// Index of the next patrol waypoint.
@@ -233,6 +237,9 @@ pub struct World {
     pub objective_reached: bool,
     /// Walkable geometry (authoritative: it decides movement).
     pub geometry: Geometry,
+    /// Navigation grid derived from `geometry` and `map_size` (cache; rebuilt on load).
+    #[serde(skip)]
+    pub nav: Option<NavGrid>,
     /// Static animation data attached by the app (not part of the snapshot; re-attached on load).
     #[serde(skip)]
     pub catalog: Catalog,
@@ -280,6 +287,7 @@ impl World {
         }
         let mut world = Self::build(scenario, seed, Some(spec.map));
         world.geometry = spec.geometry.clone();
+        world.ensure_nav();
         world.entities.clear();
         world.goal = (Fixed::from_int(-1000), Fixed::from_int(-1000));
         let f = Fixed::from_int;
@@ -303,6 +311,7 @@ impl World {
                     Fixed::from_int(1)
                 },
                 target: None,
+                path: Vec::new(),
                 patrol: a.patrol.iter().map(|&(x, y)| (f(x), f(y))).collect(),
                 patrol_index: 0,
                 wait_ticks: 0,
@@ -315,9 +324,64 @@ impl World {
         Ok(world)
     }
 
-    /// Attach walkable geometry (map view and missions).
+    /// Attach walkable geometry (map view and missions) and rebuild the navigation grid.
     pub fn set_geometry(&mut self, geometry: Geometry) {
         self.geometry = geometry;
+        self.nav = None;
+        self.ensure_nav();
+    }
+
+    /// Build the navigation grid if it is missing.
+    pub fn ensure_nav(&mut self) {
+        if self.nav.is_none() {
+            self.nav = Some(NavGrid::build(
+                &self.geometry,
+                self.map_size.0,
+                self.map_size.1,
+            ));
+        }
+    }
+
+    /// Plan a path for entity `index` to `target` (map pixels). Targets on unwalkable ground are
+    /// moved to the nearest walkable cell (up to 32 cells away); unreachable targets clear the order.
+    fn plan_path(&mut self, index: usize, target: (Fixed, Fixed)) {
+        self.ensure_nav();
+        let Some(nav) = self.nav.as_ref() else { return };
+        let e = &self.entities[index];
+        let from = nav.cell_of(e.x.round(), e.y.round());
+        let from = nav.nearest_walkable(from, 8).unwrap_or(from);
+        let goal = nav.cell_of(target.0.round(), target.1.round());
+        // Like the original, an order on water or a wall walks to the nearest reachable ground.
+        // Like the original, an order on water or behind a wall walks to the reachable cell
+        // closest to it.
+        let Some(cells) = nav.find_path_near(from, goal) else {
+            self.entities[index].target = None;
+            self.entities[index].path.clear();
+            return;
+        };
+        let smooth = nav.smooth(from, &cells);
+        let mut path: Vec<(Fixed, Fixed)> = smooth
+            .iter()
+            .map(|&c| {
+                let (x, y) = nav.centre(c);
+                (Fixed::from_int(x), Fixed::from_int(y))
+            })
+            .collect();
+        // Walk to the exact target when it is itself walkable and was reached by the path.
+        if self
+            .geometry
+            .is_walkable(target.0.round(), target.1.round())
+            && cells.last() == Some(&goal)
+        {
+            if let Some(last) = path.last_mut() {
+                *last = target;
+            } else {
+                path.push(target);
+            }
+        }
+        let e = &mut self.entities[index];
+        e.target = Some(target);
+        e.path = path;
     }
 
     /// Create a map-view world; the app resolved and decoded the background already.
@@ -355,6 +419,7 @@ impl World {
             size: f(12),
             speed: Fixed::from_raw(3 * 256 / 2),
             target: None,
+            path: Vec::new(),
             patrol: Vec::new(),
             patrol_index: 0,
             wait_ticks: 0,
@@ -370,6 +435,7 @@ impl World {
             size: f(12),
             speed: Fixed::from_int(1),
             target: None,
+            path: Vec::new(),
             patrol: vec![(f(400), f(120)), (f(400), f(360))],
             patrol_index: 1,
             wait_ticks: 0,
@@ -391,6 +457,7 @@ impl World {
                 size: f(w.max(h)),
                 speed: Fixed::ZERO,
                 target: None,
+                path: Vec::new(),
                 patrol: vec![(f(w), f(h))],
                 patrol_index: 0,
                 wait_ticks: 0,
@@ -416,6 +483,7 @@ impl World {
             goal: (f(600), f(240)),
             objective_reached: false,
             geometry: Geometry::default(),
+            nav: None,
             catalog: Catalog::default(),
         }
     }
@@ -505,6 +573,9 @@ impl World {
                         return Err(format!("entity {:?} patrol index out of range", e.id));
                     }
                 }
+            }
+            if e.path.len() > MAX_ENTITIES {
+                return Err(format!("entity {:?} has too many path points", e.id));
             }
             if e.speed < Fixed::ZERO || e.size < Fixed::ZERO {
                 return Err(format!("entity {:?} has a negative speed or size", e.id));
@@ -616,12 +687,12 @@ impl World {
     fn order_move_to_pointer(&mut self) {
         let Some(sel) = self.selected else { return };
         let target = self.pointer_in_map();
-        if let Some(e) = self
+        if let Some(i) = self
             .entities
-            .iter_mut()
-            .find(|e| e.id == sel && e.kind == EntityKind::Player)
+            .iter()
+            .position(|e| e.id == sel && e.kind == EntityKind::Player)
         {
-            e.target = Some(target);
+            self.plan_path(i, target);
         }
     }
 
@@ -636,18 +707,33 @@ impl World {
             Fixed::from_int(self.map_size.0 as i32),
             Fixed::from_int(self.map_size.1 as i32),
         );
+        // Guards pick their next patrol point (path planning needs &mut self, so collect first).
+        let mut to_plan: Vec<(usize, (Fixed, Fixed))> = Vec::new();
+        for (i, e) in self.entities.iter_mut().enumerate() {
+            if e.alive && e.kind == EntityKind::Guard && e.target.is_none() {
+                if e.wait_ticks > 0 {
+                    e.wait_ticks -= 1;
+                } else if !e.patrol.is_empty() {
+                    to_plan.push((i, e.patrol[e.patrol_index as usize % e.patrol.len()]));
+                }
+            }
+        }
+        for (i, t) in to_plan {
+            self.plan_path(i, t);
+            if self.entities[i].target.is_none() {
+                // Unreachable patrol point: skip it.
+                let e = &mut self.entities[i];
+                e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
+                e.wait_ticks = 10;
+            }
+        }
         for e in &mut self.entities {
             if !e.alive || e.kind == EntityKind::Obstacle {
                 continue;
             }
-            if e.kind == EntityKind::Guard && e.target.is_none() {
-                if e.wait_ticks > 0 {
-                    e.wait_ticks -= 1;
-                } else if !e.patrol.is_empty() {
-                    e.target = Some(e.patrol[e.patrol_index as usize % e.patrol.len()]);
-                }
-            }
-            let Some((tx, ty)) = e.target else { continue };
+            let Some((fx, fy)) = e.target else { continue };
+            // Next waypoint (or the final target when the path is exhausted).
+            let (tx, ty) = e.path.first().copied().unwrap_or((fx, fy));
             let dx = tx - e.x;
             let dy = ty - e.y;
             let dist = Fixed::length(dx, dy);
@@ -664,6 +750,7 @@ impl World {
             }
             if blocked {
                 e.target = None;
+                e.path.clear();
                 if e.kind == EntityKind::Guard {
                     e.wait_ticks = 10;
                 }
@@ -672,10 +759,15 @@ impl World {
             e.x = nx.clamp(Fixed::ZERO, w);
             e.y = ny.clamp(Fixed::ZERO, h);
             if (e.x, e.y) == (tx, ty) {
-                e.target = None;
-                if e.kind == EntityKind::Guard {
-                    e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
-                    e.wait_ticks = 20 + self.rng.below(20);
+                if !e.path.is_empty() {
+                    e.path.remove(0);
+                }
+                if e.path.is_empty() && (e.x, e.y) == (fx, fy) {
+                    e.target = None;
+                    if e.kind == EntityKind::Guard {
+                        e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
+                        e.wait_ticks = 20 + self.rng.below(20);
+                    }
                 }
             }
         }
@@ -730,8 +822,13 @@ impl World {
         }
         snap.world.validate()?;
         let catalog = std::mem::take(&mut self.catalog);
+        let nav = self.nav.take();
+        let same_geometry =
+            self.geometry == snap.world.geometry && self.map_size == snap.world.map_size;
         *self = snap.world.clone();
         self.catalog = catalog;
+        self.nav = if same_geometry { nav } else { None };
+        self.ensure_nav();
         Ok(())
     }
 
@@ -832,6 +929,10 @@ impl World {
                 Some((x, y)) => o.u8(1).i32(x.raw()).i32(y.raw()),
                 None => o.u8(0),
             };
+            o.u32(e.path.len() as u32);
+            for (x, y) in &e.path {
+                o.i32(x.raw()).i32(y.raw());
+            }
         }
         parts.insert("orders".into(), o.finish());
 
@@ -976,7 +1077,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "6bcd5808e2eb970ef912ef26ee231e503aceea4c9d8c06dce3a714709b92b958";
+        "57e3e8a567e922fcdb0caf1d0e21a2b2819b33a158a93dbe70585eecc2dfccb4";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -1144,16 +1245,25 @@ mod tests {
         assert_eq!(w.entities[1].patrol.len(), 2);
         assert_eq!(w.entities[0].anim.as_ref().unwrap().set, "RobinHood");
         assert!(World::new_mission(Scenario::Synthetic("x".into()), 1, &spec).is_err());
-        // Walking east from (100,200) into the obstacle at x=180 stops at its edge.
+        // Walking east from (100,200) with the obstacle at x=180..220 in the way: the path goes
+        // around it and reaches the target.
         let mut w = w;
-        w.selected = Some(w.entities[0].id);
-        w.entities[0].target = Some((Fixed::from_int(400), Fixed::from_int(200)));
-        for _ in 0..400 {
+        w.plan_path(0, (Fixed::from_int(400), Fixed::from_int(200)));
+        assert!(
+            w.entities[0].path.len() >= 2,
+            "path should bend around the obstacle"
+        );
+        for _ in 0..600 {
             w.step(&[]);
         }
-        let x = w.entities[0].x.round();
-        assert!((160..=180).contains(&x), "stopped at {x}");
+        assert_eq!(
+            (w.entities[0].x.round(), w.entities[0].y.round()),
+            (400, 200)
+        );
         assert!(w.entities[0].target.is_none());
+        // A target inside the obstacle is moved to its edge.
+        w.plan_path(0, (Fixed::from_int(200), Fixed::from_int(200)));
+        assert!(w.entities[0].target.is_some());
     }
 
     #[test]

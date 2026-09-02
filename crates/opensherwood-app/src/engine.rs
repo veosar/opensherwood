@@ -812,6 +812,34 @@ impl Session {
                     hashes: world.hashes(),
                 })
             }
+            "debug.nav" => {
+                #[derive(serde::Deserialize)]
+                struct P {
+                    x: i32,
+                    y: i32,
+                    #[serde(default)]
+                    to: Option<(i32, i32)>,
+                }
+                let p: P = params_required(p)?;
+                let world = self.world()?;
+                world.ensure_nav();
+                let nav = world.nav.as_ref().expect("ensured");
+                let cell = nav.cell_of(p.x, p.y);
+                let path = p.to.map(|(tx, ty)| {
+                    let goal = nav.cell_of(tx, ty);
+                    nav.find_path(cell, goal).map(|cells| cells.len())
+                });
+                ok(json!({
+                    "geometry_walkable": world.geometry.is_walkable(p.x, p.y),
+                    "cell": cell,
+                    "cell_walkable": nav.walkable(cell),
+                    "nearest_walkable": nav.nearest_walkable(cell, 8),
+                    "grid": [nav.width, nav.height],
+                    "boundary_points": world.geometry.boundary.len(),
+                    "obstacles": world.geometry.obstacles.len(),
+                    "path_cells": path,
+                }))
+            }
             "shutdown" => ok(json!({ "ok": true })),
             _ => Err(RpcError::new(
                 RpcError::METHOD_NOT_FOUND,

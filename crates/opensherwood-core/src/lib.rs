@@ -12,6 +12,7 @@ pub mod fixed;
 pub mod geom;
 pub mod hash;
 pub mod input;
+pub mod nav;
 pub mod rng;
 pub mod world;
 
@@ -20,6 +21,7 @@ pub use fixed::Fixed;
 pub use geom::Geometry;
 pub use hash::Hashes;
 pub use input::{Button, InputEvent, Key};
+pub use nav::NavGrid;
 pub use world::{
     ActorSpec, Entity, EntityId, EntityKind, MapInfo, MissionSpec, Observation, Scenario, Snapshot,
     Team, World,

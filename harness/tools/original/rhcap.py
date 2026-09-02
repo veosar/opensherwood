@@ -142,6 +142,29 @@ def raw_rel(dx, dy, flags=0x0001):
         print("SendInput failed", ctypes.GetLastError(), file=sys.stderr)
 
 
+SCAN = {"1": 0x02, "2": 0x03, "3": 0x04, "4": 0x05, "5": 0x06, "q": 0x10, "d": 0x20, "c": 0x2E, "s": 0x1F,
+        "g": 0x22, "h": 0x23, "j": 0x24, "a": 0x1E, "space": 0x39, "backspace": 0x0E, "escape": 0x01, "enter": 0x1C,
+        "tab": 0x0F, "capslock": 0x3A, "f1": 0x3B, "f5": 0x3F, "f11": 0x57, "add": 0x4E, "subtract": 0x4A,
+        "up": 0xC8, "down": 0xD0, "left": 0xCB, "right": 0xCD, "lshift": 0x2A, "lctrl": 0x1D, "lalt": 0x38}
+
+
+def skey(name, hold=0.0):
+    """Press a key by scan code (DirectInput-style games ignore VK-only input)."""
+    sc = SCAN[name]
+    ext = 0x0100 if sc >= 0x80 else 0
+    sc &= 0x7F
+
+    def send(flags):
+        inp = _INPUT()
+        inp.type = 1
+        inp.u.ki = _KI(0, sc, 0x0008 | ext | flags, 0, None)
+        ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
+
+    send(0)
+    time.sleep(hold if hold else 0.06)
+    send(0x0002)
+
+
 MOUSE_SCALE = float(os.environ.get("RHCAP_MOUSE_SCALE", "0.775"))
 
 
@@ -322,7 +345,9 @@ def main(argv):
     if cmd == "key":
         if not focus(h):
             return
-        if len(args) > 1:
+        if args[0] in SCAN:
+            skey(args[0], float(args[1]) if len(args) > 1 else 0.0)
+        elif len(args) > 1:
             pyautogui.keyDown(args[0])
             time.sleep(float(args[1]))
             pyautogui.keyUp(args[0])

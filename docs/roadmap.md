@@ -48,7 +48,7 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 ## M3: Movement slice
 
 - [x] Walkable geometry from RHP (boundary + obstacle polygons) blocks movement; occluder masks (FACE) draw the background in front of sprites behind trees, rocks and walls
-- [ ] Pathfinding around obstacles (own navigation grid over the walkable geometry; the original's EULER graph is still undecoded)
+- [x] Pathfinding around obstacles: 8-px navigation grid rasterised from the walkable geometry (eroded by one cell), A* with deterministic tie-breaking, string-pulled paths, orders on unreachable ground walk to the closest reachable cell (the original's EULER graph is still undecoded)
 - [ ] Path graph, layers, sectors, doors; pointer-driven movement with the original's rules (walk/run, crouch)
 - [ ] Replay and restore remain deterministic through movement
 
