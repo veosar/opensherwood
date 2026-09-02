@@ -1,7 +1,7 @@
 # Character / level profile table (`Configuration/profile.cpf`) and player configuration
 
 Status: `profile.cpf` container **verified** (the grammar below consumes the retail file to the exact byte;
-`harness/tools/re/cpf_probe.py`); the four string tables are **decoded** and their use by the missions is
+`harness/tools/probe/cpf_probe.py`); the four string tables are **decoded** and their use by the missions is
 **established** (see [rhm.md](rhm.md), "Actor profile mapping"); the numeric fields are `unknown_*` with
 observed values. `keyset*.cfg`, `Profiles` and `release.log` remain **stub**.
 
@@ -196,9 +196,9 @@ Status `observed` unless marked. Build: GOG English, executable SHA-256
 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`; file `DATA/Configuration/profile.cpf`
 (30,441 bytes). Method: data-file observation only (no executable analysis): printable-string scan, hex
 inspection of the section boundaries, then the grammar above implemented in
-`harness/tools/re/cpf_probe.py` and checked for exact consumption (`--hex` prints every numeric field,
+`harness/tools/probe/cpf_probe.py` and checked for exact consumption (`--hex` prints every numeric field,
 `--rhs` verifies the `sequence` string against the `.rhs` header of every `sprite`). Cross-checks: the mission
-join in `harness/tools/re/rhm_profiles.py` (see [rhm.md](rhm.md)); voice codes against the file names in
+join in `harness/tools/probe/rhm_profiles.py` (see [rhm.md](rhm.md)); voice codes against the file names in
 `Sounds/Exclamations/` and the `WAVE` paths in `Text/actors.res`; level codes against `Text/RHLevel??.red`;
 `map` against the `FOOT` chunk of every `.rhm`. Analyst session 2026-09-02. The index-role descriptions come
 from the designer labels and the sprite names of the file, rewritten in our own words (2026-09-02 text sweep

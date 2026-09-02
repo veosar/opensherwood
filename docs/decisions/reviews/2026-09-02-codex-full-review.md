@@ -354,7 +354,7 @@ The crate is only a six-line SCB header re-export at [script/lib.rs:1](</C:/User
 
 11. **Low/Portability — `rhp_chunks.py:11` contains a maintainer-specific absolute fallback path.**
 
-12. The numerous `harness/tools/re/*.py` scripts contain no embedded game byte arrays or decompiler output that I found. They are exploratory observation scripts, however, not hardened parsers: many assume the retail corpus, read whole files, use assertions/unchecked slicing, and write derived PNG/JSON when directed. Rename the directory as already promised and keep outputs under ignored roots.
+12. The numerous `harness/tools/probe/*.py` scripts contain no embedded game byte arrays or decompiler output that I found. They are exploratory observation scripts, however, not hardened parsers: many assume the retail corpus, read whole files, use assertions/unchecked slicing, and write derived PNG/JSON when directed. Rename the directory as already promised and keep outputs under ignored roots.
 
 ### Repository scripts and CI
 

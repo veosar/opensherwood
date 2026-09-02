@@ -80,7 +80,7 @@ framing and different inter-record fields, then a table of 28-byte records
 records holding a `Point` plus small `i16` offset pairs and lists of `u16` edge ids. It is almost certainly the
 pathfinder graph (console EULER); its framing is not established and the bytes are exposed as `Stat::rest`.
 
-### Remainder of `STAT` (observation, 2026-09-02, `harness/tools/re/probe_stat_layers.py`)
+### Remainder of `STAT` (observation, 2026-09-02, `harness/tools/probe/probe_stat_layers.py`)
 
 After the obstacles the remainder starts with further polygon records framed like the obstacles
 (`u8 id, u16 n, n x Point, u8 id2`), each followed by `u16 nseg` (0 in every record seen), `u32 0`,
@@ -196,7 +196,7 @@ JUMP-ZONE / jump-line). Croisement01: 11 zones, 13 jump lines; sherwood 2 / 1.
 
 ## Provenance
 
-Observation only (no disassembly). Scripts in `harness/tools/re/` (`rhp_chunks.py`, `probe_*.py`,
+Observation only (no disassembly). Scripts in `harness/tools/probe/` (`rhp_chunks.py`, `probe_*.py`,
 `overlay.py`, `map_png.py`) parse every chunk of all 9 files under the layouts above and check that each
 chunk is consumed exactly and that all point coordinates fall inside the background of that map
 (`probe_stat6.py`, `probe_woaw.py`, `probe_face_model.py`, `probe_pppp_007.py`, `probe_text_dark.py`,

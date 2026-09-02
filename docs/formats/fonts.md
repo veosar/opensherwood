@@ -5,7 +5,7 @@ The layout rule built from the two small per-glyph adjustments is **inferred** (
 
 All files live in `DATA/Interface/Fonts/`. Parser: `crates/opensherwood-formats/src/font.rs`. Tools:
 `opensherwood-tools font-sheet <file> <out.png>` (all glyphs in a grid) and
-`opensherwood-tools font-text <file> "<text>" <out.png>`. Probe: `harness/tools/re/font_probe.py`.
+`opensherwood-tools font-text <file> "<text>" <out.png>`. Probe: `harness/tools/probe/font_probe.py`.
 
 ## Inventory
 
@@ -126,7 +126,7 @@ MenuButtonDisabled, InfoScroll, Debrief, EditField, MenuText. Six roles share `t
 
 ## Provenance
 
-Observation of the 11 bitmap fonts, 16 descriptors and `manager.cfg` with `harness/tools/re/font_probe.py`:
+Observation of the 11 bitmap fonts, 16 descriptors and `manager.cfg` with `harness/tools/probe/font_probe.py`:
 
 - Hexdumps of every header; the 18-byte record pitch from the code column (0x20 at 0x46, 0x21 at 0x58); the
   glyph count word at 0x3E matches the number of records before the first blob header in every file.

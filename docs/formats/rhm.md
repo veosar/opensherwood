@@ -337,7 +337,7 @@ map). Ids up to 0x90; 24 of 596 entries are non-empty; flag 1 in 7 entries. Buil
 slot is decided by the campaign (forced team on the mission parchment, the player's selection in Sherwood);
 in `H01_Lin_VL` and `S01_Not_VL` there is a single slot and the manual says Robin is alone.
 
-Evidence (all 39 missions, `harness/tools/re/rhm_profiles.py`):
+Evidence (all 39 missions, `harness/tools/probe/rhm_profiles.py`):
 
 | Check | Result |
 |---|---|
@@ -380,7 +380,7 @@ text-like resource.
 ## Provenance
 
 Observation only: chunk walker and record-grammar probes over all 39 files
-(`harness/tools/re/rhm_inventory.py`, `rhm_probe.py`, `rhm_chunks_probe.py`, `rhm_full.py`; every grammar is
+(`harness/tools/probe/rhm_inventory.py`, `rhm_probe.py`, `rhm_chunks_probe.py`, `rhm_full.py`; every grammar is
 accepted only when it consumes every chunk of every file exactly), cross-file value histograms, the class-name join
 with the `.scb` files, PNG overlays over the decoded map backgrounds (`rhm_overlay.py`, and the
 `rhm-overlay` tool), and the profile join with `Configuration/profile.cpf` (`rhm_profiles.py`, which prints

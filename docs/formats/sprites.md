@@ -145,7 +145,7 @@ computed with checked arithmetic and pixel buffers are obtained with `try_reserv
 
 ## Provenance
 
-Observation only; no executable analysis. Scripts under `harness/tools/re/` (`spritebank.py` loader;
+Observation only; no executable analysis. Scripts under `harness/tools/probe/` (`spritebank.py` loader;
 `sprite_stats1..8.py`; `sprite_render.py`), run with `OPENSHERWOOD_GAME_DIR` set:
 
 - `sprite_stats2.py`: for all 394,721 page frames `length / 2 == ceil(width / 4) * height` (the alternatives

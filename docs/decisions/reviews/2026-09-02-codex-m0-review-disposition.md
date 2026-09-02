@@ -24,7 +24,7 @@ adds this file unless stated otherwise.
 | 16 | Tests do not prove cross-platform determinism | Fixed: the committed digest fixture is checked on Linux, Windows and macOS in CI; malformed snapshot tests added. Fuzz targets and a 32-bit job: deferred to M1 (tracked in the roadmap). |
 | 17 | Python client can hang | Fixed: stderr drained by a thread into a bounded buffer, per-call deadline, process always reaped. |
 | 18 | Protocol types not enforced | Fixed: `observe` honours `entities`; button/key tags are explicit; `EntityKind` tag explicit. Physical-key set: deferred. |
-| 19 | `harness/tools/re/` vs forbidden `re/` | Clarified: the forbidden path is the repository-root `/re/` (private analysis material). `harness/tools/re/` holds *observation* scripts that embed no game bytes; the directory will be renamed to `harness/tools/probe/` once the running investigations finish, and `check_no_assets.py` will reject a tracked root `re/`. |
+| 19 | `harness/tools/probe/` vs forbidden `re/` | Clarified: the forbidden path is the repository-root `/re/` (private analysis material). `harness/tools/probe/` holds *observation* scripts that embed no game bytes; the directory will be renamed to `harness/tools/probe/` once the running investigations finish, and `check_no_assets.py` will reject a tracked root `re/`. |
 | 20 | CI not reproducible | Fixed: toolchain pinned to 1.95.0 (matches `rust-toolchain.toml`), `--locked`, nextest pinned, Python requirements pinned, job timeouts. |
 
 Verdict after the fixes: the M0 kernel is considered stable enough to build M1/M2 on; the remaining deferred items
