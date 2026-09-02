@@ -522,6 +522,8 @@ impl Session {
                     "capture".into(),
                     "snapshot".into(),
                     "map_view".into(),
+                    "mission".into(),
+                    "replay".into(),
                 ],
                 content_fingerprint: self.game.as_ref().map(GameDir::fingerprint),
             }),
@@ -602,7 +604,8 @@ impl Session {
                 let snapshot = world.snapshot();
                 let hashes = world.hashes();
                 self.next_snapshot += 1;
-                let id = format!("snap-{}", self.next_snapshot);
+                // Zero-padded so lexicographic order in the map is insertion (FIFO) order.
+                let id = format!("snap-{:012}", self.next_snapshot);
                 while self.snapshots.len() >= limits::MAX_SNAPSHOTS {
                     let oldest = self.snapshots.keys().next().cloned();
                     if let Some(k) = oldest {

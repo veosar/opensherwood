@@ -18,7 +18,7 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 - [x] `opensherwood-tools inspect` for SRES / image blobs / RHS / chunk containers (already specified)
 
 - [x] Codex M0 review incorporated (versions, full canonical hashing, snapshot validation, protocol limits, controlled window mode, content fingerprint)
-- [ ] Deferred from the review: cargo-fuzz targets for parsers, a 32-bit CI job, SRES decode budget, physical-key code set, rename `harness/tools/re` to `probe`
+- [ ] Deferred from the reviews: cargo-fuzz targets for parsers, a 32-bit CI job, SRES decode budget, physical-key code set, rename `harness/tools/re` to `probe`, oversized-line drain, transactional session restore, full-content fingerprint with cache, replay header enforcement, window focus/resize input hygiene, sRGB surface selection, streamed looped music, per-tick digest coverage, timed Python writes, SHA-pinned CI actions (see `docs/decisions/reviews/2026-09-02-codex-review-2-disposition.md`)
 
 ## M1: Feasibility gates
 

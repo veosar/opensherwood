@@ -88,8 +88,8 @@ impl Occluder {
 }
 
 impl Framebuffer {
-    /// Largest framebuffer dimension.
-    pub const MAX_DIMENSION: u32 = 16384;
+    /// Largest framebuffer dimension (a 4096x4096 RGBA buffer is 64 MiB).
+    pub const MAX_DIMENSION: u32 = 4096;
 
     /// Allocate a black, opaque buffer (dimensions are clamped to `1..=MAX_DIMENSION`).
     #[must_use]

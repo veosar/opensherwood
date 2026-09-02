@@ -87,11 +87,12 @@ impl AnimState {
         if anim.is_empty() {
             return;
         }
-        let duration = anim[self.frame as usize % anim.len()].duration.max(1);
-        self.elapsed += 1;
+        let len = anim.len() as u32;
+        let duration = anim[(self.frame % len) as usize].duration.max(1);
+        self.elapsed = self.elapsed.saturating_add(1);
         if self.elapsed >= duration {
             self.elapsed = 0;
-            self.frame = (self.frame + 1) % anim.len() as u32;
+            self.frame = (self.frame % len).saturating_add(1) % len;
         }
     }
 }

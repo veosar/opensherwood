@@ -24,6 +24,11 @@ pub struct SpriteImage {
     pub rgba: Vec<u8>,
 }
 
+/// Largest frame dimension accepted (retail maximum is 674x583).
+pub const MAX_FRAME_DIMENSION: u16 = 4096;
+/// Largest frame stream accepted, in bytes (a 4096x4096 span frame is at most ~33 MiB).
+pub const MAX_STREAM_BYTES: u32 = 64 * 1024 * 1024;
+
 /// The open sprite bank.
 pub struct SpriteBank {
     frames: Vec<FrameRecord>,
@@ -59,6 +64,35 @@ impl SpriteBank {
             message: e.to_string(),
         })?;
         let frames = dictionary.frames;
+        let bks_len = game
+            .resolve("Data/robinhood.bks")
+            .and_then(|(_, p)| std::fs::metadata(p).ok())
+            .map_or(0, |m| m.len());
+        // Validate the whole table now so a corrupt record can never reach the decoder later.
+        if pages.frame_count as usize != frames.len() {
+            return Err(AssetError::Format {
+                path: "Data/robinhood.dic".into(),
+                message: format!(
+                    "frame count {} does not match the table ({})",
+                    pages.frame_count,
+                    frames.len()
+                ),
+            });
+        }
+        for (i, f) in frames.iter().enumerate() {
+            let end = u64::from(f.offset) + u64::from(f.length);
+            let bad = f.width > MAX_FRAME_DIMENSION
+                || f.height > MAX_FRAME_DIMENSION
+                || f.length > MAX_STREAM_BYTES
+                || end > bks_len
+                || (f.page != dic::NO_PAGE && usize::from(f.page) >= pages.pages.len());
+            if bad {
+                return Err(AssetError::Format {
+                    path: "Data/robinhood.dic".into(),
+                    message: format!("frame record {i} is out of range"),
+                });
+            }
+        }
         let (_, bks_path) = game
             .resolve("Data/robinhood.bks")
             .ok_or_else(|| AssetError::Missing("Data/robinhood.bks".into()))?;
@@ -98,7 +132,11 @@ impl SpriteBank {
         let rec = *self
             .record(index)
             .ok_or_else(|| AssetError::Missing(format!("sprite frame {index}")))?;
-        let mut stream = vec![0u8; rec.length as usize];
+        let mut stream = Vec::new();
+        stream
+            .try_reserve_exact(rec.length as usize)
+            .map_err(|_| AssetError::Missing(format!("sprite frame {index} (allocation)")))?;
+        stream.resize(rec.length as usize, 0);
         self.bks
             .seek(SeekFrom::Start(u64::from(rec.offset)))
             .and_then(|_| self.bks.read_exact(&mut stream))
@@ -117,6 +155,10 @@ impl SpriteBank {
             height: u32::from(img.height),
             rgba: sprite_decode::to_rgba8_keyed(&img),
         });
+        if sprite.rgba.len() > self.cache_limit / 4 {
+            // Unusually large frame: serve it but never let it evict the whole cache.
+            return Ok(sprite);
+        }
         if self.cache_bytes + sprite.rgba.len() > self.cache_limit {
             self.cache.clear();
             self.cache_bytes = 0;

@@ -195,6 +195,8 @@ pub const SCROLL_SPEED: i32 = 8;
 pub const EDGE_MARGIN: i32 = 6;
 /// Largest map dimension accepted.
 pub const MAX_MAP_SIZE: u32 = 1 << 15;
+/// Largest viewport dimension accepted (must fit the renderer's framebuffer budget).
+pub const MAX_VIEWPORT: u32 = 4096;
 /// Largest number of entities accepted in a snapshot.
 pub const MAX_ENTITIES: usize = 1 << 16;
 /// Pointer coordinates (24.8) are clamped to this magnitude.
@@ -519,8 +521,8 @@ impl World {
     pub fn validate(&self) -> Result<(), String> {
         if self.viewport.0 == 0
             || self.viewport.1 == 0
-            || self.viewport.0 > MAX_MAP_SIZE
-            || self.viewport.1 > MAX_MAP_SIZE
+            || self.viewport.0 > MAX_VIEWPORT
+            || self.viewport.1 > MAX_VIEWPORT
         {
             return Err(format!("viewport {:?} out of range", self.viewport));
         }
@@ -536,7 +538,9 @@ impl World {
         if !(0..=max_x).contains(&self.camera.0) || !(0..=max_y).contains(&self.camera.1) {
             return Err(format!("camera {:?} outside the map", self.camera));
         }
-        if self.pointer.0.abs() > MAX_POINTER_RAW || self.pointer.1.abs() > MAX_POINTER_RAW {
+        if self.pointer.0.unsigned_abs() > MAX_POINTER_RAW as u32
+            || self.pointer.1.unsigned_abs() > MAX_POINTER_RAW as u32
+        {
             return Err(format!("pointer {:?} out of range", self.pointer));
         }
         if self.entities.len() > MAX_ENTITIES {
@@ -576,6 +580,14 @@ impl World {
             }
             if e.path.len() > MAX_ENTITIES {
                 return Err(format!("entity {:?} has too many path points", e.id));
+            }
+            if let Some(a) = &e.anim
+                && (a.set.len() > 256 || a.animation > 1 << 20 || a.frame > 1 << 20)
+            {
+                return Err(format!(
+                    "entity {:?} has an out-of-range animation state",
+                    e.id
+                ));
             }
             if e.speed < Fixed::ZERO || e.size < Fixed::ZERO {
                 return Err(format!("entity {:?} has a negative speed or size", e.id));

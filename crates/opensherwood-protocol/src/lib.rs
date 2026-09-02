@@ -8,6 +8,18 @@ pub use opensherwood_core::{Hashes, InputEvent, Observation, Scenario, Snapshot}
 /// Protocol version reported by `hello`.
 pub const PROTOCOL_VERSION: u32 = 2;
 
+/// Limits of a replay file (format-wide; checked while parsing and recording).
+pub mod replay_limits {
+    /// Most bytes of JSON Lines accepted.
+    pub const MAX_BYTES: usize = 64 * 1024 * 1024;
+    /// Most events.
+    pub const MAX_EVENTS: usize = 1 << 20;
+    /// Most checkpoints.
+    pub const MAX_CHECKPOINTS: usize = 1 << 16;
+    /// Highest tick a replay may reach.
+    pub const MAX_TICK: u64 = 1 << 24;
+}
+
 /// JSON-RPC 2.0 request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -411,6 +423,9 @@ impl Replay {
     /// Parse JSON Lines: the header must come first, events must be strictly ordered by
     /// `(tick, sequence)`, checkpoints strictly by tick, and all versions must be current.
     pub fn from_jsonl(text: &str) -> Result<Self, String> {
+        if text.len() > replay_limits::MAX_BYTES {
+            return Err("replay exceeds the size limit".into());
+        }
         let mut header: Option<ReplayHeader> = None;
         let mut events: Vec<ReplayEvent> = Vec::new();
         let mut checkpoints: Vec<ReplayCheckpoint> = Vec::new();
@@ -432,6 +447,11 @@ impl Replay {
                     if header.is_none() {
                         return Err(format!("line {}: event before header", n + 1));
                     }
+                    if e.tick >= replay_limits::MAX_TICK
+                        || events.len() >= replay_limits::MAX_EVENTS
+                    {
+                        return Err(format!("line {}: replay too long", n + 1));
+                    }
                     if let Some(prev) = events.last()
                         && (e.tick, e.sequence) <= (prev.tick, prev.sequence)
                     {
@@ -445,6 +465,11 @@ impl Replay {
                 ReplayLine::Checkpoint(c) => {
                     if header.is_none() {
                         return Err(format!("line {}: checkpoint before header", n + 1));
+                    }
+                    if c.tick > replay_limits::MAX_TICK
+                        || checkpoints.len() >= replay_limits::MAX_CHECKPOINTS
+                    {
+                        return Err(format!("line {}: replay too long", n + 1));
                     }
                     if let Some(prev) = checkpoints.last()
                         && c.tick <= prev.tick
@@ -484,12 +509,13 @@ impl Replay {
         out
     }
 
-    /// Last tick that has an event or checkpoint.
+    /// Number of ticks to simulate so that every event is applied and every checkpoint reached:
+    /// `max(event.tick + 1, checkpoint.tick)`.
     #[must_use]
     pub fn last_tick(&self) -> u64 {
         self.events
             .iter()
-            .map(|e| e.tick)
+            .map(|e| e.tick.saturating_add(1))
             .chain(self.checkpoints.iter().map(|c| c.tick))
             .max()
             .unwrap_or(0)
