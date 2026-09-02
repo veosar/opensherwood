@@ -47,4 +47,3 @@ that the original shows transparent (plate corners, parchment margins, cursor su
 main menu drawn with `0x07C0` keyed out matches the original's `menu_main.png` outside the text areas; the
 1024x512 backgrounds (186..189) and the 1024x768 credits background are drawn opaque. Whether the original
 uses a shadow key in UI pictures is unknown; the engine applies none there (`ui_assets.rs`).
-
