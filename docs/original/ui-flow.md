@@ -227,6 +227,14 @@ Manual p.11 numbers the elements; observed positions at 1024x768:
 | - | Foliage border along the bottom | y = 655..768, full width | `PIC` 50 (871x110) + 51 (734x110) + corners 46/47 |
 | 6 / 8 | Field of vision (Alt) and health meter around a selected character | not captured | - |
 
+Implementer's measurement (2026-09-02, template matching of the decoded pictures in `pause_menu.png`, correlation
+in brackets): eyes `BTTN` 60 at (924,0) [0.97], towers `BTTN` 4 at (998,0) [0.99] and `BTTN` 5 at (998,46)
+[0.91], map scroll `BTTN` 61 at (941,38) [0.99], standing figure `BTTN` 3 at (1,661) [0.96], kneeling figure
+`BTTN` 2 at (0,721) [0.94], the bottom-right scroll is `BTTN` 1 (43x41) at (964,701) [0.998] rather than 251,
+portrait face `PIC` 136 at (83,657) [0.83]. The portrait's parchment frame is not any picture of `DEFAULT.RES`
+between 90 and 140 px wide (`actors.res` is the only other archive), so it is probably composed from smaller
+pieces; the foliage pieces 46..51 match nowhere with confidence above 0.68, their placement is unknown.
+
 Money is the campaign money (L100 at the start). The top-right seal that ends a mission (manual p.10) appears
 only when the mission is won; the tutorial text of mission 1 calls it "the top right icon".
 
