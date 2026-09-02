@@ -12,6 +12,7 @@ pub mod image_blob;
 pub mod reader;
 pub mod rhs;
 pub mod scb;
+pub mod sprite_decode;
 pub mod sres;
 
 pub use reader::{FormatError, Reader};

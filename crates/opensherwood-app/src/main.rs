@@ -1,6 +1,10 @@
-//! `opensherwood` binary. Milestone M0: headless JSON-RPC server over stdio (`docs/harness.md`).
+//! `opensherwood` binary: headless JSON-RPC server (`--rpc stdio --headless`) or the interactive
+//! window (which also accepts JSON-RPC on stdin when `--rpc stdio` is given, so the harness can
+//! drive and screenshot the real window).
 
-mod session;
+mod engine;
+mod rpc;
+mod window;
 
 use std::path::PathBuf;
 
@@ -22,6 +26,12 @@ struct Args {
     /// Directory for captures (else OPENSHERWOOD_ARTIFACTS, else ./harness/out).
     #[arg(long)]
     artifacts: Option<PathBuf>,
+    /// Scenario to load at start in window mode: `corridor`, `map:<name>[:<ambiance>]`.
+    #[arg(long, default_value = "corridor")]
+    scenario: String,
+    /// Integer window scale factor.
+    #[arg(long, default_value_t = 2)]
+    scale: u32,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -40,16 +50,17 @@ fn main() -> anyhow::Result<()> {
             None
         }
     };
-    match args.rpc.as_deref() {
-        Some("stdio") => session::serve_stdio(game, artifacts),
+    let rpc = match args.rpc.as_deref() {
+        None => false,
+        Some("stdio") => true,
         Some(other) => anyhow::bail!("unsupported --rpc transport '{other}' (only 'stdio')"),
-        None => {
-            if args.headless {
-                anyhow::bail!("--headless without --rpc stdio does nothing");
-            }
-            anyhow::bail!(
-                "the interactive window is not implemented yet (milestone M2); use --rpc stdio"
-            )
+    };
+    let session = engine::Session::new(game, artifacts);
+    if args.headless {
+        if !rpc {
+            anyhow::bail!("--headless without --rpc stdio does nothing");
         }
+        return rpc::serve_stdio(session);
     }
+    window::run(session, rpc, &args.scenario, args.scale)
 }

@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use opensherwood_formats::{FileKind, chunk, detect, dic, image_blob, rhs, scb, sres};
+use opensherwood_formats::{
+    FileKind, chunk, detect, dic, image_blob, rhs, scb, sprite_decode, sres,
+};
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -51,6 +53,13 @@ enum Cmd {
     GameDir {
         #[arg(long)]
         path: Option<PathBuf>,
+    },
+    /// Decode one sprite bank frame (dictionary page or span encoded) and write it as PNG.
+    ExportFrame {
+        dic: PathBuf,
+        bks: PathBuf,
+        frame_index: u32,
+        out: PathBuf,
     },
 }
 
@@ -222,6 +231,46 @@ fn main() -> anyhow::Result<()> {
                 &img.to_rgba8_565(),
             )?;
             println!("wrote {} ({}x{})", out.display(), img.width, img.height);
+            Ok(())
+        }
+        Cmd::ExportFrame {
+            dic,
+            bks,
+            frame_index,
+            out,
+        } => {
+            use std::io::{Read, Seek, SeekFrom};
+            let dic_data = read(&dic)?;
+            let d = dic::parse(&dic_data)?;
+            let pages = sprite_decode::parse_pages(&d)?;
+            let rec = d
+                .frame(frame_index)
+                .with_context(|| format!("table has {} frames", d.frames.len()))?;
+            let mut f =
+                std::fs::File::open(&bks).with_context(|| format!("opening {}", bks.display()))?;
+            let mut stream = vec![0u8; rec.length as usize];
+            f.seek(SeekFrom::Start(u64::from(rec.offset)))?;
+            f.read_exact(&mut stream)
+                .with_context(|| format!("reading frame {frame_index} stream"))?;
+            let img = sprite_decode::decode_frame(rec, &stream, &pages)?;
+            write_png(
+                &out,
+                u32::from(img.width),
+                u32::from(img.height),
+                &sprite_decode::to_rgba8_keyed(&img),
+            )?;
+            let enc = if rec.page == dic::NO_PAGE {
+                String::from("span encoded")
+            } else {
+                format!("page {}", rec.page)
+            };
+            println!(
+                "wrote {} ({}x{}, {enc}, {} stream bytes)",
+                out.display(),
+                img.width,
+                img.height,
+                rec.length
+            );
             Ok(())
         }
         Cmd::GameDir { path } => {

@@ -1,5 +1,6 @@
 //! The authoritative world. M0: a synthetic scenario with a player unit, a patrolling guard and
-//! rectangular obstacles, driven only by canonical input events.
+//! rectangular obstacles, driven only by canonical input events. M2 groundwork: a scrollable camera
+//! over a map of arbitrary size (the retail backgrounds are larger than the viewport).
 
 use std::collections::BTreeMap;
 
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::fixed::Fixed;
 use crate::hash::{Encoder, Hashes, total};
-use crate::input::{Button, InputEvent};
+use crate::input::{Button, InputEvent, Key};
 use crate::rng::Rng;
 
 /// Stable entity identifier (index + generation).
@@ -27,7 +28,7 @@ pub enum EntityKind {
     Player,
     /// Patrolling guard.
     Guard,
-    /// Static obstacle (axis-aligned box centred on `pos` with half extents `size`).
+    /// Static obstacle (axis-aligned box centred on the position with half extents in `patrol[0]`).
     Obstacle,
 }
 
@@ -38,7 +39,7 @@ pub struct Entity {
     pub id: EntityId,
     /// Kind.
     pub kind: EntityKind,
-    /// Position (logical pixels, 24.8).
+    /// Position in map pixels (24.8).
     pub x: Fixed,
     /// Position.
     pub y: Fixed,
@@ -48,7 +49,7 @@ pub struct Entity {
     pub speed: Fixed,
     /// Current movement target.
     pub target: Option<(Fixed, Fixed)>,
-    /// Patrol waypoints (guards).
+    /// Patrol waypoints (guards); half extents for obstacles.
     pub patrol: Vec<(Fixed, Fixed)>,
     /// Index of the next patrol waypoint.
     pub patrol_index: u32,
@@ -66,8 +67,24 @@ pub struct Entity {
 pub enum Scenario {
     /// Synthetic scenario by name (`corridor`).
     Synthetic(String),
+    /// A retail map background with synthetic units on it (`map`, `ambiance` = Day / Night / Fog).
+    MapView {
+        /// Map base name, e.g. `sherwood`.
+        map: String,
+        /// Ambiance directory name.
+        ambiance: String,
+    },
     /// Retail mission by base name (not available until milestone M2).
     Mission(String),
+}
+
+/// Data the app must supply for map-backed scenarios (core does no I/O).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapInfo {
+    /// Map width in pixels.
+    pub width: u32,
+    /// Map height in pixels.
+    pub height: u32,
 }
 
 /// Serialisable snapshot of the whole authoritative state.
@@ -88,7 +105,11 @@ pub struct Observation {
     pub scenario: Scenario,
     /// Viewport size.
     pub viewport: (u32, u32),
-    /// Pointer position (24.8).
+    /// Map size.
+    pub map_size: (u32, u32),
+    /// Camera offset in map pixels (top-left of the viewport).
+    pub camera: (i32, i32),
+    /// Pointer position in viewport coordinates (24.8).
     pub pointer: (i32, i32),
     /// Selected entity.
     pub selected: Option<EntityId>,
@@ -99,6 +120,11 @@ pub struct Observation {
     /// Objective state for the synthetic scenario.
     pub objective_reached: bool,
 }
+
+/// Scroll speed in pixels per tick for keyboard and edge scrolling.
+pub const SCROLL_SPEED: i32 = 8;
+/// Edge-scroll margin in logical pixels.
+pub const EDGE_MARGIN: i32 = 6;
 
 /// The world.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,41 +137,62 @@ pub struct World {
     pub tick: u64,
     /// Logical viewport.
     pub viewport: (u32, u32),
-    /// Pointer position in 24.8.
+    /// Map size in pixels (viewport size for synthetic scenarios).
+    pub map_size: (u32, u32),
+    /// Camera offset in map pixels.
+    pub camera: (i32, i32),
+    /// Pointer position in viewport coordinates, 24.8.
     pub pointer: (i32, i32),
+    /// Whether a pointer position has been received since reset (edge scrolling needs a real pointer).
+    pub pointer_seen: bool,
     /// Buttons currently held.
     pub buttons_down: Vec<Button>,
+    /// Keys currently held.
+    pub keys_down: Vec<Key>,
     /// Selected entity.
     pub selected: Option<EntityId>,
     /// Entities by slot.
     pub entities: Vec<Entity>,
     /// Gameplay RNG stream.
     pub rng: Rng,
-    /// Goal position for the synthetic objective.
+    /// Goal position for the synthetic objective (map pixels).
     pub goal: (Fixed, Fixed),
     /// Whether the player reached the goal.
     pub objective_reached: bool,
 }
 
 /// Snapshot schema version.
-pub const SNAPSHOT_VERSION: u32 = 1;
+pub const SNAPSHOT_VERSION: u32 = 2;
 
 impl World {
-    /// Create a world for a scenario.
+    /// Create a world for a scenario that needs no external data.
     pub fn new(scenario: Scenario, seed: u64) -> Result<Self, String> {
         match scenario {
             Scenario::Synthetic(ref name) if name == "corridor" => {
-                Ok(Self::corridor(scenario, seed))
+                Ok(Self::build(scenario, seed, None))
             }
             Scenario::Synthetic(name) => Err(format!("unknown synthetic scenario '{name}'")),
+            Scenario::MapView { .. } => {
+                Err("map view scenarios need MapInfo (World::new_map_view)".into())
+            }
             Scenario::Mission(name) => Err(format!(
                 "mission '{name}' cannot be loaded yet (milestone M2)"
             )),
         }
     }
 
-    fn corridor(scenario: Scenario, seed: u64) -> Self {
+    /// Create a map-view world; the app resolved and decoded the background already.
+    pub fn new_map_view(scenario: Scenario, seed: u64, info: MapInfo) -> Result<Self, String> {
+        match scenario {
+            Scenario::MapView { .. } => Ok(Self::build(scenario, seed, Some(info))),
+            _ => Err("not a map view scenario".into()),
+        }
+    }
+
+    fn build(scenario: Scenario, seed: u64, map: Option<MapInfo>) -> Self {
         let f = Fixed::from_int;
+        let viewport = (640u32, 480u32);
+        let map_size = map.map_or(viewport, |m| (m.width, m.height));
         let mut entities = Vec::new();
         let id = |index: u32| EntityId {
             index,
@@ -179,10 +226,12 @@ impl World {
             facing256: 64,
             alive: true,
         });
-        for (i, (x, y, w, h)) in [(320, 60, 20, 100), (320, 420, 20, 100), (520, 400, 20, 60)]
-            .into_iter()
-            .enumerate()
-        {
+        let obstacles: &[(i32, i32, i32, i32)] = if map.is_some() {
+            &[]
+        } else {
+            &[(320, 60, 20, 100), (320, 420, 20, 100), (520, 400, 20, 60)]
+        };
+        for (i, &(x, y, w, h)) in obstacles.iter().enumerate() {
             entities.push(Entity {
                 id: id(2 + i as u32),
                 kind: EntityKind::Obstacle,
@@ -202,9 +251,13 @@ impl World {
             scenario,
             seed,
             tick: 0,
-            viewport: (640, 480),
+            viewport,
+            map_size,
+            camera: (0, 0),
             pointer: (0, 0),
+            pointer_seen: false,
             buttons_down: Vec::new(),
+            keys_down: Vec::new(),
             selected: None,
             entities,
             rng: Rng::new(seed, 1),
@@ -218,13 +271,26 @@ impl World {
         for e in events {
             self.apply(*e);
         }
+        self.scroll();
         self.simulate();
         self.tick += 1;
     }
 
+    /// Pointer position in map pixels (24.8).
+    #[must_use]
+    pub fn pointer_in_map(&self) -> (Fixed, Fixed) {
+        (
+            Fixed::from_raw(self.pointer.0) + Fixed::from_int(self.camera.0),
+            Fixed::from_raw(self.pointer.1) + Fixed::from_int(self.camera.1),
+        )
+    }
+
     fn apply(&mut self, event: InputEvent) {
         match event {
-            InputEvent::PointerMove { x256, y256 } => self.pointer = (x256, y256),
+            InputEvent::PointerMove { x256, y256 } => {
+                self.pointer = (x256, y256);
+                self.pointer_seen = true;
+            }
             InputEvent::PointerDown { button } => {
                 if !self.buttons_down.contains(&button) {
                     self.buttons_down.push(button);
@@ -236,15 +302,52 @@ impl World {
                 }
             }
             InputEvent::PointerUp { button } => self.buttons_down.retain(|b| *b != button),
-            InputEvent::Wheel { .. } | InputEvent::KeyDown { .. } | InputEvent::KeyUp { .. } => {}
+            InputEvent::KeyDown { key } => {
+                if !self.keys_down.contains(&key) {
+                    self.keys_down.push(key);
+                }
+            }
+            InputEvent::KeyUp { key } => self.keys_down.retain(|k| *k != key),
+            InputEvent::Wheel { .. } => {}
         }
     }
 
-    fn select_at_pointer(&mut self) {
+    fn scroll(&mut self) {
+        let (mut dx, mut dy) = (0, 0);
+        for k in &self.keys_down {
+            match k {
+                Key::Left => dx -= SCROLL_SPEED,
+                Key::Right => dx += SCROLL_SPEED,
+                Key::Up => dy -= SCROLL_SPEED,
+                Key::Down => dy += SCROLL_SPEED,
+                _ => {}
+            }
+        }
         let (px, py) = (
-            Fixed::from_raw(self.pointer.0),
-            Fixed::from_raw(self.pointer.1),
+            Fixed::from_raw(self.pointer.0).round(),
+            Fixed::from_raw(self.pointer.1).round(),
         );
+        let (vw, vh) = (self.viewport.0 as i32, self.viewport.1 as i32);
+        if self.pointer_seen && (0..vw).contains(&px) && (0..vh).contains(&py) {
+            if px < EDGE_MARGIN {
+                dx -= SCROLL_SPEED;
+            } else if px >= vw - EDGE_MARGIN {
+                dx += SCROLL_SPEED;
+            }
+            if py < EDGE_MARGIN {
+                dy -= SCROLL_SPEED;
+            } else if py >= vh - EDGE_MARGIN {
+                dy += SCROLL_SPEED;
+            }
+        }
+        let max_x = (self.map_size.0 as i32 - vw).max(0);
+        let max_y = (self.map_size.1 as i32 - vh).max(0);
+        self.camera.0 = (self.camera.0 + dx).clamp(0, max_x);
+        self.camera.1 = (self.camera.1 + dy).clamp(0, max_y);
+    }
+
+    fn select_at_pointer(&mut self) {
+        let (px, py) = self.pointer_in_map();
         let hit = self
             .entities
             .iter()
@@ -256,10 +359,7 @@ impl World {
 
     fn order_move_to_pointer(&mut self) {
         let Some(sel) = self.selected else { return };
-        let target = (
-            Fixed::from_raw(self.pointer.0),
-            Fixed::from_raw(self.pointer.1),
-        );
+        let target = self.pointer_in_map();
         if let Some(e) = self
             .entities
             .iter_mut()
@@ -277,8 +377,8 @@ impl World {
             .map(|e| (e.x, e.y, e.patrol[0].0, e.patrol[0].1))
             .collect();
         let (w, h) = (
-            Fixed::from_int(self.viewport.0 as i32),
-            Fixed::from_int(self.viewport.1 as i32),
+            Fixed::from_int(self.map_size.0 as i32),
+            Fixed::from_int(self.map_size.1 as i32),
         );
         for e in &mut self.entities {
             if !e.alive || e.kind == EntityKind::Obstacle {
@@ -358,6 +458,8 @@ impl World {
             tick: self.tick,
             scenario: self.scenario.clone(),
             viewport: self.viewport,
+            map_size: self.map_size,
+            camera: self.camera,
             pointer: self.pointer,
             selected: self.selected,
             entities: self.entities.clone(),
@@ -375,13 +477,25 @@ impl World {
         w.u64(self.tick)
             .u32(self.viewport.0)
             .u32(self.viewport.1)
+            .u32(self.map_size.0)
+            .u32(self.map_size.1);
+        w.i32(self.camera.0)
+            .i32(self.camera.1)
             .i32(self.pointer.0)
             .i32(self.pointer.1);
-        w.u64(self.seed).u8(u8::from(self.objective_reached));
+        w.u64(self.seed)
+            .u8(u8::from(self.objective_reached))
+            .u8(u8::from(self.pointer_seen));
         match &self.scenario {
             Scenario::Synthetic(n) => w.u8(1).str(n),
+            Scenario::MapView { map, ambiance } => w.u8(3).str(map).str(ambiance),
             Scenario::Mission(n) => w.u8(2).str(n),
         };
+        let mut keys = Vec::new();
+        for k in &self.keys_down {
+            InputEvent::KeyDown { key: *k }.encode(&mut keys);
+        }
+        w.bytes(&keys);
         parts.insert("world".into(), w.finish());
 
         let mut a = Encoder::new("actors");
@@ -492,10 +606,9 @@ mod tests {
                     saved = Some(w.snapshot());
                 }
                 w.step(&[]);
-                if Some(t + 50) == snap_at.map(|s| s + 50) && t == snap_at.unwrap_or(u64::MAX) + 25
-                {
+                if snap_at.is_some_and(|s| t == s + 25) {
                     w.restore(saved.as_ref().unwrap()).unwrap();
-                    for _ in 0..25 {
+                    for _ in 0..26 {
                         w.step(&[]);
                     }
                 }
@@ -515,8 +628,61 @@ mod tests {
     }
 
     #[test]
+    fn camera_scrolls_with_keys_and_edges_and_affects_picking() {
+        let scenario = Scenario::MapView {
+            map: "test".into(),
+            ambiance: "Day".into(),
+        };
+        let mut w = World::new_map_view(
+            scenario,
+            1,
+            MapInfo {
+                width: 2000,
+                height: 1000,
+            },
+        )
+        .unwrap();
+        w.step(&[InputEvent::KeyDown { key: Key::Right }]);
+        w.step(&[]);
+        w.step(&[InputEvent::KeyUp { key: Key::Right }]);
+        assert_eq!(w.camera, (SCROLL_SPEED * 2, 0));
+        // edge scroll down
+        w.step(&[InputEvent::PointerMove {
+            x256: 320 * 256,
+            y256: 479 * 256,
+        }]);
+        assert_eq!(w.camera.1, SCROLL_SPEED);
+        // picking uses map coordinates: the player at (80,240) is now at viewport (80-16, 240-8)
+        click(
+            &mut w,
+            80 - SCROLL_SPEED * 3,
+            240 - SCROLL_SPEED,
+            Button::Left,
+        );
+        assert!(w.selected.is_some());
+        // camera never leaves the map
+        for _ in 0..1000 {
+            w.step(&[
+                InputEvent::KeyDown { key: Key::Right },
+                InputEvent::KeyDown { key: Key::Down },
+            ]);
+        }
+        assert_eq!(w.camera, (2000 - 640, 1000 - 480));
+    }
+
+    #[test]
     fn unknown_scenario_is_an_error() {
         assert!(World::new(Scenario::Synthetic("nope".into()), 1).is_err());
         assert!(World::new(Scenario::Mission("H01".into()), 1).is_err());
+        assert!(
+            World::new(
+                Scenario::MapView {
+                    map: "x".into(),
+                    ambiance: "Day".into()
+                },
+                1
+            )
+            .is_err()
+        );
     }
 }

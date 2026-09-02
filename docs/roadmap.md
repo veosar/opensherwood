@@ -22,13 +22,16 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 - [x] Exact decode of `.map` / `.min` / `.pak` / `.sxt` containers to 16-bit pixels (all 48+ files)
 - [x] Channel order of the 16-bit pixels verified (RGB565; decoded minimap and slides look right)
 - [x] SRES pictures decoded and viewable locally (`opensherwood-tools export-sres`)
-- [ ] Sprite bank: one independently verified frame, then all frames of one profile, then Day/Night/Fog variants
+- [x] Sprite bank: both encodings decoded, every one of the 404,855 frames consumed exactly, frames rendered and checked (`docs/formats/sprites.md`)
 - [ ] SCB disassembler consumes the tutorial script with every unknown explicitly listed
 - [ ] RHP: motion geometry / path graph chunk decoded well enough to draw it and compare with the original's `EULER` / `MOTION` overlays
 - [ ] RHM: actor list (`BOYZ`) decoded for the tutorial
 - [ ] First controlled oracle trace of the original (see `docs/oracle.md`)
 
 ## M2: Scene vertical slice
+
+- [x] Interactive window (winit + wgpu presenter of the CPU framebuffer), letterboxed, driven by the same canonical input events
+- [x] Map view scenario: retail background + camera (keys, edge scrolling) + picking in map coordinates; RPC works in window mode too
 
 - [ ] VFS resolves base + language overlay (`2047/data`) + mod overlays; content fingerprint
 - [ ] Tutorial map renders with static entities, camera, picking, selection, one animated actor

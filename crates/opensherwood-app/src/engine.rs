@@ -1,28 +1,39 @@
-//! JSON-RPC session over stdio.
+//! Engine session: world + assets + RPC method dispatch, shared by headless and window modes.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 use opensherwood_assets::GameDir;
-use opensherwood_core::{InputEvent, Snapshot, World};
+use opensherwood_core::{InputEvent, MapInfo, Scenario, Snapshot, World};
 use opensherwood_protocol::{
-    CaptureParams, CaptureResult, HelloResult, ObserveResult, PROTOCOL_VERSION, Request,
-    ResetParams, Response, RestoreParams, RpcError, SnapshotResult, StepParams, StepResult,
+    CaptureParams, CaptureResult, HelloResult, ObserveResult, PROTOCOL_VERSION, ResetParams,
+    RestoreParams, RpcError, SnapshotResult, StepParams, StepResult,
 };
-use opensherwood_render::{Framebuffer, render};
+use opensherwood_render::{Background, Framebuffer, render};
 use serde_json::{Value, json};
 
-struct Session {
+/// Result of an RPC method.
+pub type RpcResult = Result<Value, RpcError>;
+
+/// One engine instance.
+pub struct Session {
     game: Option<GameDir>,
     artifacts: PathBuf,
-    world: Option<World>,
+    /// The world, if a scenario is loaded.
+    pub world: Option<World>,
+    background: Option<Background>,
     snapshots: BTreeMap<String, Snapshot>,
     next_snapshot: u64,
     frame: Option<Framebuffer>,
 }
 
-type RpcResult = Result<Value, RpcError>;
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("world", &self.world.as_ref().map(|w| w.tick))
+            .finish_non_exhaustive()
+    }
+}
 
 fn params<T: serde::de::DeserializeOwned + Default>(p: Option<Value>) -> Result<T, RpcError> {
     match p {
@@ -41,30 +52,119 @@ fn ok<T: serde::Serialize>(v: T) -> RpcResult {
     serde_json::to_value(v).map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))
 }
 
+fn engine_err(msg: impl Into<String>) -> RpcError {
+    RpcError::new(RpcError::ENGINE, msg)
+}
+
 impl Session {
+    /// Create a session (no world yet).
+    #[must_use]
+    pub fn new(game: Option<GameDir>, artifacts: PathBuf) -> Self {
+        Self {
+            game,
+            artifacts,
+            world: None,
+            background: None,
+            snapshots: BTreeMap::new(),
+            next_snapshot: 0,
+            frame: None,
+        }
+    }
+
+    /// Parse a `--scenario` argument.
+    pub fn parse_scenario(text: &str) -> Result<Scenario, String> {
+        let mut parts = text.split(':');
+        match parts.next() {
+            Some("map") => {
+                let map = parts
+                    .next()
+                    .ok_or("map scenario needs a name: map:<name>[:<ambiance>]")?;
+                let ambiance = parts.next().unwrap_or("Day");
+                Ok(Scenario::MapView {
+                    map: map.to_string(),
+                    ambiance: ambiance.to_string(),
+                })
+            }
+            Some("mission") => Ok(Scenario::Mission(parts.next().unwrap_or("").to_string())),
+            Some(name) => Ok(Scenario::Synthetic(name.to_string())),
+            None => Err("empty scenario".into()),
+        }
+    }
+
+    /// Load a scenario (what `reset` does).
+    pub fn reset(&mut self, scenario: Scenario, seed: u64) -> Result<(), String> {
+        let (world, background) = match &scenario {
+            Scenario::MapView { map, ambiance } => {
+                let game = self
+                    .game
+                    .as_ref()
+                    .ok_or("map scenarios need a game directory")?;
+                let logical = format!("Data/Levels/{ambiance}/{map}.map");
+                let data = game.read(&logical).map_err(|e| e.to_string())?;
+                let img = opensherwood_formats::image_blob::parse_file(&data)
+                    .map_err(|e| format!("{logical}: {e}"))?;
+                let bg = Background {
+                    width: u32::from(img.width),
+                    height: u32::from(img.height),
+                    rgba: img.to_rgba8_565(),
+                };
+                let info = MapInfo {
+                    width: bg.width,
+                    height: bg.height,
+                };
+                (World::new_map_view(scenario, seed, info)?, Some(bg))
+            }
+            _ => (World::new(scenario, seed)?, None),
+        };
+        self.world = Some(world);
+        self.background = background;
+        self.frame = None;
+        Ok(())
+    }
+
+    /// Advance one tick with the given events (window mode).
+    pub fn tick(&mut self, events: &[InputEvent]) {
+        if let Some(w) = self.world.as_mut() {
+            w.step(events);
+            self.frame = None;
+        }
+    }
+
+    /// The current frame, rendering it if needed.
+    pub fn frame(&mut self) -> Option<&Framebuffer> {
+        let world = self.world.as_ref()?;
+        if self.frame.is_none() {
+            self.frame = Some(render(world, self.background.as_ref()));
+        }
+        self.frame.as_ref()
+    }
+
     fn world(&mut self) -> Result<&mut World, RpcError> {
         self.world
             .as_mut()
-            .ok_or_else(|| RpcError::new(RpcError::ENGINE, "no world loaded; call reset first"))
+            .ok_or_else(|| engine_err("no world loaded; call reset first"))
     }
 
-    fn dispatch(&mut self, method: &str, p: Option<Value>) -> RpcResult {
+    /// Dispatch one RPC method.
+    pub fn dispatch(&mut self, method: &str, p: Option<Value>) -> RpcResult {
         match method {
             "hello" => ok(HelloResult {
                 protocol: PROTOCOL_VERSION,
                 build: env!("CARGO_PKG_VERSION").to_string(),
                 ruleset: opensherwood_core::RULESET_VERSION,
-                capabilities: vec!["synthetic".into(), "capture".into(), "snapshot".into()],
+                capabilities: vec![
+                    "synthetic".into(),
+                    "capture".into(),
+                    "snapshot".into(),
+                    "map_view".into(),
+                ],
                 content_fingerprint: self.game.as_ref().map(GameDir::fingerprint),
             }),
             "reset" => {
                 let p: ResetParams = params_required(p)?;
-                let world = World::new(p.scenario, p.seed)
-                    .map_err(|e| RpcError::new(RpcError::ENGINE, e))?;
-                self.frame = None;
-                let hashes = world.hashes();
-                self.world = Some(world);
-                ok(json!({ "tick": 0, "hashes": hashes }))
+                self.reset(p.scenario, p.seed).map_err(engine_err)?;
+                let world = self.world()?;
+                ok(json!({ "tick": world.tick, "hashes": world.hashes() }))
             }
             "step" => {
                 let p: StepParams = params_required(p)?;
@@ -140,21 +240,16 @@ impl Session {
                     }
                 };
                 let world = self.world.get_or_insert_with(|| snap.world.clone());
-                world
-                    .restore(&snap)
-                    .map_err(|e| RpcError::new(RpcError::ENGINE, e))?;
+                world.restore(&snap).map_err(engine_err)?;
                 self.frame = None;
                 ok(json!({ "tick": world.tick, "hashes": world.hashes() }))
             }
             "capture" => {
                 let p: CaptureParams = params(p)?;
-                if self.frame.is_none() {
-                    let world = self.world.as_ref().ok_or_else(|| {
-                        RpcError::new(RpcError::ENGINE, "no world loaded; call reset first")
-                    })?;
-                    self.frame = Some(render(world));
-                }
-                let frame = self.frame.as_ref().expect("frame rendered above");
+                let artifacts = self.artifacts.clone();
+                let frame = self
+                    .frame()
+                    .ok_or_else(|| engine_err("no world loaded; call reset first"))?;
                 let mut written = None;
                 if let Some(rel) = p.path {
                     if rel.contains("..") || PathBuf::from(&rel).is_absolute() {
@@ -163,7 +258,7 @@ impl Session {
                             "path must be relative",
                         ));
                     }
-                    let path = self.artifacts.join(rel);
+                    let path = artifacts.join(rel);
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent)
                             .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
@@ -189,47 +284,4 @@ impl Session {
             )),
         }
     }
-}
-
-/// Serve requests from stdin until EOF or `shutdown`.
-pub fn serve_stdio(game: Option<GameDir>, artifacts: PathBuf) -> anyhow::Result<()> {
-    let mut session = Session {
-        game,
-        artifacts,
-        world: None,
-        snapshots: BTreeMap::new(),
-        next_snapshot: 0,
-        frame: None,
-    };
-    let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    for line in stdin.lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let response = match serde_json::from_str::<Request>(&line) {
-            Err(e) => Response::err(Value::Null, RpcError::new(RpcError::PARSE, e.to_string())),
-            Ok(req) => {
-                let id = req.id.clone().unwrap_or(Value::Null);
-                let is_shutdown = req.method == "shutdown";
-                let resp = match session.dispatch(&req.method, req.params) {
-                    Ok(v) => Response::ok(id, v),
-                    Err(e) => Response::err(id, e),
-                };
-                if is_shutdown {
-                    serde_json::to_writer(&mut out, &resp)?;
-                    out.write_all(b"\n")?;
-                    out.flush()?;
-                    return Ok(());
-                }
-                resp
-            }
-        };
-        serde_json::to_writer(&mut out, &response)?;
-        out.write_all(b"\n")?;
-        out.flush()?;
-    }
-    Ok(())
 }

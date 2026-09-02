@@ -16,7 +16,7 @@ pub mod world;
 pub use fixed::Fixed;
 pub use hash::Hashes;
 pub use input::{Button, InputEvent, Key};
-pub use world::{Entity, EntityId, EntityKind, Observation, Scenario, Snapshot, World};
+pub use world::{Entity, EntityId, EntityKind, MapInfo, Observation, Scenario, Snapshot, World};
 
 /// Ruleset version: bump when simulation semantics change so old replays/hashes are not compared.
 pub const RULESET_VERSION: u32 = 1;

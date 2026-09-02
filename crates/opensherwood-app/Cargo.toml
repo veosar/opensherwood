@@ -1,6 +1,6 @@
 [package]
 name = "opensherwood-app"
-description = "OpenSherwood game binary: headless JSON-RPC server (M0) and, later, the interactive game"
+description = "OpenSherwood game binary: headless JSON-RPC server and the interactive window"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,10 +16,14 @@ opensherwood-core.workspace = true
 opensherwood-render.workspace = true
 opensherwood-protocol.workspace = true
 opensherwood-assets.workspace = true
+opensherwood-formats.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 anyhow.workspace = true
+winit = "0.30"
+wgpu = "24"
+pollster = "0.4"
 
 [lints]
 workspace = true

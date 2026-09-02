@@ -32,6 +32,17 @@ Example session:
 
 Coordinates are logical pixels in 24.8 fixed point (`x256 = x * 256`).
 
+## Scenarios
+
+| `reset` scenario | Needs game data | What it is |
+|---|---|---|
+| `{"synthetic": "corridor"}` | no | 640x480 room, a player, a patrolling guard, three obstacles, a goal |
+| `{"map_view": {"map": "sherwood", "ambiance": "Day"}}` | yes | the retail background of that map with the synthetic units on it and a scrollable camera |
+| `{"mission": "<name>"}` | yes | not implemented yet (milestone M2/M4) |
+
+`harness/tools/drive.py` runs a short scripted session (select, order, scroll, capture) in headless or window
+mode and prints where the PNGs went; agents use it to look at the engine after a change.
+
 ## Artifacts
 
 Local runs write under `harness/out/` (git-ignored). CI uploads only synthetic artifacts. Anything derived from

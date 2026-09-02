@@ -17,6 +17,17 @@ pub struct Framebuffer {
 /// An RGBA colour.
 pub type Color = [u8; 4];
 
+/// A decoded background picture in map pixels (RGBA8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Background {
+    /// Width.
+    pub width: u32,
+    /// Height.
+    pub height: u32,
+    /// Pixels.
+    pub rgba: Vec<u8>,
+}
+
 impl Framebuffer {
     /// Allocate a black, opaque buffer.
     #[must_use]
@@ -113,6 +124,40 @@ impl Framebuffer {
         }
     }
 
+    /// Copy an opaque RGBA region of `src` (source rectangle at `sx,sy`) to `dx,dy`, clipped.
+    #[allow(clippy::too_many_arguments)]
+    pub fn blit_region(
+        &mut self,
+        src: &[u8],
+        src_w: u32,
+        src_h: u32,
+        sx: i32,
+        sy: i32,
+        dx: i32,
+        dy: i32,
+        w: u32,
+        h: u32,
+    ) {
+        for row in 0..h as i32 {
+            let syy = sy + row;
+            let dyy = dy + row;
+            if syy < 0 || syy >= src_h as i32 || dyy < 0 || dyy >= self.height as i32 {
+                continue;
+            }
+            let x_start = (-sx).max(-dx).max(0);
+            let x_end = (w as i32)
+                .min(src_w as i32 - sx)
+                .min(self.width as i32 - dx);
+            if x_end <= x_start {
+                continue;
+            }
+            let si = ((syy as u32 * src_w) as i32 + sx + x_start) as usize * 4;
+            let di = ((dyy as u32 * self.width) as i32 + dx + x_start) as usize * 4;
+            let n = (x_end - x_start) as usize * 4;
+            self.rgba[di..di + n].copy_from_slice(&src[si..si + n]);
+        }
+    }
+
     /// Blit an RGBA image (alpha 0 = skip, otherwise opaque copy).
     pub fn blit_rgba(&mut self, x: i32, y: i32, w: u32, h: u32, rgba: &[u8]) {
         for sy in 0..h {
@@ -178,15 +223,31 @@ pub mod palette {
     pub const TARGET: Color = [120, 200, 255, 255];
     /// Pointer.
     pub const POINTER: Color = [255, 255, 0, 255];
+    /// Outside the map.
+    pub const VOID: Color = [0, 0, 0, 255];
 }
 
-/// Render a world into a new framebuffer at its logical viewport size.
+/// Render a world into a new framebuffer at its logical viewport size, with an optional background.
 #[must_use]
-pub fn render(world: &World) -> Framebuffer {
+pub fn render(world: &World, background: Option<&Background>) -> Framebuffer {
     let mut fb = Framebuffer::new(world.viewport.0, world.viewport.1);
-    fb.clear(palette::GROUND);
-    let px = |f: Fixed| f.round();
-    fb.circle(px(world.goal.0), px(world.goal.1), 16, palette::GOAL);
+    let (cx, cy) = world.camera;
+    match background {
+        Some(bg) => {
+            fb.clear(palette::VOID);
+            fb.blit_region(
+                &bg.rgba, bg.width, bg.height, cx, cy, 0, 0, fb.width, fb.height,
+            );
+        }
+        None => fb.clear(palette::GROUND),
+    }
+    let px = |f: Fixed, c: i32| f.round() - c;
+    fb.circle(
+        px(world.goal.0, cx),
+        px(world.goal.1, cy),
+        16,
+        palette::GOAL,
+    );
     for e in &world.entities {
         if !e.alive {
             continue;
@@ -195,10 +256,10 @@ pub fn render(world: &World) -> Framebuffer {
             EntityKind::Obstacle => {
                 let (hw, hh) = (e.patrol[0].0, e.patrol[0].1);
                 fb.fill_rect(
-                    px(e.x - hw),
-                    px(e.y - hh),
-                    px(e.x + hw),
-                    px(e.y + hh),
+                    px(e.x - hw, cx),
+                    px(e.y - hh, cy),
+                    px(e.x + hw, cx),
+                    px(e.y + hh, cy),
                     palette::OBSTACLE,
                 );
             }
@@ -208,12 +269,23 @@ pub fn render(world: &World) -> Framebuffer {
                 } else {
                     palette::GUARD
                 };
-                fb.fill_circle(px(e.x), px(e.y), px(e.size), c);
+                fb.fill_circle(px(e.x, cx), px(e.y, cy), e.size.round(), c);
                 if let Some((tx, ty)) = e.target {
-                    fb.line(px(e.x), px(e.y), px(tx), px(ty), palette::TARGET);
+                    fb.line(
+                        px(e.x, cx),
+                        px(e.y, cy),
+                        px(tx, cx),
+                        px(ty, cy),
+                        palette::TARGET,
+                    );
                 }
                 if world.selected == Some(e.id) {
-                    fb.circle(px(e.x), px(e.y), px(e.size) + 3, palette::SELECTION);
+                    fb.circle(
+                        px(e.x, cx),
+                        px(e.y, cy),
+                        e.size.round() + 3,
+                        palette::SELECTION,
+                    );
                 }
             }
         }
@@ -235,8 +307,8 @@ mod tests {
     #[test]
     fn rendering_is_deterministic_and_png_encodes() {
         let w = World::new(Scenario::Synthetic("corridor".into()), 1).unwrap();
-        let a = render(&w);
-        let b = render(&w);
+        let a = render(&w, None);
+        let b = render(&w, None);
         assert_eq!(a.hash(), b.hash());
         assert_eq!(a.rgba.len(), 640 * 480 * 4);
         let png = a.encode_png().unwrap();
@@ -250,5 +322,20 @@ mod tests {
         fb.put(4, 4, [1, 1, 1, 255]);
         fb.fill_rect(-10, -10, 100, 100, [7, 7, 7, 255]);
         assert!(fb.rgba.chunks_exact(4).all(|p| p == [7, 7, 7, 255]));
+    }
+
+    #[test]
+    fn blit_region_clips_on_every_side() {
+        let src: Vec<u8> = (0..(3 * 3)).flat_map(|i| [i as u8, 0, 0, 255]).collect();
+        let mut fb = Framebuffer::new(4, 4);
+        fb.blit_region(&src, 3, 3, -1, -1, 2, 2, 4, 4);
+        // Source pixel (0,0) lands at (3,3); (2,2) would land at (5,5): clipped.
+        assert_eq!(
+            &fb.rgba[(3 * 4 + 3) * 4..(3 * 4 + 3) * 4 + 4],
+            &[0, 0, 0, 255]
+        );
+        fb.blit_region(&src, 3, 3, 1, 1, 0, 0, 4, 4);
+        assert_eq!(&fb.rgba[0..4], &[4, 0, 0, 255]);
+        assert_eq!(&fb.rgba[5 * 4..5 * 4 + 4], &[8, 0, 0, 255]);
     }
 }

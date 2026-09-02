@@ -69,9 +69,12 @@ class Engine:
         game_dir: Path | None = None,
         artifacts: Path | None = None,
         extra_args: list[str] | None = None,
+        headless: bool = True,
     ):
         self.binary = binary or find_binary()
-        args = [str(self.binary), "--rpc", "stdio", "--headless"]
+        args = [str(self.binary), "--rpc", "stdio"]
+        if headless:
+            args.append("--headless")
         if game_dir:
             args += ["--game-dir", str(game_dir)]
         if artifacts:

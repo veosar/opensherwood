@@ -3,7 +3,7 @@
 OpenSherwood is a Cargo workspace. Dependencies point downwards only.
 
 ```
-opensherwood-app  (binaries: `opensherwood` game / headless RPC server)
+opensherwood-app  (binary `opensherwood`: headless RPC server, or the winit + wgpu window; modules engine.rs = session + RPC dispatch, rpc.rs = stdio transport, window.rs = presenter + input mapping)
    |
    +-- opensherwood-protocol   JSON-RPC types, canonical input events, ReplayV1, state hash schema, observation DTOs
    +-- opensherwood-render     deterministic CPU compositor -> framebuffer; PNG capture; Presenter trait (winit + wgpu impl lives in app)

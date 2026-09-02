@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use opensherwood_formats::{FileKind, chunk, detect, dic, image_blob, rhs, scb, sres};
+use opensherwood_formats::{
+    FileKind, chunk, detect, dic, image_blob, rhs, scb, sprite_decode, sres,
+};
 
 fn game_dir() -> Option<PathBuf> {
     let p = std::env::var_os("OPENSHERWOOD_GAME_DIR")?;
@@ -202,4 +204,57 @@ fn sprite_profiles_reference_frames_inside_the_dictionary_table() {
         refs > 400_000,
         "expected > 400k unique frame references, found {refs}"
     );
+}
+
+#[test]
+fn sprite_frames_decode_to_their_dimensions() {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let dir = need_data!();
+    let dic_data = std::fs::read(dir.join("DATA/robinhood.dic")).unwrap();
+    let d = dic::parse(&dic_data).unwrap();
+    let pages = sprite_decode::parse_pages(&d).unwrap();
+    assert_eq!(pages.pages.len(), 134);
+    assert_eq!(pages.pages[0].entries.len(), 4096);
+    assert_eq!(pages.frame_count as usize, d.frames.len());
+    assert!(pages.pages.iter().all(|p| p.entries.len() <= 4096));
+
+    let mut bks = std::fs::File::open(dir.join("DATA/robinhood.bks")).unwrap();
+    let mut decode = |index: usize| {
+        let rec = &d.frames[index];
+        let mut stream = vec![0u8; rec.length as usize];
+        bks.seek(SeekFrom::Start(u64::from(rec.offset))).unwrap();
+        bks.read_exact(&mut stream).unwrap();
+        let img = sprite_decode::decode_frame(rec, &stream, &pages)
+            .unwrap_or_else(|e| panic!("frame {index}: {e}"));
+        assert_eq!(img.width, rec.width);
+        assert_eq!(img.height, rec.height);
+        assert_eq!(
+            img.pixels.len(),
+            usize::from(rec.width) * usize::from(rec.height)
+        );
+        img
+    };
+    // Frame 0 is the 4x1 placeholder: one symbol expanding to four transparent pixels.
+    let first = decode(0);
+    assert!(first.pixels.iter().all(|&p| p == sprite_decode::COLOR_KEY));
+    // A sample across the whole table (both encodings), plus every page-less frame in the
+    // first block of them.
+    let mut count = 1;
+    let mut pageless = 0;
+    for i in (1..d.frames.len()).step_by(97) {
+        decode(i);
+        count += 1;
+    }
+    for (i, rec) in d.frames.iter().enumerate() {
+        if rec.page == dic::NO_PAGE {
+            decode(i);
+            pageless += 1;
+            if pageless == 500 {
+                break;
+            }
+        }
+    }
+    assert!(count > 4000, "decoded {count} sampled frames");
+    assert_eq!(pageless, 500);
 }

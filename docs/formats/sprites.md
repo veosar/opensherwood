@@ -1,15 +1,17 @@
 # Sprite bank (`.rhs`, `robinhood.dic`, `robinhood.bks`)
 
 Status: `.rhs` **verified** (all 233 files parse to the exact end and every frame reference resolves);
-`.dic` frame table **verified**; dictionary region and `.bks` symbol streams **stub** (pixel decoding unknown).
-This is milestone M1's critical path.
+`.dic` header, dictionary pages and frame table **verified**; `.bks` pixel decoding **verified** for both
+encodings (every one of the 404,855 streams is consumed exactly; rendered frames are recognisable sprites).
+Open points: the meaning of the second key colour `0x001F` (drawn as a shadow?) and of the `.rhs` `unknown_*`
+fields. Parsers: `crates/opensherwood-formats/src/{rhs.rs,dic.rs,sprite_decode.rs}`.
 
 ## Files
 
 - `DATA/Characters/*.rhs` (117 files) and `DATA/Animations/{Day,Night,Fog}/*.rhs` (116): sprite *profiles*:
   named sequences of animations whose frames reference the global frame table.
-- `DATA/robinhood.dic` (9,699,680 B): a dictionary region followed by the global frame table.
-- `DATA/robinhood.bks` (592,261,466 B): the concatenated symbol streams of all frames, in frame-table order.
+- `DATA/robinhood.dic` (9,699,680 B): 134 dictionary pages followed by the global frame table.
+- `DATA/robinhood.bks` (592,261,466 B): the pixel streams of all frames, back to back, in frame-table order.
 
 All three start with the same `u32 0x0003EBC9`: a bank generation id (the executable reports an RHS that "was not
 generated with the current bank"), not a file-type magic.
@@ -39,7 +41,7 @@ sequence[sequence_count]:
             u16  unknown_0x0c   0; 414/421 on cart animations
 ```
 
-Examples: `RobinHood.rhs` = 1 sequence "Robin des bois", 90x108, 2048 animations, 13,472 frame refs (actions x 8
+Examples: `RobinHood.rhs` = 1 sequence "Robin des bois", 90x108, 2272 animations, 13,472 frame refs (actions x 8
 directions x variants); `Child.rhs` = 736 animations; `ACCESSORIES_Coin.rhs` = 48 one-frame animations of a 6x6 coin
 (probably one per ground orientation); `Cr01fx.rhs` = 4 map animations (butterflies, woodpecker) with 66-99 frame
 loops. Idle animations use ping-pong frame orders (a, a+1, a+2, a+3, a+2, a+1) with durations 6,2,2,15,4,...
@@ -49,43 +51,95 @@ Across all profiles: 962,305 frame references, 404,807 unique frame indices, ran
 ## `.dic` layout
 
 ```
-u32  bank_generation
-u16  page_count             134
-u16  symbols_per_page       4096
-u8[] dictionary_region      4,031,702 bytes, undecoded (see below)
-frame[404855]:              located from the end of file; records chain contiguously through .bks
+u32  bank_generation                 0x0003EBC9
+u16  page_count                      134
+page[page_count]:
+    u16  entry_count                 4096 for most pages; 16..2748 for 18 pages (see below)
+    entry[entry_count]:
+        u16[4] pixels                one horizontal run of 4 RGB565 pixels (8 bytes)
+u32  frame_count                     404855 (= number of records below)
+frame[frame_count]:                  14-byte records, to the exact end of the file
     u16  width
     u16  height
-    u32  offset             byte offset of the symbol stream in .bks
-    u32  length             byte length of the stream (always even; u16 symbols)
-    u16  page               dictionary page 0..133, or 0xFFFF for 10,134 large frames (up to 419x363)
+    u32  offset                      byte offset of the frame's stream in .bks
+    u32  length                      byte length of the stream (always even)
+    u16  page                        dictionary page 0..133, or 0xFFFF (span encoding, 10,134 frames)
 ```
 
-`offset[i] + length[i] == offset[i+1]` for every record and the last record ends exactly at the `.bks` size, so the
-bank is nothing but the streams back to back. Frame 0 is a 4x1 placeholder of 2 bytes. Pages are assigned in
-increasing frame order (page 0 = frames 0..270, page 1 = 271..453, ...), i.e. a page is a dictionary trained on a
-consecutive group of frames. Frames with page `0xFFFF` are the largest ones and use a different or no dictionary.
+Size check: `4 + 2 + 134*2 + 503,929*8 + 4 + 404,855*14 = 9,699,680`, the file size. The third header word (4096)
+that `dic.rs` still calls `symbols_per_page` is simply page 0's `entry_count`; the field name should be updated
+when the parser is next touched.
 
-## `.bks` symbol streams (observed, undecoded)
+Page entry counts other than 4096: pages 22..26 (2568, 2649, 2285, 2748, 2402), 30, 31 (2048), 44 (16),
+45..47 (801, 971, 1233), 49..53 (992, 806, 1318, 2350, 1519), 55, 56 (888, 1149). In 130 pages every entry is
+referenced by at least one stream; pages 26, 47, 50 and 51 have 3, 1, 2 and 1 unreferenced trailing entries.
 
-- Every `u16` in the sampled streams is `< 4096`, matching `symbols_per_page`.
-- Symbol `0x066D` (1645) makes up ~63% of the first megabytes: probably "transparent run" or the most common block.
-- Pixels per symbol vary per frame (1.7 .. 10), so a symbol expands to a variable-length run of pixels, not a
-  fixed block: a dictionary of pixel runs (LZ78/VQ-like) with per-page codebooks of 4096 entries.
-- The dictionary region starts with 16-bit values that look like RGB565 colours (`0x07C0`, i.e. bright green,
-  recurs and is probably the transparent key), but the region is not a whole number of fixed-size pages
-  (4,031,702 / 134 is not an integer), so pages are variable-length and there must be an index or per-entry
-  lengths still to be found.
+`offset[i] + length[i] == offset[i+1]` for every record and the last record ends exactly at the `.bks` size.
+Pages are assigned in increasing frame order (page 0 = frames 0..270, page 1 = 271..453, ...): a page is a
+codebook trained on a consecutive group of frames. Frame 0 is a 4x1 placeholder of one symbol (four transparent
+pixels).
 
-## Approach (see the `format-investigation` skill)
+## Pixel data (`.bks` streams)
 
-1. Find page boundaries in the dictionary region (search for a page index table: 134 monotonically increasing u32s,
-   or per-page symbol length tables of 4096 small values).
-2. Take the smallest frames (6x6 coin, 4x1 frame 0, 12x12 butterflies), decode candidate expansions and render them.
-3. Statistics of symbol streams per frame: run lengths, whether streams start/end with fixed symbols (row markers).
-4. Behavioural cross-check with the original's `STATUS FRAMECACHE` output.
+Pixels are RGB565 little-endian words, as in `docs/formats/image-blob.md`. Two colours are keys:
+
+| Value | Meaning |
+|---|---|
+| `0x07C0` | transparent (bright green). 17.3% of dictionary pixels, ~56% of span-frame pixels including the area outside spans. |
+| `0x001F` | second key (pure blue): 10.5% of dictionary pixels, found where a drop shadow would lie (under a character's feet, next to the coin). Inferred: the original draws it as a translucent shadow; **unverified**. |
+
+`0x07E0` (pure green) occurs 4 times in 2 million dictionary pixels and is *not* a key; `0xF81F` and `0xFFFF`
+never occur.
+
+### Dictionary-page frames (`page != 0xFFFF`, 394,721 frames)
+
+The stream is exactly `ceil(width / 4) * height` little-endian `u16` symbols. Symbol `s` of row `y` expands to
+`page.entry[s]`, four pixels left to right; the last symbol of a row is truncated to the frame width (rows are
+padded to a multiple of 4 pixels in the encoded form). There are no row markers and no escape codes; every
+symbol is `< entry_count` of its page. The most frequent symbol of a page is that page's all-transparent entry
+(page 0: symbol 1645 = `0x066D`; the index differs per page). Only 478 of the 503,929 entries are four equal pixels,
+so the codebook is a vector quantiser over 4x1 blocks, not a run-length table.
+
+### Span frames (`page == 0xFFFF`, 10,134 frames, up to 674x583)
+
+```
+row[height]:
+    u16  first_x
+    u16  last_x                      inclusive; 0xFFFF = empty row (first_x is then always 0)
+    u16  pixels[last_x - first_x + 1] RGB565, may contain the key colours
+```
+
+Pixels outside the span are transparent. Over the whole bank: 752,635 spans, 11,947 empty rows, 73,049 spans
+covering the full width (those frames cost `2*w*h + 4*h` bytes), 5,073,299 key pixels inside spans. This is the
+same row-span idea as the Desperados `.dvf` sprite rows (header of two `u16` with `0xFFFF` for an empty row, and
+both `0x07C0` and `0x001F` skipped when blitting), except that here the second word is an inclusive last column.
+
+### Rendered checks
+
+Decoding with the rules above gives (looked at as PNG, not committed): frame 17970 (`ACCESSORIES_Coin.rhs`) a
+6x5 gold coin with two `0x001F` pixels above it; frames 1097.. (`Cr01fx.rhs` "papillon01") a blue butterfly;
+frame 1394 ("picvert01") a green woodpecker on a trunk; frame 286393 (`RobinHood.rhs` animation 0) a 36x69
+archer in green with a bow, standing on a blue `0x001F` blob; frames 2603/2604 (span encoded, 419x363 and
+117x133) a stone building and a stone wall.
 
 ## Provenance
 
-Observation only (Python and Rust parsers over all 233 `.rhs` files and the `.dic`; cross-reference of frame
-indices between `.rhs` and the table; statistics of `.bks` samples).
+Observation only; no executable analysis. Scripts under `harness/tools/re/` (`spritebank.py` loader;
+`sprite_stats1..8.py`; `sprite_render.py`), run with `OPENSHERWOOD_GAME_DIR` set:
+
+- `sprite_stats2.py`: for all 394,721 page frames `length / 2 == ceil(width / 4) * height` (the alternatives
+  `ceil(w/2)*ceil(h/2)` and `w*ceil(h/4)` fail on about half of the frames); per page, the largest symbol used
+  plus one, summed over pages, times 8 bytes leaves 326 bytes of the region unexplained, i.e. entries are 8 bytes.
+- `sprite_stats3.py` / `sprite_stats4.py`: walking the region as `u16 count` + `count * 8` from file offset 6
+  reproduces the per-page maxima (4 pages have a few unreferenced entries) and leaves exactly one `u32`, whose
+  value is the frame-table length. The most frequent symbol of pages 0, 1, 2, 131, 132, 133 maps to four `0x07C0`
+  pixels only under this walk (off by 2 bytes per page under a header-less layout).
+- `sprite_stats7.py`: the span rule consumes all 10,134 page-less streams to the exact byte; the count-based
+  alternatives (`skip`, `count`, `count-1`) consume only 62 / 1,590 of them (`sprite_stats6.py`).
+- `sprite_stats8.py`: colour histograms quoted above.
+- `sprite_render.py`: the PNGs listed under "Rendered checks", inspected visually.
+- Rust: `cargo test -p opensherwood-formats` decodes every 97th frame plus 500 span frames and checks the
+  output size; `opensherwood-tools export-frame robinhood.dic robinhood.bks <index> out.png` reproduces the renders.
+- Cross-check of shared concepts with the GPLv3 Desperados engine reimplementation
+  <https://github.com/OpenDeathValley/OpenDeathValley> (`components/files/odv_dvf_handler.c`): row headers of two
+  `u16`, `0xFFFF` empty rows, both key colours. Only the concepts were compared; no code was taken from it.

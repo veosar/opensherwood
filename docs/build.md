@@ -28,8 +28,15 @@ cargo build --workspace --release  # release
 # headless RPC server (what the harness uses)
 cargo run -p opensherwood-app -- --rpc stdio --headless
 
-# game window (M2+)
-cargo run -p opensherwood-app --release -- --game-dir "C:\GOG Games\Robin Hood - The Legend of Sherwood"
+# game window: synthetic scenario (no game data needed)
+cargo run -p opensherwood-app --release -- --scenario corridor --scale 2
+
+# game window: scroll around a retail map background with synthetic units on it
+cargo run -p opensherwood-app --release -- --scenario map:sherwood:Day --game-dir "C:\GOG Games\Robin Hood - The Legend of Sherwood"
+
+# game window that also accepts JSON-RPC on stdin (agents drive and screenshot the real window)
+cargo run -p opensherwood-app --release -- --rpc stdio --scenario map:nottingham
+python harness/tools/drive.py --scenario map:sherwood --window --out harness/out/drive
 
 # inspect game files
 cargo run -p opensherwood-tools -- inspect "C:\GOG Games\Robin Hood - The Legend of Sherwood\DATA\Interface\DEFAULT.RES"
@@ -51,10 +58,17 @@ python scripts/check_no_assets.py
 
 `scripts/ci_local.sh` (or `.ps1`) runs the same sequence CI runs.
 
+## Window controls (current)
+
+Left click selects a unit, right click orders the selected unit to walk there, arrow keys or the pointer at the
+window edge scroll the camera. The window is letterboxed to the logical 640x480 viewport (integer `--scale` on
+start; resizable). Simulation runs at 60 ticks per second in window mode.
+
 ## Environment variables
 
 | Variable | Meaning |
 |---|---|
 | `OPENSHERWOOD_GAME_DIR` | path to the game installation used by data-backed tests and tools |
 | `OPENSHERWOOD_ARTIFACTS` | where `capture` writes PNGs (default `harness/out`) |
+| `OPENSHERWOOD_BIN` | engine binary used by the Python harness (default: `target/release` then `target/debug`) |
 | `RUST_LOG` | tracing filter, e.g. `opensherwood_core=debug` |
