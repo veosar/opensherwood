@@ -108,6 +108,21 @@ def test_escape_opens_the_pause_menu_and_quit_returns_to_the_main_menu(binary, g
         assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
 
 
+def test_credits_scroll_and_escape_returns(binary, game_dir, tmp_path):
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path) as e:
+        e.reset({"menu": "main"}, seed=0)
+        e.step(1, pointer_click(748, 563, "left"))  # Credits row (k = 5)
+        ui = e.observe(entities=False)["ui"]
+        assert ui["screen"] == "credits"
+        c0 = e.capture(path="credits_0.png")
+        e.step(120)
+        assert e.observe(entities=False)["ui"]["page"][0] == 40  # 2 s at 20 px/s
+        c1 = e.capture(path="credits_2s.png")
+        assert c0["hash"] != c1["hash"]
+        e.step(1, [key("escape")])
+        assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
+
+
 def test_exit_needs_confirmation(binary, game_dir):
     with Engine(binary=binary, game_dir=game_dir) as e:
         e.reset({"menu": "main"}, seed=0)

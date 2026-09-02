@@ -108,7 +108,6 @@ impl MenuAction {
                 | MenuAction::SelectPlayer
                 | MenuAction::Options
                 | MenuAction::ShowMovies
-                | MenuAction::Credits
                 | MenuAction::Save
         )
     }
@@ -185,6 +184,9 @@ pub struct UiAssets {
     pub seal_cancel: Vec<SpriteFrame>,
     /// Arrow cursor (`PIC` 284).
     pub cursor: Option<SpriteFrame>,
+    /// Credits background (`PIC` 309, 1024x768) and text strip (`PIC` 308, 400x7659).
+    pub credits_background: Option<SpriteFrame>,
+    pub credits_strip: Option<SpriteFrame>,
     /// HUD pictures, see `HudAssets`.
     pub hud: HudAssets,
     /// Fonts.
@@ -695,6 +697,95 @@ impl PauseMenu {
     }
 }
 
+/// The credits: the text strip scrolls up over the dark forest (`ui-flow.md` 8) at about 20 px/s;
+/// Escape, Enter or a click returns to the main menu.
+#[derive(Debug)]
+pub struct Credits {
+    /// Scroll position in pixels times `tick_rate` (exact integer accumulation; 0 = the strip's top edge
+    /// at the bottom of the frame).
+    offset_num: i64,
+    /// Ticks per second, to turn the observed speed into a per-tick step.
+    tick_rate: u32,
+}
+
+impl Credits {
+    /// Observed scroll speed in pixels per second.
+    pub const SPEED_PX_PER_S: i64 = 20;
+
+    /// New credits screen.
+    #[must_use]
+    pub fn new(tick_rate: u32) -> Self {
+        Self {
+            offset_num: 0,
+            tick_rate: tick_rate.max(1),
+        }
+    }
+
+    /// Advance one tick.
+    pub fn tick(&mut self) {
+        self.offset_num += Self::SPEED_PX_PER_S;
+    }
+
+    /// Whether an input event leaves the screen.
+    #[must_use]
+    pub fn leaves(event: InputEvent) -> bool {
+        matches!(
+            event,
+            InputEvent::KeyDown {
+                key: Key::Escape | Key::Enter | Key::Space
+            } | InputEvent::PointerDown { .. }
+        )
+    }
+
+    /// Current scroll position in pixels.
+    #[must_use]
+    pub fn offset(&self) -> i32 {
+        (self.offset_num / i64::from(self.tick_rate)) as i32
+    }
+
+    /// State for `observe`.
+    #[must_use]
+    pub fn state(&self) -> MenuState {
+        MenuState {
+            screen: "credits".into(),
+            items: Vec::new(),
+            hovered: None,
+            page: Some([self.offset().max(0) as usize, 0]),
+        }
+    }
+
+    /// Render the frame.
+    #[must_use]
+    pub fn render(&self, assets: Option<&UiAssets>) -> Framebuffer {
+        let mut fb = Framebuffer::new(MENU_FRAME.0, MENU_FRAME.1);
+        fb.clear([0, 0, 0, 255]);
+        let Some(a) = assets else {
+            fb.fill_rect(
+                312,
+                768 - self.offset(),
+                712,
+                768 - self.offset() + 400,
+                [200, 200, 200, 255],
+            );
+            return fb;
+        };
+        if let Some(bg) = &a.credits_background {
+            fb.blit_rgba(0, 0, bg.width, bg.height, &bg.rgba);
+        }
+        if let Some(strip) = &a.credits_strip {
+            let x = (MENU_FRAME.0 as i32 - strip.width as i32) / 2;
+            fb.blit_rgba(
+                x,
+                MENU_FRAME.1 as i32 - self.offset(),
+                strip.width,
+                strip.height,
+                &strip.rgba,
+            );
+        }
+        fb
+    }
+}
+
 /// The mission briefing: parchment pages over the paused scene.
 #[derive(Debug)]
 pub struct Briefing {
@@ -956,6 +1047,19 @@ mod tests {
         p.handle(click());
         p.handle(mv(483, 433));
         assert_eq!(p.handle(click()), Some(MenuAction::Quit));
+    }
+
+    #[test]
+    fn credits_scroll_at_the_observed_speed_and_leave_on_escape() {
+        let mut c = Credits::new(60);
+        for _ in 0..60 {
+            c.tick();
+        }
+        assert_eq!(c.offset(), 20);
+        assert!(!Credits::leaves(mv(1, 1)));
+        assert!(Credits::leaves(InputEvent::KeyDown { key: Key::Escape }));
+        let fb = c.render(None);
+        assert_eq!((fb.width, fb.height), MENU_FRAME);
     }
 
     #[test]

@@ -42,6 +42,9 @@ pub mod ids {
     pub const SMALL_SCROLL: u32 = 133;
     /// Plain arrow cursor.
     pub const CURSOR: u32 = 284;
+    /// Credits background (full frame) and scrolling text strip.
+    pub const CREDITS_BACKGROUND: u32 = 309;
+    pub const CREDITS_STRIP: u32 = 308;
 }
 
 /// Text ids in `Level.res` (`docs/original/campaign-flow.md`).
@@ -175,6 +178,8 @@ pub fn load(game: &GameDir) -> UiAssets {
         seal_ok: widget(ids::SEAL_OK),
         seal_cancel: widget(ids::SEAL_CANCEL),
         cursor: pic(ids::CURSOR),
+        credits_background: pic_with(ids::CREDITS_BACKGROUND, false),
+        credits_strip: pic(ids::CREDITS_STRIP),
         hud,
         font_button: load_font(game, "MenuButtonEnabled.bfn"),
         font_button_disabled: load_font(game, "MenuButtonDisabled.bfn"),
