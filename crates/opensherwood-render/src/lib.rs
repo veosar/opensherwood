@@ -4,7 +4,11 @@
 //! Every public drawing function is total over its inputs: positions are `i32` and sizes `u32`
 //! at the extremes of their types, and the arithmetic that combines them is done in `i64` (or
 //! checked) so debug and release builds agree and nothing indexes out of bounds. A source buffer
-//! shorter than its declared size is ignored, never read past.
+//! shorter than its declared size is ignored, never read past; a framebuffer whose `rgba` is
+//! shorter than `width * height * 4` (its fields are public and may be built by hand) takes a
+//! single `put` only where its bytes exist, skips every area primitive and blit (their work is
+//! then bounded by the bytes that exist, not by hostile dimensions) and encodes to an error,
+//! never panics.
 
 pub mod text;
 
@@ -12,14 +16,17 @@ use std::sync::Arc;
 
 use opensherwood_core::{EntityKind, Fixed, World};
 
-/// RGBA8 framebuffer, row-major, no padding.
+/// RGBA8 framebuffer, row-major, no padding. The fields are public for the presenters and the
+/// UI; every write is bounds-checked against `rgba.len()`: `put` writes only a pixel that
+/// exists, the area primitives and blits check [`Framebuffer::is_consistent`] first and skip a
+/// short buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Framebuffer {
     /// Width.
     pub width: u32,
     /// Height.
     pub height: u32,
-    /// Pixels.
+    /// Pixels (`width * height * 4` bytes when consistent).
     pub rgba: Vec<u8>,
 }
 
@@ -151,6 +158,29 @@ impl Framebuffer {
         }
     }
 
+    /// Whether `rgba` holds at least the `width * height * 4` bytes the dimensions declare.
+    #[must_use]
+    pub fn is_consistent(&self) -> bool {
+        rgba_len(self.width, self.height).is_some_and(|n| self.rgba.len() >= n)
+    }
+
+    /// The pixel bytes (the declared area; empty when the buffer is inconsistent).
+    #[must_use]
+    pub fn pixels(&self) -> &[u8] {
+        match rgba_len(self.width, self.height) {
+            Some(n) if self.rgba.len() >= n => &self.rgba[..n],
+            _ => &[],
+        }
+    }
+
+    /// The pixel bytes for in-place edits (tints, fades); empty when the buffer is inconsistent.
+    pub fn pixels_mut(&mut self) -> &mut [u8] {
+        match rgba_len(self.width, self.height) {
+            Some(n) if self.rgba.len() >= n => &mut self.rgba[..n],
+            _ => &mut [],
+        }
+    }
+
     /// Fill with a colour.
     pub fn clear(&mut self, c: Color) {
         for px in self.rgba.chunks_exact_mut(4) {
@@ -158,25 +188,30 @@ impl Framebuffer {
         }
     }
 
-    /// Set one pixel (ignored outside the buffer).
+    /// Set one pixel (ignored outside the buffer or when that pixel's bytes do not exist).
     pub fn put(&mut self, x: i32, y: i32, c: Color) {
-        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+        let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+            return;
+        };
+        if x >= self.width || y >= self.height {
             return;
         }
-        let i = ((y as u32 * self.width + x as u32) * 4) as usize;
-        self.rgba[i..i + 4].copy_from_slice(&c);
+        let i = (u128::from(y) * u128::from(self.width) + u128::from(x)) * 4;
+        if let Ok(i) = usize::try_from(i)
+            && let Some(px) = self.rgba.get_mut(i..i + 4)
+        {
+            px.copy_from_slice(&c);
+        }
     }
 
     /// Axis-aligned filled rectangle (inclusive of `x0,y0`, exclusive of `x1,y1`).
     pub fn fill_rect(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, c: Color) {
-        let (x0, x1) = (
-            x0.clamp(0, self.width as i32),
-            x1.clamp(0, self.width as i32),
-        );
-        let (y0, y1) = (
-            y0.clamp(0, self.height as i32),
-            y1.clamp(0, self.height as i32),
-        );
+        if !self.is_consistent() {
+            return;
+        }
+        let clamp = |v: i32, extent: u32| to_i32(i64::from(v).clamp(0, i64::from(extent)));
+        let (x0, x1) = (clamp(x0, self.width), clamp(x1, self.width));
+        let (y0, y1) = (clamp(y0, self.height), clamp(y1, self.height));
         for y in y0..y1 {
             for x in x0..x1 {
                 self.put(x, y, c);
@@ -186,6 +221,9 @@ impl Framebuffer {
 
     /// Filled disc (radius clamped to the buffer size; off-screen parts are skipped).
     pub fn fill_circle(&mut self, cx: i32, cy: i32, r: i32, c: Color) {
+        if !self.is_consistent() {
+            return;
+        }
         let r = r.clamp(0, Self::MAX_DIMENSION as i32);
         let rr = i64::from(r) * i64::from(r);
         for y in Self::clip_range(cy, r, self.height) {
@@ -200,6 +238,9 @@ impl Framebuffer {
 
     /// One-pixel circle outline.
     pub fn circle(&mut self, cx: i32, cy: i32, r: i32, c: Color) {
+        if !self.is_consistent() {
+            return;
+        }
         let r = r.clamp(0, Self::MAX_DIMENSION as i32);
         let rr = i64::from(r) * i64::from(r);
         let inner = i64::from(r - 1) * i64::from(r - 1);
@@ -214,15 +255,18 @@ impl Framebuffer {
         }
     }
 
-    /// Pixel range `centre - r ..= centre + r` clipped to `0..extent`.
+    /// Pixel range `centre - r ..= centre + r` clipped to `0..extent` (empty when `extent` is 0).
     fn clip_range(centre: i32, r: i32, extent: u32) -> std::ops::RangeInclusive<i32> {
         let lo = centre.saturating_sub(r).max(0);
-        let hi = centre.saturating_add(r).min(extent as i32 - 1);
+        let hi = to_i32((i64::from(centre) + i64::from(r)).min(i64::from(extent) - 1));
         lo..=hi
     }
 
     /// Bresenham line, clipped to the buffer first (Liang-Barsky) so huge coordinates cost nothing.
     pub fn line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, c: Color) {
+        if !self.is_consistent() {
+            return;
+        }
         let Some((x0, y0, x1, y1)) = self.clip_line(x0, y0, x1, y1) else {
             return;
         };
@@ -308,7 +352,7 @@ impl Framebuffer {
         w: u32,
         h: u32,
     ) {
-        if rgba_len(src_w, src_h).is_none_or(|n| src.len() < n) {
+        if rgba_len(src_w, src_h).is_none_or(|n| src.len() < n) || !self.is_consistent() {
             return;
         }
         let (sx, sy, dx, dy) = (i64::from(sx), i64::from(sy), i64::from(dx), i64::from(dy));
@@ -357,7 +401,7 @@ impl Framebuffer {
         rgba: &[u8],
         visible: Option<&dyn Fn(i32, i32) -> bool>,
     ) {
-        if rgba_len(w, h).is_none_or(|n| rgba.len() < n) {
+        if rgba_len(w, h).is_none_or(|n| rgba.len() < n) || !self.is_consistent() {
             return;
         }
         let (x, y) = (i64::from(x), i64::from(y));
@@ -402,7 +446,7 @@ impl Framebuffer {
         h.finalize().to_hex().to_string()
     }
 
-    /// Encode as PNG.
+    /// Encode as PNG (an inconsistent buffer is an encoding error, never a panic).
     pub fn encode_png(&self) -> Result<Vec<u8>, png::EncodingError> {
         let mut out = Vec::new();
         {
@@ -847,6 +891,73 @@ mod tests {
             panic!("asked for a transparent pixel")
         });
         assert!(fb.rgba.chunks_exact(4).all(|p| p == [2, 2, 2, 255]));
+    }
+
+    #[test]
+    fn short_buffers_draw_nothing_and_never_panic() {
+        let src: Vec<u8> = [9, 8, 7, 255].repeat(16);
+        let mut short = Framebuffer {
+            width: 4,
+            height: 4,
+            rgba: vec![0; 4 * 4 * 4 - 1],
+        };
+        assert!(!short.is_consistent());
+        assert!(short.pixels().is_empty() && short.pixels_mut().is_empty());
+        // `put` writes a pixel that exists and skips the missing last one.
+        short.put(0, 0, [1, 1, 1, 255]);
+        short.put(3, 3, [1, 1, 1, 255]);
+        assert_eq!(&short.rgba[..4], &[1, 1, 1, 255]);
+        assert_eq!(&short.rgba[60..], &[0, 0, 0]);
+        // Area primitives and blits need the whole declared area: a short buffer is left alone.
+        let before = short.rgba.clone();
+        short.fill_rect(0, 0, 4, 4, [2, 2, 2, 255]);
+        short.fill_circle(2, 2, 3, [2, 2, 2, 255]);
+        short.circle(2, 2, 3, [2, 2, 2, 255]);
+        short.line(0, 0, 3, 3, [2, 2, 2, 255]);
+        short.blit_rgba(0, 0, 4, 4, &src);
+        short.blit_rgba_masked(0, 0, 4, 4, &src, |_, _| true);
+        short.blit_region(&src, 4, 4, 0, 0, 0, 0, 4, 4);
+        assert_eq!(short.rgba, before);
+        assert!(short.encode_png().is_err());
+        let _ = short.hash();
+        // `clear` and the accessors work on the bytes that exist.
+        short.clear([2, 2, 2, 255]);
+        assert!(
+            short.rgba[..60]
+                .chunks_exact(4)
+                .all(|p| p == [2, 2, 2, 255])
+        );
+        let mut empty = Framebuffer {
+            width: u32::MAX,
+            height: u32::MAX,
+            rgba: Vec::new(),
+        };
+        empty.put(0, 0, [1, 1, 1, 255]);
+        empty.put(i32::MAX, i32::MAX, [1, 1, 1, 255]);
+        empty.blit_rgba(0, 0, 4, 4, &src);
+        empty.fill_rect(i32::MIN, i32::MIN, i32::MAX, i32::MAX, [1, 1, 1, 255]);
+        empty.fill_circle(0, 0, i32::MAX, [1, 1, 1, 255]);
+        empty.circle(0, 0, i32::MAX, [1, 1, 1, 255]);
+        empty.line(i32::MIN, i32::MIN, i32::MAX, i32::MAX, [1, 1, 1, 255]);
+        assert!(empty.rgba.is_empty());
+        // Dimensions beyond `i32` with a real (tiny) buffer: nothing is touched, nothing loops.
+        let mut wide = Framebuffer {
+            width: u32::MAX,
+            height: 1,
+            rgba: vec![0; 16],
+        };
+        wide.fill_rect(0, 0, 4, 1, [1, 1, 1, 255]);
+        wide.line(0, 0, 3, 0, [1, 1, 1, 255]);
+        wide.put(1, 0, [1, 1, 1, 255]);
+        assert_eq!(&wide.rgba[4..8], &[1, 1, 1, 255]);
+        assert_eq!(&wide.rgba[..4], &[0, 0, 0, 0]);
+        // A consistent buffer exposes exactly its area.
+        let mut fb = Framebuffer::new(4, 4);
+        assert_eq!(fb.pixels().len(), 64);
+        for px in fb.pixels_mut().chunks_exact_mut(4) {
+            px[1] = 200;
+        }
+        assert!(fb.rgba.chunks_exact(4).all(|p| p[1] == 200));
     }
 
     #[test]

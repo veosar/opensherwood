@@ -2,12 +2,17 @@
 
 Date: 2026-09-02. Status: accepted.
 
-Versions in force (2026-09-02, script VM): protocol 3 (`ui` observation, `menu` scenario, optional world
-fields; the `script` observation object and `debug.vm` are additive), ruleset 5 (script VM: `Initialize` /
+Versions in force (2026-09-02, script VM): protocol 4 (replay time is the session tick: header `time:
+"session"`, checkpoints carry `world_tick`, the tick-0 checkpoint is kept and compared; `ui` observation,
+`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 6 (script VM: `Initialize` /
 `PostInitialize` at load, `Hourglass` and `CheckVictoryCondition` every tick, sequences, messages, zone events;
-hidden player characters start inactive), hash schema 6 (`scripts` and `scheduler` parts carry the VM state,
-entity `active` / `ai_locked` flags under `actors`, the `script` RNG stream under `rng`), snapshot schema 7
-(`vm` state, entity flags).
+hidden player characters start inactive; native 32 is a barrier over walk / animation completion tokens, one
+per-tick work budget covers instructions, argument transfers, zone and scroll tests, sequence elements and the
+path searches the script issues, AI locking halts an NPC's walk, native 160 and camera centring are computed in
+`i64`), hash schema 8 (`scripts` and `scheduler` parts carry the VM state including sequence tokens and the
+barrier wait; frames and stacks are no longer encoded because a snapshot must be quiescent; entity `active` /
+`ai_locked` flags under `actors`, the `script` RNG stream under `rng`), snapshot schema 9 (`vm` state without
+its diagnostic `counters` and per-tick `budget`, sequence `tokens`, entity flags).
 Any change to canonical bytes bumps the ruleset or hash schema and regenerates
 `harness/fixtures/synthetic_corridor.json` (see `docs/decisions/reviews/2026-09-02-codex-m0-review-disposition.md`).
 
@@ -39,10 +44,31 @@ test that claims "the player can do X" must do X through input events.
 
 ## ReplayV1
 
-Protocol and ruleset version, content fingerprint, scenario id, logical viewport, tick rate as a rational,
-initial seed and named RNG stream states, ordered events keyed by `(tick, sequence)`, optional intent annotations,
-optional checkpoint expectations. JSON Lines. Never contains OS events, timestamps, paths, pointers or physical
-display coordinates.
+Protocol and ruleset version, content fingerprint, scenario id, time model, logical viewport, tick rate as a
+rational, initial seed and named RNG stream states, ordered events keyed by `(tick, sequence)`, optional intent
+annotations, checkpoint expectations. JSON Lines. Never contains OS events, timestamps, paths, pointers or
+physical display coordinates.
+
+### Replay time is the session tick
+
+Replay time (`time: "session"`, the only model) counts the session's `advance` calls since the world was
+installed by `reset`: every tick of a `step` is one unit, whether a screen consumed the tick's events or the
+world stepped. Events carry the session tick they are applied at; a checkpoint at session tick `t` holds the
+world's hashes and its own tick (`world_tick`, which lags while a screen is shown) after `t` advances. Screens
+are therefore part of the timeline: dismissing the mission's first text pages, opening the pause menu with
+Escape and continuing are ordinary recorded key and pointer events, and playback runs them through the same
+`advance` the recording did. The checkpoint at tick 0 is the state right after `reset`, before anything is
+applied; recording never drops it and playback compares it first, so a replay that reproduces nothing cannot
+report no divergence.
+
+`replay.start` is allowed only at session tick 0 (right after `reset`, even while the first page is shown; the
+main menu has no world). `replay.play` resets to the replay's scenario and seed, then requires the header to
+equal, field by field, the header the session would record now (protocol, ruleset, hash schema, content,
+scenario, time model, viewport, tick rate, seed, RNG stream identities); a replay recorded under other
+parameters is refused with the differing fields named, never played against a session that would produce
+different checkpoints. `restore` is refused while a recording is active (a restore is not an input event, so
+the recording could not reproduce it); Restart and Quit from the pause menu install another world and discard
+the recording.
 
 ## Canonical state hash
 
@@ -55,9 +81,12 @@ pending stimuli) hashed with BLAKE3 per subsystem (`world`, `actors`, `orders`, 
 ## Screens and the world
 
 Menus, briefings and the pause menu are session state of the app, not of the world: they never enter world hashes,
-and `snapshot`, `restore`, `replay.start` and `replay.play` are refused while a screen is shown (error
-`screen shown`), so a snapshot always describes a directly played world. The harness dismisses screens with the
-same events a player would use before taking snapshots.
+and `snapshot` and `restore` are refused while a screen is shown (error `screen shown`), so a snapshot always
+describes a directly played world. Replays are different: a screen's frames are session ticks and the events
+that drive it are recorded and replayed (see "Replay time is the session tick"), so `replay.start` works while
+the first briefing page is shown and `replay.play` works from any screen (it resets first). The harness
+dismisses screens with the same events a player would use (`Engine.skip_briefing`: Enter per page) before
+taking snapshots; `debug.*` methods never dismiss or drive a screen.
 
 ## Snapshot / restore invariant
 

@@ -68,6 +68,14 @@ def pointer_click(x: float, y: float, button: str = "left", tick_offset: int = 0
     ]
 
 
+def key_press(key: str, tick_offset: int = 0, sequence: int = 0) -> list[dict[str, Any]]:
+    """Press and release a key in one tick (two events): `enter`, `escape`, `right`, ..."""
+    return [
+        {"tick_offset": tick_offset, "sequence": sequence, "kind": "key_down", "key": key},
+        {"tick_offset": tick_offset, "sequence": sequence + 1, "kind": "key_up", "key": key},
+    ]
+
+
 class _Reader(threading.Thread):
     """Reads lines from a pipe into a queue so the main thread can wait with a timeout."""
 
@@ -201,19 +209,35 @@ class Engine:
         return self.call("observe", {"entities": entities})
 
     def skip_briefing(self, max_pages: int = 30) -> int:
-        """Dismiss the script's text pages shown after a mission load (Enter, like a player); returns
-        the number of pages dismissed."""
+        """Dismiss the script's text pages shown after a mission load (Enter, like a player, one
+        session tick per page; recorded by an active replay); returns the number of pages dismissed."""
         pages = 0
         while pages < max_pages:
             ui = self.observe(entities=False).get("ui")
             if not ui or ui.get("screen") != "briefing":
                 break
-            self.step(1, [
-                {"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": "enter"},
-                {"tick_offset": 0, "sequence": 1, "kind": "key_up", "key": "enter"},
-            ])
+            self.step(1, key_press("enter"))
             pages += 1
         return pages
+
+    def replay_start(self, checkpoint_every: int = 0) -> dict[str, Any]:
+        """Start recording (session tick 0 only, right after `reset`)."""
+        return self.call("replay.start", {"checkpoint_every": checkpoint_every})
+
+    def replay_stop(self, path: str | None = None) -> dict[str, Any]:
+        """Stop recording; returns `{jsonl, events, checkpoints, path}`."""
+        return self.call("replay.stop", {"path": path} if path else {})
+
+    def replay_play(
+        self, jsonl: str | None = None, path: str | None = None, stop_on_divergence: bool = True
+    ) -> dict[str, Any]:
+        """Reset to the replay's scenario and play it back, comparing every checkpoint."""
+        params: dict[str, Any] = {"stop_on_divergence": stop_on_divergence}
+        if jsonl is not None:
+            params["jsonl"] = jsonl
+        if path is not None:
+            params["path"] = path
+        return self.call("replay.play", params)
 
     def snapshot(self) -> dict[str, Any]:
         return self.call("snapshot")

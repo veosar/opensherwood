@@ -90,7 +90,7 @@ missions use blue / yellow, the last story mission red / black: the colour is th
 | 45-51 | hostile green variants of the seven families, one each, in family order (referenced only by `H04_Lei_VL`) |
 | 52, 56-58, 63-64 | spare entries the designers marked as not to be used (0 references from any mission) |
 | 53-55 | mounted knights (yellow, orange, red) |
-| 59-62 | the four armed story antagonists (Gisborne, the York and Derby lords, the Sheriff) |
+| 59-62 | the four armed story antagonists (the manual's named enemies) |
 | 65-67 | special officers (orange, red, black) |
 
 The sprite of each entry is read from the file; all 68 point at existing `Characters/*.rhs` files, and

@@ -43,12 +43,40 @@ settled before any interpreter is written: a VM living above core cannot be snap
 ## Consequences
 
 - `World` grows a `vm: Option<VmState>` (program, class variables, mission variables, objectives, message
-  queue, sequences, pending texts, camera target, patches, attributes, states, the `script` RNG stream) and
-  entities gain `active` / `ai_locked` flags; ruleset 5, snapshot schema 7 and hash schema 6 (2026-09-02).
+  queue, sequences with their completion tokens, pending texts, camera target, patches, attributes, states,
+  the `script` RNG stream) and entities gain `active` / `ai_locked` flags; ruleset 6, snapshot schema 9 and
+  hash schema 8 (2026-09-02, Codex review 5).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
+- **What is authoritative and what is not.** `VmState::counters` (instructions, callbacks, budget aborts,
+  faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
+  current tick) are diagnostics: they are neither serialised nor hashed (`#[serde(skip)]`), a restored world
+  counts afresh and `debug.vm` reports the live values only. Everything the scripts can observe stays in the
+  snapshot and the hash. Callbacks never yield, so a snapshot is *quiescent*: `validate` refuses frames,
+  pushed arguments or a sequence still being collected instead of pretending to resume them.
+- **One work budget per tick** (`vm::WORK_BUDGET_PER_TICK`, 2^22 units): instruction dispatch, every argument
+  a call or native transfers, zone edge tests, scroll range checks, sequence elements, and the A* expansions
+  and smoothing cells of the walks the script issues (`nav.rs` charges them to the same counter). An
+  exhausted budget stops the tick deterministically (the running callback is aborted, later phases wait for
+  the next tick, undelivered messages stay queued ahead of new ones) and is counted; it is part of the
+  ruleset because it changes what a tick does. Player and rail-program orders use their own per-order budget
+  (`world::ORDER_SEARCH_WORK`).
+- **Trust boundary.** `Program::validate` in core is self-sufficient (functions in table order from address 0
+  with their prologue, jumps inside their function, parameter reads and call arities against the table,
+  arities within the stack limit, aggregate code / vertex bounds, element and location coordinates within
+  `+-2^20`); the translator's checks are earlier diagnostics. `World::validate` also requires the gameplay and
+  `script` RNG streams to derive from the world seed with their assigned ids (1 and 2).
+- **Sequences.** Native 32 is a barrier: walks (45 / 48 / 64) and animations (49..=53, stubs) issue completion
+  tokens, the barrier holds the sequence until every token issued since the previous barrier completed (a
+  walk completes when the entity arrived, gave up, was ordered elsewhere, deactivated or died: hypothesis,
+  `docs/formats/scb.md`, "Engine notes"). Native 203 pages hold their sequence directly; native 202 texts
+  never block anything, and `VmState::pending_text_requests` / `ScriptObservation::text_requests` expose the
+  flag so the app can show a 202 text without pausing (`pending_texts` stays for compatibility).
 - The synthetic corridor has no script: its hashes only change through the schema bump.
-- The app dismisses the script's text pages through `World::vm_dismiss_text` (the briefing parchment, the
-  `debug.vm` inspection method); no canonical input event exists for it yet, so a replay does not reproduce
-  dismissals: an open question for the replay format.
+- The app dismisses the script's text pages through `World::vm_dismiss_text` when the briefing parchment is
+  closed by canonical input (Enter, Escape or a click on the page); `debug.vm` only inspects. Replay time is
+  the session tick (ADR-0004, protocol 4), so the dismissals are recorded and replayed as the key and pointer
+  events they are, the tick-0 checkpoint fixes the state after `PostInitialize` and before the first
+  dismissal, and a mission replay started right after `reset` reproduces the pages, the walk and the pause
+  menu (`harness/tests/data/test_script.py`, `test_mission_replay_round_trip_from_the_first_page`).
 - `opensherwood-script` keeps its place in the dependency graph (above core), which stays acyclic:
   core defines the IR, script produces it, the app hands it to core at mission load.

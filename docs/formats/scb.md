@@ -403,6 +403,31 @@ scroll (it becomes inactive). Observed in the engine: the third-nearest scroll o
 text page, the two nearer ones activate their areas without text. Natives implemented and stubbed are listed
 in `crates/opensherwood-core/src/natives.rs` (`IMPLEMENTED_NATIVES`, `STUB_NATIVES`).
 
+Barrier and completion tokens (engine model of native 32, 2026-09-02): inside a sequence every element that
+takes time issues a completion token; native 32 is a barrier that holds the sequence until every token issued
+since the previous barrier has completed, then clears them. A walk (45 / 48 / 64) completes when the actor is
+no longer walking to that point: it arrived, the path failed, it was ordered elsewhere, deactivated or died
+(hypothesis, medium for the arrival, low for the failure cases: the original presumably waits for the arrival
+only; treating failure as completion keeps a blocked cutscene from stalling a mission). Animations (49..=53)
+are stubs whose token completes at once (the engine has no animation model yet). Text pages (203) and waits
+(56) hold the sequence directly; camera moves (33 / 34) are instant. Native 202 texts never block anything:
+they are queued with `blocking = false` and the app may show them without pausing. Hypothesis to verify with
+the original: whether 32 also waits for a camera pan and how long an animation element takes.
+
+AI locking (natives 134 / 135, engine hypothesis, confidence **low**): locking halts the actor's current walk
+(the rail program stays on its instruction and re-issues the walk when unlocked; a barrier waiting for that
+walk completes) and stops the rail program from issuing new orders; a player character's orders are the
+player's and are not touched. The original's "freeze" (message 13 in the first mission) may instead let a
+walk in progress finish; the engine's choice is pinned by
+`locking_mid_walk_stops_the_ai_walk_and_completes_the_barrier` so a correction is a deliberate ruleset bump.
+
+Work budget (2026-09-02): everything the VM does in one tick is charged to one deterministic budget
+(`vm::WORK_BUDGET_PER_TICK`): instructions, arguments transferred by calls and natives, zone edge tests,
+scroll range checks, sequence elements, and the path searches and smoothing of the walks the script issues.
+When it is spent the tick stops (the running callback is aborted, the remaining phases wait for the next
+tick, undelivered messages stay queued) and `counters.budget_aborts` counts it; the retail scripts use a small
+fraction of it.
+
 ## Cross-references
 
 - Class names == mission element names of the paired `.rhm` (100 % both ways, see [rhm.md](rhm.md)).

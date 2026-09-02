@@ -10,6 +10,21 @@
 //! waits `n` script ticks, 25 per second is the hypothesis of the spec). A program carries the
 //! conversion as a rational `wait_scale` chosen by the translator. `Hourglass` receives the world
 //! tick as its time parameter (hypothesis: the scripts only compare differences of it).
+//!
+//! Work. Everything the VM does in one tick is charged to one deterministic budget
+//! ([`WORK_BUDGET_PER_TICK`]): instruction dispatch, native and call argument transfers, zone edge
+//! tests, scroll range checks, sequence elements, and the path searches and smoothing of the walks
+//! it issues (`nav.rs` charges node expansions and line-clear cells). When the budget is exhausted
+//! the tick stops where it is (the running callback is aborted, the remaining phases are skipped
+//! until the next tick, messages not yet delivered stay queued) and `counters.budget_aborts`
+//! counts it; nothing panics and nothing loops on.
+//!
+//! Sequences. Elements that take time issue *tokens* ([`SeqToken`]): a walk (natives 45 / 48 /
+//! 64) completes when the entity arrived, gave up or was ordered elsewhere; an animation
+//! (natives 49..=53, not modelled) completes at once. Native 32 is a [`SeqElement::Barrier`] that
+//! holds the sequence until every token issued since the previous barrier completed. Text pages
+//! (native 203) and waits (native 56) hold the sequence directly. Camera moves (33 / 34) are
+//! instant. Native 202 texts are never blocking.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,9 +36,23 @@ use crate::hash::Encoder;
 use crate::rng::Rng;
 use crate::world::{EntityKind, World};
 
-/// Most instructions the VM executes in one tick (all callbacks together) before it gives up on
-/// the running callback; the count is reset for every load-time and dismissal-time run as well.
-pub const STEP_BUDGET_PER_TICK: u64 = 1 << 20;
+/// Work units the VM may spend in one tick (all callbacks, zone tests, sequences and path
+/// searches together); reset for every load-time, event and dismissal-time run as well. A unit is
+/// one instruction, one transferred argument, one polygon edge test, one scroll range check, one
+/// sequence element, one A* node expansion or one line-clear cell.
+pub const WORK_BUDGET_PER_TICK: u64 = 1 << 22;
+/// Deepest argument / parameter stack; no `argc` may exceed it.
+pub const MAX_STACK: usize = 1 << 12;
+/// Largest total number of instructions over all classes of a program.
+pub const MAX_PROGRAM_CODE: usize = 1 << 22;
+/// Largest number of vertices of one location polygon.
+pub const MAX_POLYGON_VERTICES: usize = 1 << 12;
+/// Largest total vertex count over all locations of a program.
+pub const MAX_LOCATION_VERTICES: usize = 1 << 20;
+/// Largest magnitude of a location or element coordinate (the geometry's range).
+pub const MAX_LOCATION_COORD: i32 = crate::geom::MAX_COORD;
+/// Largest total number of elements over all active sequences.
+pub const MAX_SEQUENCE_ELEMENTS: usize = 1 << 16;
 /// Deepest call stack accepted.
 pub const MAX_FRAMES: usize = 64;
 /// Number of mission variables (native 0 / 1 / 2 index them).
@@ -437,7 +466,13 @@ pub struct Program {
 }
 
 impl Program {
-    /// Check every internal reference (jump targets, function addresses, slots, bindings).
+    /// Check every internal reference and bound a translated script or a snapshot must satisfy:
+    /// table sizes (per class and aggregate), functions laid out in table order from address 0
+    /// each starting with the `Enter` of its frame sizes, jumps inside their function, parameter
+    /// reads and call arities against the function table, slot indices inside their blocks,
+    /// native / call arities within [`MAX_STACK`], bindings inside the tables, and element and
+    /// location coordinates within `+-MAX_LOCATION_COORD`. The translator performs the same
+    /// checks earlier for diagnostics; this is the trust boundary (a snapshot embeds the program).
     pub fn validate(&self) -> Result<(), String> {
         if self.classes.is_empty() {
             return Err("program has no classes".into());
@@ -451,9 +486,14 @@ impl Program {
         if self.wait_scale.0 == 0 || self.wait_scale.1 == 0 {
             return Err("wait scale must be a positive rational".into());
         }
+        let mut total_code = 0usize;
         for (ci, c) in self.classes.iter().enumerate() {
             if c.code.len() > MAX_CODE || c.functions.len() > MAX_TABLE {
                 return Err(format!("class {ci} too large"));
+            }
+            total_code = total_code.saturating_add(c.code.len());
+            if total_code > MAX_PROGRAM_CODE {
+                return Err("program code too large".into());
             }
             if c.variable_count as usize > MAX_TABLE {
                 return Err(format!("class {ci} has too many variables"));
@@ -470,45 +510,76 @@ impl Program {
                     "class {ci} bound to zone {z} which is not a polygon"
                 ));
             }
+            if c.functions.is_empty() != c.code.is_empty() {
+                return Err(format!("class {ci} functions and code disagree"));
+            }
+            if c.functions.first().is_some_and(|f| f.address != 0) {
+                return Err(format!("class {ci} code does not start with a function"));
+            }
             for (fi, f) in c.functions.iter().enumerate() {
                 if f.address as usize >= c.code.len() {
                     return Err(format!("class {ci} function {fi} address out of range"));
                 }
+                if fi > 0 && f.address <= c.functions[fi - 1].address {
+                    return Err(format!(
+                        "class {ci} functions are not laid out in table order"
+                    ));
+                }
                 if f.locals as usize > MAX_TABLE
                     || f.temps as usize > MAX_TABLE
-                    || f.param_count as usize > MAX_TABLE
+                    || f.param_count as usize > MAX_STACK
                 {
                     return Err(format!("class {ci} function {fi} frame too large"));
                 }
+                match c.code[f.address as usize] {
+                    Instr::Enter { locals, temps } if locals == f.locals && temps == f.temps => {}
+                    _ => {
+                        return Err(format!(
+                            "class {ci} function {fi} does not start with its prologue"
+                        ));
+                    }
+                }
             }
-            // A slot is checked against the function whose range holds the instruction;
-            // functions are laid out in table order.
+            // Every instruction belongs to the function whose range holds it; functions are laid
+            // out in table order.
             let mut fi = 0usize;
             for (pc, ins) in c.code.iter().enumerate() {
                 while fi + 1 < c.functions.len() && c.functions[fi + 1].address as usize <= pc {
                     fi += 1;
                 }
-                let f = c.functions.get(fi);
+                let Some(f) = c.functions.get(fi) else {
+                    return Err(format!(
+                        "class {ci} instruction {pc} outside every function"
+                    ));
+                };
+                let end = c
+                    .functions
+                    .get(fi + 1)
+                    .map_or(c.code.len(), |n| n.address as usize);
                 let slot_ok = |s: Slot| match s.space {
                     Space::Class => s.index < c.variable_count,
-                    Space::Local => f.is_some_and(|f| s.index < f.locals),
-                    Space::Temp => f.is_some_and(|f| s.index < f.temps),
+                    Space::Local => s.index < f.locals,
+                    Space::Temp => s.index < f.temps,
                 };
-                let target_ok = |t: u32| (t as usize) < c.code.len();
+                let target_ok = |t: u32| (f.address as usize..end).contains(&(t as usize));
                 let ok = match *ins {
-                    Instr::Nop | Instr::Return | Instr::Enter { .. } => true,
+                    Instr::Nop | Instr::Return => true,
+                    Instr::Enter { locals, temps } => locals == f.locals && temps == f.temps,
                     Instr::SetResult { src }
                     | Instr::PushParam { src }
                     | Instr::PushArg { src } => slot_ok(src),
-                    Instr::LoadParam { dst, .. }
-                    | Instr::GetCallResult { dst }
+                    Instr::LoadParam { dst, index } => slot_ok(dst) && index < f.param_count,
+                    Instr::GetCallResult { dst }
                     | Instr::GetNativeResult { dst }
                     | Instr::LoadInt { dst, .. }
                     | Instr::LoadFixed { dst, .. } => slot_ok(dst),
                     Instr::Call { function, argc } => {
-                        (function as usize) < c.functions.len() && argc as usize <= MAX_TABLE
+                        argc as usize <= MAX_STACK
+                            && c.functions
+                                .get(function as usize)
+                                .is_some_and(|callee| callee.param_count == argc)
                     }
-                    Instr::Native { argc, .. } => argc as usize <= MAX_TABLE,
+                    Instr::Native { argc, .. } => argc as usize <= MAX_STACK,
                     Instr::Jump { target } => target_ok(target),
                     Instr::JumpIf { cond, target } => slot_ok(cond) && target_ok(target),
                     Instr::Move { dst, src }
@@ -518,6 +589,44 @@ impl Program {
                 };
                 if !ok {
                     return Err(format!("class {ci} instruction {pc} out of range"));
+                }
+            }
+        }
+        let coord_ok = |v: i32| v.unsigned_abs() <= MAX_LOCATION_COORD as u32;
+        for (i, el) in self.elements.iter().enumerate() {
+            match *el {
+                Element::Object { x, y } | Element::Scroll { x, y } => {
+                    if !(coord_ok(x) && coord_ok(y)) {
+                        return Err(format!("element {i} position out of range"));
+                    }
+                }
+                Element::Polygon(l) => {
+                    if !matches!(self.locations.get(l as usize), Some(Location::Polygon(_))) {
+                        return Err(format!("element {i} polygon out of range"));
+                    }
+                }
+                Element::Map(_) | Element::Unmodelled(_) | Element::Actor(_) => {}
+            }
+        }
+        let mut vertices = 0usize;
+        for (i, l) in self.locations.iter().enumerate() {
+            match l {
+                Location::Point { x, y } => {
+                    if !(coord_ok(*x) && coord_ok(*y)) {
+                        return Err(format!("location {i} out of range"));
+                    }
+                }
+                Location::Polygon(pts) => {
+                    if pts.len() > MAX_POLYGON_VERTICES {
+                        return Err(format!("location {i} has too many vertices"));
+                    }
+                    vertices = vertices.saturating_add(pts.len());
+                    if vertices > MAX_LOCATION_VERTICES {
+                        return Err("program locations have too many vertices".into());
+                    }
+                    if pts.iter().any(|&(x, y)| !(coord_ok(x) && coord_ok(y))) {
+                        return Err(format!("location {i} out of range"));
+                    }
                 }
             }
         }
@@ -706,8 +815,44 @@ pub enum SeqElement {
         /// Target, or off map.
         to: Option<(i32, i32)>,
     },
-    /// A recorded no-op element (animations, remarks, presentation).
+    /// Natives 49..=53: an animation on an actor (not modelled: recorded like a stub) whose
+    /// completion token completes at once.
+    Animation {
+        /// Native id.
+        id: u32,
+        /// Actor element handle.
+        actor: i32,
+        /// Animation number (0 for the natives without one).
+        anim: i32,
+    },
+    /// Native 32: hold the sequence until every token issued since the previous barrier completed.
+    Barrier,
+    /// A recorded no-op element (remarks, presentation).
     Stub {
+        /// Native id.
+        id: u32,
+    },
+}
+
+/// A completion token issued by a sequence element that takes time; a [`SeqElement::Barrier`]
+/// waits for all of them (`docs/formats/scb.md`, native 32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeqToken {
+    /// A walk of `entity` to `(x, y)`: complete when the entity is no longer walking to that
+    /// point (arrived, gave up, was ordered elsewhere, deactivated or died). Hypothesis: the
+    /// original waits for the arrival of the actor; walk failure is treated as completion so a
+    /// blocked cutscene cannot stall a mission.
+    Walk {
+        /// Entity index.
+        entity: u32,
+        /// Target x.
+        x: i32,
+        /// Target y.
+        y: i32,
+    },
+    /// An animation (natives 49..=53): complete at once, the engine has no animation model yet.
+    Animation {
         /// Native id.
         id: u32,
     },
@@ -723,6 +868,8 @@ pub enum SeqWait {
     Ticks(u32),
     /// The text request with this id to be dismissed.
     Text(u64),
+    /// Every token of the sequence to complete (native 32).
+    Barrier,
 }
 
 /// An active sequence.
@@ -734,6 +881,9 @@ pub struct Sequence {
     pub next: u32,
     /// Current wait.
     pub wait: SeqWait,
+    /// Tokens issued since the previous barrier.
+    #[serde(default)]
+    pub tokens: Vec<SeqToken>,
 }
 
 /// A text the script asked to show (natives 202 / 203).
@@ -778,14 +928,15 @@ pub struct UnknownCall {
     pub args: Vec<i32>,
 }
 
-/// Diagnostic counters (in the snapshot, not in the hash).
+/// Diagnostic counters: neither in the snapshot nor in the hash (a restored world counts afresh;
+/// ADR-0008). Every counter saturates.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Counters {
     /// Instructions executed.
     pub instructions: u64,
     /// Callbacks invoked.
     pub callbacks: u64,
-    /// Callbacks aborted by the step budget.
+    /// Callbacks, tick phases, sequences and walks stopped by the work budget.
     pub budget_aborts: u64,
     /// Run-time faults (bad slot, missing parameter, stack underflow, deep recursion).
     pub faults: u64,
@@ -795,6 +946,8 @@ pub struct Counters {
     pub messages_delivered: u64,
     /// Messages dropped because the queue was full.
     pub messages_dropped: u64,
+    /// Text requests dropped because the queue was full or the id counter saturated.
+    pub texts_dropped: u64,
     /// Calls of natives with no implementation, by id.
     pub unknown_natives: BTreeMap<u32, u64>,
     /// Calls of natives implemented as recorded no-ops, by id.
@@ -859,15 +1012,18 @@ pub struct VmState {
     pub unknown_calls: Vec<UnknownCall>,
     /// The `script` RNG stream (native 161).
     pub rng: Rng,
-    /// Call stack (empty between callbacks).
+    /// Call stack (empty between callbacks; a snapshot must be quiescent).
     pub frames: Vec<Frame>,
     /// Native argument stack (empty between callbacks).
     pub arg_stack: Vec<i32>,
     /// Script call parameter stack (empty between callbacks).
     pub param_stack: Vec<i32>,
-    /// Instructions left in the current budget window.
+    /// Work units left in the current tick (not serialised: reset at the start of every tick and
+    /// of every load-time, event and dismissal run).
+    #[serde(skip)]
     pub budget: u64,
-    /// Diagnostics.
+    /// Diagnostics (not serialised, not hashed).
+    #[serde(skip)]
     pub counters: Counters,
 }
 
@@ -910,7 +1066,7 @@ impl VmState {
             frames: Vec::new(),
             arg_stack: Vec::new(),
             param_stack: Vec::new(),
-            budget: STEP_BUDGET_PER_TICK,
+            budget: WORK_BUDGET_PER_TICK,
             counters: Counters::default(),
         }
     }
@@ -921,6 +1077,29 @@ impl VmState {
         self.program.validate()?;
         if self.program_digest != self.program.digest() {
             return Err("vm program digest does not match the program".into());
+        }
+        // Callbacks never yield: between ticks there is no frame, no pushed argument and no
+        // sequence being collected. A snapshot that says otherwise is not a state this VM can
+        // produce, and resuming it is not defined.
+        if !self.frames.is_empty()
+            || !self.arg_stack.is_empty()
+            || !self.param_stack.is_empty()
+            || self.collecting.is_some()
+        {
+            return Err(
+                "vm snapshot is not quiescent (frames, stacks or a collecting sequence)".into(),
+            );
+        }
+        if self.next_text_id == 0 {
+            return Err("vm text id counter must be at least 1".into());
+        }
+        if self
+            .program
+            .elements
+            .iter()
+            .any(|e| matches!(e, Element::Actor(i) if *i as usize >= entity_count))
+        {
+            return Err("vm element table names an entity that does not exist".into());
         }
         if self.class_vars.len() != self.program.classes.len() {
             return Err("vm class variable blocks do not match the classes".into());
@@ -961,13 +1140,52 @@ impl VmState {
         {
             return Err("vm collected sequence too long".into());
         }
+        let mut total_elements = 0usize;
         for s in &self.sequences {
             if s.elements.len() > MAX_QUEUE || s.next as usize > s.elements.len() {
                 return Err("vm sequence out of range".into());
             }
+            total_elements = total_elements.saturating_add(s.elements.len());
+            if total_elements > MAX_SEQUENCE_ELEMENTS {
+                return Err("vm sequences hold too many elements".into());
+            }
+            if s.tokens.len() > MAX_QUEUE {
+                return Err("vm sequence has too many tokens".into());
+            }
+            let entity_ok = |e: u32| (e as usize) < entity_count;
+            let coord_ok = |v: i32| v.unsigned_abs() <= MAX_LOCATION_COORD as u32;
+            for el in &s.elements {
+                let ok = match *el {
+                    SeqElement::Walk { entity, x, y } => {
+                        entity_ok(entity) && coord_ok(x) && coord_ok(y)
+                    }
+                    SeqElement::Teleport { entity, to } => {
+                        entity_ok(entity) && to.is_none_or(|(x, y)| coord_ok(x) && coord_ok(y))
+                    }
+                    _ => true,
+                };
+                if !ok {
+                    return Err("vm sequence element out of range".into());
+                }
+            }
+            for t in &s.tokens {
+                if let SeqToken::Walk { entity, x, y } = *t
+                    && !(entity_ok(entity) && coord_ok(x) && coord_ok(y))
+                {
+                    return Err("vm sequence token out of range".into());
+                }
+            }
+            if let SeqWait::Text(id) = s.wait
+                && id >= self.next_text_id
+            {
+                return Err("vm sequence waits for a text id beyond the counter".into());
+            }
         }
         if self.texts.iter().any(|t| t.id >= self.next_text_id) {
             return Err("vm text id beyond the counter".into());
+        }
+        if self.texts.windows(2).any(|w| w[0].id >= w[1].id) {
+            return Err("vm text ids are not increasing".into());
         }
         if self
             .attributes
@@ -995,9 +1213,6 @@ impl VmState {
         {
             return Err("vm path table out of range".into());
         }
-        if self.frames.len() > MAX_FRAMES {
-            return Err("vm call stack too deep".into());
-        }
         if self.unknown_calls.len() > MAX_QUEUE
             || self.unknown_calls.iter().any(|c| c.args.len() > MAX_TABLE)
         {
@@ -1005,21 +1220,6 @@ impl VmState {
         }
         if !self.lenient && !self.unknown_calls.is_empty() {
             return Err("vm unknown call log without lenient mode".into());
-        }
-        for f in &self.frames {
-            let Some(c) = self.program.classes.get(f.class as usize) else {
-                return Err("vm frame class out of range".into());
-            };
-            let Some(func) = c.functions.get(f.function as usize) else {
-                return Err("vm frame function out of range".into());
-            };
-            if f.pc as usize > c.code.len()
-                || f.locals.len() != func.locals as usize
-                || f.temps.len() != func.temps as usize
-                || f.params.len() > MAX_TABLE
-            {
-                return Err("vm frame out of range".into());
-            }
         }
         self.rng.validate()
     }
@@ -1084,7 +1284,9 @@ impl VmState {
         }
     }
 
-    /// Encode the `scheduler` hash part (queues, sequences, texts, frames).
+    /// Encode the `scheduler` hash part (queues, sequences with their tokens, texts, presence).
+    /// Frames and stacks are not encoded: they are empty whenever a hash is taken (`validate`
+    /// refuses a snapshot where they are not).
     pub fn encode_scheduler(&self, e: &mut Encoder) {
         e.u32(self.messages.len() as u32);
         for m in &self.messages {
@@ -1097,10 +1299,18 @@ impl VmState {
                 SeqWait::None => e.u8(0),
                 SeqWait::Ticks(n) => e.u8(1).u32(n),
                 SeqWait::Text(id) => e.u8(2).u64(id),
+                SeqWait::Barrier => e.u8(3),
             };
             e.u32(s.elements.len() as u32);
             for el in &s.elements {
                 encode_element(e, el);
+            }
+            e.u32(s.tokens.len() as u32);
+            for t in &s.tokens {
+                match *t {
+                    SeqToken::Walk { entity, x, y } => e.u8(1).u32(entity).i32(x).i32(y),
+                    SeqToken::Animation { id } => e.u8(2).u32(id),
+                };
             }
         }
         match &self.collecting {
@@ -1130,27 +1340,6 @@ impl VmState {
         e.u32(self.scroll_presence.len() as u32);
         for (c, en) in &self.scroll_presence {
             e.u32(*c).u32(*en);
-        }
-        e.u32(self.frames.len() as u32);
-        for f in &self.frames {
-            e.u32(f.class)
-                .u32(f.function)
-                .u32(f.pc)
-                .i32(f.result)
-                .i32(f.call_result)
-                .i32(f.native_result);
-            for v in [&f.locals, &f.temps, &f.params] {
-                e.u32(v.len() as u32);
-                for x in v {
-                    e.i32(*x);
-                }
-            }
-        }
-        for v in [&self.arg_stack, &self.param_stack] {
-            e.u32(v.len() as u32);
-            for x in v {
-                e.i32(*x);
-            }
         }
     }
 
@@ -1190,18 +1379,21 @@ impl VmState {
         if self.messages.len() < MAX_QUEUE {
             self.messages.push(m);
         } else {
-            self.counters.messages_dropped += 1;
+            inc(&mut self.counters.messages_dropped);
         }
     }
 
-    /// Ask the app to show a text; returns the request id.
-    pub fn show_text(&mut self, text: i32, blocking: bool) -> u64 {
+    /// Ask the app to show a text; returns the request id, or `None` when the request was dropped
+    /// (queue full, or the id counter saturated; counted in `texts_dropped`).
+    pub fn show_text(&mut self, text: i32, blocking: bool) -> Option<u64> {
         let id = self.next_text_id;
-        self.next_text_id += 1;
-        if self.texts.len() < MAX_QUEUE {
-            self.texts.push(TextRequest { id, text, blocking });
+        if self.texts.len() >= MAX_QUEUE || id == u64::MAX {
+            inc(&mut self.counters.texts_dropped);
+            return None;
         }
-        id
+        self.next_text_id = id.saturating_add(1);
+        self.texts.push(TextRequest { id, text, blocking });
+        Some(id)
     }
 
     /// Element by handle; out-of-table handles are [`Element::Unmodelled`], negative ones `None`.
@@ -1219,10 +1411,41 @@ impl VmState {
         )
     }
 
-    /// Pending text indices in order.
+    /// Pending text indices in order (see [`VmState::pending_text_requests`] for the blocking
+    /// flag of each: a native 202 text is shown without pausing anything, a native 203 page holds
+    /// its sequence until it is dismissed).
     #[must_use]
     pub fn pending_texts(&self) -> Vec<i32> {
         self.texts.iter().map(|t| t.text).collect()
+    }
+
+    /// Pending text requests in order, first is shown; `blocking` tells a native 203 page (a
+    /// sequence waits for its dismissal) from a native 202 text (nothing waits).
+    #[must_use]
+    pub fn pending_text_requests(&self) -> &[TextRequest] {
+        &self.texts
+    }
+}
+
+/// Saturating increment of a diagnostic counter.
+fn inc(c: &mut u64) {
+    *c = c.saturating_add(1);
+}
+
+/// Saturating increment of a per-id counter.
+fn inc_id(map: &mut BTreeMap<u32, u64>, id: u32) {
+    let c = map.entry(id).or_insert(0);
+    *c = c.saturating_add(1);
+}
+
+/// Charge `units` of work; `false` (and a zero budget) when it does not fit.
+fn charge(vm: &mut VmState, units: u64) -> bool {
+    if vm.budget < units {
+        vm.budget = 0;
+        false
+    } else {
+        vm.budget -= units;
+        true
     }
 }
 
@@ -1249,6 +1472,8 @@ fn encode_element(e: &mut Encoder, el: &SeqElement) {
             }
         }
         SeqElement::Stub { id } => e.u8(7).u32(*id),
+        SeqElement::Animation { id, actor, anim } => e.u8(8).u32(*id).i32(*actor).i32(*anim),
+        SeqElement::Barrier => e.u8(9),
     };
 }
 
@@ -1259,6 +1484,10 @@ pub struct ScriptObservation {
     pub objectives: Vec<Objective>,
     /// Pending text indices, first is shown.
     pub texts: Vec<i32>,
+    /// The same requests with their blocking flag (native 203 pages block a sequence, native 202
+    /// texts do not).
+    #[serde(default)]
+    pub text_requests: Vec<TextRequest>,
     /// `CheckVictoryCondition` returned 1.
     pub mission_won: bool,
     /// Unknown native calls by id.
@@ -1359,6 +1588,7 @@ impl World {
         Some(ScriptObservation {
             objectives: vm.objectives.clone(),
             texts: vm.pending_texts(),
+            text_requests: vm.texts.clone(),
             mission_won: vm.mission_won,
             unknown_natives: vm.counters.unknown_natives.clone(),
             sequence_active: !vm.sequences.is_empty(),
@@ -1412,13 +1642,26 @@ impl World {
 
     fn vm_reset_budget(&mut self) {
         if let Some(vm) = self.vm.as_mut() {
-            vm.budget = STEP_BUDGET_PER_TICK;
+            vm.budget = WORK_BUDGET_PER_TICK;
+        }
+    }
+
+    /// Whether the tick's work budget is spent; counts a budget abort when it is.
+    fn vm_out_of_work(&mut self) -> bool {
+        match self.vm.as_mut() {
+            Some(vm) if vm.budget == 0 => {
+                inc(&mut vm.counters.budget_aborts);
+                true
+            }
+            _ => false,
         }
     }
 
     /// One tick of the script scheduler (called by `step` before the entities move): deliver
     /// the messages queued before this tick, `Hourglass(tick)` on every class, zone transitions
-    /// of the player characters, the active sequence, then `CheckVictoryCondition`.
+    /// of the player characters, scroll pickups, the active sequences, then
+    /// `CheckVictoryCondition`. Every phase stops when the work budget is spent; undelivered
+    /// messages stay queued (ahead of those sent this tick) for the next tick.
     pub(crate) fn vm_tick(&mut self) {
         if self.vm.is_none() {
             return;
@@ -1429,17 +1672,47 @@ impl World {
             .as_mut()
             .map(|vm| std::mem::take(&mut vm.messages))
             .unwrap_or_default();
-        for m in pending {
+        let mut pending = pending.into_iter();
+        for m in pending.by_ref() {
+            if self.vm_out_of_work() {
+                if let Some(vm) = self.vm.as_mut() {
+                    let mut rest: Vec<Message> = std::iter::once(m).chain(pending).collect();
+                    rest.append(&mut vm.messages);
+                    if rest.len() > MAX_QUEUE {
+                        let dropped = rest.len() - MAX_QUEUE;
+                        rest.truncate(MAX_QUEUE);
+                        vm.counters.messages_dropped =
+                            vm.counters.messages_dropped.saturating_add(dropped as u64);
+                    }
+                    vm.messages = rest;
+                }
+                return;
+            }
             self.vm_deliver(m);
         }
         let time = self.tick as i32;
         let n = self.vm.as_ref().map_or(0, |v| v.program.classes.len());
         for class in 0..n as u32 {
+            if self.vm_out_of_work() {
+                return;
+            }
             self.vm_callback(class, callbacks::HOURGLASS, &[time]);
         }
+        if self.vm_out_of_work() {
+            return;
+        }
         self.vm_zones();
+        if self.vm_out_of_work() {
+            return;
+        }
         self.vm_scrolls();
+        if self.vm_out_of_work() {
+            return;
+        }
         self.vm_advance_sequences();
+        if self.vm_out_of_work() {
+            return;
+        }
         if let Some(CallOutcome::Returned(1)) = self.vm_callback(0, callbacks::CHECK_VICTORY, &[])
             && let Some(vm) = self.vm.as_mut()
         {
@@ -1458,18 +1731,22 @@ impl World {
             .position(|c| m.target >= 0 && c.element == Some(m.target as u32))
             .unwrap_or(0) as u32;
         if let Some(vm) = self.vm.as_mut() {
-            vm.counters.messages_delivered += 1;
+            inc(&mut vm.counters.messages_delivered);
         }
         self.vm_callback(class, callbacks::PROCESS_MESSAGE, &[m.id, m.arg, m.arg2]);
     }
 
     /// `EnterZone` / `ExitZone` for every player character crossing a zone class's polygon.
     /// Presence starts empty, so a character standing inside a zone at load enters it on the
-    /// first tick (hypothesis).
+    /// first tick (hypothesis). Every polygon test is charged (one unit per edge); when the
+    /// budget runs out the remaining pairs are tested next tick, and a transition whose callback
+    /// cannot start keeps its old presence so it fires next tick.
     fn vm_zones(&mut self) {
         let Some(vm) = self.vm.as_ref() else { return };
+        let mut budget = vm.budget;
+        let mut exhausted = false;
         let mut events: Vec<(u32, u32, bool)> = Vec::new();
-        for (ci, c) in vm.program.classes.iter().enumerate() {
+        'scan: for (ci, c) in vm.program.classes.iter().enumerate() {
             let Some(z) = c.zone else { continue };
             let Some(Location::Polygon(poly)) = vm.program.locations.get(z as usize) else {
                 continue;
@@ -1478,6 +1755,13 @@ impl World {
                 if e.kind != EntityKind::Player || !e.alive || !e.active {
                     continue;
                 }
+                let cost = poly.len().max(1) as u64;
+                if budget < cost {
+                    budget = 0;
+                    exhausted = true;
+                    break 'scan;
+                }
+                budget -= cost;
                 let inside = poly.len() >= 3 && point_in_polygon(e.x.round(), e.y.round(), poly);
                 let was = vm.zone_presence.contains(&(ci as u32, ei as u32));
                 if inside != was {
@@ -1485,7 +1769,16 @@ impl World {
                 }
             }
         }
+        if let Some(vm) = self.vm.as_mut() {
+            vm.budget = budget;
+            if exhausted {
+                inc(&mut vm.counters.budget_aborts);
+            }
+        }
         for (class, entity, inside) in events {
+            if self.vm_out_of_work() {
+                return;
+            }
             let actor = self
                 .vm
                 .as_ref()
@@ -1512,8 +1805,10 @@ impl World {
     /// radius is a hypothesis (`SCROLL_PICKUP_RADIUS`); the original's rule is not observed yet.
     fn vm_scrolls(&mut self) {
         let Some(vm) = self.vm.as_ref() else { return };
+        let mut budget = vm.budget;
+        let mut exhausted = false;
         let mut events: Vec<(u32, u32, i32, bool)> = Vec::new();
-        for (ci, c) in vm.program.classes.iter().enumerate() {
+        'scan: for (ci, c) in vm.program.classes.iter().enumerate() {
             let Some(handle) = c.element else { continue };
             let Some(Element::Scroll { x, y }) = vm.program.elements.get(handle as usize) else {
                 continue;
@@ -1523,6 +1818,11 @@ impl World {
                 if e.kind != EntityKind::Player || !e.alive || !e.active {
                     continue;
                 }
+                if budget == 0 {
+                    exhausted = true;
+                    break 'scan;
+                }
+                budget -= 1;
                 let dx = i64::from(e.x.round()) - i64::from(*x);
                 let dy = i64::from(e.y.round()) - i64::from(*y);
                 let near =
@@ -1533,7 +1833,16 @@ impl World {
                 }
             }
         }
+        if let Some(vm) = self.vm.as_mut() {
+            vm.budget = budget;
+            if exhausted {
+                inc(&mut vm.counters.budget_aborts);
+            }
+        }
         for (class, entity, handle, near) in events {
+            if self.vm_out_of_work() {
+                return;
+            }
             let actor = self
                 .vm
                 .as_ref()
@@ -1555,13 +1864,18 @@ impl World {
         }
     }
 
-    /// Advance every sequence this tick: each runs until its own wait (ticks or a text page) or its
-    /// end, independently of the others (the original's sequence manager keeps one sequence per
-    /// element; running them one after another would queue a scroll's popup behind unrelated
-    /// timed sequences such as the archery-training loop). Finished sequences are removed.
+    /// Advance every sequence this tick: each runs until its own wait (ticks, a text page or a
+    /// barrier) or its end, independently of the others (the original's sequence manager keeps
+    /// one sequence per element; running them one after another would queue a scroll's popup
+    /// behind unrelated timed sequences such as the archery-training loop). Finished sequences
+    /// are removed. Every element executed costs one work unit; when the budget is spent the
+    /// remaining sequences wait for the next tick.
     pub(crate) fn vm_advance_sequences(&mut self) {
         let mut i = 0;
         while i < self.vm.as_ref().map_or(0, |vm| vm.sequences.len()) {
+            if self.vm_out_of_work() {
+                return;
+            }
             if self.vm_advance_sequence(i) {
                 if let Some(vm) = self.vm.as_mut() {
                     vm.sequences.remove(i);
@@ -1572,32 +1886,64 @@ impl World {
         }
     }
 
+    /// Whether a completion token is done (see [`SeqToken`]).
+    fn seq_token_done(&self, token: SeqToken) -> bool {
+        match token {
+            SeqToken::Walk { entity, x, y } => {
+                let Some(e) = self.entities.get(entity as usize) else {
+                    return true;
+                };
+                !e.alive || !e.active || e.target != Some((Fixed::from_int(x), Fixed::from_int(y)))
+            }
+            SeqToken::Animation { .. } => true,
+        }
+    }
+
     /// Run sequence `i` until it blocks; returns true when it has finished.
     fn vm_advance_sequence(&mut self, i: usize) -> bool {
         loop {
+            // What the sequence waits for, checked against the world without holding it mutably.
+            let Some(vm) = self.vm.as_ref() else {
+                return true;
+            };
+            let Some(seq) = vm.sequences.get(i) else {
+                return true;
+            };
+            match seq.wait {
+                // `Wait(n)` holds the sequence for exactly n ticks: the tick that brings the
+                // count to zero runs the next element.
+                SeqWait::Ticks(n) if n > 1 => {
+                    if let Some(seq) = self.vm.as_mut().and_then(|vm| vm.sequences.get_mut(i)) {
+                        seq.wait = SeqWait::Ticks(n - 1);
+                    }
+                    return false;
+                }
+                SeqWait::Text(id) => {
+                    if vm.texts.iter().any(|t| t.id == id) {
+                        return false;
+                    }
+                }
+                SeqWait::Barrier => {
+                    if !seq.tokens.iter().all(|&t| self.seq_token_done(t)) {
+                        return false;
+                    }
+                }
+                SeqWait::Ticks(_) | SeqWait::None => {}
+            }
             let el = {
                 let Some(vm) = self.vm.as_mut() else {
                     return true;
                 };
-                let texts_pending: Vec<u64> = vm.texts.iter().map(|t| t.id).collect();
+                if !charge(vm, 1) {
+                    return false;
+                }
                 let Some(seq) = vm.sequences.get_mut(i) else {
                     return true;
                 };
-                match seq.wait {
-                    // `Wait(n)` holds the sequence for exactly n ticks: the tick that brings the
-                    // count to zero runs the next element.
-                    SeqWait::Ticks(n) if n > 1 => {
-                        seq.wait = SeqWait::Ticks(n - 1);
-                        return false;
-                    }
-                    SeqWait::Text(id) => {
-                        if texts_pending.contains(&id) {
-                            return false;
-                        }
-                        seq.wait = SeqWait::None;
-                    }
-                    SeqWait::Ticks(_) | SeqWait::None => seq.wait = SeqWait::None,
+                if seq.wait == SeqWait::Barrier {
+                    seq.tokens.clear();
                 }
+                seq.wait = SeqWait::None;
                 let Some(el) = seq.elements.get(seq.next as usize).cloned() else {
                     return true;
                 };
@@ -1608,11 +1954,11 @@ impl World {
                 SeqElement::Text(t) => {
                     if let Some(vm) = self.vm.as_mut() {
                         let id = vm.show_text(t, true);
-                        if let Some(seq) = vm.sequences.get_mut(i) {
+                        if let (Some(id), Some(seq)) = (id, vm.sequences.get_mut(i)) {
                             seq.wait = SeqWait::Text(id);
+                            return false;
                         }
                     }
-                    return false;
                 }
                 SeqElement::Wait(n) => {
                     if n > 0 {
@@ -1622,20 +1968,43 @@ impl World {
                         return false;
                     }
                 }
+                SeqElement::Barrier => {
+                    if let Some(seq) = self.vm.as_mut().and_then(|vm| vm.sequences.get_mut(i)) {
+                        seq.wait = SeqWait::Barrier;
+                    }
+                }
                 SeqElement::Camera(loc) => self.vm_camera(loc),
                 SeqElement::Message(m) => {
                     if let Some(vm) = self.vm.as_mut() {
                         vm.send(m);
                     }
                 }
-                SeqElement::Walk { entity, x, y } => self.vm_walk(entity, x, y),
+                SeqElement::Walk { entity, x, y } => {
+                    self.vm_walk(entity, x, y);
+                    self.vm_push_token(i, SeqToken::Walk { entity, x, y });
+                }
                 SeqElement::Teleport { entity, to } => self.vm_teleport(entity, to),
+                SeqElement::Animation { id, .. } => {
+                    if let Some(vm) = self.vm.as_mut() {
+                        inc_id(&mut vm.counters.stub_natives, id);
+                    }
+                    self.vm_push_token(i, SeqToken::Animation { id });
+                }
                 SeqElement::Stub { id } => {
                     if let Some(vm) = self.vm.as_mut() {
-                        *vm.counters.stub_natives.entry(id).or_insert(0) += 1;
+                        inc_id(&mut vm.counters.stub_natives, id);
                     }
                 }
             }
+        }
+    }
+
+    /// Record a completion token on sequence `i` (bounded).
+    fn vm_push_token(&mut self, i: usize, token: SeqToken) {
+        if let Some(seq) = self.vm.as_mut().and_then(|vm| vm.sequences.get_mut(i))
+            && seq.tokens.len() < MAX_QUEUE
+        {
+            seq.tokens.push(token);
         }
     }
 
@@ -1656,15 +2025,16 @@ impl World {
         Some(self.vm_invoke(class, function, params))
     }
 
-    /// Run one function to completion (nested script calls included) within the budget.
+    /// Run one function to completion (nested script calls included) within the budget: one
+    /// unit per instruction plus one per argument transferred by a call or a native.
     pub(crate) fn vm_invoke(&mut self, class: u32, function: u32, params: &[i32]) -> CallOutcome {
         let Some(vm) = self.vm.as_mut() else {
             return CallOutcome::Aborted;
         };
-        vm.counters.callbacks += 1;
+        inc(&mut vm.counters.callbacks);
         if !vm.frames.is_empty() {
             // Callbacks never nest (natives queue events instead of invoking scripts).
-            vm.counters.faults += 1;
+            inc(&mut vm.counters.faults);
             vm.frames.clear();
         }
         vm.arg_stack.clear();
@@ -1677,25 +2047,29 @@ impl World {
             let Some(vm) = self.vm.as_mut() else {
                 return CallOutcome::Aborted;
             };
-            if vm.budget == 0 {
-                vm.counters.budget_aborts += 1;
-                vm.frames.clear();
-                vm.collecting = None;
-                return CallOutcome::Aborted;
-            }
-            vm.budget -= 1;
-            vm.counters.instructions += 1;
             let Some(frame) = vm.frames.last() else {
                 return CallOutcome::Aborted;
             };
             let (ci, pc) = (frame.class as usize, frame.pc as usize);
-            let Some(ins) = vm
+            let ins = vm
                 .program
                 .classes
                 .get(ci)
                 .and_then(|c| c.code.get(pc))
-                .copied()
-            else {
+                .copied();
+            // One unit per instruction, plus the arguments a call or native transfers.
+            let cost = 1 + match ins {
+                Some(Instr::Call { argc, .. } | Instr::Native { argc, .. }) => u64::from(argc),
+                _ => 0,
+            };
+            if !charge(vm, cost) {
+                inc(&mut vm.counters.budget_aborts);
+                vm.frames.clear();
+                vm.collecting = None;
+                return CallOutcome::Aborted;
+            }
+            inc(&mut vm.counters.instructions);
+            let Some(ins) = ins else {
                 // Ran off the end of the code: treat as a return.
                 if let Some(v) = pop_frame(vm) {
                     return CallOutcome::Returned(v);
@@ -1723,7 +2097,7 @@ impl World {
                         .last()
                         .and_then(|f| f.params.get(index as usize).copied());
                     let v = v.unwrap_or_else(|| {
-                        vm.counters.faults += 1;
+                        inc(&mut vm.counters.faults);
                         0
                     });
                     write(vm, dst, v);
@@ -1731,7 +2105,7 @@ impl World {
                 }
                 Instr::PushParam { src } => {
                     let v = read(vm, src);
-                    if vm.param_stack.len() < MAX_QUEUE {
+                    if vm.param_stack.len() < MAX_STACK {
                         vm.param_stack.push(v);
                     }
                     advance(vm);
@@ -1751,7 +2125,7 @@ impl World {
                 }
                 Instr::PushArg { src } => {
                     let v = read(vm, src);
-                    if vm.arg_stack.len() < MAX_QUEUE {
+                    if vm.arg_stack.len() < MAX_STACK {
                         vm.arg_stack.push(v);
                     }
                     advance(vm);
@@ -1766,7 +2140,7 @@ impl World {
                         if let Some(vm) = self.vm.as_mut() {
                             vm.frames.clear();
                             vm.collecting = None;
-                            vm.counters.traps += 1;
+                            inc(&mut vm.counters.traps);
                         }
                         return CallOutcome::Aborted;
                     };
@@ -1832,9 +2206,11 @@ fn jump(vm: &mut VmState, target: u32) {
     }
 }
 
+/// Pop `n` values (validated `n <= MAX_STACK`, so the padded vector never exceeds the stack limit).
 fn pop_n(stack: &mut Vec<i32>, n: usize, counters: &mut Counters) -> Vec<i32> {
+    let n = n.min(MAX_STACK);
     if stack.len() < n {
-        counters.faults += 1;
+        inc(&mut counters.faults);
         let mut v = std::mem::take(stack);
         v.resize(n, 0);
         return v;
@@ -1849,11 +2225,11 @@ fn push_frame(vm: &mut VmState, class: u32, function: u32, params: Vec<i32>) -> 
         .get(class as usize)
         .and_then(|c| c.functions.get(function as usize))
     else {
-        vm.counters.faults += 1;
+        inc(&mut vm.counters.faults);
         return false;
     };
     if vm.frames.len() >= MAX_FRAMES {
-        vm.counters.faults += 1;
+        inc(&mut vm.counters.faults);
         return false;
     }
     vm.frames.push(Frame {
@@ -1903,7 +2279,7 @@ fn read(vm: &mut VmState, s: Slot) -> i32 {
             .copied(),
     };
     v.unwrap_or_else(|| {
-        vm.counters.faults += 1;
+        inc(&mut vm.counters.faults);
         0
     })
 }
@@ -1929,7 +2305,7 @@ fn write(vm: &mut VmState, s: Slot, v: i32) {
             .map(|slot| *slot = v),
     };
     if ok.is_none() {
-        vm.counters.faults += 1;
+        inc(&mut vm.counters.faults);
     }
 }
 
@@ -2208,9 +2584,10 @@ pub(crate) mod tests {
         let mut w = mission_world(0, Some(program(vec![level], 0)));
         w.step(&[]);
         let vm = w.vm.as_ref().unwrap();
-        assert_eq!(vm.counters.budget_aborts, 1);
+        assert!(vm.counters.budget_aborts >= 1);
         assert!(vm.frames.is_empty());
-        assert!(vm.counters.instructions >= STEP_BUDGET_PER_TICK);
+        assert!(vm.counters.instructions >= WORK_BUDGET_PER_TICK);
+        assert_eq!(vm.budget, 0, "the tick stopped at zero");
     }
 
     #[test]
@@ -2599,7 +2976,12 @@ pub(crate) mod tests {
         assert_ne!(w2.hashes().total(), w.hashes().total());
         w2.restore(&snap).unwrap();
         assert_eq!(w2.hashes(), w.hashes());
-        assert_eq!(w2.vm, w.vm);
+        // Counters and the budget are diagnostics: absent from the snapshot, zero after restore.
+        let mut expected = w.vm.clone().unwrap();
+        expected.counters = Counters::default();
+        expected.budget = 0;
+        assert_eq!(w2.vm, Some(expected));
+        assert!(!json.contains("\"counters\"") && !json.contains("\"budget\""));
         let h0 = w.hashes();
         let mut v = w.clone();
         v.vm.as_mut().unwrap().mission_vars[9] = 1;
@@ -2637,6 +3019,655 @@ pub(crate) mod tests {
             snap.world.vm.as_ref().unwrap().program.digest();
         assert!(w.restore(&snap).unwrap_err().contains("out of range"));
         assert_eq!(w.hashes(), h0);
+    }
+
+    #[test]
+    fn walk_then_barrier_then_text_orders_the_sequence() {
+        // PostInitialize: n30; n45(guard, location 0, 0); n32; n203(0); n32; n34(0); n31. The
+        // guard (element 1) walks to location 0 = (200, 200); the page shows only once it arrived.
+        let mut post = native(30, &[], None, 0);
+        post.extend(native(45, &[1, 0, 0], None, 0));
+        post.extend(native(32, &[], None, 0));
+        post.extend(native(203, &[0], None, 0));
+        post.extend(native(32, &[], None, 0));
+        post.extend(native(34, &[0], None, 0));
+        post.extend(native(31, &[], None, 0));
+        let level = class("StartUp", 0, &[("PostInitialize", 0, false, 0, 4, post)]);
+        let mut w = mission_world(1, Some(program(vec![level], 1)));
+        let vm = w.vm.as_ref().unwrap();
+        assert!(
+            vm.pending_texts().is_empty(),
+            "the page waits behind the barrier"
+        );
+        assert_eq!(vm.sequences.len(), 1);
+        assert_eq!(vm.sequences[0].wait, SeqWait::Barrier);
+        assert_eq!(
+            vm.sequences[0].tokens,
+            vec![SeqToken::Walk {
+                entity: 1,
+                x: 200,
+                y: 200
+            }]
+        );
+        assert!(w.entities[1].target.is_some(), "the guard walks");
+        for _ in 0..20 {
+            w.step(&[]);
+        }
+        // Tokens are state: they survive a JSON round trip and are hashed.
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
+        let snap: crate::world::Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = mission_world(1, None);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.vm.as_ref().unwrap().sequences[0].tokens.len(), 1);
+        assert_eq!(w2.hashes(), w.hashes());
+        let mut v = w.clone();
+        v.vm.as_mut().unwrap().sequences[0].tokens.clear();
+        assert_ne!(v.hashes().get("scheduler"), w.hashes().get("scheduler"));
+        let mut arrived_at = None;
+        for t in 20..400 {
+            w.step(&[]);
+            if w.entities[1].target.is_none() {
+                arrived_at = Some(t);
+                break;
+            }
+            assert!(
+                w.vm.as_ref().unwrap().pending_texts().is_empty(),
+                "still walking at tick {t}"
+            );
+        }
+        let arrived_at = arrived_at.expect("the guard arrives");
+        assert!(arrived_at > 60, "{arrived_at}");
+        assert_eq!(
+            (w.entities[1].x.round(), w.entities[1].y.round()),
+            (200, 200)
+        );
+        // The scheduler ran before the move on the arrival tick: the page shows on the next one.
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(
+            vm.pending_text_requests(),
+            &[TextRequest {
+                id: 1,
+                text: 0,
+                blocking: true
+            }]
+        );
+        assert_eq!(vm.sequences[0].wait, SeqWait::Text(1));
+        assert!(vm.sequences[0].tokens.is_empty(), "cleared at the barrier");
+        assert_eq!(vm.camera_target, None);
+        assert!(w.vm_dismiss_text());
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.camera_target, Some((200, 200)));
+        assert!(vm.sequences.is_empty());
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn locking_mid_walk_stops_the_ai_walk_and_completes_the_barrier() {
+        // Initialize: n132(guard, path 0) (the rail walks to (500, 500) and loops).
+        // Hourglass(t): if t == 30: n134(guard, 1); if t == 60: n135(guard).
+        // PostInitialize: n30; n45(guard, location 0, 0); n32; n203(0); n31.
+        let init = native(132, &[1, 0], None, 0);
+        let mut hourglass = vec![
+            Instr::LoadParam {
+                dst: tv(0),
+                index: 0,
+            },
+            Instr::LoadInt {
+                dst: tv(1),
+                value: 30,
+            },
+            Instr::Binary {
+                op: BinOp::Eq,
+                dst: tv(2),
+                a: tv(0),
+                b: tv(1),
+            },
+            Instr::JumpIf {
+                cond: tv(2),
+                target: 9,
+            },
+            Instr::LoadInt {
+                dst: tv(1),
+                value: 60,
+            },
+            Instr::Binary {
+                op: BinOp::Eq,
+                dst: tv(2),
+                a: tv(0),
+                b: tv(1),
+            },
+            Instr::JumpIf {
+                cond: tv(2),
+                target: 15,
+            },
+            Instr::Return,
+        ];
+        hourglass.extend(native(134, &[1, 1], None, 0)); // code 9..=13
+        hourglass.push(Instr::Return); // code 14
+        hourglass.extend(native(135, &[1], None, 0)); // code 15..=17
+        let mut post = native(30, &[], None, 0);
+        post.extend(native(45, &[1, 0, 0], None, 0));
+        post.extend(native(32, &[], None, 0));
+        post.extend(native(203, &[0], None, 0));
+        post.extend(native(31, &[], None, 0));
+        // `Hourglass` comes first: its jump targets are class code indices.
+        let level = class(
+            "StartUp",
+            0,
+            &[
+                ("Hourglass", 1, false, 0, 4, hourglass),
+                ("Initialize", 0, false, 0, 4, init),
+                ("PostInitialize", 0, false, 0, 4, post),
+            ],
+        );
+        let mut w = mission_world(1, Some(program(vec![level], 1)));
+        assert_eq!(w.entities[1].program, Some(0));
+        // The sequence walk (to (200, 200)) is in progress; the rail waits behind it.
+        assert_eq!(
+            w.entities[1].target,
+            Some((Fixed::from_int(200), Fixed::from_int(200)))
+        );
+        for _ in 0..30 {
+            w.step(&[]);
+        }
+        assert!(w.entities[1].target.is_some() && !w.entities[1].ai_locked);
+        assert!(w.vm.as_ref().unwrap().pending_texts().is_empty());
+        // Tick 30 locks the guard: its walk stops where it is, the barrier completes.
+        w.step(&[]);
+        let g = &w.entities[1];
+        assert!(g.ai_locked && g.target.is_none() && g.path.is_empty());
+        let stopped = (g.x.round(), g.y.round());
+        assert_ne!(stopped, (200, 200));
+        assert_eq!(w.vm.as_ref().unwrap().pending_texts(), vec![0]);
+        assert!(w.vm_dismiss_text());
+        for _ in 0..29 {
+            w.step(&[]);
+            let g = &w.entities[1];
+            assert!(g.target.is_none(), "locked: the rail does not start");
+            assert_eq!((g.x.round(), g.y.round()), stopped);
+        }
+        // Tick 60 unlocks it: the rail program issues its walk from where it stands.
+        w.step(&[]);
+        assert!(!w.entities[1].ai_locked);
+        w.step(&[]);
+        assert_eq!(
+            w.entities[1].target,
+            Some((Fixed::from_int(500), Fixed::from_int(500)))
+        );
+        assert_eq!(w.entities[1].pc, 0);
+        // Locking a player character does not touch the player's order.
+        w.plan_path(0, (Fixed::from_int(300), Fixed::from_int(100)));
+        assert_eq!(w.native_call(134, &[0, 1]), Some(0));
+        assert!(w.entities[0].ai_locked && w.entities[0].target.is_some());
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn text_202_never_blocks_and_203_blocks_its_sequence() {
+        // Initialize: n202(5). PostInitialize: n30; n202(7); n203(8); n32; n34(0); n31 (202 is
+        // not a sequence element: inside the sequence it runs at collection time).
+        let init = native(202, &[5], None, 0);
+        let mut post = native(30, &[], None, 0);
+        post.extend(native(202, &[7], None, 0));
+        post.extend(native(203, &[8], None, 0));
+        post.extend(native(32, &[], None, 0));
+        post.extend(native(34, &[0], None, 0));
+        post.extend(native(31, &[], None, 0));
+        let level = class(
+            "StartUp",
+            0,
+            &[
+                ("Initialize", 0, false, 0, 4, init),
+                ("PostInitialize", 0, false, 0, 4, post),
+            ],
+        );
+        let mut w = mission_world(0, Some(program(vec![level], 0)));
+        let req = |id, text, blocking| TextRequest { id, text, blocking };
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(
+            vm.pending_text_requests(),
+            &[req(1, 5, false), req(2, 7, false), req(3, 8, true)]
+        );
+        assert_eq!(vm.pending_texts(), vec![5, 7, 8]);
+        assert_eq!(vm.sequences[0].wait, SeqWait::Text(3));
+        assert_eq!(vm.camera_target, None);
+        assert_eq!(
+            w.script_observation().unwrap().text_requests,
+            vec![req(1, 5, false), req(2, 7, false), req(3, 8, true)]
+        );
+        // Dismissing the non-blocking texts changes nothing for the sequence.
+        assert!(w.vm_dismiss_text());
+        assert!(w.vm_dismiss_text());
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.pending_text_requests(), &[req(3, 8, true)]);
+        assert_eq!(vm.sequences[0].wait, SeqWait::Text(3));
+        assert_eq!(vm.camera_target, None);
+        for _ in 0..5 {
+            w.step(&[]);
+        }
+        assert_eq!(w.vm.as_ref().unwrap().camera_target, None, "blocked");
+        assert!(w.vm_dismiss_text());
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.camera_target, Some((200, 200)));
+        assert!(vm.sequences.is_empty() && vm.texts.is_empty());
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn work_budget_stops_the_tick_deterministically_and_resumes() {
+        // Initialize: n43(hero, 1); n43(hero, 2) (both reach the level's ProcessMessage).
+        // ProcessMessage(1): cv1 = 1; spin. ProcessMessage(2): cv2 = 1. Hourglass: cv0 += 1.
+        // PostInitialize: n30; n56(2); n34(0); n31. CheckVictoryCondition: 1.
+        // Zone class: EnterZone: cv0 += 1; the hero stands inside the zone from the start.
+        let mut init = native(43, &[0, 1], None, 0);
+        init.extend(native(43, &[0, 2], None, 0));
+        let pm = vec![
+            Instr::LoadParam {
+                dst: tv(0),
+                index: 0,
+            },
+            Instr::LoadInt {
+                dst: tv(1),
+                value: 1,
+            },
+            Instr::Binary {
+                op: BinOp::Eq,
+                dst: tv(2),
+                a: tv(0),
+                b: tv(1),
+            },
+            Instr::JumpIf {
+                cond: tv(2),
+                target: 7,
+            },
+            Instr::LoadInt {
+                dst: cv(2),
+                value: 1,
+            },
+            Instr::Return,
+            // 7: cv1 = 1; spin
+            Instr::LoadInt {
+                dst: cv(1),
+                value: 1,
+            },
+            Instr::Jump { target: 8 },
+        ];
+        let hourglass = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::Binary {
+                op: BinOp::Add,
+                dst: cv(0),
+                a: cv(0),
+                b: tv(0),
+            },
+        ];
+        let mut post = native(30, &[], None, 0);
+        post.extend(native(56, &[2], None, 0));
+        post.extend(native(34, &[0], None, 0));
+        post.extend(native(31, &[], None, 0));
+        let victory = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::SetResult { src: tv(0) },
+        ];
+        // `ProcessMessage` comes first: its jump targets are class code indices.
+        let level = class(
+            "StartUp",
+            3,
+            &[
+                ("ProcessMessage", 3, false, 0, 4, pm),
+                ("Initialize", 0, false, 0, 4, init),
+                ("Hourglass", 1, false, 0, 4, hourglass.clone()),
+                ("PostInitialize", 0, false, 0, 4, post),
+                ("CheckVictoryCondition", 0, true, 0, 4, victory),
+            ],
+        );
+        let mut zone = class("Zone", 1, &[("EnterZone", 1, true, 0, 4, hourglass)]);
+        zone.zone = Some(1);
+        zone.element = Some(2);
+        let mut w = mission_world(0, Some(program(vec![level, zone], 0)));
+        w.entities[0].x = Fixed::from_int(500);
+        w.entities[0].y = Fixed::from_int(500);
+        assert_eq!(w.vm.as_ref().unwrap().sequences[0].wait, SeqWait::Ticks(4));
+        // Tick 0: message 1 spins the budget away; message 2 stays queued, every later phase
+        // of the tick is skipped.
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[0], vec![0, 1, 0]);
+        assert_eq!(vm.messages.len(), 1, "requeued");
+        assert_eq!(vm.class_vars[1], vec![0], "zone skipped");
+        assert_eq!(vm.sequences[0].wait, SeqWait::Ticks(4), "sequence skipped");
+        assert!(!vm.mission_won);
+        assert!(vm.counters.budget_aborts >= 1);
+        assert_eq!(vm.budget, 0);
+        // Tick 1: the queued message, the Hourglass, the zone, the sequence and the victory
+        // check all run.
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[0], vec![1, 1, 1]);
+        assert!(vm.messages.is_empty());
+        assert_eq!(vm.class_vars[1], vec![1]);
+        assert_eq!(vm.sequences[0].wait, SeqWait::Ticks(3));
+        assert!(vm.mission_won);
+        // The wait was delayed by exactly the skipped tick: camera on tick 4, not 3.
+        for _ in 2..4 {
+            w.step(&[]);
+        }
+        assert_eq!(w.vm.as_ref().unwrap().camera_target, None);
+        w.step(&[]);
+        assert_eq!(w.vm.as_ref().unwrap().camera_target, Some((200, 200)));
+        assert_eq!(w.tick, 5);
+        // Same program, same inputs, same outcome: the budget is part of the ruleset.
+        let mut w2 = mission_world(
+            0,
+            Some(program(
+                vec![
+                    w.vm.as_ref().unwrap().program.classes[0].clone(),
+                    w.vm.as_ref().unwrap().program.classes[1].clone(),
+                ],
+                0,
+            )),
+        );
+        w2.entities[0].x = Fixed::from_int(500);
+        w2.entities[0].y = Fixed::from_int(500);
+        for _ in 0..5 {
+            w2.step(&[]);
+        }
+        assert_eq!(w2.hashes(), w.hashes());
+        // Path searches issued by the script are charged to the same budget: with none left the
+        // walk is dropped and counted; with a fresh budget it is planned.
+        let aborts = w.vm.as_ref().unwrap().counters.budget_aborts;
+        w.vm.as_mut().unwrap().budget = 0;
+        w.vm_walk(0, 200, 200);
+        assert!(w.entities[0].target.is_none());
+        assert_eq!(w.vm.as_ref().unwrap().counters.budget_aborts, aborts + 1);
+        w.vm.as_mut().unwrap().budget = WORK_BUDGET_PER_TICK;
+        w.vm_walk(0, 200, 200);
+        assert!(w.entities[0].target.is_some());
+        assert!(
+            w.vm.as_ref().unwrap().budget < WORK_BUDGET_PER_TICK,
+            "charged"
+        );
+        let mut tiny = 3;
+        assert!(
+            w.plan_path_with(0, (Fixed::from_int(100), Fixed::from_int(100)), &mut tiny)
+                .is_err()
+        );
+        assert!(w.entities[0].target.is_none());
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn program_validation_is_self_sufficient_and_snapshots_must_be_canonical() {
+        // Hourglass(t): cv0 = id(t). id(x): x.
+        let body = vec![
+            Instr::LoadParam {
+                dst: tv(0),
+                index: 0,
+            },
+            Instr::PushParam { src: tv(0) },
+            Instr::Call {
+                function: 1,
+                argc: 1,
+            },
+            Instr::GetCallResult { dst: cv(0) },
+        ];
+        let callee = vec![
+            Instr::LoadParam {
+                dst: tv(0),
+                index: 0,
+            },
+            Instr::SetResult { src: tv(0) },
+        ];
+        let level = class(
+            "StartUp",
+            1,
+            &[
+                ("Hourglass", 1, false, 0, 2, body),
+                ("id", 1, true, 0, 2, callee),
+            ],
+        );
+        let base = program(vec![level], 0);
+        base.validate().unwrap();
+        let m = MAX_LOCATION_COORD;
+        let reject = |edit: fn(&mut Program), needle: &str| {
+            let mut p = base.clone();
+            edit(&mut p);
+            let err = p.validate().unwrap_err();
+            assert!(err.contains(needle), "{err} should mention {needle}");
+        };
+        reject(
+            |p| p.classes[0].functions.swap(0, 1),
+            "start with a function",
+        );
+        reject(|p| p.classes[0].functions[1].address = 0, "table order");
+        reject(|p| p.classes[0].functions.clear(), "disagree");
+        reject(
+            |p| {
+                p.classes[0].code[0] = Instr::Enter {
+                    locals: 1,
+                    temps: 2,
+                }
+            },
+            "prologue",
+        );
+        reject(
+            |p| {
+                p.classes[0].code[1] = Instr::LoadParam {
+                    dst: tv(0),
+                    index: 1,
+                }
+            },
+            "instruction 1 out of range",
+        );
+        reject(
+            |p| {
+                p.classes[0].code[3] = Instr::Call {
+                    function: 1,
+                    argc: 0,
+                }
+            },
+            "instruction 3 out of range",
+        );
+        reject(
+            |p| p.classes[0].code[1] = Instr::Jump { target: 7 },
+            "instruction 1 out of range",
+        );
+        reject(
+            |p| {
+                p.classes[0].code[1] = Instr::Native {
+                    id: 1,
+                    argc: MAX_STACK as u32 + 1,
+                }
+            },
+            "instruction 1 out of range",
+        );
+        reject(
+            |p| {
+                p.locations[0] = Location::Point {
+                    x: MAX_LOCATION_COORD + 1,
+                    y: 0,
+                }
+            },
+            "location 0 out of range",
+        );
+        reject(
+            |p| p.locations[1] = Location::Polygon(vec![(0, 0), (1, i32::MIN), (2, 2)]),
+            "location 1 out of range",
+        );
+        reject(
+            |p| p.elements[1] = Element::Scroll { x: 0, y: i32::MAX },
+            "element 1 position",
+        );
+        reject(|p| p.elements[2] = Element::Polygon(0), "element 2 polygon");
+        let mut extreme = base.clone();
+        extreme.locations[0] = Location::Point { x: -m, y: m };
+        extreme.locations[1] = Location::Polygon(vec![(m, m), (-m, m), (0, -m)]);
+        extreme.validate().unwrap();
+
+        let mut w = mission_world(1, Some(base));
+        w.step(&[]);
+        let before = w.hashes();
+        let reject_snap = |w: &mut World, edit: fn(&mut VmState), needle: &str| {
+            let mut snap = w.snapshot(None);
+            edit(snap.world.vm.as_mut().unwrap());
+            let err = w.restore(&snap).unwrap_err();
+            assert!(err.contains(needle), "{err} should mention {needle}");
+        };
+        // Non-quiescent snapshots are refused.
+        reject_snap(
+            &mut w,
+            |vm| {
+                vm.frames.push(Frame {
+                    class: 0,
+                    function: 0,
+                    pc: 0,
+                    locals: vec![],
+                    temps: vec![0, 0],
+                    params: vec![],
+                    result: 0,
+                    call_result: 0,
+                    native_result: 0,
+                });
+            },
+            "quiescent",
+        );
+        reject_snap(&mut w, |vm| vm.arg_stack.push(1), "quiescent");
+        reject_snap(&mut w, |vm| vm.param_stack.push(1), "quiescent");
+        reject_snap(&mut w, |vm| vm.collecting = Some(Vec::new()), "quiescent");
+        // Tables and counters.
+        reject_snap(
+            &mut w,
+            |vm| {
+                vm.program.elements.push(Element::Actor(99));
+                vm.program_digest = vm.program.digest();
+            },
+            "entity that does not exist",
+        );
+        reject_snap(&mut w, |vm| vm.next_text_id = 0, "at least 1");
+        reject_snap(
+            &mut w,
+            |vm| {
+                vm.texts.push(TextRequest {
+                    id: 3,
+                    text: 0,
+                    blocking: false,
+                });
+                vm.texts.push(TextRequest {
+                    id: 3,
+                    text: 1,
+                    blocking: false,
+                });
+                vm.next_text_id = 4;
+            },
+            "not increasing",
+        );
+        reject_snap(
+            &mut w,
+            |vm| {
+                vm.sequences.push(Sequence {
+                    elements: vec![],
+                    next: 0,
+                    wait: SeqWait::Text(9),
+                    tokens: vec![],
+                });
+            },
+            "beyond the counter",
+        );
+        reject_snap(
+            &mut w,
+            |vm| {
+                vm.sequences.push(Sequence {
+                    elements: vec![],
+                    next: 0,
+                    wait: SeqWait::Barrier,
+                    tokens: vec![SeqToken::Walk {
+                        entity: 7,
+                        x: 0,
+                        y: 0,
+                    }],
+                });
+            },
+            "token out of range",
+        );
+        reject_snap(
+            &mut w,
+            |vm| {
+                vm.sequences.push(Sequence {
+                    elements: vec![SeqElement::Walk {
+                        entity: 0,
+                        x: i32::MIN,
+                        y: 0,
+                    }],
+                    next: 0,
+                    wait: SeqWait::None,
+                    tokens: vec![],
+                });
+            },
+            "element out of range",
+        );
+        // Hostile coordinates through JSON, as a client would send them: refused in either build
+        // mode, the world untouched.
+        for &c in &[i32::MIN, i32::MAX, -(m + 1), m + 1] {
+            let mut json = serde_json::to_value(w.snapshot(None)).unwrap();
+            json["world"]["vm"]["program"]["locations"][0] =
+                serde_json::json!({ "point": { "x": c, "y": 0 } });
+            let mut snap: crate::world::Snapshot = serde_json::from_value(json).unwrap();
+            let vm = snap.world.vm.as_mut().unwrap();
+            vm.program_digest = vm.program.digest();
+            assert!(w.restore(&snap).unwrap_err().contains("location 0"));
+        }
+        assert_eq!(w.hashes(), before);
+        // A saturated text counter drops further requests instead of wrapping.
+        let mut v = w.clone();
+        let vm = v.vm.as_mut().unwrap();
+        vm.next_text_id = u64::MAX;
+        assert_eq!(vm.show_text(1, false), None);
+        assert_eq!(vm.counters.texts_dropped, 1);
+        assert_eq!(vm.next_text_id, u64::MAX);
+        v.validate().unwrap();
+        // The maximum stack transfer is accepted and never resizes past the limit.
+        let mut stack = Vec::new();
+        let mut counters = Counters::default();
+        let popped = pop_n(&mut stack, MAX_STACK * 4, &mut counters);
+        assert_eq!(popped.len(), MAX_STACK);
+        assert_eq!(counters.faults, 1);
+    }
+
+    #[test]
+    fn distance_and_camera_natives_are_total_at_the_coordinate_bounds() {
+        // Initialize: cv0 = n160(0, 2); cv1 = n160(0, 0); cv2 = n160(0, -1); n33(2); n34(0).
+        // Locations 0 = (-M, -M), 2 = (M, M) with M the coordinate bound.
+        let m = MAX_LOCATION_COORD;
+        let mut init = native(160, &[0, 2], Some(cv(0)), 0);
+        init.extend(native(160, &[0, 0], Some(cv(1)), 0));
+        init.extend(native(160, &[0, -1], Some(cv(2)), 0));
+        init.extend(native(33, &[2], None, 0));
+        init.extend(native(34, &[0], None, 0));
+        let level = class("StartUp", 3, &[("Initialize", 0, false, 0, 4, init)]);
+        let mut p = program(vec![level], 0);
+        p.locations[0] = Location::Point { x: -m, y: -m };
+        p.locations.push(Location::Point { x: m, y: m });
+        let mut w = mission_world(0, Some(p));
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[0], vec![2_965_821, 0, i32::MAX]);
+        assert_eq!(vm.camera_target, Some((-m, -m)));
+        assert_eq!(w.camera, (0, 0));
+        w.center_camera_on(m, m);
+        assert_eq!(
+            w.camera,
+            (0, 32),
+            "clamped to a 1000x800 map under a 1024x768 viewport"
+        );
+        w.center_camera_on(-m, -m);
+        assert_eq!(w.camera, (0, 0));
+        w.validate().unwrap();
     }
 
     #[test]

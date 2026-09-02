@@ -364,8 +364,8 @@ officer on the road, merry men at the targets. A stronger check is the console `
 if it lists actor kinds.
 
 Display names: `profile.cpf` carries only French designer labels (no text ids). The English hero names are
-[original game text removed]
-[original game text removed]
+the strings 144..150 of `Level.res` TEXT 1000507 (the UI string table), in an order that differs from the
+PC table's (the hero, his town variant, then the companions), so the hero-name
 lookup is code-side; merry men get generated names from strings 100..143 (first names, then surnames) of the
 same entry. Non-player characters have no display name in the data; their voice set is the only per-kind
 text-like resource.
