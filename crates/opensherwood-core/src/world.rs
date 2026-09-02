@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::ai::{AiState, action_id, wanted_animation};
 use crate::anim::{AnimState, Catalog, direction_of};
 use crate::fixed::Fixed;
 use crate::geom::Geometry;
@@ -150,6 +151,44 @@ pub struct Entity {
     /// Standing or crouched (player characters, keys `c` / `s`).
     #[serde(default)]
     pub posture: Posture,
+    /// Side (players are `Player`, soldiers `Enemy`, civilians `Civilian`; obstacles carry the
+    /// default). Only enemy soldiers perceive (`ai.rs`).
+    #[serde(default = "default_team")]
+    pub team: Team,
+    /// Behaviour state (`ai.rs`): normal, the alert states, the knock-out states.
+    #[serde(default)]
+    pub ai_state: AiState,
+    /// Ticks left in the current timed state (`ai_state`); 0 in untimed states.
+    #[serde(default)]
+    pub state_ticks: u32,
+    /// Where the soldier last perceived a player character (map pixels, 24.8), while alerted.
+    #[serde(default)]
+    pub last_seen: Option<(Fixed, Fixed)>,
+    /// Where the alert or the knock-out took the soldier from: he returns there afterwards.
+    #[serde(default)]
+    pub alert_origin: Option<(Fixed, Fixed)>,
+    /// The enemy this player character was ordered to attack (walk into reach, then punch).
+    #[serde(default)]
+    pub attack_target: Option<EntityId>,
+    /// The sprite action id the entity reported last tick (`ai::action_id`); a change fires the
+    /// script's `ActionChange`.
+    #[serde(default)]
+    pub action: u32,
+    /// Hit points (`profile.md`, SD `p0`: hypothesis; [`crate::ai::DEFAULT_HIT_POINTS`] for
+    /// everyone without a profile value). No damage model yet beyond the knock-out.
+    #[serde(default = "default_hit_points")]
+    pub hit_points: i32,
+    /// Knock-out resistance (`profile.md`, SD `p4`: hypothesis, 0..100): scales the knock-out
+    /// timer, 100 makes the blow fail.
+    #[serde(default)]
+    pub knockout_resistance: i32,
+    /// Gait of the walks this NPC's waypoint program issues (script native 140: hypothesis
+    /// 0 walk / 1 run / 2 sprint, the last played as a run).
+    #[serde(default)]
+    pub npc_gait: Gait,
+    /// Fell backward (struck from the front: actions 44 / 48) rather than forward (41 / 47).
+    #[serde(default)]
+    pub fell_backward: bool,
 }
 
 impl Entity {
@@ -168,6 +207,14 @@ impl Entity {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_team() -> Team {
+    Team::Civilian
+}
+
+fn default_hit_points() -> i32 {
+    crate::ai::DEFAULT_HIT_POINTS
 }
 
 /// The last left click on the ground, remembered for double-click detection (authoritative: it
@@ -295,6 +342,18 @@ pub enum Team {
     Civilian,
 }
 
+impl Team {
+    /// Stable tag for canonical encodings (never derived from declaration order).
+    #[must_use]
+    pub fn tag(self) -> u8 {
+        match self {
+            Team::Player => 1,
+            Team::Enemy => 2,
+            Team::Civilian => 3,
+        }
+    }
+}
+
 /// One actor of a mission, as decoded by the app from the mission file (plain data; core does no I/O).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActorSpec {
@@ -318,6 +377,12 @@ pub struct ActorSpec {
     /// activates later; `docs/formats/rhm.md`, `SCOT` placement flag `0x88`).
     #[serde(default = "default_true")]
     pub active: bool,
+    /// Hit points (`profile.md`, SD `p0`; the default for actors without a profile value).
+    #[serde(default = "default_hit_points")]
+    pub hit_points: i32,
+    /// Knock-out resistance (`profile.md`, SD `p4`; 0 for actors without a profile value).
+    #[serde(default)]
+    pub knockout_resistance: i32,
 }
 
 /// A mission ready to be simulated: map size, walkable geometry and actors. Built by the app from
@@ -477,6 +542,8 @@ pub const RUN_SPEED_FACTOR: i32 = 2;
 /// Crouched (sneaking) speed as a divisor of the walking speed. Hypothesis, same status as
 /// [`RUN_SPEED_FACTOR`].
 pub const CROUCH_SPEED_DIVISOR: i32 = 2;
+/// Largest state timer a snapshot may carry (`Entity::state_ticks`).
+pub const MAX_STATE_TICKS: u32 = 1 << 24;
 
 /// Every check a walkable geometry must pass before it may drive movement: vertex budget and
 /// coordinate range (`-MAX_GEOMETRY_COORD..=MAX_GEOMETRY_COORD`).
@@ -552,8 +619,11 @@ pub struct World {
 
 /// Snapshot schema version (9: sequence barrier tokens, VM counters and budget no longer
 /// serialised, snapshots must be quiescent; 11: entity `gait` / `posture`, the world's
-/// `last_ground_click`).
-pub const SNAPSHOT_VERSION: u32 = 11;
+/// `last_ground_click`; 12: the stealth layer: entity `team`, `ai_state`, `state_ticks`,
+/// `last_seen`, `alert_origin`, `attack_target`, `action`, `hit_points`,
+/// `knockout_resistance`, `npc_gait`, `fell_backward`; actor specs carry `hit_points` and
+/// `knockout_resistance`).
+pub const SNAPSHOT_VERSION: u32 = 12;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -648,6 +718,17 @@ impl World {
                 ai_locked: false,
                 gait: Gait::Walk,
                 posture: Posture::Standing,
+                team: a.team,
+                ai_state: AiState::Patrol,
+                state_ticks: 0,
+                last_seen: None,
+                alert_origin: None,
+                attack_target: None,
+                action: 0,
+                hit_points: a.hit_points,
+                knockout_resistance: a.knockout_resistance,
+                npc_gait: Gait::Walk,
+                fell_backward: false,
             });
         }
         // The original opens a mission with the camera on the hero.
@@ -864,6 +945,17 @@ impl World {
             ai_locked: false,
             gait: Gait::Walk,
             posture: Posture::Standing,
+            team: Team::Player,
+            ai_state: AiState::Patrol,
+            state_ticks: 0,
+            last_seen: None,
+            alert_origin: None,
+            attack_target: None,
+            action: 0,
+            hit_points: crate::ai::DEFAULT_HIT_POINTS,
+            knockout_resistance: 0,
+            npc_gait: Gait::Walk,
+            fell_backward: false,
         });
         entities.push(Entity {
             id: id(1),
@@ -886,6 +978,17 @@ impl World {
             ai_locked: false,
             gait: Gait::Walk,
             posture: Posture::Standing,
+            team: Team::Enemy,
+            ai_state: AiState::Patrol,
+            state_ticks: 0,
+            last_seen: None,
+            alert_origin: None,
+            attack_target: None,
+            action: 0,
+            hit_points: crate::ai::DEFAULT_HIT_POINTS,
+            knockout_resistance: 0,
+            npc_gait: Gait::Walk,
+            fell_backward: false,
         });
         let obstacles: &[(i32, i32, i32, i32)] = if map.is_some() {
             &[]
@@ -914,6 +1017,17 @@ impl World {
                 ai_locked: false,
                 gait: Gait::Walk,
                 posture: Posture::Standing,
+                team: Team::Civilian,
+                ai_state: AiState::Patrol,
+                state_ticks: 0,
+                last_seen: None,
+                alert_origin: None,
+                attack_target: None,
+                action: 0,
+                hit_points: 0,
+                knockout_resistance: 0,
+                npc_gait: Gait::Walk,
+                fell_backward: false,
             });
         }
         let geometry = Geometry::default();
@@ -1122,6 +1236,29 @@ impl World {
             if e.x.abs() > bound || e.y.abs() > bound {
                 return Err(format!("entity {:?} position out of range", e.id));
             }
+            if (e.kind == EntityKind::Player) != (e.team == Team::Player) {
+                return Err(format!(
+                    "entity {:?} kind {:?} does not match team {:?}",
+                    e.id, e.kind, e.team
+                ));
+            }
+            if e.state_ticks > MAX_STATE_TICKS {
+                return Err(format!("entity {:?} state ticks out of range", e.id));
+            }
+            for (name, p) in [("last seen", e.last_seen), ("alert origin", e.alert_origin)] {
+                if let Some((x, y)) = p
+                    && (x.abs() > bound || y.abs() > bound)
+                {
+                    return Err(format!("entity {:?} {name} position out of range", e.id));
+                }
+            }
+        }
+        for e in &self.entities {
+            if let Some(t) = e.attack_target
+                && (!ids.contains(&t) || t == e.id)
+            {
+                return Err(format!("entity {:?} attack target {t:?} is invalid", e.id));
+            }
         }
         if let Some(sel) = self.selected
             && !ids.contains(&sel)
@@ -1265,14 +1402,27 @@ impl World {
             .position(|e| e.id == sel && e.kind == EntityKind::Player && e.alive && e.active)
     }
 
-    /// Left click (`docs/original/ui-flow.md` 9.4): on a character it selects him; on the ground
-    /// it orders the selected player character to walk there, and a second click within
-    /// [`DOUBLE_CLICK_TICKS`] and [`DOUBLE_CLICK_DISTANCE`] of the first makes the order a run.
-    /// A click on the ground with nothing selected does nothing.
+    /// Left click (`docs/original/ui-flow.md` 9.4): on an enemy while a player character is
+    /// selected it orders the attack (`crate::ai`: walk into reach, then the knock-out blow when
+    /// behind him; hypothesis, the manual's fist icon is not drawn yet); on any other character
+    /// it selects him; on the ground it orders the selected player character to walk there, and
+    /// a second click within [`DOUBLE_CLICK_TICKS`] and [`DOUBLE_CLICK_DISTANCE`] of the first
+    /// makes the order a run. A click on the ground with nothing selected does nothing.
     fn left_click(&mut self) {
         if let Some(hit) = self.actor_at_pointer() {
-            self.selected = Some(hit);
             self.last_ground_click = None;
+            let enemy = self
+                .entities
+                .iter()
+                .position(|e| e.id == hit && e.kind == EntityKind::Guard && e.team == Team::Enemy);
+            match (enemy, self.commanded_player()) {
+                (Some(t), Some(i)) if self.entities[i].ai_state == AiState::Patrol => {
+                    let to = (self.entities[t].x, self.entities[t].y);
+                    self.plan_path(i, to);
+                    self.entities[i].attack_target = Some(hit);
+                }
+                _ => self.selected = Some(hit),
+            }
             return;
         }
         let Some(i) = self.commanded_player() else {
@@ -1280,6 +1430,12 @@ impl World {
             return;
         };
         let target = self.pointer_in_map();
+        if self.entities[i].ai_state != AiState::Patrol {
+            // A character delivering a blow finishes it first.
+            self.last_ground_click = None;
+            return;
+        }
+        self.entities[i].attack_target = None;
         let double = self.last_ground_click.is_some_and(|c| {
             self.tick.saturating_sub(c.tick) <= DOUBLE_CLICK_TICKS
                 && Fixed::length(target.0 - c.x, target.1 - c.y)
@@ -1312,6 +1468,7 @@ impl World {
                 e.target = None;
                 e.path.clear();
                 e.gait = Gait::Walk;
+                e.attack_target = None;
             }
             _ => self.selected = None,
         }
@@ -1336,13 +1493,21 @@ impl World {
             Fixed::from_int(self.map_size.0 as i32),
             Fixed::from_int(self.map_size.1 as i32),
         );
+        // The stealth layer first (`ai.rs`): attack orders, perception, alert and knock-out
+        // states; an alerted or knocked-out guard does not run its program below.
+        self.ai_tick();
         // Idle guards run their waypoint program, or pick their next legacy patrol point (path
         // planning needs &mut self, so collect first).
         let mut to_plan: Vec<(usize, (Fixed, Fixed))> = Vec::new();
         let programs = &self.programs;
         let rng = &mut self.rng;
         for (i, e) in self.entities.iter_mut().enumerate() {
-            if !(e.alive && e.active && e.kind == EntityKind::Guard && e.target.is_none()) {
+            if !(e.alive
+                && e.active
+                && e.kind == EntityKind::Guard
+                && e.target.is_none()
+                && e.ai_state == AiState::Patrol)
+            {
                 continue;
             }
             if e.wait_ticks > 0 {
@@ -1367,6 +1532,10 @@ impl World {
         }
         for (i, t) in to_plan {
             self.plan_path(i, t);
+            if self.entities[i].target.is_some() {
+                // Program walks use the gait the script set (native 140).
+                self.entities[i].gait = self.entities[i].npc_gait;
+            }
             if self.entities[i].target.is_none() {
                 // Unreachable point: skip it.
                 let e = &mut self.entities[i];
@@ -1438,21 +1607,44 @@ impl World {
             if !e.active {
                 continue;
             }
-            let Some(anim) = e.anim.as_mut() else {
+            let Some(set) = e.anim.as_ref().and_then(|a| self.catalog.sets.get(&a.set)) else {
                 continue;
             };
-            let Some(set) = self.catalog.sets.get(&anim.set) else {
+            let wanted = wanted_animation(e, set);
+            if let Some(anim) = e.anim.as_mut() {
+                anim.advance(&self.catalog, wanted);
+            }
+        }
+        // The action id every human reports (`ai::action_id`); a change reaches the script's
+        // `ActionChange` of the class bound to the actor with `(previous, new)` (hypothesis on
+        // the parameter order: the actor classes compare the second parameter with 141,
+        // `docs/formats/scb.md`), within what the tick's budget left.
+        let mut changes: Vec<(u32, i32, i32)> = Vec::new();
+        for (i, e) in self.entities.iter_mut().enumerate() {
+            if !e.active || e.kind == EntityKind::Obstacle {
                 continue;
-            };
-            let dir = direction_of(e.facing256);
-            let wanted = match (e.posture, e.target.is_some(), e.gait) {
-                (Posture::Crouched, true, _) => set.crouch_walk[dir],
-                (Posture::Crouched, false, _) => set.crouch_idle[dir],
-                (Posture::Standing, true, Gait::Run) => set.run[dir],
-                (Posture::Standing, true, Gait::Walk) => set.walk[dir],
-                (Posture::Standing, false, _) => set.idle[dir],
-            };
-            anim.advance(&self.catalog, wanted);
+            }
+            let now = action_id(e);
+            if now != e.action {
+                let previous = e.action;
+                e.action = now;
+                if let Some(class) = self.vm.as_ref().and_then(|vm| {
+                    let handle = vm.program.element_of_entity(i as u32);
+                    (handle >= 0)
+                        .then(|| {
+                            vm.program
+                                .classes
+                                .iter()
+                                .position(|c| c.element == Some(handle as u32))
+                        })
+                        .flatten()
+                }) {
+                    changes.push((class as u32, previous as i32, now as i32));
+                }
+            }
+        }
+        for (class, previous, now) in changes {
+            self.vm_action_change(class, previous, now);
         }
         if let Some(p) = self.entities.iter().find(|e| e.kind == EntityKind::Player)
             && Fixed::length(p.x - self.goal.0, p.y - self.goal.1) <= Fixed::from_int(16)
@@ -1584,6 +1776,14 @@ impl World {
                 .u8(u8::from(e.ai_locked))
                 .u8(e.gait.tag())
                 .u8(e.posture.tag())
+                .u8(e.team.tag())
+                .u8(e.ai_state.tag())
+                .u32(e.state_ticks)
+                .u32(e.action)
+                .i32(e.hit_points)
+                .i32(e.knockout_resistance)
+                .u8(e.npc_gait.tag())
+                .u8(u8::from(e.fell_backward))
                 .u32(e.wait_ticks)
                 .u32(e.patrol_index)
                 .u32(e.patrol.len() as u32);
@@ -1604,6 +1804,16 @@ impl World {
                 None => a.u8(0),
             };
             a.u32(e.pc);
+            for p in [e.last_seen, e.alert_origin] {
+                match p {
+                    Some((x, y)) => a.u8(1).i32(x.raw()).i32(y.raw()),
+                    None => a.u8(0),
+                };
+            }
+            match e.attack_target {
+                Some(t) => a.u8(1).u32(t.index).u32(t.generation),
+                None => a.u8(0),
+            };
         }
         a.u32(self.programs.len() as u32);
         for p in &self.programs {
@@ -1763,7 +1973,7 @@ fn run_program(e: &mut Entity, program: &[Instruction], rng: &mut Rng) -> Option
 }
 
 /// Facing from a direction vector: 8-way quantised to 1/256 turns, exact and deterministic.
-fn facing_of(dx: Fixed, dy: Fixed) -> i32 {
+pub(crate) fn facing_of(dx: Fixed, dy: Fixed) -> i32 {
     let (ax, ay) = (i64::from(dx.abs().raw()), i64::from(dy.abs().raw()));
     let diagonal = ax * 2 > ay && ay * 2 > ax;
     let octant = match (dx.raw() >= 0, dy.raw() >= 0, diagonal, ax >= ay) {
@@ -1867,7 +2077,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "e18aba4000a668003e64face096e27d99972ee772a389fea580616a86dfbbc7a";
+        "39857808207a23fb4632c64a85682f9a34b7eaef064541ac60ff128df4380374";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -1912,6 +2122,39 @@ mod tests {
             y: Fixed::ONE,
         });
         variants.push(("last_ground_click", w));
+        let mut w = base.clone();
+        w.entities[1].team = Team::Civilian;
+        variants.push(("team", w));
+        let mut w = base.clone();
+        w.entities[1].ai_state = AiState::Alarm;
+        variants.push(("ai_state", w));
+        let mut w = base.clone();
+        w.entities[1].state_ticks = 5;
+        variants.push(("state_ticks", w));
+        let mut w = base.clone();
+        w.entities[1].last_seen = Some((Fixed::ONE, Fixed::ONE));
+        variants.push(("last_seen", w));
+        let mut w = base.clone();
+        w.entities[1].alert_origin = Some((Fixed::ONE, Fixed::ONE));
+        variants.push(("alert_origin", w));
+        let mut w = base.clone();
+        w.entities[0].attack_target = Some(base.entities[1].id);
+        variants.push(("attack_target", w));
+        let mut w = base.clone();
+        w.entities[1].action = 141;
+        variants.push(("action", w));
+        let mut w = base.clone();
+        w.entities[1].hit_points += 1;
+        variants.push(("hit_points", w));
+        let mut w = base.clone();
+        w.entities[1].knockout_resistance = 35;
+        variants.push(("knockout_resistance", w));
+        let mut w = base.clone();
+        w.entities[1].npc_gait = Gait::Run;
+        variants.push(("npc_gait", w));
+        let mut w = base.clone();
+        w.entities[1].fell_backward = true;
+        variants.push(("fell_backward", w));
         let mut w = base.clone();
         w.programs.push(vec![Instruction::Stop]);
         variants.push(("programs", w));
@@ -2222,6 +2465,8 @@ mod tests {
                     patrol: vec![],
                     program: vec![],
                     active: true,
+                    hit_points: 100,
+                    knockout_resistance: 0,
                 },
                 ActorSpec {
                     profile: "Soldier A00".into(),
@@ -2232,6 +2477,8 @@ mod tests {
                     patrol: vec![(300, 200), (300, 400)],
                     program: vec![],
                     active: true,
+                    hit_points: 80,
+                    knockout_resistance: 0,
                 },
             ],
             script: None,
@@ -2277,6 +2524,8 @@ mod tests {
             patrol: vec![],
             program: vec![],
             active: true,
+            hit_points: 100,
+            knockout_resistance: 0,
         }];
         for (i, p) in programs.iter().enumerate() {
             actors.push(ActorSpec {
@@ -2288,6 +2537,8 @@ mod tests {
                 patrol: vec![],
                 program: p.clone(),
                 active: true,
+                hit_points: 80,
+                knockout_resistance: 0,
             });
         }
         let spec = MissionSpec {
@@ -2713,11 +2964,23 @@ mod tests {
         assert_eq!(w.selected, Some(w.entities[0].id));
         click(&mut w, 200, 240, Button::Left);
         assert!(w.entities[0].target.is_some());
-        // Clicking the guard selects it and forgets the ground click.
+        // Clicking the guard with the player selected is an attack order (the selection stays,
+        // the ground click is forgotten); with nothing selected it selects the guard.
+        let (gx, gy) = (w.entities[1].x.round(), w.entities[1].y.round());
+        click(&mut w, gx, gy, Button::Left);
+        assert_eq!(w.selected, Some(w.entities[0].id));
+        assert_eq!(w.entities[0].attack_target, Some(w.entities[1].id));
+        assert!(w.last_ground_click.is_none());
+        click(&mut w, 300, 400, Button::Right);
+        assert!(w.selected.is_none());
         let (gx, gy) = (w.entities[1].x.round(), w.entities[1].y.round());
         click(&mut w, gx, gy, Button::Left);
         assert_eq!(w.selected, Some(w.entities[1].id));
-        assert!(w.last_ground_click.is_none());
+        // A ground order replaces the attack.
+        click(&mut w, 80, 240, Button::Left);
+        assert!(w.entities[0].attack_target.is_some());
+        click(&mut w, 200, 240, Button::Left);
+        assert!(w.entities[0].attack_target.is_none());
         // Right click on the ground deselects; the player's order continues.
         click(&mut w, 80, 240, Button::Left);
         click(&mut w, 200, 240, Button::Left);
@@ -2754,12 +3017,10 @@ mod tests {
         catalog.sets.insert(
             "hero".into(),
             AnimSet {
-                animations: (0..5).map(|i| vec![frame(i)]).collect(),
-                idle: [0; 8],
-                walk: [1; 8],
                 run: [2; 8],
                 crouch_idle: [3; 8],
                 crouch_walk: [4; 8],
+                ..AnimSet::standing_only((0..5).map(|i| vec![frame(i)]).collect(), [0; 8], [1; 8])
             },
         );
         let mut w = corridor(14);

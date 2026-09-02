@@ -19,10 +19,16 @@ pub struct FrameSpec {
     pub offset_y: i32,
 }
 
-/// The animations of one character profile plus which of them are idle / walk / run and the
-/// crouched idle / walk per direction (`docs/formats/sprite-animations.md`: action ids 0, 6, 7,
-/// 14 and 16). Profiles without a crouch set (soldiers, civilians) or without a run block name
-/// their standing blocks again, so every array always resolves.
+/// The animations of one character profile plus which of them play for each posture and state,
+/// per 8-way direction (`docs/formats/sprite-animations.md`: action ids 0, 6, 7, 14, 16; the alert
+/// set 140 / 141 / 142 / 143 / 151; the fall set 41 / 44 / 47 / 48 / 49; the knock-out blow 123;
+/// `docs/original/stealth-and-combat.md`, "Engine"). Every array always resolves: a profile without
+/// a block names the documented fallback (crouch -> standing, run -> walk, alert idle / noticed /
+/// alarm -> idle, alert walk / run -> walk / run, knocked down -> idle, lying -> knocked down,
+/// get up -> idle, punch -> idle), so a soldier without a sneak block sneaks with its walk and a
+/// civilian without an alert set stands. `has_punch` records whether the knock-out blow exists,
+/// because the order model must not fake it (`docs/original/stealth-and-combat.md` 3.2: Robin
+/// and the big man only).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AnimSet {
     /// Animations in profile order.
@@ -40,10 +46,47 @@ pub struct AnimSet {
     /// Crouched walk ("sneak") per direction (action 16; the walk block when the profile has none).
     #[serde(default)]
     pub crouch_walk: [u32; 8],
+    /// Alert idle, weapon ready (action 140; fallback idle).
+    #[serde(default)]
+    pub alert_idle: [u32; 8],
+    /// Noticed something (action 141; fallback idle).
+    #[serde(default)]
+    pub noticed: [u32; 8],
+    /// Raises the alarm (action 142; fallback idle).
+    #[serde(default)]
+    pub alarm: [u32; 8],
+    /// Alert walk (action 143; fallback walk).
+    #[serde(default)]
+    pub alert_walk: [u32; 8],
+    /// Alert run (action 151; fallback run).
+    #[serde(default)]
+    pub alert_run: [u32; 8],
+    /// Knocked down forward, ends face down (action 41; fallback idle).
+    #[serde(default)]
+    pub knocked_down: [u32; 8],
+    /// Knocked down backward, ends on the back (action 44; fallback `knocked_down`).
+    #[serde(default)]
+    pub knocked_down_back: [u32; 8],
+    /// Lying face down (action 47; fallback `knocked_down`).
+    #[serde(default)]
+    pub lying: [u32; 8],
+    /// Lying on the back (action 48; fallback `lying`).
+    #[serde(default)]
+    pub lying_back: [u32; 8],
+    /// Gets up from the ground (action 49; fallback idle).
+    #[serde(default)]
+    pub get_up: [u32; 8],
+    /// The knock-out blow (action 123; fallback idle, see `has_punch`).
+    #[serde(default)]
+    pub punch: [u32; 8],
+    /// Whether the profile has the knock-out blow (action 123).
+    #[serde(default)]
+    pub has_punch: bool,
 }
 
 impl AnimSet {
-    /// A set whose run and crouched blocks are the standing ones (synthetic worlds and tests).
+    /// A set whose run, crouched, alert, fall and punch blocks are the standing ones (synthetic
+    /// worlds and tests). Such a set can punch: synthetic units exercise the knock-out rules.
     #[must_use]
     pub fn standing_only(animations: Vec<Vec<FrameSpec>>, idle: [u32; 8], walk: [u32; 8]) -> Self {
         Self {
@@ -53,7 +96,34 @@ impl AnimSet {
             run: walk,
             crouch_idle: idle,
             crouch_walk: walk,
+            alert_idle: idle,
+            noticed: idle,
+            alarm: idle,
+            alert_walk: walk,
+            alert_run: walk,
+            knocked_down: idle,
+            knocked_down_back: idle,
+            lying: idle,
+            lying_back: idle,
+            get_up: idle,
+            punch: idle,
+            has_punch: true,
         }
+    }
+
+    /// Length of one loop of animation `index` in ticks (the sum of its frame durations, each at
+    /// least 1); `None` when the index does not exist or the animation has no frames.
+    #[must_use]
+    pub fn length(&self, index: u32) -> Option<u32> {
+        let frames = self.animations.get(index as usize)?;
+        if frames.is_empty() {
+            return None;
+        }
+        Some(
+            frames
+                .iter()
+                .fold(0u32, |acc, f| acc.saturating_add(f.duration.max(1))),
+        )
     }
 }
 
@@ -168,6 +238,16 @@ mod tests {
         s.advance(&c, 1);
         assert_eq!((s.animation, s.frame), (1, 0));
         assert_eq!(s.current(&c).unwrap().frame, 20);
+    }
+
+    #[test]
+    fn length_sums_the_frame_durations() {
+        let c = catalog();
+        let set = &c.sets["hero"];
+        assert_eq!(set.length(0), Some(3));
+        assert_eq!(set.length(1), Some(1));
+        assert_eq!(set.length(2), None);
+        assert!(set.has_punch);
     }
 
     #[test]

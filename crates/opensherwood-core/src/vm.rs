@@ -1042,6 +1042,8 @@ pub struct Counters {
     pub stub_natives: BTreeMap<u32, u64>,
     /// Objective completions for objectives that were never added.
     pub objective_done_before_added: u64,
+    /// Calls of native 90 that reported an actor out of action (knocked out or dead).
+    pub out_of_action_true: u64,
 }
 
 /// Run-time state of the VM (part of [`World`], of the snapshot and of the hash).
@@ -1621,6 +1623,11 @@ pub struct ScriptObservation {
     pub lenient: bool,
     /// Unknown native calls recorded in lenient mode.
     pub unknown_calls: usize,
+    /// Element handle of every entity, by entity index (`NONE_HANDLE` for entities the script
+    /// cannot address): what native 3 returns for the actors, for tests that aim at the actor a
+    /// script polls.
+    #[serde(default)]
+    pub actor_elements: Vec<i32>,
 }
 
 /// Outcome of one callback invocation.
@@ -1716,6 +1723,9 @@ impl World {
             faulted: vm.faulted,
             lenient: vm.lenient,
             unknown_calls: vm.unknown_calls.len(),
+            actor_elements: (0..self.entities.len() as u32)
+                .map(|i| vm.program.element_of_entity(i))
+                .collect(),
         })
     }
 
@@ -1746,7 +1756,9 @@ impl World {
         self.vm_event(class, handler, &[actor])
     }
 
-    /// Hook: the actor of `class` changed its action state. Not triggered by the engine yet.
+    /// Hook: the actor of `class` changed its action state: `(previous, new)` sprite action ids
+    /// (`crate::ai::action_id`; the parameter order is a hypothesis, `docs/formats/scb.md`).
+    /// Triggered by `World::simulate` after the animations advanced.
     pub fn vm_action_change(&mut self, class: u32, a: i32, b: i32) -> Option<i32> {
         self.vm_event(class, callbacks::ACTION_CHANGE, &[a, b])
     }
@@ -2531,6 +2543,8 @@ pub(crate) mod tests {
             patrol: vec![],
             program: vec![],
             active: true,
+            hit_points: 100,
+            knockout_resistance: 0,
         }];
         for i in 0..guards {
             actors.push(ActorSpec {
@@ -2542,6 +2556,8 @@ pub(crate) mod tests {
                 patrol: vec![],
                 program: vec![],
                 active: true,
+                hit_points: 80,
+                knockout_resistance: 0,
             });
         }
         let spec = MissionSpec {
@@ -3182,6 +3198,9 @@ pub(crate) mod tests {
         post.extend(native(31, &[], None, 0));
         let level = class("StartUp", 0, &[("PostInitialize", 0, false, 0, 4, post)]);
         let mut w = mission_world(1, Some(program(vec![level], 1)));
+        // Out of the walking guard's sight (`crate::ai`): the walk must not be interrupted.
+        w.entities[0].x = Fixed::from_int(900);
+        w.entities[0].y = Fixed::from_int(700);
         let vm = w.vm.as_ref().unwrap();
         assert!(
             vm.pending_texts().is_empty(),
@@ -4222,14 +4241,14 @@ pub(crate) mod tests {
         assert_eq!((v[15], v[16]), (0, 0), "250(0) is 211's value: the hero");
         assert_eq!(v[17], 1, "245: one live player character");
         assert_eq!(v[18], NONE_HANDLE, "192: the level class has no element");
-        for id in [128, 240, 253, 255, 205, 119, 231, 246, 20] {
+        for id in [253, 255, 205, 119, 231, 246, 20] {
             assert_eq!(
                 vm.counters.stub_natives.get(&id),
                 Some(&1),
                 "stub {id} recorded"
             );
         }
-        for id in [8, 12, 13, 86, 98, 245, 250, 192] {
+        for id in [8, 12, 13, 86, 98, 128, 240, 245, 250, 192] {
             assert_eq!(
                 crate::natives::native_status(id),
                 crate::natives::NativeStatus::Implemented
@@ -4245,6 +4264,152 @@ pub(crate) mod tests {
                 crate::natives::NativeStatus::Stub
             );
         }
+        w.validate().unwrap();
+    }
+
+    /// Natives 85 / 87 / 90 / 128 / 240 read the stealth layer's states (`crate::ai`), 140 sets
+    /// the gait of an NPC's program walks.
+    #[test]
+    fn state_natives_read_the_stealth_layer() {
+        use crate::ai::AiState;
+        use crate::world::Gait;
+        // Elements: hero 0, guard 1, scroll 2, zone 3.
+        let level = class("StartUp", 0, &[]);
+        let mut w = mission_world(1, Some(program(vec![level], 1)));
+        let read = |w: &mut World, id: u32, handle: i32| w.native_call(id, &[handle]).unwrap();
+        assert_eq!(
+            (
+                read(&mut w, 85, 1),
+                read(&mut w, 87, 1),
+                read(&mut w, 90, 1)
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!((read(&mut w, 128, 1), read(&mut w, 240, 1)), (1, 1));
+        assert_eq!(
+            (read(&mut w, 128, 2), read(&mut w, 240, 2)),
+            (1, 1),
+            "non-actors act"
+        );
+        w.entities[1].ai_state = AiState::KnockedDown;
+        assert_eq!((read(&mut w, 90, 1), read(&mut w, 128, 1)), (1, 0));
+        w.entities[1].ai_state = AiState::Lying;
+        assert_eq!(
+            (
+                read(&mut w, 85, 1),
+                read(&mut w, 87, 1),
+                read(&mut w, 90, 1)
+            ),
+            (0, 0, 1)
+        );
+        assert_eq!(
+            read(&mut w, 240, 1),
+            1,
+            "a knocked-out soldier is still present"
+        );
+        w.entities[1].ai_state = AiState::GettingUp;
+        assert_eq!((read(&mut w, 90, 1), read(&mut w, 128, 1)), (0, 0));
+        w.entities[1].ai_state = AiState::Dead;
+        assert_eq!((read(&mut w, 87, 1), read(&mut w, 90, 1)), (1, 1));
+        assert_eq!(read(&mut w, 85, 1), 0, "dead by state is not 'removed'");
+        w.entities[1].ai_state = AiState::Patrol;
+        w.entities[1].alive = false;
+        assert_eq!(
+            (
+                read(&mut w, 85, 1),
+                read(&mut w, 87, 1),
+                read(&mut w, 90, 1)
+            ),
+            (1, 1, 1)
+        );
+        w.entities[1].alive = true;
+        w.entities[1].active = false;
+        assert_eq!(
+            (
+                read(&mut w, 85, 1),
+                read(&mut w, 128, 1),
+                read(&mut w, 240, 1)
+            ),
+            (1, 0, 0)
+        );
+        w.entities[1].active = true;
+        assert_eq!(w.vm.as_ref().unwrap().counters.out_of_action_true, 4);
+        // A deactivated scroll is not present.
+        w.native_call(113, &[2]);
+        assert_eq!(read(&mut w, 240, 2), 0);
+        w.native_call(114, &[2]);
+        assert_eq!(read(&mut w, 240, 2), 1);
+        // 140: the guard's rail walks run from now on (the rail of `mission_world`).
+        assert_eq!(w.entities[1].npc_gait, Gait::Walk);
+        w.native_call(140, &[1, 1]);
+        assert_eq!(w.entities[1].npc_gait, Gait::Run);
+        w.native_call(132, &[1, 0]);
+        w.step(&[]);
+        assert_eq!(w.entities[1].gait, Gait::Run);
+        assert!(w.entities[1].target.is_some());
+        w.native_call(140, &[1, 0]);
+        assert_eq!(w.entities[1].npc_gait, Gait::Walk);
+        assert_eq!(
+            w.entities[1].gait,
+            Gait::Run,
+            "the walk under way keeps its gait"
+        );
+        assert_eq!(
+            crate::natives::native_status(88),
+            crate::natives::NativeStatus::Stub,
+            "no tied-up state exists"
+        );
+        w.validate().unwrap();
+    }
+
+    /// `ActionChange(previous, new)` reaches the class bound to the actor whose action id
+    /// changed (the first mission's archers key on 141, `docs/formats/scb.md`).
+    #[test]
+    fn action_changes_reach_the_actors_class() {
+        use crate::ai::{AiState, actions};
+        // ActionChange(a, b): cv0 = b, cv1 = a, cv2 += 1.
+        let body = vec![
+            Instr::LoadParam {
+                dst: cv(0),
+                index: 1,
+            },
+            Instr::LoadParam {
+                dst: cv(1),
+                index: 0,
+            },
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::Binary {
+                op: BinOp::Add,
+                dst: cv(2),
+                a: cv(2),
+                b: tv(0),
+            },
+        ];
+        let level = class("StartUp", 0, &[]);
+        let mut guard = class("Guard", 3, &[("ActionChange", 2, false, 0, 4, body)]);
+        guard.element = Some(1);
+        let mut w = mission_world(1, Some(program(vec![level, guard], 1)));
+        // The hero steps in front of the guard (at (300, 300) facing +x): noticed.
+        w.entities[0].x = Fixed::from_int(420);
+        w.entities[0].y = Fixed::from_int(300);
+        w.step(&[]);
+        assert_eq!(w.entities[1].ai_state, AiState::Noticed);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[1][0], actions::NOTICED as i32, "new action");
+        assert_eq!(vm.class_vars[1][1], actions::IDLE as i32, "previous action");
+        assert_eq!(vm.class_vars[1][2], 1);
+        for _ in 0..crate::ai::NOTICED_TICKS {
+            w.step(&[]);
+        }
+        assert_eq!(w.entities[1].ai_state, AiState::Alarm);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[1][0], actions::ALARM as i32);
+        assert_eq!(vm.class_vars[1][1], actions::NOTICED as i32);
+        assert_eq!(vm.class_vars[1][2], 2);
+        assert_eq!(vm.counters.faults, 0);
         w.validate().unwrap();
     }
 

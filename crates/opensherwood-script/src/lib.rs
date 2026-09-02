@@ -743,6 +743,8 @@ mod tests {
                     patrol: vec![],
                     program: vec![],
                     active: true,
+                    hit_points: 100,
+                    knockout_resistance: 0,
                 },
                 ActorSpec {
                     profile: "Soldier A00".into(),
@@ -753,6 +755,8 @@ mod tests {
                     patrol: vec![],
                     program: vec![],
                     active: true,
+                    hit_points: 100,
+                    knockout_resistance: 0,
                 },
             ],
             script: Some(program),

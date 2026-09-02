@@ -28,16 +28,34 @@ fheroes2, VCMI) and by what the original executable already contains (developer 
   mission with the translated / unknown counts. NPCs without a rail (and all civilians) stand idle in their
   placement direction. Programs and program counters are part of the snapshot and of the `actors` hash; the
   probabilistic choices draw from the gameplay RNG stream, so runs are reproducible from the seed. Not yet:
-  reactions to the player (view cones, alarms), synchronisation between patrols (`CheckForSync`), scripted
-  rails, carts.
+  the rails' check-for scans (0x0d), synchronisation between patrols (`CheckForSync`), scripted rails,
+  carts.
 - **Movement modes.** The manual's mouse rules (`docs/original/ui-flow.md` 9.4): left click selects a character
   or walks the selected one to the ground point, a double click (second press within 20 ticks and 8 px) runs
   there, a right click on the selected character cancels his order and a right click elsewhere deselects; `c`
   / `s` crouch / stand. Running uses the run block (action 7) at twice the walking speed, crouching the
   crouched idle and sneak blocks (14 / 16) at half speed; both speeds are hypotheses (the table's per-frame
   advance is a distance per frame). Gait, posture and the double-click memory are in the snapshot and hash.
-  Not yet: distance-timed walk cycles, the run / sprint distinction (ids 7 / 10), noise, crouch transitions
-  (13 / 18), the HUD kneel / stand icons, multi-selection.
+  Not yet: distance-timed walk cycles, the run / sprint distinction (ids 7 / 10), crouch transitions
+  (13 / 18), multi-selection.
+- **Stealth layer** (`docs/original/stealth-and-combat.md` "Engine", `crates/opensherwood-core/src/ai.rs`).
+  Every enemy soldier that is alive, active, unlocked and on his feet perceives the player characters: a view
+  cone (half angle 45 degrees, range 200 px, halved for a crouched character; occluders ignored) and a noise
+  radius (a running character within 150 px is heard whatever the soldier faces). A stimulus takes him from
+  his patrol through *noticed* (action 141) and *alarm* (142) to *alerted*: he runs (151) to the last seen
+  position with the weapon ready (140 / 143 idle / walk), keeps searching while he sees the character, and
+  5 s after the last sighting walks back to where the alert took him from and resumes his program. Every
+  action-id change of an actor with a script class fires `ActionChange(previous, new)` (the first mission's
+  archery training ends when an archer notices something). A left click on an enemy with a character
+  selected is an attack order: the character walks into reach (32 px) and, if his profile has the knock-out
+  blow (123: Robin) and he stands behind the victim (within 67.5 degrees of straight behind), the victim goes
+  down (41), lies knocked out (47) for 10 s scaled by his knock-out resistance (`profile.md` `p4`; 100 =
+  immune), gets up (49) and returns to his post; from the front the character stops and faces him. Hit points
+  come from the profile (`p0`), without a damage model yet. Script natives 85 / 87 / 90 / 128 / 240 read these
+  states, 140 sets the gait of an NPC's program walks. Every constant is a hypothesis pinned by tests
+  (`ai.rs`, `harness/tests/data/test_mission.py`). Not yet: sight blocked by walls, civilians raising the
+  alarm, walking noise, the rails' check-for radius, soldiers fighting or shooting, comrades reviving a body,
+  `FilterAIEvent` stimuli, the fist / action icons, the stars over a knocked-out head, damage and death.
 - **Mission scripts.** Every retail mission's compiled script (`.scb`) is translated to the core VM and runs
   (ADR-0008, `docs/formats/scb.md` "Engine"): `Initialize` / `PostInitialize` at load, `Hourglass` and
   `CheckVictoryCondition` every tick, messages between classes, sequences (text pages that wait for the player,
@@ -45,9 +63,9 @@ fheroes2, VCMI) and by what the original executable already contains (developer 
   variables, element activation (hidden actors appear when the script says so), patrol assignment and AI
   locks, attributes, states, patches, a `script` RNG stream. The first mission's briefing pages and its initial
   objective come from the script. Natives without an implementation are visible: stubs are counted, unknown
-  ones trap (or are logged in lenient mode). Not yet: combat and item natives, `IsTaken` / `ActivatedBy*` /
-  `ReachPoint` / `ActionChange` triggers from the world, doors, animations, the text presentation of in-mission
-  popups.
+  ones trap (or are logged in lenient mode). `IsTaken` fires from scroll pickups and `ActionChange` from the
+  actors' action-id changes. Not yet: combat and item natives, `ActivatedBy*` / `ReachPoint` triggers from
+  the world, doors, animations, the text presentation of in-mission popups.
 
 ## Target for "1.0" (the maintainer's definition of done)
 

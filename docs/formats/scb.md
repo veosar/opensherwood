@@ -607,6 +607,21 @@ run-time fault or a budget abort, none is won or lost; H10 holds 100000 of money
 The harness pins the load-time state of every script (`EXPECTED_AT_LOAD`) and the first 300 strict ticks
 (`harness/tests/data/test_script.py`).
 
+Stealth layer (2026-09-03, ruleset 9, `crates/opensherwood-core/src/ai.rs`,
+`docs/original/stealth-and-combat.md` "Engine"): 87 (dead), 90 (out of action: knocked down, lying knocked
+out or dead; a soldier getting up is back, hypothesis), 128 (alive, active and on his feet; non-actor
+elements always can act) and 240 (the entity's `active` flag; other elements present unless deactivated)
+read the entities' states instead of the policy values (73 implemented, 95 stubs; `STUB_POLICY_VALUES` keeps
+205 / 253 / 255); 88 / 89 stay stubs at 0 (no tied / netted state exists). 140 (actor, 0 / 1 / 2) sets the
+gait of the actor's rail walks (0 walk, else run: the hypothesis of the stealth spec, section 2.5; a walk under
+way keeps its gait). `ActionChange(previous, new)` fires on the class bound to an actor whenever the actor's
+reported sprite action id changes (`ai::action_id`: 0 / 6 / 7 / 14 / 16 for the normal posture, 141 / 142 /
+140 / 143 / 151 for the alert states, 123 / 41 / 44 / 47 / 48 / 49 for the knock-out); the parameter order
+is a hypothesis from the actor classes comparing the second parameter with 141 and the object classes the
+first with 137 (objects never fire it yet), pinned by `action_changes_reach_the_actors_class`. `FilterAIEvent`
+is not called. `debug.vm.counters.out_of_action_true` counts the calls of 90 that reported 1 (diagnostic);
+the `script` observation's `actor_elements` lists the element handle of every entity.
+
 ## Cross-references
 
 - Class names == mission element names of the paired `.rhm` (100 % both ways, see [rhm.md](rhm.md)).

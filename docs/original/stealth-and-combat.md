@@ -421,6 +421,64 @@ Sprite reactions: 169 (goes and picks up the purse), 165 (drinks), 166 (eats), t
    archer, 45 for a blue lancer) and Robin's PC values (profile.md).
 5. Speeds from section 4.2 under reading A until the oracle says otherwise.
 
+## Engine (implemented 2026-09-03; `crates/opensherwood-core/src/ai.rs`, ruleset 9)
+
+What of section 6 exists, with the constants chosen and their status. Everything is fixed point, part of
+every entity (`team`, `ai_state`, `state_ticks`, `last_seen`, `alert_origin`, `attack_target`, `action`,
+`hit_points`, `knockout_resistance`, `npc_gait`, `fell_backward`), snapshotted, validated and hashed; the
+harness reads it through `observe` (`docs/harness.md`, "Stealth layer").
+
+- **Perception** (item 2). Every enemy soldier (`BORG` actor) that is alive, active, not AI-locked (natives
+  134 / 135: a locked AI perceives nothing, section 2.5) and on his feet tests every player character each
+  tick, in entity order, within a bound of 65536 pairs per tick: a **view cone** of half angle
+  `VIEW_CONE_HALF_ANGLE_256` = 32 (45 degrees) and range `VIEW_RANGE` = 200 map px, the range over
+  `CROUCH_VIEW_DIVISOR` = 2 for a crouched character; and a **noise radius** `RUN_NOISE_RADIUS` = 150 px
+  around the soldier within which a running character is heard whatever he faces. Occluders and walls do not
+  block sight; walking and sneaking make no noise; civilians perceive nothing. All four numbers are
+  `hypothesis` (section 2.3 found no such field; item 7.2 / 7.3 measure them); the geometry (a sector test on a
+  4096-scaled sine table, `ai::in_view_cone`) is pinned by `view_cone_geometry`.
+- **Alert states** (item 1 / 3). `patrol` (the rail program, actions 0 / 6 / 7) -> `noticed` (141, plays
+  for the animation's length: 6 ticks on the soldier profiles; the soldier stops and remembers where he
+  perceived the character and where he stood) -> `alarm` (142, 11 ticks) -> `alerted` (runs to the last seen
+  position with 151, stands with 140, walks with 143; every new sighting refreshes the position and the
+  `ALERT_TIMEOUT_TICKS` = 300 timer, a hypothesis) -> `returning` (walks back to the origin with 143) ->
+  `patrol` (the program continues where it stood). The animation ids come from the soldier / knight profiles
+  (section 2.4); profiles without them fall back to idle / walk / run (`anim::AnimSet`). The states are the
+  engine's reading of section 2.4 (`inferred`); the transition order noticed -> alarm and the return are
+  `hypothesis`. Every change of an actor's action id reaches its script class as `ActionChange(previous,
+  new)` (the parameter order is a hypothesis: the H01 archer classes compare the second parameter with 141;
+  pinned by `action_changes_reach_the_actors_class`), so the archery training of the first mission ends when
+  an archer notices something (`test_running_past_a_soldier_is_noticed_then_the_alarm`).
+- **Knock-out** (item 4, the blow only). A left click on an enemy with a player character selected is an
+  attack order (hypothesis for the manual's fist icon, section 1): the character walks into
+  `PUNCH_REACH` = 32 px (the 30-35 px displacement of action 123, `observed`), then, if his profile has 123
+  (Robin and the big man, `observed`) and he stands within `BACK_ARC_HALF_ANGLE_256` = 48 (67.5 degrees) of
+  straight behind the victim (`hypothesis`), plays 123 (`punching`, 12 ticks) and the victim goes
+  `knocked_down` (41 forward, or 44 backward if struck from the front - unreachable today, since the blow is
+  only delivered from behind, 13 / 10 ticks) -> `lying` (47 / 48) for `KNOCK_OUT_BASE_TICKS` = 600 ticks
+  scaled by `(100 - p4) / 100` (`p4` = the profile's knock-out resistance, section 3.3, `hypothesis`; `p4` >=
+  100 makes the blow fail and the victim notices the attacker) -> `getting_up` (49, 16 ticks) -> `returning` /
+  `patrol`. From the front the character stops and faces the victim. The knock-out chance of the manual and
+  the "stars" are not modelled; no comrade revives him; the victim keeps his position (the fall's
+  displacement is ignored). Pinned by `knock_out_from_behind_and_a_stop_from_the_front`,
+  `immune_victims_notice_the_blow_and_resistance_shortens_the_sleep`, `a_profile_without_the_punch_cannot_strike`
+  and, on the first mission, `test_knock_out_from_behind_puts_the_soldier_out_of_action` (the corridor post
+  the level script polls with native 90).
+- **Hit points**: `p0` of the SD record per entity (`hypothesis`, section 2.3); 100 for player characters and
+  civilians (no field read yet). No damage model: nothing loses them yet.
+- **Script predicates** (item 3): 85 = dead or deactivated, 87 = dead, 90 = knocked down / lying / dead
+  (getting up counts as back in action: hypothesis), 128 = alive, active and on his feet, 240 = active;
+  88 / 89 stay stubs returning 0 (no tied / netted state exists); 140 (actor, 0 / 1 / 2) sets the gait of the
+  actor's program walks (0 walk, else run; section 2.5, `hypothesis`); `FilterAIEvent` is never called.
+- **Timing**: every timed state lasts one loop of its animation as the profile's tick halves give it (one
+  world tick per tick of the timing word, as the animation player already assumes: the engine runs 60 ticks
+  per second, so the spec's 25 Hz reading makes these 2.4 times too fast until the oracle settles item 7.1);
+  without the block (or a catalog) the spec's counts apply (`NOTICED_TICKS` 6, `ALARM_TICKS` 11,
+  `KNOCKED_DOWN_TICKS` 13, `GET_UP_TICKS` 16, `PUNCH_TICKS` 12).
+
+Not implemented from section 6: the rails' check-for scans, silhouettes, the fighting posture, strikes and
+parries, the bow, damage and death, tying / carrying / reviving, the stimuli of section 5.
+
 ## 7. Open questions and the oracle capture plan
 
 Only a trace of the original settles these. Capture with `harness/tools/original/rhcap.py` (windowed

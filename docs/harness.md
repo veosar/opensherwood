@@ -47,7 +47,26 @@ crouched) the walking speed over `CROUCH_SPEED_DIVISOR` (2); both are hypotheses
 `crates/opensherwood-core/src/world.rs` (the animation table's per-frame `advance` is a distance per frame, not a
 speed). Running plays the run block (action 7), crouching the crouched idle / sneak blocks (14 / 16) of profiles
 that have them; the double-click memory (`last_ground_click`), gait and posture are in the snapshot and the
-`world` / `actors` hashes.
+`world` / `actors` hashes. A **left click on an enemy soldier** while a player character is selected is an
+**attack order** (hypothesis: the manual's fist icon is not drawn yet): the character walks into reach
+(`attack_target` names the victim), then delivers the knock-out blow when he stands behind the victim, else
+stops facing him; a ground order or a right click cancels it. See "Stealth layer" below.
+
+## Stealth layer
+
+`docs/original/stealth-and-combat.md` "Engine" (`crates/opensherwood-core/src/ai.rs`; every constant a
+hypothesis pinned by tests). `observe` entities carry `team` (`player` / `enemy` / `civilian`), `ai_state`
+(`patrol` = normal, `noticed` (action 141), `alarm` (142), `alerted` (searching the last seen position with
+140 / 143 / 151), `returning` (walking back to the post), `punching` (123, player characters), `knocked_down`
+(41 / 44), `lying` (47 / 48, knocked out), `getting_up` (49), `dead`), `state_ticks` (ticks left in a timed
+state), `last_seen` and `alert_origin` (map points, 24.8), `attack_target` (entity id), `action` (the sprite
+action id the entity reports: a change fires the script's `ActionChange(previous, new)`), `hit_points`
+(profile `p0`; 100 without a profile value), `knockout_resistance` (profile `p4`), `npc_gait` (the gait of the
+NPC's program walks, script native 140) and `fell_backward`. Enemy soldiers that are alive, active, unlocked
+and on their feet perceive: a player character inside their view cone (half angle 45 degrees, range 200 px,
+100 px when crouched; occluders ignored) or a running player character within 150 px is a stimulus. A
+knocked-out soldier is out of action for `KNOCK_OUT_BASE_TICKS` (600) scaled by `(100 - p4) / 100`; `p4` >=
+100 makes the blow fail. All of it is in the snapshot, validated and hashed (`actors`).
 
 ## Replays
 
@@ -102,7 +121,7 @@ expires), and `restore` while a replay is being recorded.
 |---|---|---|
 | `{"synthetic": "corridor"}` | no | 640x480 room, a player, a patrolling guard, three obstacles, a goal |
 | `{"map_view": {"map": "sherwood", "ambiance": "Day"}}` | yes | the retail background of that map with the synthetic units on it and a scrollable camera |
-| `{"mission": "<name>"}` | yes | the retail mission's background, walkable geometry, occluders and actors (NPC, civilian and `TOTO` sprites from the profile table `Configuration/profile.cpf`, see `docs/formats/profile.md`; a default sprite with a logged warning when an entry is unavailable; heroes still in file order; hidden player characters start inactive); NPCs follow their rail programs (walk the rail back and forth, face, wait, glance, loop; see `docs/formats/rhm.md` "Rail programs"), NPCs without a rail stand idle; the mission script (`Data/Levels/<name>.scb`) runs in the core VM (objectives, texts, sequences, messages, zones, activation, patrols; see below); no reactive AI yet; viewport 1024x768 |
+| `{"mission": "<name>"}` | yes | the retail mission's background, walkable geometry, occluders and actors (NPC, civilian and `TOTO` sprites from the profile table `Configuration/profile.cpf`, see `docs/formats/profile.md`; a default sprite with a logged warning when an entry is unavailable; heroes still in file order; hidden player characters start inactive); NPCs follow their rail programs (walk the rail back and forth, face, wait, glance, loop; see `docs/formats/rhm.md` "Rail programs"), NPCs without a rail stand idle; the mission script (`Data/Levels/<name>.scb`) runs in the core VM (objectives, texts, sequences, messages, zones, activation, patrols; see below); enemy soldiers perceive the player characters and can be knocked out (see "Stealth layer"); viewport 1024x768 |
 | `{"menu": "main"}` | yes | the original main menu; `observe` returns a `ui` object (`screen` = `main_menu`, `briefing`, `pause_menu`, `dialog`, `debriefing` or `credits`; `items` with actions and rectangles; `hovered`; briefing `page`; `credits` reports the scroll offset in `page[0]`) while a screen is shown; clicking Play! loads the first mission behind its briefing; Escape in a mission opens the pause menu (Continue / Restart / Quit with confirmation); menus never tick the world; left clicks on HUD widgets act on the interface (kneel / standing figures crouch / stand the selection, other widgets consume the click) and never reach the map |
 
 ## Scripts
@@ -112,7 +131,9 @@ done}]` in the order the script added them), `texts` (pending text indices of th
 shown), `mission_won`, `mission_lost` (`CheckVictoryCondition` returned 1 / 2; both sticky), `sequence_active`,
 `camera_target` (map pixels set by the last camera native),
 `debriefing`, `unknown_natives` (`{id: count}` of natives without an implementation that were called),
-`faulted` (an unknown native stopped a callback), `lenient` and `unknown_calls` (see below). The app dismisses
+`faulted` (an unknown native stopped a callback), `lenient` and `unknown_calls` (see below), and
+`actor_elements` (the script element handle of every entity by entity index, -1 for entities the script
+cannot address: the handle native 3 returns, so a test can aim at the actor a script polls). The app dismisses
 the text at the front of the queue through `World::vm_dismiss_text` when the briefing parchment closes (one
 dismissal per page, on Enter, Escape or a click on the page). Tests dismiss pages the same way, with canonical
 input: `Engine.skip_briefing()` sends Enter once per page (one session tick each, recorded by an active
@@ -121,8 +142,9 @@ replay). `debug.vm` is inspection only and cannot dismiss a page.
 `debug.vm` (counters, objectives, pending texts, scrolls with positions and activity) returns `{present, classes, elements, locations, objectives, texts, mission_won,
 mission_lost, money, sequence_active, sequences, faulted, lenient, unknown_calls, pending_messages, camera_target, debriefing,
 mission_vars, counters, rng_draws}` (`money` is the script's integer of natives 236 / 237); `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
-`traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives` and
-`objective_done_before_added`. Its one mutation, `debug.vm {"win": true}`, marks the mission won: a documented
+`traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives`,
+`objective_done_before_added` and `out_of_action_true` (native 90 calls that reported an actor knocked out or
+dead). Its one mutation, `debug.vm {"win": true}`, marks the mission won: a documented
 harness shortcut used only by the end-of-mission flow test (`test_mission_won_shows_the_debriefing_then_the_menu`),
 because no mission can be won yet through play; it is not a player action and no other test may use it.
 

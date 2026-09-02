@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Hash schema version; bump when the encoding changes.
-pub const HASH_SCHEMA_VERSION: u32 = 10;
+pub const HASH_SCHEMA_VERSION: u32 = 11;
 
 /// Subsystem hashes plus the total, as lowercase hex.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
