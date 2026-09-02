@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use opensherwood_assets::{GameDir, SpriteBank};
 use opensherwood_core::{
-    AnimSet, Catalog, EntityKind, FrameSpec, InputEvent, Key, MapInfo, Scenario, Snapshot, World,
+    AnimSet, Catalog, EntityKind, Fixed, FrameSpec, InputEvent, Key, MapInfo, Scenario, Snapshot,
+    World,
 };
 
 use crate::mission;
@@ -640,6 +641,16 @@ impl Session {
                 if escape_at.is_some() {
                     self.open_pause();
                 } else {
+                    // Clicks on HUD widgets act on the interface, not on the map: the kneel /
+                    // standing figures crouch / stand the selection like the `c` / `s` keys, other
+                    // widgets consume the click. Derived from canonical pointer events only, so a
+                    // replay reproduces it.
+                    let events = if in_mission {
+                        self.route_hud_clicks(events)
+                    } else {
+                        events.to_vec()
+                    };
+                    let events = events.as_slice();
                     if let Some(world) = self.world.as_mut() {
                         world.step(events);
                         // The cached frame shows the previous tick: a checkpoint or `capture`
@@ -658,6 +669,49 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Replace left clicks on HUD widgets by their interface action (see `ui::hud_hit`).
+    fn route_hud_clicks(&self, events: &[InputEvent]) -> Vec<InputEvent> {
+        let mut pointer = self.world.as_ref().map_or((0, 0), |w| {
+            (
+                Fixed::from_raw(w.pointer.0).round(),
+                Fixed::from_raw(w.pointer.1).round(),
+            )
+        });
+        let mut out = Vec::with_capacity(events.len());
+        let mut swallow_up = false;
+        for e in events {
+            match *e {
+                InputEvent::PointerMove { x256, y256 } => {
+                    pointer = (Fixed::from_raw(x256).round(), Fixed::from_raw(y256).round());
+                    out.push(*e);
+                }
+                InputEvent::PointerDown {
+                    button: opensherwood_core::Button::Left,
+                } => match crate::ui::hud_hit(pointer.0, pointer.1) {
+                    Some(crate::ui::HudAction::Crouch) => {
+                        swallow_up = true;
+                        out.push(InputEvent::KeyDown {
+                            key: Key::Letter('c'),
+                        });
+                    }
+                    Some(crate::ui::HudAction::Stand) => {
+                        swallow_up = true;
+                        out.push(InputEvent::KeyDown {
+                            key: Key::Letter('s'),
+                        });
+                    }
+                    Some(crate::ui::HudAction::Consumed) => swallow_up = true,
+                    None => out.push(*e),
+                },
+                InputEvent::PointerUp {
+                    button: opensherwood_core::Button::Left,
+                } if swallow_up => swallow_up = false,
+                _ => out.push(*e),
+            }
+        }
+        out
     }
 
     /// Screen state for `observe`.
