@@ -24,7 +24,7 @@ Example session:
 
 ```
 -> {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"pytest"}}
-<- {"jsonrpc":"2.0","id":1,"result":{"protocol":4,"build":"0.1.0","ruleset":5,"capabilities":["synthetic","capture","mission","replay"],"content_fingerprint":null}}
+<- {"jsonrpc":"2.0","id":1,"result":{"protocol":5,"build":"0.1.0","ruleset":5,"capabilities":["synthetic","capture","mission","replay"],"content_fingerprint":null}}
 -> {"jsonrpc":"2.0","id":2,"method":"reset","params":{"scenario":{"synthetic":"corridor"},"seed":42}}
 -> {"jsonrpc":"2.0","id":3,"method":"step","params":{"ticks":10,"events":[{"tick_offset":0,"sequence":0,"kind":"pointer_move","x256":25600,"y256":19200},{"tick_offset":0,"sequence":1,"kind":"pointer_down","button":"right"},{"tick_offset":0,"sequence":2,"kind":"pointer_up","button":"right"}]}}
 <- {"jsonrpc":"2.0","id":3,"result":{"tick":10,"hashes":{"total":"...","actors":"..."}}}
@@ -40,13 +40,18 @@ world tick lags behind the session tick by the number of screen frames. `replay.
 (at session tick 0: right after `reset`, the mission's first text page may be showing) records the initial
 world hashes as the tick-0 checkpoint, then every canonical event of subsequent `step` calls (screen events
 included: the Enter that dismisses a page, the Escape that pauses) plus a checkpoint every N session ticks;
-a checkpoint is `{tick, world_tick, hashes}`. `replay.stop {path?}` appends the final checkpoint and returns
+a checkpoint is `{tick, world_tick, hashes, session, frame}`: the world hashes, a `session` digest (BLAKE3 over
+the screen kind, the `ui` state as `observe` reports it and the notice text with its remaining ticks) and the
+`frame` hash (`capture.hash` at that tick), so a replay reproduces what the player saw, not only the world.
+A replay must have a checkpoint at tick 0 and a terminal one at its last tick (the parser refuses one with
+either deleted, before any reset). `replay.stop {path?}` appends the final checkpoint and returns
 the `ReplayV1` JSON Lines (and writes it under the artifact directory). `replay.play {jsonl | path,
 stop_on_divergence}` resets to the replay's scenario and seed, checks that the header equals the one the
 session would record now (protocol, ruleset, hash schema, content fingerprint, scenario, `time: "session"`,
 viewport, tick rate, seed, RNG streams; a mismatch names the fields), compares the tick-0 checkpoint before
 applying anything, then drives the same `advance` as recording did with the recorded events, comparing every
-checkpoint (hash parts and `world_tick`) and reporting the first diverging session tick and what differs.
+checkpoint (hash parts, `world_tick`, `session`, `frame`) and reporting the first diverging session tick and
+what differs.
 The header line: `{type: "header", replay_version: 1, protocol, ruleset, hash_schema, content_fingerprint,
 scenario, time: "session", viewport: [w, h], tick_rate: [num, den], seed, rng_streams: {name: {algorithm,
 seed, stream}}}`. `restore` is refused while a recording is active; Restart or Quit from the pause menu
@@ -70,8 +75,9 @@ scenarios and `null` for synthetic ones. `restore {id | snapshot}` refuses a sna
 `content` differ from the session's, or whose world fails validation (geometry vertices within `+-2^20` map
 pixels, animation state resolvable in the attached sprite catalog, every other invariant of `World::validate`),
 and a refused restore or a failed `reset` leaves the session exactly as it was: world, background, screen,
-snapshot handles (ADR-0004, "Envelope and validation"). Both are refused while a menu screen is shown, and
-`restore` while a replay is being recorded.
+snapshot handles (ADR-0004, "Envelope and validation"). Both are refused while a menu screen is shown or while
+a notice (native 202 text over the world) is still visible (a snapshot describes the world only; step until it
+expires), and `restore` while a replay is being recorded.
 
 ## Scenarios
 

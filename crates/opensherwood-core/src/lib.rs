@@ -32,4 +32,4 @@ pub use world::{
 };
 
 /// Ruleset version: bump when simulation semantics change so old replays/hashes are not compared.
-pub const RULESET_VERSION: u32 = 6;
+pub const RULESET_VERSION: u32 = 7;

@@ -573,12 +573,16 @@ player's and are not touched. The original's "freeze" (message 13 in the first m
 walk in progress finish; the engine's choice is pinned by
 `locking_mid_walk_stops_the_ai_walk_and_completes_the_barrier` so a correction is a deliberate ruleset bump.
 
-Work budget (2026-09-02): everything the VM does in one tick is charged to one deterministic budget
-(`vm::WORK_BUDGET_PER_TICK`): instructions, arguments transferred by calls and natives, zone edge tests,
-scroll range checks, sequence elements, and the path searches and smoothing of the walks the script issues.
-When it is spent the tick stops (the running callback is aborted, the remaining phases wait for the next
-tick, undelivered messages stay queued) and `counters.budget_aborts` counts it; the retail scripts use a small
-fraction of it.
+Work budget (2026-09-02, ruleset 7): everything the VM does in one tick is charged to one deterministic
+budget (`vm::WORK_BUDGET_PER_TICK`) granted at the start of the tick and nowhere else (the load-time run has
+`vm::WORK_BUDGET_AT_LOAD`; event hooks and text dismissals draw from the tick's remainder): instructions,
+arguments transferred by calls and natives, every entity a zone / scroll scan looks at, every polygon edge
+tested (zones, natives 97 and 204), sequence elements, and every stage of the path searches of the walks the
+script issues (initialisation, expansions, unwinding, smoothing, conversion). When it is spent the tick stops
+(the running callback is aborted, the remaining phases wait for the next tick, undelivered messages stay
+queued) and `counters.budget_aborts` counts it; the retail scripts use a small fraction of it. Every callback
+exit (return, abort, fault, trap) clears the frames, both stacks and a sequence being collected, and a program
+whose parameter / argument stacks are not balanced in some function is refused at load.
 
 ## Cross-references
 

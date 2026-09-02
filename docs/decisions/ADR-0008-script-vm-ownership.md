@@ -45,21 +45,35 @@ settled before any interpreter is written: a VM living above core cannot be snap
 - `World` grows a `vm: Option<VmState>` (program, class variables, mission variables, objectives, message
   queue, sequences with their completion tokens, pending texts, camera target, patches, attributes, states,
   the `script` RNG stream) and entities gain `active` / `ai_locked` flags; ruleset 6, snapshot schema 9 and
-  hash schema 8 (2026-09-02, Codex review 5).
+  hash schema 8 (2026-09-02, Codex review 5); ruleset 7 for the budget scope and charges below (Codex review 6,
+  canonical bytes unchanged).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
 - **What is authoritative and what is not.** `VmState::counters` (instructions, callbacks, budget aborts,
   faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
   current tick) are diagnostics: they are neither serialised nor hashed (`#[serde(skip)]`), a restored world
   counts afresh and `debug.vm` reports the live values only. Everything the scripts can observe stays in the
   snapshot and the hash. Callbacks never yield, so a snapshot is *quiescent*: `validate` refuses frames,
-  pushed arguments or a sequence still being collected instead of pretending to resume them.
-- **One work budget per tick** (`vm::WORK_BUDGET_PER_TICK`, 2^22 units): instruction dispatch, every argument
-  a call or native transfers, zone edge tests, scroll range checks, sequence elements, and the A* expansions
-  and smoothing cells of the walks the script issues (`nav.rs` charges them to the same counter). An
-  exhausted budget stops the tick deterministically (the running callback is aborted, later phases wait for
-  the next tick, undelivered messages stay queued ahead of new ones) and is counted; it is part of the
-  ruleset because it changes what a tick does. Player and rail-program orders use their own per-order budget
-  (`world::ORDER_SEARCH_WORK`).
+  pushed arguments or a sequence still being collected instead of pretending to resume them; the
+  interpreter guarantees it through one teardown path (`vm::teardown`) that every callback exit takes
+  (return, budget abort, fault, trap), and `Program::validate` rejects programs whose parameter / argument
+  stacks are not balanced (a worklist walk per function: a call or native needs its `argc` values pushed,
+  a return needs both stacks empty, join points must agree).
+- **One work budget per tick** (`vm::WORK_BUDGET_PER_TICK`, 2^22 units), granted at the start of `vm_tick`
+  and nowhere else: the event hooks (`IsTaken`, `ReachPoint`, `ActivatedBy*`, `ActionChange`) and
+  `vm_dismiss_text`, which the app calls between ticks, draw from what the current tick left (after an
+  exhausted tick a dismissal removes the page and the sequence behind it continues next tick); the load-time
+  run of `attach_script` has its own `WORK_BUDGET_AT_LOAD`, whose remainder serves the dismissals of the
+  briefing pages before the first tick. Charged: instruction dispatch, every argument a call or native
+  transfers, every entity a zone or scroll scan looks at plus one unit per polygon edge tested, natives 97
+  (edges) and 204 (entities plus edges per player character) before they scan a borrowed polygon, sequence
+  elements, and every stage of the walks the script issues (`nav.rs`: search initialisation at one unit per
+  64 cells charged before the arrays are allocated, A* expansions, unwound cells, line-clear cells and
+  smoothed output points; `world.rs`: the conversion of the final path, allocated fallibly). An exhausted
+  budget stops the tick deterministically (the running callback is aborted, later phases wait for the next
+  tick, undelivered messages stay queued ahead of new ones) and is counted; it is part of the ruleset because
+  it changes what a tick does. Player and rail-program orders use their own per-order budget
+  (`world::ORDER_SEARCH_WORK`). Navigation has no fail-open entry point: `World::try_ensure_nav` is the only
+  way to rebuild a missing grid and every caller handles its error.
 - **Trust boundary.** `Program::validate` in core is self-sufficient (functions in table order from address 0
   with their prologue, jumps inside their function, parameter reads and call arities against the table,
   arities within the stack limit, aggregate code / vertex bounds, element and location coordinates within

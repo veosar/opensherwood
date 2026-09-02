@@ -47,7 +47,7 @@ during the previous tick (to the class bound to the target element, else the lev
 every class that defines it, `EnterZone` / `ExitZone` for player characters crossing a zone class's polygon,
 the running sequence (one at a time, FIFO; elements block on a text until the app dismisses it with
 `World::vm_dismiss_text`, on a wait for its tick count, everything else completes at once), then
-`CheckVictoryCondition` (1 = `mission_won`). A callback runs to completion within a per-tick instruction budget;
+`CheckVictoryCondition` (1 = `mission_won`). A callback runs to completion within a per-tick work budget (instructions, natives' argument and polygon work, zone and scroll checks, sequence elements, path search);
 natives never call back into the script (they queue messages), so the frame stack is empty between ticks.
 Unknown natives trap (see the ADR); the `IsTaken`, `ActivatedBy*`, `ReachPoint` and `ActionChange` callbacks
 are exposed as `World::vm_*` hooks that nothing triggers yet.

@@ -39,11 +39,17 @@ pub const MAX_POLYGONS: usize = 1 << 16;
 /// work a hostile snapshot can request to a fraction of a second.
 pub const MAX_EDGE_TESTS: u64 = 1 << 26;
 /// Work budget of the searches issued without an explicit budget (`find_path`, `find_path_near`,
-/// `smooth`, `line_clear`): node expansions plus line-clear cells. A* closes each cell at most
-/// once and pushes at most eight entries per closed cell, so `8 x MAX_CELLS` node pops finish any
-/// search on an accepted grid; smoothing a path of `p` cells needs at most `p x (width + height)`
-/// line-clear cells, which this budget bounds for retail-sized paths.
+/// `smooth`, `line_clear`): initialisation, node expansions, unwound cells and line-clear cells.
+/// A* closes each cell at most once and pushes at most eight entries per closed cell, so
+/// `8 x MAX_CELLS` node pops finish any search on an accepted grid; smoothing a path of `p` cells
+/// needs at most `p x (width + height)` line-clear cells, which this budget bounds for
+/// retail-sized paths.
 pub const DEFAULT_SEARCH_WORK: u64 = 1 << 26;
+/// Search cells initialised per work unit: a search fills three word-sized arrays over the whole
+/// grid before its first expansion, a small fixed cost per cell next to a node expansion (eight
+/// neighbour tests and a heap operation), so one unit pays for a cache line of cells. The charge
+/// is made before the arrays are allocated: a search with no budget allocates nothing.
+pub const INIT_CELLS_PER_UNIT: u64 = 64;
 
 /// Neighbour offsets and step costs (10 straight, 14 diagonal).
 const DIRS: [(i32, i32, u32); 8] = [
@@ -287,12 +293,14 @@ impl NavGrid {
             .flatten()
     }
 
-    /// A* with an explicit work budget: every node expansion (heap pop) costs one unit of
-    /// `budget`. `nearest` selects the [`NavGrid::find_path_near`] behaviour, otherwise an
-    /// unwalkable `to` is unreachable. `Ok(None)` = unreachable; `Err(WorkExhausted)` when the
-    /// budget ran out (it is then zero), `Err(Allocation)` when a search structure could not be
-    /// allocated. The budget is charged deterministically: the same grid, cells and budget give
-    /// the same result and the same remaining budget.
+    /// A* with an explicit work budget: the initialisation of the search arrays costs one unit
+    /// per [`INIT_CELLS_PER_UNIT`] grid cells (charged before they are allocated), every node
+    /// expansion (heap pop) one unit and every cell of the unwound path one unit. `nearest`
+    /// selects the [`NavGrid::find_path_near`] behaviour, otherwise an unwalkable `to` is
+    /// unreachable. `Ok(None)` = unreachable; `Err(WorkExhausted)` when the budget ran out (it is
+    /// then zero), `Err(Allocation)` when a search structure could not be allocated. The budget
+    /// is charged deterministically: the same grid, cells and budget give the same result and the
+    /// same remaining budget.
     pub fn find_path_with(
         &self,
         from: (i32, i32),
@@ -321,6 +329,13 @@ impl NavGrid {
         }
         let idx = |(x, y): (i32, i32)| (y * self.width + x) as usize;
         let n = (self.width * self.height) as usize;
+        // Initialisation is charged before anything is allocated.
+        let init = (n as u64).div_ceil(INIT_CELLS_PER_UNIT);
+        if *budget < init {
+            *budget = 0;
+            return Err(NavError::WorkExhausted);
+        }
+        *budget -= init;
         let mut g = alloc_filled(n, u32::MAX)?;
         let mut parent = alloc_filled(n, u32::MAX)?;
         let mut closed = alloc_filled(n, false)?;
@@ -336,18 +351,24 @@ impl NavGrid {
         g[idx(from)] = 0;
         heap_push(&mut open, Reverse((h(from), 0, idx(from) as u32)))?;
         let mut best = (h(from), idx(from));
-        let unwind = |end: usize, parent: &[u32]| -> Result<Vec<(i32, i32)>, NavError> {
-            let mut path = Vec::new();
-            let mut cur = end;
-            while cur != idx(from) {
-                path.try_reserve(1)
-                    .map_err(|_| NavError::Allocation { cells: n })?;
-                path.push(((cur as i32) % self.width, (cur as i32) / self.width));
-                cur = parent[cur] as usize;
-            }
-            path.reverse();
-            Ok(path)
-        };
+        // Unwinding charges one unit per path cell before it is pushed (fallibly).
+        let unwind =
+            |end: usize, parent: &[u32], budget: &mut u64| -> Result<Vec<(i32, i32)>, NavError> {
+                let mut path = Vec::new();
+                let mut cur = end;
+                while cur != idx(from) {
+                    if *budget == 0 {
+                        return Err(NavError::WorkExhausted);
+                    }
+                    *budget -= 1;
+                    path.try_reserve(1)
+                        .map_err(|_| NavError::Allocation { cells: n })?;
+                    path.push(((cur as i32) % self.width, (cur as i32) / self.width));
+                    cur = parent[cur] as usize;
+                }
+                path.reverse();
+                Ok(path)
+            };
         while let Some(Reverse((_, gc, ci))) = open.pop() {
             if *budget == 0 {
                 return Err(NavError::WorkExhausted);
@@ -360,7 +381,7 @@ impl NavGrid {
             closed[ci] = true;
             let c = ((ci as i32) % self.width, (ci as i32) / self.width);
             if c == to {
-                return unwind(ci, &parent).map(Some);
+                return unwind(ci, &parent, budget).map(Some);
             }
             let hc = h(c);
             if hc < best.0 {
@@ -391,7 +412,7 @@ impl NavGrid {
             }
         }
         if nearest && best.1 != idx(from) {
-            return unwind(best.1, &parent).map(Some);
+            return unwind(best.1, &parent, budget).map(Some);
         }
         Ok(None)
     }
@@ -463,7 +484,8 @@ impl NavGrid {
             .unwrap_or_else(|_| path.to_vec())
     }
 
-    /// [`NavGrid::smooth`] charging every line-clear cell to `budget`.
+    /// [`NavGrid::smooth`] charging every line-clear cell and every output point to `budget`
+    /// (the output is reserved fallibly; `path` was itself charged when it was unwound).
     pub fn smooth_with(
         &self,
         from: (i32, i32),
@@ -480,6 +502,10 @@ impl NavGrid {
             while j > i && !self.line_clear_with(anchor, path[j], budget)? {
                 j -= 1;
             }
+            if *budget == 0 {
+                return Err(NavError::WorkExhausted);
+            }
+            *budget -= 1;
             out.push(path[j]);
             anchor = path[j];
             i = j + 1;
@@ -785,6 +811,58 @@ mod tests {
             Err(NavError::WorkExhausted)
         );
         assert!(!g.line_clear((0, 0), (2, 2)));
+    }
+
+    #[test]
+    fn a_search_without_budget_charges_initialisation_before_allocating() {
+        // The largest accepted grid: 16384 x 16384 pixels is 2048 x 2048 cells = MAX_CELLS.
+        let g = NavGrid::try_build(&Geometry::default(), 16384, 16384).unwrap();
+        assert_eq!(
+            u64::from(g.width as u32) * u64::from(g.height as u32),
+            MAX_CELLS as u64
+        );
+        let init = (MAX_CELLS as u64).div_ceil(INIT_CELLS_PER_UNIT);
+        let (from, to) = ((1, 1), (2046, 2046));
+        assert!(g.walkable(from) && g.walkable(to));
+        // Zero and tiny budgets fail before the search arrays exist: exhausted, not allocated.
+        for short in [0, 1, init - 1, init] {
+            let mut b = short;
+            assert_eq!(
+                g.find_path_with(from, to, false, &mut b),
+                Err(NavError::WorkExhausted),
+                "{short}"
+            );
+            assert_eq!(b, 0);
+        }
+        // With the initialisation paid, the first expansion is charged next.
+        let mut b = init + 1;
+        assert_eq!(
+            g.find_path_with(from, to, true, &mut b),
+            Err(NavError::WorkExhausted)
+        );
+        assert_eq!(b, 0);
+        // On the small grid the unwinding is charged too: a path of p cells costs at least the
+        // initialisation, p expansions and p unwound cells.
+        let g = grid();
+        let (from, to) = (g.cell_of(20, 20), g.cell_of(180, 20));
+        let mut b = DEFAULT_SEARCH_WORK;
+        let path = g.find_path_with(from, to, false, &mut b).unwrap().unwrap();
+        let used = DEFAULT_SEARCH_WORK - b;
+        let cells = u64::from(g.width as u32) * u64::from(g.height as u32);
+        assert!(used >= cells.div_ceil(INIT_CELLS_PER_UNIT) + 2 * path.len() as u64);
+        // Smoothing charges its output points: exactly its cost succeeds, one less does not.
+        let mut full = DEFAULT_SEARCH_WORK;
+        let smooth = g.smooth_with(from, &path, &mut full).unwrap();
+        let cost = DEFAULT_SEARCH_WORK - full;
+        assert!(cost >= smooth.len() as u64);
+        let mut short = cost - 1;
+        assert_eq!(
+            g.smooth_with(from, &path, &mut short),
+            Err(NavError::WorkExhausted)
+        );
+        let mut exact = cost;
+        assert_eq!(g.smooth_with(from, &path, &mut exact).unwrap(), smooth);
+        assert_eq!(exact, 0);
     }
 
     #[test]

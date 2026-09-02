@@ -12,12 +12,19 @@
 //! tick as its time parameter (hypothesis: the scripts only compare differences of it).
 //!
 //! Work. Everything the VM does in one tick is charged to one deterministic budget
-//! ([`WORK_BUDGET_PER_TICK`]): instruction dispatch, native and call argument transfers, zone edge
-//! tests, scroll range checks, sequence elements, and the path searches and smoothing of the walks
-//! it issues (`nav.rs` charges node expansions and line-clear cells). When the budget is exhausted
-//! the tick stops where it is (the running callback is aborted, the remaining phases are skipped
-//! until the next tick, messages not yet delivered stay queued) and `counters.budget_aborts`
-//! counts it; nothing panics and nothing loops on.
+//! ([`WORK_BUDGET_PER_TICK`]): instruction dispatch, native and call argument transfers, zone and
+//! scroll scans (one unit per entity looked at, one per polygon edge tested), the polygon natives
+//! 97 / 204, sequence elements, and the path searches of the walks it issues (`nav.rs` charges
+//! the search initialisation, node expansions, unwinding, line-clear cells and the smoothed
+//! output; `world.rs` the conversion of the final path). The budget is granted exactly once per
+//! world tick, at the start of [`World::vm_tick`]; the load-time run of `attach_script` has its
+//! own, [`WORK_BUDGET_AT_LOAD`]. Every other entry point (the event hooks such as `IsTaken`, and
+//! `vm_dismiss_text`, which the app calls between ticks) draws from whatever the current tick
+//! left: a dismissal after an exhausted tick removes the page but the sequence behind it only
+//! continues next tick. When the budget is exhausted the tick stops where it is (the running
+//! callback is aborted, the remaining phases are skipped until the next tick, messages not yet
+//! delivered stay queued) and `counters.budget_aborts` counts it; nothing panics and nothing
+//! loops on.
 //!
 //! Sequences. Elements that take time issue *tokens* ([`SeqToken`]): a walk (natives 45 / 48 /
 //! 64) completes when the entity arrived, gave up or was ordered elsewhere; an animation
@@ -36,11 +43,17 @@ use crate::hash::Encoder;
 use crate::rng::Rng;
 use crate::world::{EntityKind, World};
 
-/// Work units the VM may spend in one tick (all callbacks, zone tests, sequences and path
-/// searches together); reset for every load-time, event and dismissal-time run as well. A unit is
-/// one instruction, one transferred argument, one polygon edge test, one scroll range check, one
-/// sequence element, one A* node expansion or one line-clear cell.
+/// Work units the VM may spend in one tick (all callbacks, zone and scroll scans, event hooks,
+/// sequences, dismissals and path searches together), granted once at the start of `vm_tick`
+/// and never replenished before the next tick. A unit is one instruction, one transferred
+/// argument, one entity looked at by a scan, one polygon edge test, one sequence element, one A*
+/// node expansion, one unwound or converted path cell, one line-clear cell or 64 search cells
+/// initialised.
 pub const WORK_BUDGET_PER_TICK: u64 = 1 << 22;
+/// Work units of the load-time run (`Initialize` on every class, `PostInitialize`, the first
+/// sequence elements), granted once by `attach_script`; what it leaves serves the dismissals of
+/// the briefing pages until the first tick grants [`WORK_BUDGET_PER_TICK`].
+pub const WORK_BUDGET_AT_LOAD: u64 = 1 << 22;
 /// Deepest argument / parameter stack; no `argc` may exceed it.
 pub const MAX_STACK: usize = 1 << 12;
 /// Largest total number of instructions over all classes of a program.
@@ -470,7 +483,8 @@ impl Program {
     /// table sizes (per class and aggregate), functions laid out in table order from address 0
     /// each starting with the `Enter` of its frame sizes, jumps inside their function, parameter
     /// reads and call arities against the function table, slot indices inside their blocks,
-    /// native / call arities within [`MAX_STACK`], bindings inside the tables, and element and
+    /// native / call arities within [`MAX_STACK`], balanced parameter and argument stacks in
+    /// every function ([`check_stack_balance`]), bindings inside the tables, and element and
     /// location coordinates within `+-MAX_LOCATION_COORD`. The translator performs the same
     /// checks earlier for diagnostics; this is the trust boundary (a snapshot embeds the program).
     pub fn validate(&self) -> Result<(), String> {
@@ -591,6 +605,17 @@ impl Program {
                     return Err(format!("class {ci} instruction {pc} out of range"));
                 }
             }
+            for (fi, f) in c.functions.iter().enumerate() {
+                let end = c
+                    .functions
+                    .get(fi + 1)
+                    .map_or(c.code.len(), |n| n.address as usize);
+                if let Err(pc) = check_stack_balance(&c.code, f.address as usize, end) {
+                    return Err(format!(
+                        "class {ci} function {fi} stacks are not balanced at instruction {pc}"
+                    ));
+                }
+            }
         }
         let coord_ok = |v: i32| v.unsigned_abs() <= MAX_LOCATION_COORD as u32;
         for (i, el) in self.elements.iter().enumerate() {
@@ -696,6 +721,69 @@ impl Program {
             .position(|e| *e == Element::Actor(entity))
             .map_or(NONE_HANDLE, |i| i as i32)
     }
+}
+
+/// Stack balance of one function (`code[start..end]`, jump targets already checked to lie in
+/// it): a worklist walk assigns every reachable instruction the depths of the parameter and
+/// argument stacks. A `Call` / `Native` needs at least its `argc` values, a `Return` (and falling
+/// off the end of the function) needs both stacks empty, a join point must agree, and neither
+/// depth may exceed [`MAX_STACK`]. Unreachable code is not walked. `Err(pc)` names the offending
+/// instruction. The interpreter's teardown clears the stacks after every callback anyway; this
+/// makes a program that would rely on it invalid instead of merely tolerated.
+fn check_stack_balance(code: &[Instr], start: usize, end: usize) -> Result<(), usize> {
+    let mut depth: Vec<Option<(u32, u32)>> = vec![None; end.saturating_sub(start)];
+    let mut work = vec![(start, (0u32, 0u32))];
+    while let Some((pc, d)) = work.pop() {
+        let Some(slot) = pc.checked_sub(start).and_then(|i| depth.get_mut(i)) else {
+            return Err(pc);
+        };
+        match *slot {
+            Some(seen) if seen == d => continue,
+            Some(_) => return Err(pc),
+            None => *slot = Some(d),
+        }
+        let (mut params, mut args) = d;
+        match code[pc] {
+            Instr::PushParam { .. } => params += 1,
+            Instr::Call { argc, .. } => {
+                if params < argc {
+                    return Err(pc);
+                }
+                params -= argc;
+            }
+            Instr::PushArg { .. } => args += 1,
+            Instr::Native { argc, .. } => {
+                if args < argc {
+                    return Err(pc);
+                }
+                args -= argc;
+            }
+            Instr::Return => {
+                if (params, args) != (0, 0) {
+                    return Err(pc);
+                }
+                continue;
+            }
+            Instr::Jump { target } => {
+                work.push((target as usize, (params, args)));
+                continue;
+            }
+            Instr::JumpIf { target, .. } => work.push((target as usize, (params, args))),
+            _ => {}
+        }
+        if params as usize > MAX_STACK || args as usize > MAX_STACK {
+            return Err(pc);
+        }
+        if pc + 1 >= end {
+            // Falling off the end of the function is a return.
+            if (params, args) != (0, 0) {
+                return Err(pc);
+            }
+            continue;
+        }
+        work.push((pc + 1, (params, args)));
+    }
+    Ok(())
 }
 
 fn encode_slot(e: &mut Encoder, s: Slot) {
@@ -1018,8 +1106,8 @@ pub struct VmState {
     pub arg_stack: Vec<i32>,
     /// Script call parameter stack (empty between callbacks).
     pub param_stack: Vec<i32>,
-    /// Work units left in the current tick (not serialised: reset at the start of every tick and
-    /// of every load-time, event and dismissal run).
+    /// Work units left in the current tick (not serialised: granted at the start of every tick
+    /// and once at load; events and dismissals draw from what is left).
     #[serde(skip)]
     pub budget: u64,
     /// Diagnostics (not serialised, not hashed).
@@ -1440,13 +1528,30 @@ fn inc_id(map: &mut BTreeMap<u32, u64>, id: u32) {
 
 /// Charge `units` of work; `false` (and a zero budget) when it does not fit.
 fn charge(vm: &mut VmState, units: u64) -> bool {
-    if vm.budget < units {
-        vm.budget = 0;
+    charge_budget(&mut vm.budget, units)
+}
+
+/// Charge `units` of work to a budget; `false` (and a zero budget) when it does not fit. Every
+/// charge is made before the work (or the allocation) it pays for.
+pub(crate) fn charge_budget(budget: &mut u64, units: u64) -> bool {
+    if *budget < units {
+        *budget = 0;
         false
     } else {
-        vm.budget -= units;
+        *budget -= units;
         true
     }
+}
+
+/// The one teardown path of a callback: frames, both stacks and a sequence still being collected
+/// are dropped, so the VM is quiescent between callbacks whatever the program did (returned with
+/// surplus values, was aborted by the budget, faulted or trapped). `Program::validate` rejects
+/// programs whose stacks are not balanced; this holds even for one that got past it.
+fn teardown(vm: &mut VmState) {
+    vm.frames.clear();
+    vm.arg_stack.clear();
+    vm.param_stack.clear();
+    vm.collecting = None;
 }
 
 fn encode_message(e: &mut Encoder, m: &Message) {
@@ -1554,7 +1659,7 @@ impl World {
         let vm = VmState::new(program, paths, self.seed, lenient);
         vm.validate(self.programs.len(), self.entities.len())?;
         self.vm = Some(vm);
-        self.vm_reset_budget();
+        self.vm_grant_budget(WORK_BUDGET_AT_LOAD);
         let n = self.vm.as_ref().map_or(0, |v| v.program.classes.len());
         for class in 0..n as u32 {
             self.vm_callback(class, callbacks::INITIALIZE, &[]);
@@ -1566,8 +1671,10 @@ impl World {
 
     /// The app dismissed the text at the front of the queue (a briefing page, a popup). The
     /// sequence waiting for it continues at once (up to its next blocking element), so a
-    /// multi-page presentation can dismiss page after page without ticking the world. Returns
-    /// whether a text was pending.
+    /// multi-page presentation can dismiss page after page without ticking the world. The
+    /// continuation draws from the work the current tick (or the load-time run) left: no new
+    /// budget is granted between ticks, so after an exhausted tick the page is removed but the
+    /// sequence continues at the next tick. Returns whether a text was pending.
     pub fn vm_dismiss_text(&mut self) -> bool {
         let Some(vm) = self.vm.as_mut() else {
             return false;
@@ -1576,7 +1683,6 @@ impl World {
             return false;
         }
         vm.texts.remove(0);
-        self.vm_reset_budget();
         self.vm_advance_sequences();
         true
     }
@@ -1632,17 +1738,23 @@ impl World {
         self.vm_event(class, callbacks::ACTION_CHANGE, &[a, b])
     }
 
+    /// An event hook: runs the callback within what the current tick's budget has left (an
+    /// exhausted budget aborts it at once; the hook fires again when its cause persists, e.g. a
+    /// scroll approach whose presence was not recorded). `None` when the class has no such
+    /// callback or the callback did not return.
     fn vm_event(&mut self, class: u32, name: &str, params: &[i32]) -> Option<i32> {
-        self.vm_reset_budget();
         match self.vm_callback(class, name, params) {
             Some(CallOutcome::Returned(v)) => Some(v),
             _ => None,
         }
     }
 
-    fn vm_reset_budget(&mut self) {
+    /// Grant a work budget. Called from exactly two places: the start of [`World::vm_tick`]
+    /// ([`WORK_BUDGET_PER_TICK`]) and once by `attach_script` ([`WORK_BUDGET_AT_LOAD`]). No
+    /// other entry point replenishes the budget.
+    fn vm_grant_budget(&mut self, units: u64) {
         if let Some(vm) = self.vm.as_mut() {
-            vm.budget = WORK_BUDGET_PER_TICK;
+            vm.budget = units;
         }
     }
 
@@ -1660,13 +1772,14 @@ impl World {
     /// One tick of the script scheduler (called by `step` before the entities move): deliver
     /// the messages queued before this tick, `Hourglass(tick)` on every class, zone transitions
     /// of the player characters, scroll pickups, the active sequences, then
-    /// `CheckVictoryCondition`. Every phase stops when the work budget is spent; undelivered
-    /// messages stay queued (ahead of those sent this tick) for the next tick.
+    /// `CheckVictoryCondition`. The tick's work budget is granted here and nowhere else; every
+    /// phase stops when it is spent; undelivered messages stay queued (ahead of those sent this
+    /// tick) for the next tick.
     pub(crate) fn vm_tick(&mut self) {
         if self.vm.is_none() {
             return;
         }
-        self.vm_reset_budget();
+        self.vm_grant_budget(WORK_BUDGET_PER_TICK);
         let pending = self
             .vm
             .as_mut()
@@ -1752,16 +1865,18 @@ impl World {
                 continue;
             };
             for (ei, e) in self.entities.iter().enumerate() {
-                if e.kind != EntityKind::Player || !e.alive || !e.active {
-                    continue;
-                }
-                let cost = poly.len().max(1) as u64;
+                // One unit per entity looked at, plus one per edge for every character tested.
+                let player = e.kind == EntityKind::Player && e.alive && e.active;
+                let cost = if player { 1 + poly.len() as u64 } else { 1 };
                 if budget < cost {
                     budget = 0;
                     exhausted = true;
                     break 'scan;
                 }
                 budget -= cost;
+                if !player {
+                    continue;
+                }
                 let inside = poly.len() >= 3 && point_in_polygon(e.x.round(), e.y.round(), poly);
                 let was = vm.zone_presence.contains(&(ci as u32, ei as u32));
                 if inside != was {
@@ -1815,14 +1930,15 @@ impl World {
             };
             let active = !vm.inactive_elements.contains(&(handle as i32));
             for (ei, e) in self.entities.iter().enumerate() {
-                if e.kind != EntityKind::Player || !e.alive || !e.active {
-                    continue;
-                }
+                // One unit per entity looked at.
                 if budget == 0 {
                     exhausted = true;
                     break 'scan;
                 }
                 budget -= 1;
+                if e.kind != EntityKind::Player || !e.alive || !e.active {
+                    continue;
+                }
                 let dx = i64::from(e.x.round()) - i64::from(*x);
                 let dy = i64::from(e.y.round()) - i64::from(*y);
                 let near =
@@ -2026,8 +2142,19 @@ impl World {
     }
 
     /// Run one function to completion (nested script calls included) within the budget: one
-    /// unit per instruction plus one per argument transferred by a call or a native.
+    /// unit per instruction plus one per argument transferred by a call or a native. Every exit
+    /// (a return, a budget abort, a fault, a trap) passes through [`teardown`], so the VM is
+    /// quiescent afterwards whatever the program did.
     pub(crate) fn vm_invoke(&mut self, class: u32, function: u32, params: &[i32]) -> CallOutcome {
+        let outcome = self.vm_run(class, function, params);
+        if let Some(vm) = self.vm.as_mut() {
+            teardown(vm);
+        }
+        outcome
+    }
+
+    /// [`World::vm_invoke`] without the teardown (its caller always tears down).
+    fn vm_run(&mut self, class: u32, function: u32, params: &[i32]) -> CallOutcome {
         let Some(vm) = self.vm.as_mut() else {
             return CallOutcome::Aborted;
         };
@@ -2035,11 +2162,8 @@ impl World {
         if !vm.frames.is_empty() {
             // Callbacks never nest (natives queue events instead of invoking scripts).
             inc(&mut vm.counters.faults);
-            vm.frames.clear();
         }
-        vm.arg_stack.clear();
-        vm.param_stack.clear();
-        vm.collecting = None;
+        teardown(vm);
         if !push_frame(vm, class, function, params.to_vec()) {
             return CallOutcome::Aborted;
         }
@@ -2064,8 +2188,6 @@ impl World {
             };
             if !charge(vm, cost) {
                 inc(&mut vm.counters.budget_aborts);
-                vm.frames.clear();
-                vm.collecting = None;
                 return CallOutcome::Aborted;
             }
             inc(&mut vm.counters.instructions);
@@ -2080,7 +2202,6 @@ impl World {
                 Instr::Nop | Instr::Enter { .. } => advance(vm),
                 Instr::Return => {
                     if let Some(v) = pop_frame(vm) {
-                        vm.collecting = None;
                         return CallOutcome::Returned(v);
                     }
                 }
@@ -2135,11 +2256,9 @@ impl World {
                     advance(vm);
                     let Some(r) = self.native_call(id, &args) else {
                         // Unknown native in strict mode: a deterministic trap ends the
-                        // callback here (its frames are discarded, the script is marked
-                        // faulted).
+                        // callback here (the teardown discards its frames and stacks, the
+                        // script is marked faulted).
                         if let Some(vm) = self.vm.as_mut() {
-                            vm.frames.clear();
-                            vm.collecting = None;
                             inc(&mut vm.counters.traps);
                         }
                         return CallOutcome::Aborted;
@@ -3668,6 +3787,351 @@ pub(crate) mod tests {
         w.center_camera_on(-m, -m);
         assert_eq!(w.camera, (0, 0));
         w.validate().unwrap();
+    }
+
+    /// A square with [`MAX_POLYGON_VERTICES`] vertices (1024 points per side) covering
+    /// (400..1424, 400..1424).
+    fn big_square() -> Vec<(i32, i32)> {
+        let n = MAX_POLYGON_VERTICES as i32 / 4;
+        let mut pts = Vec::with_capacity(MAX_POLYGON_VERTICES);
+        pts.extend((0..n).map(|i| (400 + i, 400)));
+        pts.extend((0..n).map(|i| (400 + n, 400 + i)));
+        pts.extend((0..n).map(|i| (400 + n - i, 400 + n)));
+        pts.extend((0..n).map(|i| (400, 400 + n - i)));
+        pts
+    }
+
+    /// Frames, both stacks and the collecting sequence are empty.
+    fn assert_quiescent(w: &World) {
+        let vm = w.vm.as_ref().unwrap();
+        assert!(vm.frames.is_empty(), "frames");
+        assert!(vm.arg_stack.is_empty(), "arg stack");
+        assert!(vm.param_stack.is_empty(), "param stack");
+        assert!(vm.collecting.is_none(), "collecting");
+    }
+
+    /// `World::validate`, then a JSON snapshot restored into a fresh world with equal hashes.
+    fn assert_round_trips(w: &World) {
+        w.validate().unwrap();
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
+        let snap: crate::world::Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = mission_world(0, None);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.hashes(), w.hashes());
+    }
+
+    #[test]
+    fn simultaneous_is_taken_callbacks_share_one_tick_budget() {
+        // Three scrolls at one spot, each with an `IsTaken` that counts its call and spins.
+        let handler = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::Binary {
+                op: BinOp::Add,
+                dst: cv(0),
+                a: cv(0),
+                b: tv(0),
+            },
+            Instr::Jump { target: 3 },
+        ];
+        let level = class("StartUp", 0, &[("Initialize", 0, false, 0, 0, vec![])]);
+        let mut classes = vec![level];
+        let mut elements = vec![Element::Actor(0)];
+        for i in 0..3u32 {
+            let mut c = class(
+                &format!("Scroll{i}"),
+                1,
+                &[("IsTaken", 1, true, 0, 1, handler.clone())],
+            );
+            elements.push(Element::Scroll { x: 700, y: 700 });
+            c.element = Some(1 + i);
+            classes.push(c);
+        }
+        let program = Program {
+            classes,
+            elements,
+            locations: vec![],
+            wait_scale: (2, 1),
+        };
+        let mut w = mission_world(0, Some(program));
+        w.entities[0].x = Fixed::from_int(700);
+        w.entities[0].y = Fixed::from_int(705);
+        let counts = |w: &World| -> Vec<i32> {
+            (1..4)
+                .map(|c| w.vm.as_ref().unwrap().class_vars[c][0])
+                .collect()
+        };
+        w.vm.as_mut().unwrap().counters = Counters::default();
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(counts(&w), vec![1, 0, 0], "one handler per exhausted tick");
+        assert!(
+            vm.counters.instructions <= WORK_BUDGET_PER_TICK,
+            "{} instructions: the callbacks did not share one budget",
+            vm.counters.instructions
+        );
+        assert_eq!(vm.budget, 0);
+        assert_quiescent(&w);
+        // The hooks draw from what the tick left: nothing left, nothing runs, no refill.
+        assert_eq!(w.vm_is_taken(2, 0), None);
+        assert_eq!(w.vm.as_ref().unwrap().budget, 0);
+        assert_eq!(counts(&w), vec![1, 0, 0]);
+        // The scrolls whose handler could not start fire on the following ticks, one per tick.
+        w.step(&[]);
+        assert_eq!(counts(&w), vec![1, 1, 0]);
+        w.step(&[]);
+        assert_eq!(counts(&w), vec![1, 1, 1]);
+        assert!(w.vm.as_ref().unwrap().counters.instructions <= 3 * WORK_BUDGET_PER_TICK);
+        assert_round_trips(&w);
+    }
+
+    #[test]
+    fn dismissals_between_ticks_draw_from_the_ticks_remaining_budget() {
+        // Hourglass: spins on its first call only (cv0 marks it). Initialize: n202(7), a
+        // notice. PostInitialize: n30; n203(1); n34(0); n31 (a page, then a camera move).
+        let hourglass = vec![
+            Instr::JumpIf {
+                cond: cv(0),
+                target: 4,
+            },
+            Instr::LoadInt {
+                dst: cv(0),
+                value: 1,
+            },
+            Instr::Jump { target: 3 },
+        ];
+        let init = native(202, &[7], None, 0);
+        let mut post = native(30, &[], None, 0);
+        post.extend(native(203, &[1], None, 0));
+        post.extend(native(34, &[0], None, 0));
+        post.extend(native(31, &[], None, 0));
+        let level = class(
+            "StartUp",
+            1,
+            &[
+                ("Hourglass", 1, false, 0, 1, hourglass),
+                ("Initialize", 0, false, 0, 4, init),
+                ("PostInitialize", 0, false, 0, 4, post),
+            ],
+        );
+        let mut w = mission_world(0, Some(program(vec![level], 0)));
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(
+            vm.texts
+                .iter()
+                .map(|t| (t.text, t.blocking))
+                .collect::<Vec<_>>(),
+            vec![(7, false), (1, true)]
+        );
+        assert!(
+            vm.budget > 0 && vm.budget < WORK_BUDGET_AT_LOAD,
+            "the load run drew from its own budget"
+        );
+        // A notice dismissed right after load draws from the load budget's remainder (the
+        // sequence still waits for its page, so nothing is charged) and grants nothing.
+        let left = vm.budget;
+        assert!(w.vm_dismiss_text());
+        assert_eq!(w.vm.as_ref().unwrap().budget, left);
+        // Tick 0: Hourglass spins the budget away; the sequence phase is skipped.
+        w.step(&[]);
+        assert_eq!(w.vm.as_ref().unwrap().budget, 0);
+        // The page dismissed between ticks is removed, but its sequence gets no new budget: the
+        // camera move behind it waits for the next tick.
+        let aborts = w.vm.as_ref().unwrap().counters.budget_aborts;
+        assert!(w.vm_dismiss_text());
+        let vm = w.vm.as_ref().unwrap();
+        assert!(vm.texts.is_empty());
+        assert_eq!(vm.budget, 0, "no budget between ticks");
+        assert_eq!(vm.camera_target, None);
+        assert!(matches!(vm.sequences[0].wait, SeqWait::Text(_)));
+        assert_eq!(vm.counters.budget_aborts, aborts + 1);
+        assert!(!w.vm_dismiss_text(), "nothing pending");
+        // Tick 1: Hourglass returns at once; the sequence continues and finishes.
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.camera_target, Some((200, 200)));
+        assert!(vm.sequences.is_empty());
+        assert_round_trips(&w);
+    }
+
+    #[test]
+    fn polygon_natives_charge_edges_and_entities_before_scanning() {
+        // Hourglass: cv0 = n97(hero, big polygon); cv1 = n204(big polygon).
+        let mut body = native(97, &[0, 2], Some(cv(0)), 0);
+        body.extend(native(204, &[2], Some(cv(1)), 0));
+        let level = class("StartUp", 2, &[("Hourglass", 1, false, 0, 4, body)]);
+        let mut program = program(vec![level], 0);
+        program.locations.push(Location::Polygon(big_square()));
+        program.validate().unwrap();
+        let mut w = mission_world(3, Some(program));
+        w.entities[0].x = Fixed::from_int(500);
+        w.entities[0].y = Fixed::from_int(500);
+        let edges = MAX_POLYGON_VERTICES as u64;
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[0], vec![1, 1]);
+        // 15 units of dispatch (12 instructions, 3 arguments), the edges for native 97, one per
+        // entity (hero and three guards) plus the edges of the one player character for 204.
+        let used = WORK_BUDGET_PER_TICK - vm.budget;
+        assert_eq!(used, 15 + edges + (4 + edges));
+        // Too little for native 97: nothing is scanned, the result is 0 and the callback aborts
+        // at its next instruction with the budget at zero.
+        let aborts = vm.counters.budget_aborts;
+        let vm = w.vm.as_mut().unwrap();
+        vm.class_vars[0] = vec![5, 5];
+        vm.budget = edges;
+        assert_eq!(
+            w.vm_callback(0, callbacks::HOURGLASS, &[1]),
+            Some(CallOutcome::Aborted)
+        );
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.budget, 0);
+        assert_eq!(vm.class_vars[0], vec![5, 5], "nothing stored");
+        assert!(vm.counters.budget_aborts > aborts);
+        assert_quiescent(&w);
+        // Enough for native 97 and the dispatch up to 204, not for 204's first entity.
+        let vm = w.vm.as_mut().unwrap();
+        vm.class_vars[0] = vec![5, 5];
+        vm.budget = 8 + edges + 5;
+        assert_eq!(
+            w.vm_callback(0, callbacks::HOURGLASS, &[1]),
+            Some(CallOutcome::Aborted)
+        );
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[0], vec![1, 5]);
+        assert_eq!(vm.budget, 0);
+        assert_quiescent(&w);
+        assert_round_trips(&w);
+    }
+
+    #[test]
+    fn every_callback_exit_tears_down_to_a_quiescent_vm() {
+        // (a) Budget abort with values pending on both stacks: the loop keeps the depths, so
+        // the program is balanced and valid.
+        let spin = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::PushArg { src: tv(0) },
+            Instr::PushParam { src: tv(0) },
+            Instr::Jump { target: 4 },
+        ];
+        let level = class("StartUp", 0, &[("Hourglass", 1, false, 0, 1, spin)]);
+        let mut w = mission_world(0, Some(program(vec![level], 0)));
+        w.step(&[]);
+        assert!(w.vm.as_ref().unwrap().counters.budget_aborts >= 1);
+        assert_quiescent(&w);
+        assert_round_trips(&w);
+        // (b) Trap with values pending and a sequence being collected: Initialize: n30; three
+        // arguments pushed; n999 takes one and traps; n3 would take the other two; n31.
+        let mut init = native(30, &[], None, 0);
+        init.push(Instr::LoadInt {
+            dst: tv(0),
+            value: 5,
+        });
+        init.extend([Instr::PushArg { src: tv(0) }; 3]);
+        init.push(Instr::Native { id: 999, argc: 1 });
+        init.push(Instr::Native { id: 3, argc: 2 });
+        init.extend(native(31, &[], None, 0));
+        let level = class("StartUp", 0, &[("Initialize", 0, false, 0, 1, init)]);
+        let w = mission_world(0, Some(program(vec![level], 0)));
+        let vm = w.vm.as_ref().unwrap();
+        assert!(vm.faulted);
+        assert_eq!(vm.counters.traps, 1);
+        assert!(
+            vm.sequences.is_empty(),
+            "the collected sequence was dropped"
+        );
+        assert_quiescent(&w);
+        assert_round_trips(&w);
+        // (c) Returns: a nested call returns while the caller holds values on both stacks (a
+        // balanced program), and the outermost return leaves everything empty.
+        let hourglass = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::PushArg { src: tv(0) },
+            Instr::PushParam { src: tv(0) },
+            Instr::PushParam { src: tv(0) },
+            Instr::Call {
+                function: 1,
+                argc: 1,
+            },
+            Instr::Call {
+                function: 1,
+                argc: 1,
+            },
+            Instr::Native { id: 3, argc: 1 },
+            Instr::GetNativeResult { dst: cv(0) },
+        ];
+        let inner = vec![
+            Instr::LoadParam {
+                dst: tv(0),
+                index: 0,
+            },
+            Instr::SetResult { src: tv(0) },
+        ];
+        let level = class(
+            "StartUp",
+            1,
+            &[
+                ("Hourglass", 1, false, 0, 1, hourglass),
+                ("inner", 1, true, 0, 1, inner),
+            ],
+        );
+        let mut w = mission_world(0, Some(program(vec![level], 0)));
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[0], vec![1]);
+        assert_eq!(vm.counters.faults, 0);
+        assert_quiescent(&w);
+        assert_round_trips(&w);
+        // (d) A program that would return with surplus values, or call with too few pushed, is
+        // invalid; injected past validation, the surplus is still torn down on return.
+        let sloppy = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::PushArg { src: tv(0) },
+            Instr::PushParam { src: tv(0) },
+        ];
+        let level = class("StartUp", 0, &[("Hourglass", 1, false, 0, 1, sloppy)]);
+        let p = program(vec![level], 0);
+        assert!(p.validate().unwrap_err().contains("not balanced"));
+        let starved = vec![Instr::Call {
+            function: 1,
+            argc: 1,
+        }];
+        let level = class(
+            "StartUp",
+            0,
+            &[
+                ("Hourglass", 1, false, 0, 1, starved),
+                ("inner", 1, true, 0, 1, vec![]),
+            ],
+        );
+        assert!(
+            program(vec![level], 0)
+                .validate()
+                .unwrap_err()
+                .contains("not balanced")
+        );
+        let mut w = mission_world(0, None);
+        w.vm = Some(VmState::new(p, vec![], 9, false));
+        assert_eq!(
+            w.vm_callback(0, callbacks::HOURGLASS, &[0]),
+            Some(CallOutcome::Returned(0))
+        );
+        assert_quiescent(&w);
+        assert!(
+            w.validate().is_err(),
+            "the unbalanced program stays invalid"
+        );
     }
 
     #[test]
