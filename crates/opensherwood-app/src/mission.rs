@@ -1,20 +1,29 @@
 //! Turn a retail mission file into a `MissionSpec` for the core (`docs/formats/rhm.md`).
 //!
-//! What is verified: actor placements (map pixels), 16-way directions, the actor groups. What is
-//! still a placeholder: the profile-index -> sprite profile mapping (the profile table is not
-//! located yet), so NPCs are drawn with a default soldier sprite and player characters get the
-//! hero profiles in file order. NPC patrols come from the rail programs (`RAIL`): each rail is
-//! translated into a core [`Instruction`] program by [`compile_rail`]; the opcode meanings used
-//! are the documented inferences of `docs/formats/rhm.md` ("Rail programs") and every command
-//! whose meaning is not established becomes a no-op and is counted in the load-time summary.
+//! What is verified: actor placements (map pixels), 16-way directions, the actor groups. The
+//! sprite of every non-player actor comes from `Configuration/profile.cpf`
+//! (`docs/formats/profile.md`): `BORG.profile` indexes the SD table, `OILE.profile` the CV table
+//! and `TOTO.profile` the PC table, each record naming `Characters/<sprite>.rhs`. A sprite whose
+//! profile cannot be loaded from the bank, an index outside its table, or a missing table falls
+//! back to a default of the actor's kind with a logged warning. `SCOT` records carry no profile:
+//! which hero stands in a slot is campaign state, so the heroes are still assigned in file order
+//! (Robin first; correct for `H01_Lin_VL` and `S01_Not_VL`, where Robin is alone). Whether the
+//! original honours `SCOT.unknown_0x16` for that choice is an open question of the spec.
+//!
+//! NPC patrols come from the rail programs (`RAIL`): each rail is translated into a core
+//! [`Instruction`] program by [`compile_rail`]; the opcode meanings used are the documented
+//! inferences of `docs/formats/rhm.md` ("Rail programs") and every command whose meaning is not
+//! established becomes a no-op and is counted in the load-time summary.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use opensherwood_assets::GameDir;
+use opensherwood_assets::{GameDir, SpriteBank};
 use opensherwood_core::{ActorSpec, Geometry, Instruction, MapInfo, MissionSpec, Team};
+use opensherwood_formats::cpf::{self, ProfileTable};
 use opensherwood_formats::rhm::{self, ActorGroup, Command, CommandTable, Mission, RailPoint};
 
-/// Hero profiles in the order player characters appear in mission files (placeholder).
+/// Hero profiles in the order player characters appear in mission files (placeholder: the
+/// campaign decides the team; see the module documentation).
 const HERO_PROFILES: [&str; 6] = [
     "RobinHood",
     "LittleJohn",
@@ -24,10 +33,13 @@ const HERO_PROFILES: [&str; 6] = [
     "LadyMarian",
 ];
 
-/// Default NPC profile until the profile table is decoded.
+/// Fallback NPC profile when the SD table entry is unavailable.
 const NPC_PROFILE: &str = "Soldier A00";
-/// Default civilian profile.
+/// Fallback civilian / VIP profile when the CV or PC table entry is unavailable.
 const CIVILIAN_PROFILE: &str = "ManCivilianPoor";
+
+/// Logical path of the profile table.
+const PROFILE_TABLE_PATH: &str = "Data/Configuration/profile.cpf";
 
 /// Opcodes `compile_block` gives a meaning to (see its documentation); every other opcode is a no-op.
 const TRANSLATED_OPCODES: [u8; 6] = [0x02, 0x03, 0x04, 0x07, 0x0b, 0x0c];
@@ -51,7 +63,7 @@ pub fn wait_ticks(hundredths: u16) -> u32 {
     u32::from(hundredths) * num / (100 * den)
 }
 
-/// Counts from translating a mission's rail programs.
+/// Counts from translating a mission's rail programs and resolving its actor profiles.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProgramStats {
     /// Rails translated (those assigned to actors).
@@ -62,6 +74,9 @@ pub struct ProgramStats {
     pub translated: usize,
     /// Commands emitted as no-ops, by opcode.
     pub unknown: BTreeMap<u8, usize>,
+    /// Non-player actors drawn with the default sprite of their kind because their profile
+    /// table entry was unavailable.
+    pub profile_fallbacks: usize,
 }
 
 impl ProgramStats {
@@ -91,33 +106,142 @@ impl ProgramStats {
             s.push_str(&list.join(", "));
             s.push(']');
         }
+        if self.profile_fallbacks > 0 {
+            use std::fmt::Write as _;
+            let _ = write!(
+                s,
+                "; {} actors on a default sprite (profile unavailable)",
+                self.profile_fallbacks
+            );
+        }
         s
     }
 }
 
-/// Load `Data/Levels/<name>.rhm` and build the spec. `map_size` must be supplied by the caller
-/// after decoding the background (core cannot read files).
-pub fn load(game: &GameDir, name: &str) -> Result<(Mission, String), String> {
+/// A mission file together with what the spec needs from the rest of the installation.
+#[derive(Debug, Clone)]
+pub struct LoadedMission {
+    /// The decoded `.rhm`.
+    pub mission: Mission,
+    /// The profile table, `None` when `Configuration/profile.cpf` is missing or unreadable.
+    pub profiles: Option<ProfileTable>,
+    /// Sprite base names (`Characters/<name>.rhs`) referenced by this mission through the profile
+    /// table whose profile loads from the sprite bank; anything else falls back.
+    pub available_sprites: BTreeSet<String>,
+}
+
+/// Load `Data/Levels/<name>.rhm` and the profile table, and check the referenced sprites against
+/// the bank. Returns the loaded mission and its map name; the map size must be supplied by the
+/// caller after decoding the background (core cannot read files).
+pub fn load(game: &GameDir, name: &str) -> Result<(LoadedMission, String), String> {
     let logical = format!("Data/Levels/{name}.rhm");
     let data = game.read(&logical).map_err(|e| e.to_string())?;
     let mission = rhm::parse(&data).map_err(|e| format!("{logical}: {e}"))?;
     let map = mission.header.map.clone();
-    Ok((mission, map))
+    let profiles = match game.read(PROFILE_TABLE_PATH) {
+        Ok(bytes) => match cpf::parse(&bytes) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("opensherwood: {PROFILE_TABLE_PATH}: {e}; NPCs use default sprites");
+                None
+            }
+        },
+        Err(e) => {
+            eprintln!("opensherwood: {PROFILE_TABLE_PATH}: {e}; NPCs use default sprites");
+            None
+        }
+    };
+    let mut available_sprites = BTreeSet::new();
+    if let Some(table) = &profiles {
+        for sprite in referenced_sprites(&mission, table) {
+            match SpriteBank::load_profile(game, &sprite) {
+                Ok(_) => {
+                    available_sprites.insert(sprite);
+                }
+                Err(e) => eprintln!(
+                    "opensherwood: profile table sprite {sprite:?}: {e}; using a default sprite"
+                ),
+            }
+        }
+    }
+    Ok((
+        LoadedMission {
+            mission,
+            profiles,
+            available_sprites,
+        },
+        map,
+    ))
 }
 
-/// Build the spec from a decoded mission and the background size. Logs one line with the rail
+/// Distinct sprite names the mission's `BORG`, `OILE` and `TOTO` records resolve to through the
+/// table (indices outside a table are skipped).
+#[must_use]
+pub fn referenced_sprites(mission: &Mission, table: &ProfileTable) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for group in &mission.actor_groups {
+        match group {
+            ActorGroup::Npcs { records, .. } => {
+                for r in records {
+                    if let Some(p) = index(&table.soldiers, r.profile) {
+                        out.insert(p.sprite.clone());
+                    }
+                }
+            }
+            ActorGroup::Civilians { records, .. } => {
+                for r in records {
+                    if let Some(p) = index(&table.civilians, r.profile) {
+                        out.insert(p.sprite.clone());
+                    }
+                }
+            }
+            ActorGroup::Vips { records, .. } => {
+                for r in records {
+                    if let Some(p) = index(&table.player_characters, r.profile) {
+                        out.insert(p.sprite.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn index<T>(table: &[T], i: u32) -> Option<&T> {
+    usize::try_from(i).ok().and_then(|i| table.get(i))
+}
+
+/// The sprite of a non-player actor: the table entry when it exists and its profile is
+/// available, else the kind's default (counted as a fallback).
+fn npc_sprite<'a>(
+    loaded: &'a LoadedMission,
+    entry: Option<&'a str>,
+    default: &'a str,
+    stats: &mut ProgramStats,
+) -> &'a str {
+    match entry {
+        Some(s) if loaded.available_sprites.contains(s) => s,
+        _ => {
+            stats.profile_fallbacks += 1;
+            default
+        }
+    }
+}
+
+/// Build the spec from a loaded mission and the background size. Logs one line with the rail
 /// program translation summary.
 #[must_use]
 pub fn build_spec(
-    mission: &Mission,
+    loaded: &LoadedMission,
     map: MapInfo,
     geometry: Geometry,
 ) -> (MissionSpec, Vec<String>) {
-    let (spec, profiles, stats) = build_spec_with_stats(mission, map, geometry);
+    let (spec, profiles, stats) = build_spec_with_stats(loaded, map, geometry);
     eprintln!(
         "opensherwood: mission {} on {}: {}",
-        mission.header.mission_id,
-        mission.header.map,
+        loaded.mission.header.mission_id,
+        loaded.mission.header.map,
         stats.summary()
     );
     (spec, profiles)
@@ -126,10 +250,12 @@ pub fn build_spec(
 /// [`build_spec`] returning the translation counts instead of logging them.
 #[must_use]
 pub fn build_spec_with_stats(
-    mission: &Mission,
+    loaded: &LoadedMission,
     map: MapInfo,
     geometry: Geometry,
 ) -> (MissionSpec, Vec<String>, ProgramStats) {
+    let mission = &loaded.mission;
+    let table = loaded.profiles.as_ref();
     let mut actors = Vec::new();
     let mut profiles: Vec<String> = Vec::new();
     let mut use_profile = |p: &str| {
@@ -171,8 +297,12 @@ pub fn build_spec_with_stats(
                                 .clone()
                         })
                         .unwrap_or_default();
+                    let entry = table
+                        .and_then(|t| index(&t.soldiers, npc.profile))
+                        .map(|p| p.sprite.as_str());
+                    let sprite = npc_sprite(loaded, entry, NPC_PROFILE, &mut stats);
                     actors.push(ActorSpec {
-                        profile: use_profile(NPC_PROFILE),
+                        profile: use_profile(sprite),
                         team: Team::Enemy,
                         x: i32::from(npc.placement.x),
                         y: i32::from(npc.placement.y),
@@ -184,8 +314,12 @@ pub fn build_spec_with_stats(
             }
             ActorGroup::Civilians { records, .. } => {
                 for c in records {
+                    let entry = table
+                        .and_then(|t| index(&t.civilians, c.profile))
+                        .map(|p| p.sprite.as_str());
+                    let sprite = npc_sprite(loaded, entry, CIVILIAN_PROFILE, &mut stats);
                     actors.push(ActorSpec {
-                        profile: use_profile(CIVILIAN_PROFILE),
+                        profile: use_profile(sprite),
                         team: Team::Civilian,
                         x: i32::from(c.placement.x),
                         y: i32::from(c.placement.y),
@@ -197,8 +331,12 @@ pub fn build_spec_with_stats(
             }
             ActorGroup::Vips { records, .. } => {
                 for v in records {
+                    let entry = table
+                        .and_then(|t| index(&t.player_characters, v.profile))
+                        .map(|p| p.sprite.as_str());
+                    let sprite = npc_sprite(loaded, entry, CIVILIAN_PROFILE, &mut stats);
                     actors.push(ActorSpec {
-                        profile: use_profile(CIVILIAN_PROFILE),
+                        profile: use_profile(sprite),
                         team: Team::Civilian,
                         x: i32::from(v.placement.x),
                         y: i32::from(v.placement.y),
@@ -573,5 +711,191 @@ mod tests {
         assert_eq!(p[5], Jump { pc: 7 });
         assert_eq!(p.len(), 9);
         assert_eq!(p[8], Jump { pc: 0 });
+    }
+
+    fn synthetic_mission() -> Mission {
+        use opensherwood_formats::rhm::{
+            Brains, Civilian, Header, Npc, Placement, ScriptAreas, Vip,
+        };
+        let placement = Placement {
+            x: 10,
+            y: 20,
+            ..Placement::default()
+        };
+        let npc = |profile: u32| Npc {
+            placement,
+            unknown_0x12: 0,
+            profile,
+            unknown_0x1a: 0,
+            unknown_0x1b: 0,
+            unknown_0x1f: 0,
+            unknown_0x23: 0,
+            members: Vec::new(),
+            rail: -1,
+            unknown_i16: -1,
+            name: None,
+        };
+        Mission {
+            version: 2,
+            header: Header {
+                version: 4,
+                map_id: 100,
+                variant: 1,
+                map: "Croisement01".into(),
+                mission_id: 1,
+            },
+            tenants: Vec::new(),
+            actor_groups: vec![
+                ActorGroup::Npcs {
+                    version: 4,
+                    records: vec![npc(0), npc(1), npc(99)],
+                },
+                ActorGroup::Civilians {
+                    version: 3,
+                    records: vec![Civilian {
+                        placement,
+                        unknown_0x12: 0,
+                        profile: 1,
+                        unknown_i16_a: -1,
+                        unknown_i16_b: 0,
+                        unknown_u16: 0,
+                        lists: None,
+                        name: None,
+                    }],
+                },
+                ActorGroup::Vips {
+                    version: 2,
+                    records: vec![Vip {
+                        placement,
+                        unknown_0x12: 0,
+                        profile: 1,
+                        unknown_i16_a: 0,
+                        unknown_i16_b: 0,
+                        name: None,
+                    }],
+                },
+            ],
+            zorg: Vec::new(),
+            brains: Brains::default(),
+            rails: Vec::new(),
+            scrolls: Vec::new(),
+            mobiles: Vec::new(),
+            script_areas: ScriptAreas::default(),
+            cave: Vec::new(),
+            chunk_versions: Vec::new(),
+            unknown_chunks: Vec::new(),
+        }
+    }
+
+    fn synthetic_table() -> ProfileTable {
+        use opensherwood_formats::cpf::{CivilianProfile, PlayerProfile, SoldierProfile};
+        let soldier = |sprite: &str| SoldierProfile {
+            sprite: sprite.into(),
+            sequence: String::new(),
+            label: String::new(),
+            unknown_pre: [0; 21],
+            voice: "SDHL".into(),
+            unknown_post: [0; 55],
+        };
+        let pc = |sprite: &str| PlayerProfile {
+            sprite: sprite.into(),
+            sequence: String::new(),
+            label: String::new(),
+            unknown_pre: [0; 8],
+            voice: "PCRH".into(),
+            unknown_post: [0; 82],
+        };
+        let civilian = |sprite: &str| CivilianProfile {
+            sprite: sprite.into(),
+            sequence: String::new(),
+            label: String::new(),
+            unknown_pre: [0; 8],
+            voice: "CVTC".into(),
+        };
+        ProfileTable {
+            soldiers: vec![soldier("Guard A00"), soldier("Guard A01")],
+            civilians: vec![civilian("TaxeCollector"), civilian("Mendicant")],
+            player_characters: vec![pc("RobinHood"), pc("RobinTown")],
+            ..ProfileTable::default()
+        }
+    }
+
+    fn actor_profiles(loaded: &LoadedMission) -> (Vec<String>, Vec<String>, ProgramStats) {
+        let (spec, profiles, stats) = build_spec_with_stats(
+            loaded,
+            MapInfo {
+                width: 100,
+                height: 100,
+            },
+            Geometry::default(),
+        );
+        let actors: Vec<String> = spec.actors.iter().map(|a| a.profile.clone()).collect();
+        (actors, profiles, stats)
+    }
+
+    #[test]
+    fn profiles_resolve_through_the_table_and_fall_back_when_unavailable() {
+        let mission = synthetic_mission();
+        let table = synthetic_table();
+        assert_eq!(
+            referenced_sprites(&mission, &table)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["Guard A00", "Guard A01", "Mendicant", "RobinTown"]
+        );
+        // Everything available: table sprites, and the VIP wears the PC table sprite.
+        let loaded = LoadedMission {
+            mission: mission.clone(),
+            profiles: Some(table.clone()),
+            available_sprites: referenced_sprites(&mission, &table),
+        };
+        let (actors, profiles, stats) = actor_profiles(&loaded);
+        assert_eq!(
+            actors,
+            [
+                "Guard A00",
+                "Guard A01",
+                NPC_PROFILE, // index 99: outside the SD table
+                "Mendicant",
+                "RobinTown"
+            ]
+        );
+        assert_eq!(stats.profile_fallbacks, 1);
+        assert_eq!(
+            profiles,
+            [
+                "Guard A00",
+                "Guard A01",
+                NPC_PROFILE,
+                "Mendicant",
+                "RobinTown"
+            ]
+        );
+        assert!(stats.summary().contains("1 actors on a default sprite"));
+        // One sprite failed to load from the bank: its actors fall back.
+        let mut partial = loaded.clone();
+        partial.available_sprites.remove("Guard A01");
+        let (actors, _, stats) = actor_profiles(&partial);
+        assert_eq!(actors[1], NPC_PROFILE);
+        assert_eq!(stats.profile_fallbacks, 2);
+        // No table at all: the old defaults for every kind.
+        let none = LoadedMission {
+            mission,
+            profiles: None,
+            available_sprites: BTreeSet::new(),
+        };
+        let (actors, profiles, stats) = actor_profiles(&none);
+        assert_eq!(
+            actors,
+            [
+                NPC_PROFILE,
+                NPC_PROFILE,
+                NPC_PROFILE,
+                CIVILIAN_PROFILE,
+                CIVILIAN_PROFILE
+            ]
+        );
+        assert_eq!(profiles, [NPC_PROFILE, CIVILIAN_PROFILE]);
+        assert_eq!(stats.profile_fallbacks, 5);
     }
 }

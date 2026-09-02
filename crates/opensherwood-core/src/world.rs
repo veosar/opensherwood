@@ -237,7 +237,8 @@ pub struct MissionSpec {
     pub actors: Vec<ActorSpec>,
 }
 
-/// Serialisable snapshot of the whole authoritative state, with the versions it was made under.
+/// Serialisable snapshot of the whole authoritative state, with the versions it was made under
+/// and the identity of the content it was built from (the envelope, ADR-0004).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// Snapshot schema version.
@@ -246,8 +247,59 @@ pub struct Snapshot {
     pub ruleset: u32,
     /// Hash schema in force.
     pub hash_schema: u32,
+    /// Fingerprint of the game content the world was built from (`GameDir::fingerprint` in the
+    /// assets crate); `None` for synthetic scenarios. The catalog and background are not part of
+    /// the snapshot, so a restore must run on the same content: see [`Snapshot::check_content`].
+    pub content: Option<String>,
     /// World state.
     pub world: World,
+}
+
+impl Snapshot {
+    /// Check the envelope versions against this build: snapshot schema, ruleset and hash schema
+    /// must all match exactly (a snapshot is never migrated).
+    pub fn check_versions(&self) -> Result<(), String> {
+        if self.version != SNAPSHOT_VERSION {
+            return Err(format!(
+                "snapshot version {} not supported (expected {SNAPSHOT_VERSION})",
+                self.version
+            ));
+        }
+        if self.ruleset != crate::RULESET_VERSION {
+            return Err(format!(
+                "snapshot ruleset {} does not match {}",
+                self.ruleset,
+                crate::RULESET_VERSION
+            ));
+        }
+        if self.hash_schema != HASH_SCHEMA_VERSION {
+            return Err(format!(
+                "snapshot hash schema {} does not match {HASH_SCHEMA_VERSION}",
+                self.hash_schema
+            ));
+        }
+        Ok(())
+    }
+
+    /// Check content identity: `expected` is the fingerprint of the content the restoring session
+    /// would rebuild the scenario from (`None` for synthetic scenarios, which need no content).
+    /// The core cannot compute fingerprints (no I/O), so the app calls this before
+    /// [`World::restore`].
+    pub fn check_content(&self, expected: Option<&str>) -> Result<(), String> {
+        match (self.content.as_deref(), expected) {
+            (None, None) => Ok(()),
+            (Some(a), Some(b)) if a == b => Ok(()),
+            (None, Some(_)) => Err(
+                "snapshot carries no content fingerprint but the scenario needs game content"
+                    .into(),
+            ),
+            (Some(_), None) => Err(
+                "snapshot carries a content fingerprint but the scenario uses no game content"
+                    .into(),
+            ),
+            (Some(_), Some(_)) => Err("snapshot was taken with different game content".into()),
+        }
+    }
 }
 
 /// Filtered view for `observe`.
@@ -289,6 +341,17 @@ pub const MAX_ENTITIES: usize = 1 << 16;
 pub const MAX_POINTER_RAW: i32 = 1 << 24;
 /// Largest total vertex count of the walkable geometry.
 pub const MAX_GEOMETRY_VERTICES: usize = 1 << 20;
+/// Largest magnitude of a geometry vertex coordinate; see [`crate::geom::MAX_COORD`].
+pub const MAX_GEOMETRY_COORD: i32 = crate::geom::MAX_COORD;
+
+/// Every check a walkable geometry must pass before it may drive movement: vertex budget and
+/// coordinate range (`-MAX_GEOMETRY_COORD..=MAX_GEOMETRY_COORD`).
+fn check_geometry(geometry: &Geometry) -> Result<(), String> {
+    if geometry.vertex_count() > MAX_GEOMETRY_VERTICES {
+        return Err("geometry has too many vertices".into());
+    }
+    geometry.check_bounds().map_err(|e| format!("geometry {e}"))
+}
 
 /// The world.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,8 +400,8 @@ pub struct World {
     pub catalog: Catalog,
 }
 
-/// Snapshot schema version.
-pub const SNAPSHOT_VERSION: u32 = 5;
+/// Snapshot schema version (6: `content` fingerprint in the envelope).
+pub const SNAPSHOT_VERSION: u32 = 6;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -379,8 +442,7 @@ impl World {
             return Err(format!("{} actors exceed the limit", spec.actors.len()));
         }
         let mut world = Self::build(scenario, seed, Some(spec.map));
-        world.geometry = spec.geometry.clone();
-        world.ensure_nav();
+        world.set_geometry(spec.geometry.clone())?;
         world.entities.clear();
         world.goal = (Fixed::from_int(-1000), Fixed::from_int(-1000));
         let f = Fixed::from_int;
@@ -451,11 +513,15 @@ impl World {
         );
     }
 
-    /// Attach walkable geometry (map view and missions) and rebuild the navigation grid.
-    pub fn set_geometry(&mut self, geometry: Geometry) {
+    /// Attach walkable geometry (map view and missions) and rebuild the navigation grid. Geometry
+    /// over the vertex budget or outside `+-MAX_GEOMETRY_COORD` is refused and the world is left
+    /// unchanged.
+    pub fn set_geometry(&mut self, geometry: Geometry) -> Result<(), String> {
+        check_geometry(&geometry)?;
         self.geometry = geometry;
         self.nav = None;
         self.ensure_nav();
+        Ok(())
     }
 
     /// Build the navigation grid if it is missing.
@@ -655,8 +721,18 @@ impl World {
         }
     }
 
-    /// Check every invariant a snapshot must satisfy before it may become the world.
+    /// Check every invariant a snapshot must satisfy before it may become the world, using the
+    /// attached catalog for the animation checks (see [`World::validate_with`]).
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_with(&self.catalog)
+    }
+
+    /// [`World::validate`] against an explicit catalog: a deserialised snapshot carries none, so
+    /// restore checks it against the catalog of the session. When `catalog` has any set, every
+    /// animation state must name an existing profile with its animation and frame indices in
+    /// range and `elapsed` below the frame duration; nothing falls back silently. Without a
+    /// catalog (synthetic worlds, no sprite bank) only the size bounds apply.
+    pub fn validate_with(&self, catalog: &Catalog) -> Result<(), String> {
         if self.viewport.0 == 0
             || self.viewport.1 == 0
             || self.viewport.0 > MAX_VIEWPORT
@@ -684,9 +760,7 @@ impl World {
         if self.entities.len() > MAX_ENTITIES {
             return Err(format!("{} entities exceed the limit", self.entities.len()));
         }
-        if self.geometry.vertex_count() > MAX_GEOMETRY_VERTICES {
-            return Err("geometry has too many vertices".into());
-        }
+        check_geometry(&self.geometry)?;
         if self.programs.len() > MAX_ENTITIES {
             return Err(format!("{} programs exceed the limit", self.programs.len()));
         }
@@ -753,13 +827,43 @@ impl World {
             if e.path.len() > MAX_ENTITIES {
                 return Err(format!("entity {:?} has too many path points", e.id));
             }
-            if let Some(a) = &e.anim
-                && (a.set.len() > 256 || a.animation > 1 << 20 || a.frame > 1 << 20)
-            {
-                return Err(format!(
-                    "entity {:?} has an out-of-range animation state",
-                    e.id
-                ));
+            if let Some(a) = &e.anim {
+                if a.set.len() > 256 || a.animation > 1 << 20 || a.frame > 1 << 20 {
+                    return Err(format!(
+                        "entity {:?} has an out-of-range animation state",
+                        e.id
+                    ));
+                }
+                if !catalog.sets.is_empty() {
+                    let Some(set) = catalog.sets.get(&a.set) else {
+                        return Err(format!(
+                            "entity {:?} animation profile '{}' is not in the catalog",
+                            e.id, a.set
+                        ));
+                    };
+                    let Some(frames) = set.animations.get(a.animation as usize) else {
+                        return Err(format!(
+                            "entity {:?} animation {} does not exist in profile '{}'",
+                            e.id, a.animation, a.set
+                        ));
+                    };
+                    // An empty animation holds frame 0 (nothing advances it).
+                    if a.frame as usize >= frames.len().max(1) {
+                        return Err(format!(
+                            "entity {:?} frame {} out of range for animation {} of '{}'",
+                            e.id, a.frame, a.animation, a.set
+                        ));
+                    }
+                    let duration = frames
+                        .get(a.frame as usize)
+                        .map_or(1, |f| f.duration.max(1));
+                    if a.elapsed >= duration {
+                        return Err(format!(
+                            "entity {:?} animation elapsed {} exceeds the frame duration {duration}",
+                            e.id, a.elapsed
+                        ));
+                    }
+                }
             }
             if e.speed < Fixed::ZERO || e.size < Fixed::ZERO {
                 return Err(format!("entity {:?} has a negative speed or size", e.id));
@@ -1004,34 +1108,27 @@ impl World {
         }
     }
 
-    /// Snapshot everything authoritative.
+    /// Snapshot everything authoritative. `content` is the fingerprint of the game content the
+    /// world was built from (`None` for synthetic scenarios); the core has no I/O, so the app
+    /// supplies it.
     #[must_use]
-    pub fn snapshot(&self) -> Snapshot {
+    pub fn snapshot(&self, content: Option<String>) -> Snapshot {
         Snapshot {
             version: SNAPSHOT_VERSION,
             ruleset: crate::RULESET_VERSION,
             hash_schema: HASH_SCHEMA_VERSION,
+            content,
             world: self.clone(),
         }
     }
 
-    /// Validate a snapshot and, only if it is acceptable, make it the current state. The catalog
-    /// is kept (it is static data). On error the world is unchanged.
+    /// Validate a snapshot (envelope versions, every world invariant, animation state against
+    /// the attached catalog) and, only if it is acceptable, make it the current state. The
+    /// catalog is kept (it is static data). On error the world is unchanged. Content identity
+    /// ([`Snapshot::check_content`]) is the caller's check: the core cannot fingerprint content.
     pub fn restore(&mut self, snap: &Snapshot) -> Result<(), String> {
-        if snap.version != SNAPSHOT_VERSION {
-            return Err(format!(
-                "snapshot version {} not supported (expected {SNAPSHOT_VERSION})",
-                snap.version
-            ));
-        }
-        if snap.ruleset != crate::RULESET_VERSION {
-            return Err(format!(
-                "snapshot ruleset {} does not match {}",
-                snap.ruleset,
-                crate::RULESET_VERSION
-            ));
-        }
-        snap.world.validate()?;
+        snap.check_versions()?;
+        snap.world.validate_with(&self.catalog)?;
         let catalog = std::mem::take(&mut self.catalog);
         let nav = self.nav.take();
         let same_geometry =
@@ -1196,6 +1293,13 @@ impl World {
                 g.i32(*x).i32(*y);
             }
         }
+        g.u32(self.geometry.areas.len() as u32);
+        for a in &self.geometry.areas {
+            g.u32(a.len() as u32);
+            for (x, y) in a {
+                g.i32(*x).i32(*y);
+            }
+        }
         parts.insert("pathfinding".into(), g.finish());
 
         // Subsystems that do not exist yet hash to a versioned constant so the set of parts is
@@ -1318,7 +1422,7 @@ mod tests {
             let mut saved = None;
             for t in 0..300u64 {
                 if Some(t) == snap_at {
-                    saved = Some(w.snapshot());
+                    saved = Some(w.snapshot(None));
                 }
                 w.step(&[]);
                 if snap_at.is_some_and(|s| t == s + 25) {
@@ -1363,7 +1467,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "51537eb4571d5f3b42d3aae69068f5044167779718d9cfbd8fbeaecfe36dc907";
+        "e07fc914c38cb5009bbf3cb162a432984b1555ad1c2e3a77823adea7be5032fc";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -1482,27 +1586,204 @@ mod tests {
     fn invalid_snapshots_are_rejected_and_leave_the_world_untouched() {
         let mut w = corridor(2);
         let before = w.hashes();
-        let mut snap = w.snapshot();
+        let mut snap = w.snapshot(None);
         snap.world.entities[1].id = snap.world.entities[0].id;
         assert!(w.restore(&snap).unwrap_err().contains("duplicate"));
-        let mut snap = w.snapshot();
+        let mut snap = w.snapshot(None);
         snap.world.entities[2].patrol.clear();
         assert!(w.restore(&snap).is_err());
-        let mut snap = w.snapshot();
+        let mut snap = w.snapshot(None);
         snap.world.selected = Some(EntityId {
             index: 99,
             generation: 1,
         });
         assert!(w.restore(&snap).is_err());
-        let mut snap = w.snapshot();
+        let mut snap = w.snapshot(None);
         snap.world.camera = (5, 0);
         assert!(w.restore(&snap).is_err());
-        let mut snap = w.snapshot();
+        let mut snap = w.snapshot(None);
         snap.ruleset += 1;
-        assert!(w.restore(&snap).is_err());
-        let mut snap = w.snapshot();
+        assert!(w.restore(&snap).unwrap_err().contains("ruleset"));
+        let mut snap = w.snapshot(None);
         snap.version += 1;
-        assert!(w.restore(&snap).is_err());
+        assert!(w.restore(&snap).unwrap_err().contains("version"));
+        let mut snap = w.snapshot(None);
+        snap.hash_schema += 1;
+        assert!(w.restore(&snap).unwrap_err().contains("hash schema"));
+        assert_eq!(w.hashes(), before);
+    }
+
+    #[test]
+    fn content_identity_is_part_of_the_envelope() {
+        let w = corridor(2);
+        let snap = w.snapshot(None);
+        snap.check_content(None).unwrap();
+        assert!(
+            snap.check_content(Some("abc"))
+                .unwrap_err()
+                .contains("no content")
+        );
+        let snap = w.snapshot(Some("abc".into()));
+        snap.check_content(Some("abc")).unwrap();
+        assert!(
+            snap.check_content(Some("xyz"))
+                .unwrap_err()
+                .contains("different")
+        );
+        assert!(
+            snap.check_content(None)
+                .unwrap_err()
+                .contains("no game content")
+        );
+        // The field survives JSON and a missing field reads as "no content".
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["content"], "abc");
+        let mut json = json;
+        json.as_object_mut().unwrap().remove("content");
+        let back: Snapshot = serde_json::from_value(json).unwrap();
+        assert_eq!(back.content, None);
+    }
+
+    #[test]
+    fn hostile_geometry_snapshots_are_rejected_and_extremes_never_panic() {
+        let mut w = corridor(4);
+        w.ensure_nav();
+        let before = w.hashes();
+        let extremes = [
+            i32::MIN,
+            i32::MIN + 1,
+            -(MAX_GEOMETRY_COORD + 1),
+            MAX_GEOMETRY_COORD + 1,
+            i32::MAX - 1,
+            i32::MAX,
+        ];
+        for &c in &extremes {
+            // Through JSON, as a hostile client would send it.
+            let mut json = serde_json::to_value(w.snapshot(None)).unwrap();
+            json["world"]["geometry"]["boundary"] =
+                serde_json::json!([[0, 0], [c, 0], [c, c], [0, c]]);
+            let snap: Snapshot = serde_json::from_value(json).unwrap();
+            let err = w.restore(&snap).unwrap_err();
+            assert!(
+                err.contains("geometry") && err.contains("boundary"),
+                "{err}"
+            );
+            let mut json = serde_json::to_value(w.snapshot(None)).unwrap();
+            json["world"]["geometry"]["obstacles"] = serde_json::json!([[[1, 1], [2, c], [c, 2]]]);
+            let snap: Snapshot = serde_json::from_value(json).unwrap();
+            let err = w.restore(&snap).unwrap_err();
+            assert!(err.contains("obstacle 0"), "{err}");
+            assert!(
+                w.nav.is_some(),
+                "the navigation grid of the live world is kept"
+            );
+            // `set_geometry` refuses the same input and leaves the world alone.
+            let err = w
+                .set_geometry(Geometry {
+                    boundary: vec![(0, 0), (c, 0), (0, c)],
+                    obstacles: vec![],
+                    areas: Vec::new(),
+                })
+                .unwrap_err();
+            assert!(err.contains("geometry"), "{err}");
+        }
+        assert_eq!(w.hashes(), before);
+        assert!(w.geometry.boundary.is_empty());
+        // The documented extreme is accepted and rasterises without overflow.
+        let m = MAX_GEOMETRY_COORD;
+        let mut json = serde_json::to_value(w.snapshot(None)).unwrap();
+        json["world"]["geometry"]["boundary"] =
+            serde_json::json!([[-m, -m], [m, -m], [m, m], [-m, m]]);
+        json["world"]["geometry"]["obstacles"] =
+            serde_json::json!([[[m, -m], [-m, m], [300, 300]]]);
+        let snap: Snapshot = serde_json::from_value(json).unwrap();
+        w.restore(&snap).unwrap();
+        assert!(w.nav.is_some());
+        // Movement over such geometry runs the point-in-polygon tests with extreme vertices and
+        // the pointer at its clamp; the core must neither panic nor differ between build modes,
+        // which `i128` arithmetic guarantees by construction. Same inputs, same hashes.
+        let mut w2 = w.clone();
+        for world in [&mut w, &mut w2] {
+            click(world, 80, 240, Button::Left);
+            click(world, 600, 240, Button::Right);
+            world.step(&[InputEvent::PointerMove {
+                x256: i32::MAX,
+                y256: i32::MIN,
+            }]);
+            for _ in 0..30 {
+                world.step(&[]);
+            }
+            world.validate().unwrap();
+        }
+        assert_eq!(w.hashes(), w2.hashes());
+        // The world's own accessors tolerate any query point on any accepted geometry.
+        for &x in &[i32::MIN, -1, 0, m, i32::MAX] {
+            for &y in &[i32::MIN, 0, i32::MAX] {
+                let _ = w.geometry.is_walkable(x, y);
+            }
+        }
+    }
+
+    #[test]
+    fn animation_state_is_validated_against_the_catalog() {
+        use crate::anim::{AnimSet, FrameSpec};
+        let frame = |frame, duration| FrameSpec {
+            frame,
+            duration,
+            offset_x: 0,
+            offset_y: 0,
+        };
+        let mut catalog = Catalog::default();
+        catalog.sets.insert(
+            "hero".into(),
+            AnimSet {
+                animations: vec![vec![frame(1, 3), frame(2, 1)], vec![frame(3, 1)], vec![]],
+                idle: [0; 8],
+                walk: [1; 8],
+            },
+        );
+        // Without a catalog only the size bounds apply (synthetic worlds, no sprite bank).
+        let mut plain = corridor(6);
+        let mut snap = plain.snapshot(None);
+        snap.world.entities[0].anim = Some(AnimState::new("ghost", 7));
+        plain.restore(&snap).unwrap();
+        // With a catalog every reference must resolve.
+        let mut w = corridor(6);
+        w.attach_catalog(catalog, Some("hero"), Some("hero"));
+        for _ in 0..5 {
+            w.step(&[]);
+        }
+        let good = w.snapshot(None);
+        let before = w.hashes();
+        let reject = |w: &mut World, edit: fn(&mut AnimState), needle: &str| {
+            let mut snap = good.clone();
+            edit(snap.world.entities[0].anim.as_mut().unwrap());
+            let err = w.restore(&snap).unwrap_err();
+            assert!(err.contains(needle), "{err} should mention {needle}");
+        };
+        reject(&mut w, |a| a.set = "ghost".into(), "profile 'ghost'");
+        reject(&mut w, |a| a.animation = 3, "animation 3 does not exist");
+        reject(&mut w, |a| a.frame = 2, "frame 2 out of range");
+        reject(&mut w, |a| a.elapsed = 3, "elapsed 3 exceeds");
+        reject(
+            &mut w,
+            |a| {
+                a.animation = 2;
+                a.frame = 1;
+            },
+            "frame 1 out of range",
+        );
+        assert_eq!(w.hashes(), before);
+        // In-range states, including the empty animation at frame 0, are accepted.
+        let mut snap = good.clone();
+        let a = snap.world.entities[0].anim.as_mut().unwrap();
+        (a.animation, a.frame, a.elapsed) = (0, 0, 2);
+        w.restore(&snap).unwrap();
+        let mut snap = good.clone();
+        let a = snap.world.entities[0].anim.as_mut().unwrap();
+        (a.animation, a.frame, a.elapsed) = (2, 0, 0);
+        w.restore(&snap).unwrap();
+        w.restore(&good).unwrap();
         assert_eq!(w.hashes(), before);
     }
 
@@ -1516,6 +1797,7 @@ mod tests {
             geometry: Geometry {
                 boundary: vec![(0, 0), (1000, 0), (1000, 800), (0, 800)],
                 obstacles: vec![vec![(180, 150), (220, 150), (220, 250), (180, 250)]],
+                areas: Vec::new(),
             },
             actors: vec![
                 ActorSpec {
@@ -1596,6 +1878,7 @@ mod tests {
             geometry: Geometry {
                 boundary: vec![(0, 0), (1000, 0), (1000, 800), (0, 800)],
                 obstacles: vec![],
+                areas: Vec::new(),
             },
             actors,
         };
@@ -1715,7 +1998,7 @@ mod tests {
             let mut saved = None;
             for t in 0..900u64 {
                 if Some(t) == snap_at {
-                    saved = Some(w.snapshot());
+                    saved = Some(w.snapshot(None));
                 }
                 w.step(&[]);
                 if snap_at.is_some_and(|s| t == s + 40) {
@@ -1742,7 +2025,7 @@ mod tests {
         for _ in 0..50 {
             w.step(&[]);
         }
-        let json = serde_json::to_string(&w.snapshot()).unwrap();
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
         let snap: Snapshot = serde_json::from_str(&json).unwrap();
         let mut w2 = programmed_mission(&[]);
         w2.restore(&snap).unwrap();
@@ -1750,13 +2033,13 @@ mod tests {
         assert_eq!(w2.entities[1].pc, w.entities[1].pc);
         assert_eq!(w2.hashes(), w.hashes());
         // Invalid programs and counters are rejected.
-        let mut snap = w.snapshot();
+        let mut snap = w.snapshot(None);
         snap.world.entities[1].pc = 99;
         assert!(w.restore(&snap).unwrap_err().contains("pc"));
-        let mut snap = w.snapshot();
+        let mut snap = w.snapshot(None);
         snap.world.entities[1].program = Some(5);
         assert!(w.restore(&snap).is_err());
-        let mut snap = w.snapshot();
+        let mut snap = w.snapshot(None);
         snap.world.programs[0][1] = Jump { pc: 1000 };
         assert!(w.restore(&snap).is_err());
     }

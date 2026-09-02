@@ -16,14 +16,14 @@ All integers are little-endian unless stated otherwise. Offsets are in bytes fro
 | Image blob | header `w,h,flag,size` | Generic compressed picture (used by `.map`, `.min`, `.pak`, `.sxt`, `_t` thumbnails and inside SRES) | verified (RGB565) | [image-blob.md](image-blob.md) |
 | SRES | `SRES` (`.res`, `.RES`) | Resource archive: UI pictures, texts, sound lists | container verified for retail archives; widget state meanings partial; version unchecked | [sres.md](sres.md) |
 | RHP | `MEUH` (`.rhp`) | Map / level geometry, sectors, motion, lights | verified: occluder masks, motion area + obstacles, projection areas, bonds, zones, sprite instances; partial: path graph, FARM/AZ/TUPO/LOUD | [rhp.md](rhp.md) |
-| RHM | `DUTY` (`.rhm`) | Mission: actors, waypoints, zones, scripts binding | partial: all 10 chunks framed and consumed for all 39 files (corpus test), POUF stored raw, profile table and several field meanings unknown; parser does not enforce the chunk set | [rhm.md](rhm.md) |
+| RHM | `DUTY` (`.rhm`) | Mission: actors, waypoints, zones, scripts binding | partial: all 10 chunks framed and consumed for all 39 files (corpus test), POUF stored raw, actor profile indices resolved through `profile.cpf`, several field meanings unknown; parser does not enforce the chunk set | [rhm.md](rhm.md) |
 | SCB | `SBSCRIPT` (`.scb`) | Compiled mission script bytecode | container verified (classes, variables, functions, 9-byte instructions); opcode semantics unknown | [scb.md](scb.md) |
 | Sprite bank | `C9 EB 03 00` (`.rhs`, `.dic`, `.bks`) | Character/animation sprites and the 565 MB pixel bank | framing verified; all 404,855 frames decoded once on 2026-09-02 (dated corpus observation, the maintained test samples ~4,700 frames); shadow/alpha rendering unverified | [sprites.md](sprites.md) |
 | Sprite animations | (layout of `.rhs` animation lists) | 16-direction action blocks, action ids, timing | verified (idle/walk/run...), partial (ids > 75) | [sprite-animations.md](sprite-animations.md) |
 | Fonts | `SBFONT` (`.bfn`, `.fnt`), `SBTTFT` (`.tfn`) | Bitmap fonts and TrueType descriptors | pixels verified (glyph table, colour + mask strips); text layout (advance, adjustments) partial | [fonts.md](fonts.md) |
 | Sound tables | `FXBK` (`.fxg`), `SFPK` (`.sfk`), `NEUF` (`actor*.dat`) | Sound effect name tables, sound packs, remark tables | stub | [sound.md](sound.md) |
 | Text index | `.red` | Per-level text id tables | stub | [red.md](red.md) |
-| Profile / config | `.cpf`, `keyset*.cfg`, `Profiles` (`FORP`) | Player profile, key bindings | stub | [profile.md](profile.md) |
+| Profile / config | `.cpf`, `keyset*.cfg`, `Profiles` (`FORP`) | `profile.cpf`: character profile tables (PC / soldier / civilian: sprite, voice set, stats) and the level table (code -> `.rhm`, map, music, campaign graph); key bindings; player profiles | `profile.cpf` parsed (`cpf` module; the six tables consumed exactly, corpus test), semantics partial: string tables and the level table decoded, numeric fields `unknown_*`; the rest stub | [profile.md](profile.md) |
 | Save game | `GSHR` | Campaign / mission save | stub | [savegame.md](savegame.md) |
 | Video | `BIKi` (`.vid`) | Bink video (RAD Game Tools) | stub (magic detection only; Bink is a third-party format) | [video.md](video.md) |
 

@@ -54,6 +54,7 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 
 - [x] Walkable geometry from RHP (boundary + obstacle polygons) blocks movement; occluder masks (FACE) draw the background in front of sprites behind trees, rocks and walls
 - [x] Pathfinding around obstacles: 8-px navigation grid rasterised from the walkable geometry (eroded by one cell), A* with deterministic tie-breaking, string-pulled paths, orders on unreachable ground walk to the closest reachable cell (the original's EULER graph is still undecoded)
+- [x] Projection areas (`WOAW`) count as walkable ground, so the town maps (Lincoln yard of mission 1) can be walked; `debug.nav` reports them
 - [ ] Path graph, layers, sectors, doors; pointer-driven movement with the original's rules (walk/run, crouch)
 - [ ] Replay and restore remain deterministic through movement
 

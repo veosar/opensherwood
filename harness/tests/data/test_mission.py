@@ -97,3 +97,18 @@ def test_guards_follow_their_rail_programs(binary, game_dir):
             moved = sum(1 for k, p in before.items() if after[k] != p)
     assert moved >= 5, f"only {moved} guards moved in 600 ticks"
     assert totals[0] == totals[1]
+
+
+def test_npc_sprites_come_from_the_profile_table(binary, game_dir):
+    """H01 (Lincoln): BORG / OILE indices resolve through profile.cpf (docs/formats/rhm.md,
+    "Actor profile mapping"): the wall guards are halberdiers, a beggar stands near the start."""
+    with Engine(binary=binary, game_dir=game_dir) as e:
+        e.reset({"mission": "H01_Lin_VL"}, seed=1)
+        sets = {}
+        for x in e.observe()["entities"]:
+            if x["kind"] == "guard":
+                sets[x["anim"]["set"]] = sets.get(x["anim"]["set"], 0) + 1
+    assert sets.get("Guard A00", 0) >= 2, sets  # blue halberdiers (SD 0)
+    assert sets.get("Guard B00", 0) >= 1, sets  # blue lancers (SD 30)
+    assert sets.get("Mendicant", 0) == 1, sets  # the beggar (CV 1)
+    assert sets.get("Soldier A00", 0) < sum(sets.values()) // 2, sets  # no longer the default for all

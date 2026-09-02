@@ -7,7 +7,7 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use opensherwood_formats::rhp;
 use opensherwood_formats::{
-    FileKind, chunk, detect, dic, font, image_blob, rhm, rhs, scb, sprite_decode, sres,
+    FileKind, chunk, cpf, detect, dic, font, image_blob, rhm, rhs, scb, sprite_decode, sres,
 };
 
 #[derive(Debug, Parser)]
@@ -99,6 +99,13 @@ enum Cmd {
         rhm: PathBuf,
         map: PathBuf,
         out: PathBuf,
+    },
+    /// Dump the profile table (profile.cpf): player, soldier and civilian sprites and the level table.
+    Cpf {
+        file: PathBuf,
+        /// Print the raw `unknown_*` bytes of every record as hex.
+        #[arg(long)]
+        hex: bool,
     },
     /// Dump a compiled script (.scb): classes, variables, function table and a raw disassembly.
     Scb {
@@ -423,6 +430,10 @@ fn main() -> anyhow::Result<()> {
             println!("wrote {} ({}x{})", out.display(), img.width, img.height);
             Ok(())
         }
+        Cmd::Cpf { file, hex } => {
+            dump_cpf(&cpf::parse(&read(&file)?)?, hex);
+            Ok(())
+        }
         Cmd::Scb {
             file,
             class,
@@ -609,9 +620,128 @@ fn inspect(file: &Path) -> anyhow::Result<()> {
                 println!("  {}x{} 16bpp", img.width, img.height);
             }
         }
+        FileKind::ProfileTable => {
+            let t = cpf::parse(&data)?;
+            println!(
+                "  table A {} blocks, table B {} records, {} player characters, {} soldiers, {} levels, {} civilians",
+                t.table_a.len(),
+                t.table_b.len(),
+                t.player_characters.len(),
+                t.soldiers.len(),
+                t.levels.len(),
+                t.civilians.len()
+            );
+        }
         _ => {}
     }
     Ok(())
+}
+
+fn dump_cpf(t: &cpf::ProfileTable, with_hex: bool) {
+    println!(
+        "profile table: table A {} blocks, table B {} records, PC {}, SD {}, LEVEL {}, CV {}",
+        t.table_a.len(),
+        t.table_b.len(),
+        t.player_characters.len(),
+        t.soldiers.len(),
+        t.levels.len(),
+        t.civilians.len()
+    );
+    println!("== PC (TOTO.profile; the player's team)");
+    for (i, p) in t.player_characters.iter().enumerate() {
+        println!(
+            "{i:3} sprite {:<20} sequence {:<22} label {:<30} voice {:4}",
+            p.sprite,
+            format!("{:?}", p.sequence),
+            format!("{:?}", p.label),
+            p.voice
+        );
+        if with_hex {
+            println!(
+                "    unknown_pre {} unknown_post {}",
+                hex(&p.unknown_pre),
+                hex(&p.unknown_post)
+            );
+        }
+    }
+    println!("== SD (BORG.profile)");
+    for (i, p) in t.soldiers.iter().enumerate() {
+        println!(
+            "{i:3} sprite {:<20} sequence {:<22} label {:<30} voice {:4}",
+            p.sprite,
+            format!("{:?}", p.sequence),
+            format!("{:?}", p.label),
+            p.voice
+        );
+        if with_hex {
+            println!(
+                "    unknown_pre {} unknown_post {}",
+                hex(&p.unknown_pre),
+                hex(&p.unknown_post)
+            );
+        }
+    }
+    println!("== CV (OILE.profile)");
+    for (i, p) in t.civilians.iter().enumerate() {
+        println!(
+            "{i:3} sprite {:<20} sequence {:<22} label {:<30} voice {:4}",
+            p.sprite,
+            format!("{:?}", p.sequence),
+            format!("{:?}", p.label),
+            p.voice
+        );
+        if with_hex {
+            println!("    unknown_pre {}", hex(&p.unknown_pre));
+        }
+    }
+    println!("== LEVEL");
+    for (i, l) in t.levels.iter().enumerate() {
+        println!(
+            "{i:3} {:2} map {:<13} mission {:<19} title {:<28} kind {} location {} after {:?} until {:?} music {:?} / {:?} / {:?}",
+            l.code,
+            l.map,
+            l.mission_file,
+            format!("{:?}", l.title),
+            l.unknown_a,
+            l.location,
+            l.after,
+            l.until,
+            l.music_ambient,
+            l.music_alarm,
+            l.music_fight
+        );
+        if with_hex {
+            println!(
+                "    unknown c {} d {} e {} f {} g {} h {} fixed {:?} i {} j {} k {:?} l {} slots {:?} m {:?}",
+                l.unknown_c,
+                l.unknown_d,
+                l.unknown_e,
+                l.unknown_f,
+                l.unknown_g,
+                l.unknown_h,
+                l.unknown_fixed,
+                l.unknown_i,
+                l.unknown_j,
+                l.unknown_k,
+                hex(&l.unknown_l),
+                l.unknown_slots,
+                l.unknown_m
+            );
+        }
+    }
+    if with_hex {
+        println!("== table A");
+        for (i, b) in t.table_a.iter().enumerate() {
+            println!("{i:3} head {}", hex(&b.unknown_head));
+            for r in &b.unknown_records {
+                println!("    {}", hex(r));
+            }
+        }
+        println!("== table B");
+        for r in &t.table_b {
+            println!("    {}", hex(r));
+        }
+    }
 }
 
 fn dump_rhm(m: &rhm::Mission, programs: bool) {

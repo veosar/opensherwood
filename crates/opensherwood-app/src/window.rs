@@ -385,13 +385,19 @@ impl App {
         }
     }
 
+    /// Controlled mode: hand the window input collected so far to the session, so the next `step`
+    /// (handled right after this) sees everything the player did before the request arrived.
+    fn flush_pending(&mut self) {
+        if self.rpc.is_some() && !self.pending.is_empty() {
+            self.session.queue_input(std::mem::take(&mut self.pending));
+        }
+    }
+
     fn tick_if_due(&mut self) {
         // Controlled mode: with an RPC client attached the simulation advances only through `step`,
         // so identical scripts give identical hashes. Window input is queued for the next step.
         if self.rpc.is_some() {
-            if !self.pending.is_empty() {
-                self.session.queue_input(std::mem::take(&mut self.pending));
-            }
+            self.flush_pending();
             return;
         }
         let now = Instant::now();
@@ -625,6 +631,7 @@ impl ApplicationHandler for App {
         if self.exit {
             return;
         }
+        self.flush_pending();
         self.drain_rpc(event_loop);
         self.tick_if_due();
         if self.session.exit_requested {

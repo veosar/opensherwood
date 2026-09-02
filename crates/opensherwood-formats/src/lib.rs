@@ -8,6 +8,7 @@
 
 pub mod anim_table;
 pub mod chunk;
+pub mod cpf;
 pub mod dic;
 pub mod font;
 pub mod image_blob;
@@ -52,6 +53,9 @@ pub enum FileKind {
     Bink,
     /// Compressed 16-bit picture with a 12-byte header (`docs/formats/image-blob.md`).
     ImageBlob,
+    /// Character / level profile table `profile.cpf`, detected structurally: no magic
+    /// (`docs/formats/profile.md`).
+    ProfileTable,
     /// Not recognised.
     Unknown,
 }
@@ -87,6 +91,9 @@ pub fn detect(data: &[u8]) -> FileKind {
     }
     if image_blob::looks_like_image_blob(data) {
         return FileKind::ImageBlob;
+    }
+    if cpf::looks_like_profile_table(data) {
+        return FileKind::ProfileTable;
     }
     FileKind::Unknown
 }

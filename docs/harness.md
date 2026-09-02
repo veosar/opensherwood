@@ -50,17 +50,31 @@ the event, checkpoint or tick quota is refused before anything moves (`replay.st
 crosses a quota outside `step` (window mode) is discarded with an error at `replay.stop` rather than written as a
 file the parser would reject.
 
+## Snapshots
+
+`snapshot` returns a handle (32 kept, oldest dropped) and the snapshot itself, an envelope
+`{version, ruleset, hash_schema, content, world}`; `content` is the `hello.content_fingerprint` for retail
+scenarios and `null` for synthetic ones. `restore {id | snapshot}` refuses a snapshot whose three versions or
+`content` differ from the session's, or whose world fails validation (geometry vertices within `+-2^20` map
+pixels, animation state resolvable in the attached sprite catalog, every other invariant of `World::validate`),
+and a refused restore or a failed `reset` leaves the session exactly as it was: world, background, screen,
+snapshot handles (ADR-0004, "Envelope and validation"). Both are refused while a menu screen is shown.
+
 ## Scenarios
 
 | `reset` scenario | Needs game data | What it is |
 |---|---|---|
 | `{"synthetic": "corridor"}` | no | 640x480 room, a player, a patrolling guard, three obstacles, a goal |
 | `{"map_view": {"map": "sherwood", "ambiance": "Day"}}` | yes | the retail background of that map with the synthetic units on it and a scrollable camera |
-| `{"mission": "<name>"}` | yes | the retail mission's background, walkable geometry, occluders and actors (default soldier sprite for NPCs until the profile table is decoded); NPCs follow their rail programs (walk the rail back and forth, face, wait, glance, loop; see `docs/formats/rhm.md` "Rail programs"), NPCs without a rail stand idle; no scripts or reactive AI yet; viewport 1024x768 |
+| `{"mission": "<name>"}` | yes | the retail mission's background, walkable geometry, occluders and actors (NPC, civilian and `TOTO` sprites from the profile table `Configuration/profile.cpf`, see `docs/formats/profile.md`; a default sprite with a logged warning when an entry is unavailable; heroes still in file order); NPCs follow their rail programs (walk the rail back and forth, face, wait, glance, loop; see `docs/formats/rhm.md` "Rail programs"), NPCs without a rail stand idle; no scripts or reactive AI yet; viewport 1024x768 |
 | `{"menu": "main"}` | yes | the original main menu; `observe` returns a `ui` object (`screen` = `main_menu`, `briefing`, `pause_menu` or `dialog`; `items` with actions and rectangles; `hovered`; briefing `page`) while a screen is shown; clicking Play! loads the first mission behind its briefing; Escape in a mission opens the pause menu (Continue / Restart / Quit with confirmation); menus never tick the world |
 
 `harness/tools/drive.py` runs a short scripted session (select, order, scroll, capture) in headless or window
 mode and prints where the PNGs went; agents use it to look at the engine after a change.
+`harness/tools/play_window.py --flow menu` plays the real window with OS-level mouse and keyboard input
+(main menu, Play!, briefing, selection, walk order, pause menu, quit confirmation) and verifies every step
+over the RPC; it is the end-to-end check of the window path (Windows only; refuses to click into other windows
+and routes keys through the RPC when Ctrl or Shift is physically held).
 
 ## Determinism fixture
 
