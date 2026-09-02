@@ -50,12 +50,14 @@ labels use the "Disabled" font). The column is right-aligned:
 
 - x = 664..831 (168 px), row pitch **41 px**, plate height 39.
 - Row k (k = 0..6) has y = **345 + 41*k**: 345, 386, 427, 468, 509, 550, 591. Every screen fills the column
+  (implementer's note: measuring the plate's top edge on `menu_main.png` at x=668 gives **339 + 41*k**; the engine
+  uses 339).
   from the bottom (`Back`/`Cancel`/`Quit`/`OK` always on the last row, y = 591).
 - Label text centred, y-centre = row y + 19.
 
 | Screen | Rows (top to bottom, with y) |
 |---|---|
-| Main menu | Play! 345, Load 386, Select player 427, Options 468, Show movies 509, Credits 550, Exit to windows 591 |
+| Main menu | play 345, load 386, select player 427, options 468, movies 509, credits 550, exit 591 (labels: `Level.res` TEXT, see 10) |
 | Options | Graphics 468, Sounds 509, Shortcuts 550, Back 591 |
 | Graphical options / Sound options | OK 550, Cancel 591 |
 | Shortcuts | OK 427, Default 1 468, Default 2 509, User defined 550, Cancel 591 |
@@ -71,7 +73,7 @@ Files: `menu_main.png`, `menu_hover_play.png` (Play! hovered = orange), `options
 
 ### 2.2 Keyboard in menus
 
-- **Escape** in the main menu opens the "Do you really want to quit Robin Hood - Legend of Sherwood?" dialog
+- **Escape** in the main menu opens the quit confirmation dialog
   (`menu_quit_dialog.png`). Escape closes: Graphical options (= Cancel), Load, Show movies, Credits.
 - Escape does **not** leave Sound options, Shortcuts or Select player (their Cancel/Select button must be
   clicked). While a name is being edited (Rename / New) Escape and Enter only end the edit.
@@ -83,7 +85,7 @@ Files: `menu_main.png`, `menu_hover_play.png` (Play! hovered = orange), `options
   *inferred*), question text centred in the top half, two wax seals below: blue **V** (yes) at (483,433) and red
   **X** (no) at (541,433), 41x44 = `BTTN` 145 (blue) / 146 (red), 3 states. The dialog is modal: the buttons
   behind it ignore clicks.
-- The same seals confirm/cancel the New player dialog and the in-game "Are you sure you want to leave the game?"
+- The same seals confirm/cancel the New player dialog and the in-game leave-the-game confirmation
   (pause menu -> Quit). `BTTN` 281/282 (41x41, seal with a blue ring) are a second style not yet seen.
 
 ## 3. Main menu (`menu_main.png`)
@@ -91,22 +93,23 @@ Files: `menu_main.png`, `menu_hover_play.png` (Play! hovered = orange), `options
 Left of the buttons, centred at x = 432, the current profile summary in yellow-orange text:
 
 ```
-<profile name>            (title font, y = 254)
-Difficulty level : Medium (y = 278)
-Money: L100               (y = 298)   - the currency sign is a pound sign
-Score : 0                 (y = 318)
-Spared lives : 0 %        (y = 338)
-Progress : 0 %            (y = 358)
-Game length : 00:00       (y = 378)
+<profile name>                 (title font, y = 254)
+difficulty label : <level>     (y = 278)
+money label: <pound sign><n>   (y = 298)
+score label : <n>              (y = 318)
+spared-lives label : <n> %     (y = 338)
+progress label : <n> %         (y = 358)
+game-length label : <mm:ss>    (y = 378)
 ```
+(The label strings come from `Level.res` TEXT entries at run time and are not reproduced here.)
 
 Buttons: see 2.1. **Exit to windows** asks for confirmation (same dialog as Escape). The values come from the
 selected profile (`DATA/Savegame/Profiles`, see `docs/formats/savegame.md`).
 
 ## 4. Options
 
-`options_main.png`: title "Options" (y = 158, x-centre 442), two info lines "Processor : <cpu name>, <MHz> MHz"
-(y = 254) and "Memory : <n> Mb" (y = 274), buttons Graphics / Sounds / Shortcuts / Back.
+`options_main.png`: screen title (y = 158, x-centre 442), two info lines with the processor name and clock
+(y = 254) and the memory size in MB (y = 274), buttons graphics / sounds / shortcuts / back.
 
 ### 4.1 Graphical options (`options_graphics.png`)
 
@@ -115,8 +118,8 @@ high, pitch 41; orange = selected / enabled, teal = not selected):
 
 | Group label (y) | Bars (y of bar top) | Default |
 |---|---|---|
-| "Screen resolution" (233) | 4:3 (249), 16:9 (290), 16:10 (331) | 4:3 |
-| "Special effects" (383) | Alpha field of vision (400), Transparent shadows (441), Effect animations (482), Background animations (523) | all enabled |
+| screen-resolution group (233) | 4:3 (249), 16:9 (290), 16:10 (331) | 4:3 |
+| special-effects group (383) | alpha view cones (400), transparent shadows (441), effect animations (482), background animations (523) | all enabled |
 
 The GOG/Ready2Play build offers **aspect ratios instead of resolutions** here (the retail game listed
 640x480 / 800x600 / 1024x768 according to its strings; *inferred* that the patched build maps the ratio to a

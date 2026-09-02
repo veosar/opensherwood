@@ -11,6 +11,8 @@ use opensherwood_core::{
 };
 
 use crate::mission;
+use crate::ui::{Briefing, MainMenu, MenuAction, ProfileSummary, UiAssets};
+use crate::ui_assets;
 use opensherwood_core::Geometry;
 use opensherwood_protocol::{
     CaptureParams, CaptureResult, HelloResult, ObserveParams, ObserveResult, PROTOCOL_VERSION,
@@ -105,7 +107,27 @@ pub struct Session {
     recording: Option<Recording>,
     /// Audio output (window mode only; `None` when muted, headless or unavailable).
     audio: Option<opensherwood_audio::Audio>,
+    /// Active screen.
+    screen: Screen,
+    /// Menu pictures and fonts (loaded on first use).
+    ui_assets: Option<UiAssets>,
+    /// The window should close (Exit chosen in the menu).
+    pub exit_requested: bool,
 }
+
+/// What the player is looking at.
+#[derive(Debug)]
+enum Screen {
+    /// The world is played directly.
+    World,
+    /// Main menu.
+    Menu(MainMenu),
+    /// Briefing parchment over the paused mission.
+    Briefing(Briefing),
+}
+
+/// The mission `Play!` starts with a fresh profile (`docs/original/campaign-flow.md`).
+pub const FIRST_MISSION: &str = "H01_Lin_VL";
 
 /// Tick rate used by replays and the window (ticks per second).
 pub const TICK_RATE: (u32, u32) = (60, 1);
@@ -174,6 +196,103 @@ impl Session {
             queued_input: Vec::new(),
             recording: None,
             audio: None,
+            screen: Screen::World,
+            ui_assets: None,
+            exit_requested: false,
+        }
+    }
+
+    fn ui_assets(&mut self) -> Option<&UiAssets> {
+        if self.ui_assets.is_none()
+            && let Some(game) = self.game.as_ref()
+        {
+            self.ui_assets = Some(ui_assets::load(game));
+        }
+        self.ui_assets.as_ref()
+    }
+
+    /// Open the main menu.
+    fn open_menu(&mut self) {
+        let _ = self.ui_assets();
+        let strings = self
+            .ui_assets
+            .as_ref()
+            .map(|a| a.strings.as_slice())
+            .unwrap_or(&[]);
+        self.screen = Screen::Menu(MainMenu::new(ProfileSummary::default(), strings));
+        self.frame = None;
+        self.start_scenario_music();
+    }
+
+    /// `Play!`: load the first mission behind its briefing parchment.
+    fn start_campaign(&mut self) -> Result<(), String> {
+        self.reset(Scenario::Mission(FIRST_MISSION.into()), 0)?;
+        let pages = self
+            .game
+            .as_ref()
+            .map(|g| ui_assets::level_texts(g, ui_assets::texts::FIRST_MISSION_BRIEFING))
+            .unwrap_or_default();
+        // Strings 0..2 are the briefing pages; the rest are in-mission tutorial popups.
+        let pages: Vec<String> = pages
+            .into_iter()
+            .take(ui_assets::texts::FIRST_MISSION_BRIEFING_PAGES)
+            .collect();
+        self.screen = if pages.is_empty() {
+            Screen::World
+        } else {
+            Screen::Briefing(Briefing::new(pages))
+        };
+        self.frame = None;
+        Ok(())
+    }
+
+    /// Advance one tick: menus consume the events without ticking the world; the briefing pauses
+    /// the world; otherwise the world steps.
+    pub fn advance(&mut self, events: &[InputEvent]) {
+        match &mut self.screen {
+            Screen::Menu(menu) => {
+                let mut chosen = None;
+                for e in events {
+                    if let Some(a) = menu.handle(*e) {
+                        chosen = Some(a);
+                        break;
+                    }
+                }
+                self.frame = None;
+                match chosen {
+                    Some(MenuAction::Play) => {
+                        if let Err(e) = self.start_campaign() {
+                            eprintln!("opensherwood: cannot start the campaign: {e}");
+                        }
+                    }
+                    Some(MenuAction::Exit) => self.exit_requested = true,
+                    Some(other) => eprintln!("opensherwood: menu action {other:?} not implemented"),
+                    None => {}
+                }
+            }
+            Screen::Briefing(b) => {
+                let mut done = false;
+                for e in events {
+                    if b.handle(*e) {
+                        done = true;
+                        break;
+                    }
+                }
+                self.frame = None;
+                if done {
+                    self.screen = Screen::World;
+                }
+            }
+            Screen::World => self.step_recorded(events),
+        }
+    }
+
+    /// Screen state for `observe`.
+    fn ui_state(&self) -> Option<Value> {
+        match &self.screen {
+            Screen::World => None,
+            Screen::Menu(m) => serde_json::to_value(m.state()).ok(),
+            Screen::Briefing(b) => serde_json::to_value(b.state()).ok(),
         }
     }
 
@@ -201,6 +320,7 @@ impl Session {
             return;
         };
         let track = match self.world.as_ref().map(|w| &w.scenario) {
+            Some(Scenario::Mission(_)) => return, // mission music states are not modelled yet
             Some(Scenario::MapView { map, ambiance }) => {
                 let base = match map.to_lowercase().as_str() {
                     "sherwood" => "Sherwood".to_string(),
@@ -316,6 +436,7 @@ impl Session {
                 })
             }
             Some("mission") => Ok(Scenario::Mission(parts.next().unwrap_or("").to_string())),
+            Some("menu") => Ok(Scenario::Menu(parts.next().unwrap_or("main").to_string())),
             Some(name) => Ok(Scenario::Synthetic(name.to_string())),
             None => Err("empty scenario".into()),
         }
@@ -418,6 +539,19 @@ impl Session {
 
     /// Load a scenario (what `reset` does).
     pub fn reset(&mut self, scenario: Scenario, seed: u64) -> Result<(), String> {
+        if let Scenario::Menu(name) = &scenario {
+            if name != "main" {
+                return Err(format!("unknown menu '{name}'"));
+            }
+            self.world = None;
+            self.background = None;
+            self.snapshots.clear();
+            self.queued_input.clear();
+            self.recording = None;
+            self.open_menu();
+            return Ok(());
+        }
+        self.screen = Screen::World;
         let (world, background) = match &scenario {
             Scenario::MapView { map, ambiance } => {
                 let game = self
@@ -455,7 +589,7 @@ impl Session {
                 }
                 (world, Some(bg))
             }
-            Scenario::Synthetic(_) => (World::new(scenario, seed)?, None),
+            Scenario::Synthetic(_) | Scenario::Menu(_) => (World::new(scenario, seed)?, None),
         };
         self.world = Some(world);
         self.background = background;
@@ -469,10 +603,7 @@ impl Session {
 
     /// Advance one tick with the given events (window mode).
     pub fn tick(&mut self, events: &[InputEvent]) {
-        if let Some(w) = self.world.as_mut() {
-            w.step(events);
-            self.frame = None;
-        }
+        self.advance(events);
     }
 
     /// Resolve a relative artifact path (rejecting absolute paths and `..`).
@@ -493,11 +624,29 @@ impl Session {
 
     /// The current frame, rendering it if needed.
     pub fn frame(&mut self) -> Option<&Framebuffer> {
-        let world = self.world.as_ref()?;
         if self.frame.is_none() {
-            let frame = match self.sprites.as_mut() {
-                Some(s) => render(world, self.background.as_ref(), s),
-                None => render(world, self.background.as_ref(), &mut NoSprites),
+            let frame = match &self.screen {
+                Screen::Menu(_) => {
+                    let _ = self.ui_assets();
+                    let Screen::Menu(menu) = &self.screen else {
+                        unreachable!()
+                    };
+                    menu.render(self.ui_assets.as_ref())
+                }
+                Screen::Briefing(_) | Screen::World => {
+                    let world = self.world.as_ref()?;
+                    let mut frame = match self.sprites.as_mut() {
+                        Some(s) => render(world, self.background.as_ref(), s),
+                        None => render(world, self.background.as_ref(), &mut NoSprites),
+                    };
+                    if matches!(self.screen, Screen::Briefing(_)) {
+                        let _ = self.ui_assets();
+                        if let Screen::Briefing(b) = &self.screen {
+                            b.render(&mut frame, self.ui_assets.as_ref());
+                        }
+                    }
+                    frame
+                }
             };
             self.frame = Some(frame);
         }
@@ -530,8 +679,13 @@ impl Session {
             "reset" => {
                 let p: ResetParams = params_required(p)?;
                 self.reset(p.scenario, p.seed).map_err(engine_err)?;
-                let world = self.world()?;
-                ok(json!({ "tick": world.tick, "hashes": world.hashes() }))
+                let ui = self.ui_state();
+                match self.world.as_ref() {
+                    Some(world) => {
+                        ok(json!({ "tick": world.tick, "hashes": world.hashes(), "ui": ui }))
+                    }
+                    None => ok(json!({ "tick": 0, "hashes": {}, "ui": ui })),
+                }
             }
             "step" => {
                 let p: StepParams = params_required(p)?;
@@ -565,7 +719,9 @@ impl Session {
                 let mut events = p.events;
                 events.sort_by_key(|e| (e.tick_offset, e.sequence));
                 let queued = std::mem::take(&mut self.queued_input);
-                self.world()?;
+                if self.world.is_none() && matches!(self.screen, Screen::World) {
+                    return Err(engine_err("no world loaded; call reset first"));
+                }
                 let mut per_tick = Vec::new();
                 let mut cursor = 0usize;
                 let mut tick_events: Vec<InputEvent> = Vec::new();
@@ -578,26 +734,37 @@ impl Session {
                         tick_events.push(events[cursor].event);
                         cursor += 1;
                     }
-                    self.step_recorded(&tick_events);
-                    if p.hash_every_tick {
-                        per_tick.push(self.world()?.hashes());
+                    self.advance(&tick_events);
+                    if p.hash_every_tick
+                        && let Some(w) = self.world.as_ref()
+                    {
+                        per_tick.push(w.hashes());
                     }
                 }
                 self.frame = None;
-                let world = self.world()?;
+                let (tick, hashes) = self
+                    .world
+                    .as_ref()
+                    .map_or((0, opensherwood_core::Hashes::default()), |w| {
+                        (w.tick, w.hashes())
+                    });
                 ok(StepResult {
-                    tick: world.tick,
-                    hashes: world.hashes(),
+                    tick,
+                    hashes,
                     per_tick,
                 })
             }
             "observe" => {
                 let p: ObserveParams = params(p)?;
-                let world = self.world()?;
-                ok(ObserveResult {
-                    observation: world.observe(p.entities),
-                    hashes: world.hashes(),
-                })
+                let ui = self.ui_state();
+                match self.world.as_ref() {
+                    Some(world) => ok(ObserveResult {
+                        observation: world.observe(p.entities),
+                        hashes: world.hashes(),
+                        ui,
+                    }),
+                    None => ok(json!({ "tick": 0, "ui": ui, "hashes": {} })),
+                }
             }
             "snapshot" => {
                 let world = self.world()?;
@@ -654,7 +821,7 @@ impl Session {
                 let artifacts = self.artifacts.clone();
                 let frame = self
                     .frame()
-                    .ok_or_else(|| engine_err("no world loaded; call reset first"))?;
+                    .ok_or_else(|| engine_err("nothing to capture; call reset first"))?;
                 let mut written = None;
                 if let Some(rel) = p.path {
                     if rel.contains("..") || PathBuf::from(&rel).is_absolute() {

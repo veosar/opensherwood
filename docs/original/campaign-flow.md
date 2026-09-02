@@ -33,37 +33,22 @@ message in the lower middle of the screen, white outlined text at about (512,620
   the first `.red` value; the mission file was not verified by loading it).
 - Player characters: Robin Hood only. Start position: in front of the castle gate on a muddy yard with a pig
   sty and a barn to the left, two guards on the wall above the gate, a mendicant to the right.
-- Objective shown in the pause menu (short briefing, `Level.res` 1000283 string 0): "Robin must get into the
-  castle to find Godwin." The other short briefings of the mission (1000283 strings 1..5) are updated
-  objectives: Edward's son awaits Robin in the village to help him leave the town; Edward's brave son will take
-  Robin to a safe place as soon as he tells him he wants to leave; Master Worman has received some money from the
-  Sheriff; Haldric the knight has been bribed by the Sheriff, why not rob him; the bowmen are far too clumsy - by
-  hitting one of the targets with an arrow Robin could put an end to the training session.
-- Briefing pages (TEXT 1000105 strings 0..2), verbatim in the game:
-  0. "Young Robin of Locksley left his cherished land some years ago to follow the valiant King Richard the Lion
-     Heart in the Crusades. Now, finally, he has returned, but it seems that his fighting days are far from over.
-     In fact, King Richard has yet to return from the Holy Land. In his absence, power is in the hands of Prince
-     John Lackland, his brother. But the vassals do not seem to respect his authority: the Sheriff of Nottingham,
-     in particular, is using his position to tax the country folk so heavily that they are reduced to the most
-     abject poverty."
-  1. "Even worse: Robin learns that his father, Lord Locksley, died of old age while he was away. And the Sheriff
-     took advantage of this to claim that Robin had also met his death - struck down by the infidels - and
-     confiscate his lands in the name of the Crown! Now Robin has been disinherited, robbed of his estate by this
-     loutish Sheriff's embezzling. Our hero is left with but one solution: he must go to Lincoln."
-  2. "Lincoln! It is here that Robin spent his youth, with an old friend of his father's, Lord Godwin. It was
-     under his guidance that Robin learnt to fight and use a bow and arrow: what better ally could he find in such
-     circumstances! But as our hero enters his Godfather's castle, his face fortunately concealed by his hood, a
-     painful surprise awaits him: the castle is teeming with men bearing the arms of the Sheriff of Nottingham! We
-     must find Godwin... and hope that the Sheriff's men do not notice Robin!"
-  Pages 1..3 show a different 120x160 character picture each (Robin in green, a man in a purple tunic, ...).
+- Objective shown in the pause menu: `Level.res` 1000283 string 0 (Robin has to get into the castle and find
+  his godfather). Strings 1..5 are the updated objectives that follow (leaving the town with the servant's son,
+  the steward's money, the bribed knight, the archery training). Text is loaded from the player's files at run
+  time; it is not reproduced here (`docs/legal.md`).
+- Briefing pages: TEXT 1000105 strings 0..2 (three paragraphs of back story: Robin's return from the Crusades,
+  the loss of his estate, his arrival at his godfather's castle in Lincoln). Pages 1..3 show a different 120x160
+  character picture each (Robin in green, a man in a purple tunic, ...). String lengths 0..2: see
+  `sres_text.py --lengths` on a local copy.
 - The remaining strings of 1000105 (3..22) are the in-mission dialogue and tutorial popups: the clover charm
-  (string 3), Master Worman's purses (4), the archery trainer (5, 6), Haldric the knight (7), Edward the servant
-  (8..10), Edward's son (11, ends with "(To leave Lincoln, click on the top right icon)"), and the tutorial hints
-  12..22: ivy climbing, the jump arrow, knocking out (icon + click, stars over the victim's head show the
-  remaining time), throwing a purse, paying beggars for information, picking up a purse, Edward, the forgotten
-  purse, cutting the drawbridge rope, combat (click / double click on the adversary, click on Robin to parry, hold
-  the button and move to draw attacks, "draw a horizontal figure of 8" against strong enemies), and the bow
-  ("click on the arrow drawn above his picture, then aim... when the cursor arrow turns green, click").
+  (string 3), the steward's purses (4), the archery trainer (5, 6), the knight (7), the servant (8..10), the
+  servant's son (11, ends with the instruction to leave the map through the top right icon), and the tutorial
+  hints 12..22: ivy climbing, the jump arrow, knocking out (icon + click, stars over the victim's head show the
+  remaining time), throwing a purse, paying beggars for information, picking up a purse, the forgotten purse,
+  cutting the drawbridge rope, combat (click / double click on the adversary, click on Robin to parry, hold the
+  button and move to draw attacks, a horizontal figure of eight against strong enemies), and the bow (click the
+  arrow above the portrait, aim, click when the cursor turns green).
 - `RHLevelHA.red` (u32 values): `1000017, 1000007, 0, 23, 1000105, 1000103, 1000106, 1000001, 1000107, 1000083,
   1000108, 1000108, 1000109, 1000110, 1000110, 1000089, 1000111, 1000112, 1000113, 1000114, 1000115, 1000116,
   1000117, 1000118, 1000117, 1000119, 1000120, 1000121, 1, 1000349, 1, 1000350, 6, 1000283`: title, unused goal,
@@ -71,10 +56,8 @@ message in the lower middle of the screen, white outlined text at about (512,620
   string), `1` + 1000349 (debriefing when won), `1` + 1000350 (debriefing when lost), `6` + 1000283 (six short
   briefings). This refines the stub in `docs/formats/red.md` (*inferred* layout, consistent with all 57 files:
   every file ends with `n_won, id, n_lost, id, n_short, id`).
-- Debriefings: won = 1000349 ("With the help of Edward's son, Robin managed to leave the estate of Lincoln, but
-  his situation is far from brilliant: he was unable to find his godfather, and has nowhere to try and take
-  refuge..."); lost = 1000350 ("Hell! Robin has been slain by the Sheriff's formidable soldiers! All we can do
-  now is start another game...").
+- Debriefings: won = 1000349 (Robin leaves Lincoln with the servant's son but without finding his godfather),
+  lost = 1000350 (Robin was slain; start another game).
 - **Tutorial**: there is no separate training mission in the flow; the first mission *is* the tutorial (popup
   hints above). `Levels/EmbTut_FoC_EC.rhm` ("Emb" = ambush, "Tut" = tutorial) exists in the data but is not
   reached from Play! with a fresh profile; when it is used is *unknown* (possibly the first ambush, see below).

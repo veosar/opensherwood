@@ -60,7 +60,7 @@ python scripts/check_no_assets.py
 
 ## Window flags
 
-`--scenario corridor | map:<name>[:<ambiance>] | mission:<name>`, `--windowed` (resizable window; the default is
+`--scenario menu | corridor | map:<name>[:<ambiance>] | mission:<name>` (default `menu`, the original main menu), `--windowed` (resizable window; the default is
 borderless fullscreen at the desktop resolution, letterboxed), `--scale N` (integer window scale when windowed),
 `--mute` (no audio device), `--rpc stdio` (accept harness commands; the simulation then advances only through
 `step`; implies `--windowed`). F11 toggles fullscreen at runtime.

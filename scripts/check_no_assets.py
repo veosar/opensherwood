@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Fail if any git-tracked file looks like game data (see docs/legal.md).
 
-Checks: forbidden extensions, known magics of the game's formats, suspiciously large binaries, and file names
-that exist in the retail DATA tree. Run in CI and before every commit.
+Checks: forbidden extensions (game formats and derived images), known magics of the game's formats, binaries
+above a size limit, file names that exist in the retail DATA tree, and the private `re/` and `harness/goldens/`
+roots. It cannot detect copied game prose: reviewers must check that (docs/legal.md). Run in CI and before every
+commit.
 """
 from __future__ import annotations
 
@@ -16,7 +18,10 @@ FORBIDDEN_EXT = {
     ".rhs", ".rhp", ".rhm", ".scb", ".bks", ".dic", ".res", ".red", ".pak", ".sxt", ".map", ".min",
     ".bfn", ".tfn", ".fnt", ".ttc", ".sfk", ".fxg", ".cpf", ".bck", ".vid", ".bik", ".wav", ".ogg", ".mp3",
     ".bmp", ".exe", ".dll",
+    # derived images: screenshots and decoded sheets of game data stay local
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff",
 }
+FORBIDDEN_ROOTS = ("re/", "harness/goldens/", "harness/captures/", "goldens/")
 FORBIDDEN_NAMES = {"continue", "continue_t", "restart", "restart_t", "profiles", "campaign.bck"}
 MAGICS = [b"SRES", b"MEUH", b"DUTY", b"SBSCRIPT", b"SBFONT", b"SBTTFT", b"FXBK", b"SFPK", b"NEUF", b"GSHR",
           b"FORP", b"BIKi", bytes.fromhex("c9eb0300")]
@@ -37,6 +42,9 @@ def main() -> int:
     for path in tracked_files():
         rel = path.relative_to(ROOT).as_posix()
         name = path.name.lower()
+        if rel.lower().startswith(FORBIDDEN_ROOTS):
+            problems.append(f"file under a local-only root: {rel}")
+            continue
         if path.suffix.lower() in FORBIDDEN_EXT:
             problems.append(f"forbidden extension: {rel}")
             continue
@@ -45,17 +53,18 @@ def main() -> int:
             continue
         if not path.exists():
             continue
-        head = path.read_bytes()[:16]
+        head = path.read_bytes()[:8192]
         for magic in MAGICS:
             if head.startswith(magic):
                 problems.append(f"game format magic {magic!r}: {rel}")
-        if is_binary(path.read_bytes()[:8192]) and path.stat().st_size > MAX_BINARY_BYTES:
+        if is_binary(head) and path.stat().st_size > MAX_BINARY_BYTES:
             problems.append(f"large binary file ({path.stat().st_size} bytes): {rel}")
     for p in problems:
         print(p)
     if problems:
         return 1
-    print("no game assets detected in tracked files")
+    print("policy check passed: no forbidden extensions, magics, roots or large binaries in tracked files "
+          "(copied text is not detected by this script)")
     return 0
 
 

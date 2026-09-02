@@ -52,7 +52,8 @@ def main() -> int:
     digest = run()
     if args.write:
         Path(args.write).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.write).write_text(json.dumps(digest, indent=2) + "\n", encoding="utf-8")
+        with open(args.write, "w", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(digest, indent=2) + "\n")
         print(f"wrote {args.write}")
         return 0
     expected = json.loads(Path(args.check).read_text(encoding="utf-8"))

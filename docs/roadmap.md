@@ -18,6 +18,7 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 - [x] `opensherwood-tools inspect` for SRES / image blobs / RHS / chunk containers (already specified)
 
 - [x] Codex M0 review incorporated (versions, full canonical hashing, snapshot validation, protocol limits, controlled window mode, content fingerprint)
+- [ ] Hardening batch from the full review (P1 10-17: shared sprite decode limits, SRES cumulative budgets, bounded RPC drain, replay quotas and file-size checks, geometry coordinate bounds, full content digest, transactional restore, snapshot schema/content/catalog validation), then P2-P4 (`docs/decisions/reviews/2026-09-02-codex-full-review-disposition.md`)
 - [ ] Deferred from the reviews: cargo-fuzz targets for parsers, a 32-bit CI job, SRES decode budget, physical-key code set, rename `harness/tools/re` to `probe`, oversized-line drain, transactional session restore, full-content fingerprint with cache, replay header enforcement, window focus/resize input hygiene, sRGB surface selection, streamed looped music, per-tick digest coverage, timed Python writes, SHA-pinned CI actions (see `docs/decisions/reviews/2026-09-02-codex-review-2-disposition.md`)
 
 ## M1: Feasibility gates
@@ -40,6 +41,9 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 - [x] Characters drawn from the sprite bank with the documented idle/walk animation blocks and canvas origins
 - [x] Audio: Ogg Vorbis music per map / menu theme, PCM effects channel (`opensherwood-audio`)
 - [x] Borderless fullscreen by default, F11 toggle, letterboxed logical viewport
+- [x] Main menu from the player's files (background, plate buttons, fonts, strings; geometry from `docs/original/ui-flow.md`), Play! loads the first mission ("The Godfather", `H01_Lin_VL`) behind its briefing pages, camera on the hero; menus and briefings are driven by canonical input and observable over RPC (`ui`)
+- [ ] Pause menu (Escape), HUD (portraits, money, action bar, minimap), quit confirmation dialog
+- [ ] Options, profiles (select/new/rename/delete), load/save screens, movies, credits
 
 - [ ] VFS resolves base + language overlay (`2047/data`) + mod overlays; content fingerprint
 - [ ] Tutorial map renders with static entities, camera, picking, selection, one animated actor
@@ -54,7 +58,7 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 
 ## M4: Tutorial slice
 
-- [ ] SCB instructions needed by `EmbTut_FoC_EC`, objectives, stimuli (sight cones, noise), AI patrols, alarm, combat basics, items, win/lose
+- [ ] SCB instructions needed by the first mission (`H01_Lin_VL`, which is the tutorial in the retail flow; `EmbTut_FoC_EC` is not reached from Play!), objectives, stimuli (sight cones, noise), AI patrols, alarm, combat basics, items, win/lose
 - [ ] An input-only replay completes the tutorial
 
 ## M5: Representative campaign

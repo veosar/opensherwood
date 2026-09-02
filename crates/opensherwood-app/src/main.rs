@@ -5,6 +5,8 @@
 mod engine;
 mod mission;
 mod rpc;
+mod ui;
+mod ui_assets;
 mod window;
 
 use std::path::PathBuf;
@@ -27,8 +29,9 @@ struct Args {
     /// Directory for captures (else OPENSHERWOOD_ARTIFACTS, else ./harness/out).
     #[arg(long)]
     artifacts: Option<PathBuf>,
-    /// Scenario to load at start in window mode: `corridor`, `map:<name>[:<ambiance>]`.
-    #[arg(long, default_value = "corridor")]
+    /// Scenario to load at start in window mode: `menu`, `corridor`, `map:<name>[:<ambiance>]`,
+    /// `mission:<name>`.
+    #[arg(long, default_value = "menu")]
     scenario: String,
     /// Integer window scale factor.
     #[arg(long, default_value_t = 2)]

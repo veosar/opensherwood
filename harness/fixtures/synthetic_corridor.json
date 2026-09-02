@@ -1,6 +1,6 @@
 {
-  "protocol": 2,
-  "ruleset": 2,
+  "protocol": 3,
+  "ruleset": 3,
   "ticks": 400,
   "every_50th_total": [
     "3cd9a14b7117f0f425b61f8988b051686792361b9ec61b6720f85c37863580b5",

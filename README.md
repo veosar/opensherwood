@@ -4,11 +4,13 @@ OpenSherwood is a free, open-source game engine that plays *Robin Hood: The Lege
 Entertainment, 2002) from the data files of a copy you already own. It is a clean-room reimplementation in the
 tradition of OpenMW, Julius and OpenRCT2: the original game's assets are read, never shipped.
 
-**Status: pre-alpha, milestone M1/M2 in progress.** What works today (2026-09-02): deterministic core with
-snapshots, canonical hashes and replays; headless JSON-RPC harness; a borderless-fullscreen window (winit + wgpu)
-that shows any retail map background with animated characters walking on it, camera scrolling and the original
-music; decoders for the sprite bank (all 404,855 frames), UI resource archives, backgrounds and character animation
-tables. Not yet: missions, AI, scripts, menus. See [docs/roadmap.md](docs/roadmap.md).
+**Status: pre-alpha, milestone M2 in progress.** What works today (2026-09-02): the original main menu (pictures,
+fonts and strings from the player's files), Play! loading the first mission behind its briefing pages, every
+retail mission's map and actors, walking with pathfinding and foreground occlusion, animated sprites, music; a
+deterministic core with snapshots, canonical hashes and replays; a headless JSON-RPC harness that plays the engine;
+a borderless-fullscreen window (winit + wgpu). Not yet: HUD, AI behaviour, combat, scripts (objectives, dialogues),
+options, profiles and saves, comparison against the original. See [docs/roadmap.md](docs/roadmap.md) and the
+[status reports](docs/status/).
 
 ## Goals
 
@@ -42,7 +44,7 @@ when it is not set.
 | Path | Content |
 |---|---|
 | `crates/` | the engine (Rust workspace); see [docs/architecture.md](docs/architecture.md) |
-| `harness/` | Python test harness: drives the engine over JSON-RPC, compares against the original game |
+| `harness/` | Python test harness: drives the engine over JSON-RPC (comparison against the original is planned, see `docs/oracle.md`) |
 | `docs/` | all documentation: legal policy, architecture, roadmap, file formats, notes on the original |
 | `docs/decisions/` | architecture decision records |
 | `.agents/skills/`, `.claude/skills/` | procedures for AI agents working on this repo (kept identical) |
@@ -53,7 +55,7 @@ when it is not set.
 
 This project is developed largely by AI coding agents (Claude Code and OpenAI Codex) under human direction,
 with a rule that nothing is merged unless the automated harness verifies it: build, run headless, play,
-screenshot, compare with the original. Humans are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md).
+screenshot (comparison with the original is planned). Humans are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

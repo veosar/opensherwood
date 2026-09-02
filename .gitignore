@@ -33,6 +33,17 @@ Thumbs.db
 /.local/
 /re/                      # private reverse-engineering workspace (Ghidra projects, decompiler output) - NEVER committed
 /goldens/                 # locally generated reference screenshots (contain game imagery) - NEVER committed
+/harness/goldens/
+/harness/captures/
+# derived images anywhere (screenshots, decoded sheets): keep them local
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.tif
+*.tiff
+!docs/diagrams/*.svg
 /harness/out/
 /harness/captures/
 *.gwr.tmp
