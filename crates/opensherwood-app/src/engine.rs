@@ -11,7 +11,9 @@ use opensherwood_core::{
 };
 
 use crate::mission;
-use crate::ui::{Briefing, HudState, MainMenu, MenuAction, PauseMenu, ProfileSummary, UiAssets};
+use crate::ui::{
+    Briefing, Credits, HudState, MainMenu, MenuAction, PauseMenu, ProfileSummary, UiAssets,
+};
 use crate::ui_assets;
 use opensherwood_core::Geometry;
 use opensherwood_protocol::{
@@ -130,6 +132,8 @@ enum Screen {
     Briefing(Briefing),
     /// Pause menu over the paused mission.
     Pause(PauseMenu),
+    /// Credits.
+    Credits(Credits),
 }
 
 /// The mission `Play!` starts with a fresh profile (`docs/original/campaign-flow.md`).
@@ -338,6 +342,10 @@ impl Session {
                         }
                     }
                     Some(MenuAction::Exit) => self.exit_requested = true,
+                    Some(MenuAction::Credits) => {
+                        let _ = self.ui_assets();
+                        self.screen = Screen::Credits(Credits::new(crate::window::TICK_RATE));
+                    }
                     Some(other) => eprintln!("opensherwood: menu action {other:?} not implemented"),
                     None => {}
                 }
@@ -353,6 +361,14 @@ impl Session {
                 self.frame = None;
                 if done {
                     self.screen = Screen::World;
+                }
+            }
+            Screen::Credits(c) => {
+                let leave = events.iter().any(|e| Credits::leaves(*e));
+                c.tick();
+                self.frame = None;
+                if leave {
+                    self.open_menu();
                 }
             }
             Screen::Pause(p) => {
@@ -407,6 +423,7 @@ impl Session {
             Screen::Menu(m) => Some(m.state()),
             Screen::Briefing(b) => Some(b.state()),
             Screen::Pause(p) => Some(p.state()),
+            Screen::Credits(c) => Some(c.state()),
         }
     }
 
@@ -852,6 +869,7 @@ impl Session {
                     };
                     menu.render(self.ui_assets.as_ref())
                 }
+                Screen::Credits(c) => c.render(self.ui_assets.as_ref()),
                 Screen::Briefing(_) | Screen::Pause(_) | Screen::World => {
                     let in_mission = matches!(
                         self.world.as_ref().map(|w| &w.scenario),
