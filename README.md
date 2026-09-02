@@ -44,7 +44,7 @@ when it is not set.
 | Path | Content |
 |---|---|
 | `crates/` | the engine (Rust workspace); see [docs/architecture.md](docs/architecture.md) |
-| `harness/` | Python test harness: drives the engine over JSON-RPC (comparison against the original is planned, see `docs/oracle.md`) |
+| `harness/` | Python test harness: drives the engine over JSON-RPC and compares screens with local captures of the original (`docs/harness.md`, `docs/oracle.md`) |
 | `docs/` | all documentation: legal policy, architecture, roadmap, file formats, notes on the original |
 | `docs/decisions/` | architecture decision records |
 | `.agents/skills/`, `.claude/skills/` | procedures for AI agents working on this repo (kept identical) |
@@ -55,7 +55,7 @@ when it is not set.
 
 This project is developed largely by AI coding agents (Claude Code and OpenAI Codex) under human direction,
 with a rule that nothing is merged unless the automated harness verifies it: build, run headless, play,
-screenshot (comparison with the original is planned). Humans are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md).
+screenshot, compare with local captures of the original where one exists. Humans are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
