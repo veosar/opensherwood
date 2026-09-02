@@ -18,7 +18,7 @@ def test_robin_can_walk_from_the_first_mission_start(binary, game_dir):
         assert nav["areas"] > 100, "Lincoln's projection areas must be loaded"
         e.step(2, pointer_click(sx, sy, "left"))
         assert e.observe(entities=False)["selected"] is not None
-        e.step(2, pointer_click(sx - 150, sy + 30, "right"))
+        e.step(2, pointer_click(sx - 150, sy + 30, "left"))
         p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
         assert p["target"] is not None and len(p["path"]) >= 1
         e.step(300)

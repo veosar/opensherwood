@@ -24,7 +24,7 @@ def test_map_view_renders_background_and_sprites_deterministically(binary, game_
             player = next(x for x in obs["entities"] if x["kind"] == "player")
             assert player["anim"] is not None, "player should carry sprite animation state"
             e.step(1, pointer_click(80, 240, "left"))
-            e.step(1, pointer_click(300, 300, "right"))
+            e.step(1, pointer_click(300, 300, "left"))
             e.step(90)
             cap = e.capture(f"map_view_{run}.png")
             hashes.append(cap["hash"])
@@ -39,7 +39,7 @@ def test_map_view_snapshot_restore_keeps_animation_state(binary, game_dir):
     with Engine(binary=binary, game_dir=game_dir) as e:
         e.reset({"map_view": {"map": "sherwood", "ambiance": "Day"}}, seed=4)
         e.step(1, pointer_click(80, 240, "left"))
-        e.step(1, pointer_click(400, 260, "right"))
+        e.step(1, pointer_click(400, 260, "left"))
         e.step(30)
         snap = e.snapshot()
         a = e.step(40, hash_every_tick=True)["per_tick"]

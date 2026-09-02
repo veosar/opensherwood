@@ -19,7 +19,10 @@ pub struct FrameSpec {
     pub offset_y: i32,
 }
 
-/// The animations of one character profile plus which of them are idle / walk per direction.
+/// The animations of one character profile plus which of them are idle / walk / run and the
+/// crouched idle / walk per direction (`docs/formats/sprite-animations.md`: action ids 0, 6, 7,
+/// 14 and 16). Profiles without a crouch set (soldiers, civilians) or without a run block name
+/// their standing blocks again, so every array always resolves.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AnimSet {
     /// Animations in profile order.
@@ -28,6 +31,30 @@ pub struct AnimSet {
     pub idle: [u32; 8],
     /// Walk animation index per direction.
     pub walk: [u32; 8],
+    /// Run animation index per direction (action 7; the walk block when the profile has none).
+    #[serde(default)]
+    pub run: [u32; 8],
+    /// Crouched idle per direction (action 14; the idle block when the profile has none).
+    #[serde(default)]
+    pub crouch_idle: [u32; 8],
+    /// Crouched walk ("sneak") per direction (action 16; the walk block when the profile has none).
+    #[serde(default)]
+    pub crouch_walk: [u32; 8],
+}
+
+impl AnimSet {
+    /// A set whose run and crouched blocks are the standing ones (synthetic worlds and tests).
+    #[must_use]
+    pub fn standing_only(animations: Vec<Vec<FrameSpec>>, idle: [u32; 8], walk: [u32; 8]) -> Self {
+        Self {
+            animations,
+            idle,
+            walk,
+            run: walk,
+            crouch_idle: idle,
+            crouch_walk: walk,
+        }
+    }
 }
 
 /// All animation sets known to the world, by profile name (`RobinHood`, `Soldier A00`, ...).
@@ -118,11 +145,11 @@ mod tests {
         let mut sets = BTreeMap::new();
         sets.insert(
             "hero".into(),
-            AnimSet {
-                animations: vec![vec![f(10, 2), f(11, 1)], vec![f(20, 1)]],
-                idle: [0; 8],
-                walk: [1; 8],
-            },
+            AnimSet::standing_only(
+                vec![vec![f(10, 2), f(11, 1)], vec![f(20, 1)]],
+                [0; 8],
+                [1; 8],
+            ),
         );
         Catalog { sets }
     }

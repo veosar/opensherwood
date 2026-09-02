@@ -52,7 +52,7 @@ def main() -> int:
         print("reset tick", r["tick"])
         eng.capture("00_start.png")
         eng.step(1, pointer_click(80, 240, "left"))
-        eng.step(1, pointer_click(400, 300, "right"))
+        eng.step(1, pointer_click(400, 300, "left"))
         eng.step(args.ticks // 2)
         eng.capture("01_moving.png")
         # scroll right with the keyboard for a while, then release

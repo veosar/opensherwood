@@ -2,10 +2,12 @@
 
 Date: 2026-09-02. Status: accepted.
 
-Versions in force (2026-09-02, script VM): protocol 5 (replay time is the session tick: header `time:
+Versions in force (2026-09-03, movement modes): protocol 5 (replay time is the session tick: header `time:
 "session"`, checkpoints carry `world_tick`, a `session` digest and the `frame` hash, the tick-0 and terminal
 checkpoints are required and compared; `ui` observation,
-`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 7 (script VM: `Initialize` /
+`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 8 (movement modes: a
+left click on the ground walks, a double click runs at twice the walking speed, `c` / `s` crouch / stand at half
+speed, a right click cancels / deselects; ruleset 7: script VM: `Initialize` /
 `PostInitialize` at load, `Hourglass` and `CheckVictoryCondition` every tick, sequences, messages, zone events;
 hidden player characters start inactive; native 32 is a barrier over walk / animation completion tokens; one
 work budget per tick, granted only at the start of the tick (the load-time run has its own; event hooks and
@@ -13,10 +15,12 @@ text dismissals draw from what the tick left) and charging instructions, argumen
 zone / scroll scan or native 204 looks at, every polygon edge tested (zones, natives 97 / 204), sequence
 elements and every stage of the path searches the script issues (initialisation, expansions, unwinding,
 smoothing, conversion); programs must have balanced parameter / argument stacks; AI locking halts an NPC's
-walk, native 160 and camera centring are computed in `i64`), hash schema 9 (`scripts` and `scheduler` parts carry the VM state including sequence tokens and the
+walk, native 160 and camera centring are computed in `i64`), hash schema 10 (entity `gait` / `posture` tags under `actors`,
+the `last_ground_click` under `world`; schema 9: `scripts` and `scheduler` parts carry the VM state including sequence tokens and the
 barrier wait; frames and stacks are no longer encoded because a snapshot must be quiescent; entity `active` /
 `ai_locked` flags under `actors`, the `script` RNG stream under `rng`; schema 9 adds the player's `money`
-(natives 236 / 237) and `mission_lost` (`CheckVictoryCondition` = 2) to `scripts`), snapshot schema 10 (`vm`
+(natives 236 / 237) and `mission_lost` (`CheckVictoryCondition` = 2) to `scripts`), snapshot schema 11 (entity `gait` /
+`posture`, the world's `last_ground_click`; schema 10: `vm`
 state without its diagnostic `counters` and per-tick `budget`, sequence `tokens`, entity flags, `money` and
 `mission_lost`).
 Any change to canonical bytes bumps the ruleset or hash schema and regenerates

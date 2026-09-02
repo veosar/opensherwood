@@ -28,7 +28,7 @@ def run() -> dict:
         hello = e.hello()
         e.reset("corridor", seed=11)
         r1 = e.step(1, pointer_click(80, 240, "left"), hash_every_tick=True)
-        r2 = e.step(1, pointer_click(600, 240, "right"), hash_every_tick=True)
+        r2 = e.step(1, pointer_click(600, 240, "left"), hash_every_tick=True)
         r3 = e.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": "right"}], hash_every_tick=True)
         r4 = e.step(397, hash_every_tick=True)
         per_tick = [h["total"] for r in (r1, r2, r3, r4) for h in r["per_tick"]]

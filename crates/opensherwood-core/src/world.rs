@@ -51,6 +51,52 @@ impl EntityKind {
     }
 }
 
+/// Movement mode of an actor's current order (`docs/original/ui-flow.md` 9.4: a click on the
+/// ground walks, a double click runs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Gait {
+    /// Walking (action 6 of the animation table).
+    #[default]
+    Walk,
+    /// Running (action 7): [`RUN_SPEED_FACTOR`] times the walking speed.
+    Run,
+}
+
+impl Gait {
+    /// Stable tag for canonical encodings (never derived from declaration order).
+    #[must_use]
+    pub fn tag(self) -> u8 {
+        match self {
+            Gait::Walk => 1,
+            Gait::Run => 2,
+        }
+    }
+}
+
+/// Body posture of an actor (`c` crouches, `s` stands; the kneel / stand icons of the HUD).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Posture {
+    /// Upright.
+    #[default]
+    Standing,
+    /// Crouched: the sneak animation (action 16) and the crouched idle (14), moving at the walking
+    /// speed over [`CROUCH_SPEED_DIVISOR`] whatever the gait.
+    Crouched,
+}
+
+impl Posture {
+    /// Stable tag for canonical encodings (never derived from declaration order).
+    #[must_use]
+    pub fn tag(self) -> u8 {
+        match self {
+            Posture::Standing => 1,
+            Posture::Crouched => 2,
+        }
+    }
+}
+
 /// An entity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entity {
@@ -97,10 +143,43 @@ pub struct Entity {
     /// The script locked this entity's AI (natives 134 / 135): its waypoint program is paused.
     #[serde(default)]
     pub ai_locked: bool,
+    /// Movement mode of the current order: every order walks unless a double click made it a
+    /// run; reset to walking when the order ends.
+    #[serde(default)]
+    pub gait: Gait,
+    /// Standing or crouched (player characters, keys `c` / `s`).
+    #[serde(default)]
+    pub posture: Posture,
+}
+
+impl Entity {
+    /// Distance covered per tick: the walking `speed`, times [`RUN_SPEED_FACTOR`] when running,
+    /// over [`CROUCH_SPEED_DIVISOR`] when crouched (a crouched actor never runs: the animation
+    /// table has one crouched movement, the sneak).
+    #[must_use]
+    pub fn effective_speed(&self) -> Fixed {
+        match (self.posture, self.gait) {
+            (Posture::Crouched, _) => Fixed::from_raw(self.speed.raw() / CROUCH_SPEED_DIVISOR),
+            (Posture::Standing, Gait::Run) => self.speed.mul_int(RUN_SPEED_FACTOR),
+            (Posture::Standing, Gait::Walk) => self.speed,
+        }
+    }
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// The last left click on the ground, remembered for double-click detection (authoritative: it
+/// decides whether the next click walks or runs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroundClick {
+    /// Tick the click was applied on.
+    pub tick: u64,
+    /// Map position of the click (24.8).
+    pub x: Fixed,
+    /// Map position.
+    pub y: Fixed,
 }
 
 /// One instruction of an NPC waypoint program. Programs are plain data translated by the app
@@ -384,6 +463,20 @@ pub const GAMEPLAY_RNG_STREAM: u64 = 1;
 /// (A* node expansions and smoothing cells, `nav.rs`); orders issued by the script are charged
 /// to the VM's per-tick budget instead.
 pub const ORDER_SEARCH_WORK: u64 = DEFAULT_SEARCH_WORK;
+/// A second left click on the ground within this many ticks of the first (20 at 60 Hz, a third
+/// of a second) ...
+pub const DOUBLE_CLICK_TICKS: u64 = 20;
+/// ... and within this many map pixels of it is a double click: the order becomes a run
+/// (`docs/original/ui-flow.md` 9.4).
+pub const DOUBLE_CLICK_DISTANCE: i32 = 8;
+/// Running speed as a multiple of the walking speed. Hypothesis: the manual only says a double
+/// click runs; the animation table's per-frame `advance` (Robin walk 4 / run 5 px per frame) is a
+/// distance per frame, not a speed per tick (`docs/formats/sprite-animations.md`, "Per-frame
+/// timing word"), so no speed can be read from the data yet.
+pub const RUN_SPEED_FACTOR: i32 = 2;
+/// Crouched (sneaking) speed as a divisor of the walking speed. Hypothesis, same status as
+/// [`RUN_SPEED_FACTOR`].
+pub const CROUCH_SPEED_DIVISOR: i32 = 2;
 
 /// Every check a walkable geometry must pass before it may drive movement: vertex budget and
 /// coordinate range (`-MAX_GEOMETRY_COORD..=MAX_GEOMETRY_COORD`).
@@ -425,6 +518,10 @@ pub struct World {
     pub keys_down: BTreeSet<Key>,
     /// Selected entity.
     pub selected: Option<EntityId>,
+    /// The last left click that ordered a walk, for double-click detection (`None` once a double
+    /// click was consumed or a click did something else).
+    #[serde(default)]
+    pub last_ground_click: Option<GroundClick>,
     /// Entities by slot (order is authoritative: it is the simulation and draw order).
     pub entities: Vec<Entity>,
     /// Gameplay RNG stream.
@@ -454,8 +551,9 @@ pub struct World {
 }
 
 /// Snapshot schema version (9: sequence barrier tokens, VM counters and budget no longer
-/// serialised, snapshots must be quiescent).
-pub const SNAPSHOT_VERSION: u32 = 10;
+/// serialised, snapshots must be quiescent; 11: entity `gait` / `posture`, the world's
+/// `last_ground_click`).
+pub const SNAPSHOT_VERSION: u32 = 11;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -548,6 +646,8 @@ impl World {
                 pc: 0,
                 active: a.active,
                 ai_locked: false,
+                gait: Gait::Walk,
+                posture: Posture::Standing,
             });
         }
         // The original opens a mission with the camera on the hero.
@@ -703,6 +803,8 @@ impl World {
         let e = &mut self.entities[index];
         e.target = Some(target);
         e.path = path;
+        // Every order walks; the player's double click upgrades its own order afterwards.
+        e.gait = Gait::Walk;
         Ok(())
     }
 
@@ -760,6 +862,8 @@ impl World {
             pc: 0,
             active: true,
             ai_locked: false,
+            gait: Gait::Walk,
+            posture: Posture::Standing,
         });
         entities.push(Entity {
             id: id(1),
@@ -780,6 +884,8 @@ impl World {
             pc: 0,
             active: true,
             ai_locked: false,
+            gait: Gait::Walk,
+            posture: Posture::Standing,
         });
         let obstacles: &[(i32, i32, i32, i32)] = if map.is_some() {
             &[]
@@ -806,6 +912,8 @@ impl World {
                 pc: 0,
                 active: true,
                 ai_locked: false,
+                gait: Gait::Walk,
+                posture: Posture::Standing,
             });
         }
         let geometry = Geometry::default();
@@ -823,6 +931,7 @@ impl World {
             buttons_down: BTreeSet::new(),
             keys_down: BTreeSet::new(),
             selected: None,
+            last_ground_click: None,
             entities,
             rng: Rng::new(seed, GAMEPLAY_RNG_STREAM),
             goal: (f(600), f(240)),
@@ -1019,6 +1128,12 @@ impl World {
         {
             return Err(format!("selected entity {sel:?} does not exist"));
         }
+        if let Some(c) = self.last_ground_click {
+            let bound = Fixed::from_int(MAX_ENTITY_COORD);
+            if c.tick > self.tick || c.x.abs() > bound || c.y.abs() > bound {
+                return Err(format!("last ground click {c:?} out of range"));
+            }
+        }
         if let Some(vm) = &self.vm {
             vm.validate(self.programs.len(), self.entities.len())?;
             if vm.rng.seed != self.seed || vm.rng.stream != SCRIPT_RNG_STREAM {
@@ -1071,8 +1186,8 @@ impl World {
             InputEvent::PointerDown { button } => {
                 self.buttons_down.insert(button);
                 match button {
-                    Button::Left => self.select_at_pointer(),
-                    Button::Right => self.order_move_to_pointer(),
+                    Button::Left => self.left_click(),
+                    Button::Right => self.right_click(),
                     Button::Middle => {}
                 }
             }
@@ -1081,6 +1196,11 @@ impl World {
             }
             InputEvent::KeyDown { key } => {
                 self.keys_down.insert(key);
+                match key {
+                    Key::Letter('c') => self.set_posture(Posture::Crouched),
+                    Key::Letter('s') => self.set_posture(Posture::Standing),
+                    _ => {}
+                }
             }
             InputEvent::KeyUp { key } => {
                 self.keys_down.remove(&key);
@@ -1123,31 +1243,85 @@ impl World {
         self.camera.1 = self.camera.1.saturating_add(dy).clamp(0, max_y);
     }
 
-    fn select_at_pointer(&mut self) {
+    /// The actor under the pointer: first match in slot order (order is authoritative and
+    /// hashed).
+    fn actor_at_pointer(&self) -> Option<EntityId> {
         let (px, py) = self.pointer_in_map();
-        // First match in slot order: order is authoritative (and hashed).
-        let hit = self
-            .entities
+        self.entities
             .iter()
             .filter(|e| {
                 e.alive && e.active && matches!(e.kind, EntityKind::Player | EntityKind::Guard)
             })
             .find(|e| Fixed::length(e.x - px, e.y - py) <= e.size)
-            .map(|e| e.id);
-        self.selected = hit;
+            .map(|e| e.id)
     }
 
-    /// A right click orders the selected player character to the pointer; only a living, active
-    /// one takes orders (a deactivated actor is deselected, but a snapshot may still name one).
-    fn order_move_to_pointer(&mut self) {
-        let Some(sel) = self.selected else { return };
-        let target = self.pointer_in_map();
-        if let Some(i) = self
-            .entities
+    /// Slot of the selected player character if it takes orders: only a living, active one does
+    /// (a deactivated actor is deselected, but a snapshot may still name one).
+    fn commanded_player(&self) -> Option<usize> {
+        let sel = self.selected?;
+        self.entities
             .iter()
             .position(|e| e.id == sel && e.kind == EntityKind::Player && e.alive && e.active)
-        {
-            self.plan_path(i, target);
+    }
+
+    /// Left click (`docs/original/ui-flow.md` 9.4): on a character it selects him; on the ground
+    /// it orders the selected player character to walk there, and a second click within
+    /// [`DOUBLE_CLICK_TICKS`] and [`DOUBLE_CLICK_DISTANCE`] of the first makes the order a run.
+    /// A click on the ground with nothing selected does nothing.
+    fn left_click(&mut self) {
+        if let Some(hit) = self.actor_at_pointer() {
+            self.selected = Some(hit);
+            self.last_ground_click = None;
+            return;
+        }
+        let Some(i) = self.commanded_player() else {
+            self.last_ground_click = None;
+            return;
+        };
+        let target = self.pointer_in_map();
+        let double = self.last_ground_click.is_some_and(|c| {
+            self.tick.saturating_sub(c.tick) <= DOUBLE_CLICK_TICKS
+                && Fixed::length(target.0 - c.x, target.1 - c.y)
+                    <= Fixed::from_int(DOUBLE_CLICK_DISTANCE)
+        });
+        self.plan_path(i, target);
+        if double {
+            // The run replaces the walk the first click ordered; a third click starts over.
+            self.last_ground_click = None;
+            let e = &mut self.entities[i];
+            if e.target.is_some() {
+                e.gait = Gait::Run;
+            }
+        } else {
+            self.last_ground_click = Some(GroundClick {
+                tick: self.tick,
+                x: target.0,
+                y: target.1,
+            });
+        }
+    }
+
+    /// Right click: on the selected character it cancels his order; anywhere else it deselects.
+    fn right_click(&mut self) {
+        self.last_ground_click = None;
+        let hit = self.actor_at_pointer();
+        match (hit, self.commanded_player()) {
+            (Some(h), Some(i)) if self.entities[i].id == h => {
+                let e = &mut self.entities[i];
+                e.target = None;
+                e.path.clear();
+                e.gait = Gait::Walk;
+            }
+            _ => self.selected = None,
+        }
+    }
+
+    /// Keys `c` / `s`: the selected player character crouches / stands up. Orders and the gait
+    /// are kept: a crouched character continues at the sneaking speed.
+    fn set_posture(&mut self, posture: Posture) {
+        if let Some(i) = self.commanded_player() {
+            self.entities[i].posture = posture;
         }
     }
 
@@ -1214,10 +1388,11 @@ impl World {
             let dx = tx - e.x;
             let dy = ty - e.y;
             let dist = Fixed::length(dx, dy);
-            let (nx, ny) = if dist <= e.speed {
+            let speed = e.effective_speed();
+            let (nx, ny) = if dist <= speed {
                 (tx, ty)
             } else {
-                (e.x + dx * e.speed / dist, e.y + dy * e.speed / dist)
+                (e.x + dx * speed / dist, e.y + dy * speed / dist)
             };
             let blocked = obstacles.iter().any(|&(ox, oy, hw, hh)| {
                 (nx - ox).abs() <= hw + e.size && (ny - oy).abs() <= hh + e.size
@@ -1228,6 +1403,7 @@ impl World {
             if blocked {
                 e.target = None;
                 e.path.clear();
+                e.gait = Gait::Walk;
                 if e.kind == EntityKind::Guard {
                     e.wait_ticks = 10;
                     if e.program.is_some() {
@@ -1245,6 +1421,7 @@ impl World {
                 }
                 if e.path.is_empty() && (e.x, e.y) == (fx, fy) {
                     e.target = None;
+                    e.gait = Gait::Walk;
                     if e.kind == EntityKind::Guard {
                         if e.program.is_some() {
                             // Arrived: the `GoTo` is complete.
@@ -1268,10 +1445,12 @@ impl World {
                 continue;
             };
             let dir = direction_of(e.facing256);
-            let wanted = if e.target.is_some() {
-                set.walk[dir]
-            } else {
-                set.idle[dir]
+            let wanted = match (e.posture, e.target.is_some(), e.gait) {
+                (Posture::Crouched, true, _) => set.crouch_walk[dir],
+                (Posture::Crouched, false, _) => set.crouch_idle[dir],
+                (Posture::Standing, true, Gait::Run) => set.run[dir],
+                (Posture::Standing, true, Gait::Walk) => set.walk[dir],
+                (Posture::Standing, false, _) => set.idle[dir],
             };
             anim.advance(&self.catalog, wanted);
         }
@@ -1370,6 +1549,10 @@ impl World {
             .u8(u8::from(self.objective_reached))
             .i32(self.goal.0.raw())
             .i32(self.goal.1.raw());
+        match self.last_ground_click {
+            Some(c) => w.u8(1).u64(c.tick).i32(c.x.raw()).i32(c.y.raw()),
+            None => w.u8(0),
+        };
         match &self.scenario {
             Scenario::Synthetic(n) => w.u8(1).str(n),
             Scenario::Mission(n) => w.u8(2).str(n),
@@ -1399,6 +1582,8 @@ impl World {
                 .u8(u8::from(e.alive))
                 .u8(u8::from(e.active))
                 .u8(u8::from(e.ai_locked))
+                .u8(e.gait.tag())
+                .u8(e.posture.tag())
                 .u32(e.wait_ticks)
                 .u32(e.patrol_index)
                 .u32(e.patrol.len() as u32);
@@ -1618,7 +1803,7 @@ mod tests {
         let mut w = corridor(7);
         click(&mut w, 80, 240, Button::Left);
         assert!(w.selected.is_some());
-        click(&mut w, 200, 240, Button::Right);
+        click(&mut w, 200, 240, Button::Left);
         for _ in 0..200 {
             w.step(&[]);
         }
@@ -1633,7 +1818,7 @@ mod tests {
         let run = |snap_at: Option<u64>| {
             let mut w = corridor(3);
             click(&mut w, 80, 240, Button::Left);
-            click(&mut w, 300, 200, Button::Right);
+            click(&mut w, 300, 200, Button::Left);
             let mut saved = None;
             for t in 0..300u64 {
                 if Some(t) == snap_at {
@@ -1667,7 +1852,7 @@ mod tests {
     fn golden_hash_of_the_corridor_script() {
         let mut w = corridor(11);
         click(&mut w, 80, 240, Button::Left);
-        click(&mut w, 600, 240, Button::Right);
+        click(&mut w, 600, 240, Button::Left);
         w.step(&[InputEvent::KeyDown { key: Key::Right }]);
         for _ in 0..398 {
             w.step(&[]);
@@ -1682,7 +1867,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "193e26b330a5c5e7f54387365420209d6efd3b91db49db529610e05760d997d5";
+        "e18aba4000a668003e64face096e27d99972ee772a389fea580616a86dfbbc7a";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -1714,6 +1899,19 @@ mod tests {
         let mut w = base.clone();
         w.entities[1].pc = 3;
         variants.push(("pc", w));
+        let mut w = base.clone();
+        w.entities[0].gait = Gait::Run;
+        variants.push(("gait", w));
+        let mut w = base.clone();
+        w.entities[0].posture = Posture::Crouched;
+        variants.push(("posture", w));
+        let mut w = base.clone();
+        w.last_ground_click = Some(GroundClick {
+            tick: 0,
+            x: Fixed::ONE,
+            y: Fixed::ONE,
+        });
+        variants.push(("last_ground_click", w));
         let mut w = base.clone();
         w.programs.push(vec![Instruction::Stop]);
         variants.push(("programs", w));
@@ -1920,7 +2118,7 @@ mod tests {
         let mut w2 = w.clone();
         for world in [&mut w, &mut w2] {
             click(world, 80, 240, Button::Left);
-            click(world, 600, 240, Button::Right);
+            click(world, 600, 240, Button::Left);
             world.step(&[InputEvent::PointerMove {
                 x256: i32::MAX,
                 y256: i32::MIN,
@@ -1951,11 +2149,11 @@ mod tests {
         let mut catalog = Catalog::default();
         catalog.sets.insert(
             "hero".into(),
-            AnimSet {
-                animations: vec![vec![frame(1, 3), frame(2, 1)], vec![frame(3, 1)], vec![]],
-                idle: [0; 8],
-                walk: [1; 8],
-            },
+            AnimSet::standing_only(
+                vec![vec![frame(1, 3), frame(2, 1)], vec![frame(3, 1)], vec![]],
+                [0; 8],
+                [1; 8],
+            ),
         );
         // Without a catalog only the size bounds apply (synthetic worlds, no sprite bank).
         let mut plain = corridor(6);
@@ -2286,15 +2484,17 @@ mod tests {
         assert_eq!(w.selected, Some(w.entities[0].id));
         // A snapshot may still select an inactive actor: the order is refused.
         w.entities[0].active = false;
-        click(&mut w, 200, 240, Button::Right);
+        click(&mut w, 200, 240, Button::Left);
         assert!(w.entities[0].target.is_none());
         w.entities[0].active = true;
         w.entities[0].alive = false;
-        click(&mut w, 200, 240, Button::Right);
+        click(&mut w, 200, 240, Button::Left);
         assert!(w.entities[0].target.is_none());
         w.entities[0].alive = true;
-        click(&mut w, 200, 240, Button::Right);
+        // Refused clicks leave no double-click memory: this one is a plain walk.
+        click(&mut w, 200, 240, Button::Left);
         assert!(w.entities[0].target.is_some());
+        assert_eq!(w.entities[0].gait, Gait::Walk);
         w.validate().unwrap();
     }
 
@@ -2434,5 +2634,202 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// Ticks until the player of a fresh corridor (selected, then ordered) has arrived, and the
+    /// gait it reported while under way.
+    fn ticks_to_arrive(order: impl Fn(&mut World)) -> (u32, Gait) {
+        let mut w = corridor(12);
+        click(&mut w, 80, 240, Button::Left);
+        order(&mut w);
+        let gait = w.entities[0].gait;
+        assert!(w.entities[0].target.is_some());
+        let mut ticks = 0;
+        while w.entities[0].target.is_some() {
+            w.step(&[]);
+            ticks += 1;
+            assert!(ticks < 1000, "never arrived");
+        }
+        assert_eq!(w.entities[0].gait, Gait::Walk, "the gait resets on arrival");
+        w.validate().unwrap();
+        (ticks, gait)
+    }
+
+    #[test]
+    fn double_click_runs_at_twice_the_walking_speed() {
+        let (walk, g) = ticks_to_arrive(|w| click(w, 200, 240, Button::Left));
+        assert_eq!(g, Gait::Walk);
+        // Two clicks in consecutive ticks, 3 px apart: a double click.
+        let (run, g) = ticks_to_arrive(|w| {
+            click(w, 200, 240, Button::Left);
+            click(w, 203, 240, Button::Left);
+        });
+        assert_eq!(g, Gait::Run);
+        // 120 px at 1.5 px/tick is 80 moves walking (the first one on the click's own tick), 40
+        // at 3 px/tick running (the walk of the first click's tick covered 1.5 px).
+        assert_eq!((walk, run), (79, 40));
+        assert_eq!(
+            Fixed::from_raw(3 * 256 / 2).mul_int(RUN_SPEED_FACTOR),
+            Fixed::from_int(3)
+        );
+        // Too late (21 ticks between the presses) or too far (9 px): two walks.
+        let (late, g) = ticks_to_arrive(|w| {
+            click(w, 200, 240, Button::Left);
+            for _ in 0..DOUBLE_CLICK_TICKS {
+                w.step(&[]);
+            }
+            click(w, 200, 240, Button::Left);
+        });
+        assert_eq!(g, Gait::Walk);
+        assert!(late < walk, "the second walk order continues the first");
+        let (_, g) = ticks_to_arrive(|w| {
+            click(w, 200, 240, Button::Left);
+            click(w, 200, 240 + DOUBLE_CLICK_DISTANCE + 1, Button::Left);
+        });
+        assert_eq!(g, Gait::Walk);
+        // Exactly at the limits it is still a double click, and a third click starts over.
+        let mut w = corridor(12);
+        click(&mut w, 80, 240, Button::Left);
+        click(&mut w, 200, 240, Button::Left);
+        for _ in 0..DOUBLE_CLICK_TICKS - 1 {
+            w.step(&[]);
+        }
+        click(&mut w, 200 + DOUBLE_CLICK_DISTANCE, 240, Button::Left);
+        assert_eq!(w.entities[0].gait, Gait::Run);
+        assert!(w.last_ground_click.is_none());
+        click(&mut w, 200 + DOUBLE_CLICK_DISTANCE, 240, Button::Left);
+        assert_eq!(w.entities[0].gait, Gait::Walk);
+        assert!(w.last_ground_click.is_some());
+    }
+
+    #[test]
+    fn left_click_selects_or_orders_and_right_click_cancels_or_deselects() {
+        let mut w = corridor(13);
+        // A ground click with nothing selected does nothing and remembers nothing.
+        click(&mut w, 200, 240, Button::Left);
+        assert!(w.selected.is_none() && w.last_ground_click.is_none());
+        assert!(w.entities[0].target.is_none());
+        click(&mut w, 80, 240, Button::Left);
+        assert_eq!(w.selected, Some(w.entities[0].id));
+        click(&mut w, 200, 240, Button::Left);
+        assert!(w.entities[0].target.is_some());
+        // Clicking the guard selects it and forgets the ground click.
+        let (gx, gy) = (w.entities[1].x.round(), w.entities[1].y.round());
+        click(&mut w, gx, gy, Button::Left);
+        assert_eq!(w.selected, Some(w.entities[1].id));
+        assert!(w.last_ground_click.is_none());
+        // Right click on the ground deselects; the player's order continues.
+        click(&mut w, 80, 240, Button::Left);
+        click(&mut w, 200, 240, Button::Left);
+        click(&mut w, 203, 240, Button::Left);
+        assert_eq!(w.entities[0].gait, Gait::Run);
+        click(&mut w, 300, 400, Button::Right);
+        assert!(w.selected.is_none());
+        assert!(w.entities[0].target.is_some());
+        // Right click on the selected character cancels his order.
+        let (px, py) = (w.entities[0].x.round(), w.entities[0].y.round());
+        click(&mut w, px, py, Button::Left);
+        assert_eq!(w.selected, Some(w.entities[0].id));
+        click(&mut w, px, py, Button::Right);
+        assert!(w.entities[0].target.is_none() && w.entities[0].path.is_empty());
+        assert_eq!(w.entities[0].gait, Gait::Walk);
+        assert_eq!(
+            w.selected,
+            Some(w.entities[0].id),
+            "cancelling keeps the selection"
+        );
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn crouch_and_stand_keys_change_posture_speed_and_animation() {
+        use crate::anim::{AnimSet, FrameSpec};
+        let frame = |frame| FrameSpec {
+            frame,
+            duration: 1,
+            offset_x: 0,
+            offset_y: 0,
+        };
+        let mut catalog = Catalog::default();
+        catalog.sets.insert(
+            "hero".into(),
+            AnimSet {
+                animations: (0..5).map(|i| vec![frame(i)]).collect(),
+                idle: [0; 8],
+                walk: [1; 8],
+                run: [2; 8],
+                crouch_idle: [3; 8],
+                crouch_walk: [4; 8],
+            },
+        );
+        let mut w = corridor(14);
+        w.attach_catalog(catalog, Some("hero"), None);
+        let anim = |w: &World| w.entities[0].anim.as_ref().unwrap().animation;
+        w.step(&[]);
+        assert_eq!(anim(&w), 0);
+        // The keys act on the selected player only.
+        w.step(&[InputEvent::KeyDown {
+            key: Key::Letter('c'),
+        }]);
+        assert_eq!(w.entities[0].posture, Posture::Standing);
+        click(&mut w, 80, 240, Button::Left);
+        w.step(&[
+            InputEvent::KeyDown {
+                key: Key::Letter('c'),
+            },
+            InputEvent::KeyUp {
+                key: Key::Letter('c'),
+            },
+        ]);
+        assert_eq!(w.entities[0].posture, Posture::Crouched);
+        assert_eq!(anim(&w), 3);
+        assert_eq!(
+            w.entities[0].effective_speed(),
+            Fixed::from_raw(3 * 256 / 2 / CROUCH_SPEED_DIVISOR)
+        );
+        // Sneaking: half speed, the crouched walk block; a double click does not make him run.
+        click(&mut w, 200, 240, Button::Left);
+        click(&mut w, 200, 240, Button::Left);
+        assert_eq!(w.entities[0].gait, Gait::Run);
+        assert_eq!(anim(&w), 4);
+        let x0 = w.entities[0].x;
+        for _ in 0..20 {
+            w.step(&[]);
+        }
+        assert_eq!(w.entities[0].x - x0, Fixed::from_int(15));
+        // Standing up mid-order: the run order resumes at the running speed and block.
+        w.step(&[InputEvent::KeyDown {
+            key: Key::Letter('s'),
+        }]);
+        assert_eq!(w.entities[0].posture, Posture::Standing);
+        assert_eq!(anim(&w), 2);
+        let x1 = w.entities[0].x;
+        for _ in 0..10 {
+            w.step(&[]);
+        }
+        assert_eq!(w.entities[0].x - x1, Fixed::from_int(30));
+        // Walking uses the walk block.
+        click(&mut w, 300, 240, Button::Left);
+        assert_eq!(anim(&w), 1);
+        // Posture and gait survive a snapshot round trip through JSON and are validated.
+        w.step(&[InputEvent::KeyDown {
+            key: Key::Letter('c'),
+        }]);
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
+        assert!(json.contains("\"posture\":\"crouched\""));
+        assert!(json.contains("\"gait\":\"walk\""));
+        let snap: Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = corridor(14);
+        w2.attach_catalog(w.catalog.clone(), Some("hero"), None);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.hashes(), w.hashes());
+        assert_eq!(w2.entities[0].posture, Posture::Crouched);
+        let mut bad = w.snapshot(None);
+        bad.world.last_ground_click = Some(GroundClick {
+            tick: w.tick + 1,
+            x: Fixed::ZERO,
+            y: Fixed::ZERO,
+        });
+        assert!(w2.restore(&bad).unwrap_err().contains("ground click"));
     }
 }
