@@ -14,9 +14,9 @@ use crate::fixed::Fixed;
 use crate::geom::Geometry;
 use crate::hash::{Encoder, HASH_SCHEMA_VERSION, Hashes, total};
 use crate::input::{Button, InputEvent, Key, button_tag, encode_key};
-use crate::nav::NavGrid;
+use crate::nav::{DEFAULT_SEARCH_WORK, NavError, NavGrid};
 use crate::rng::Rng;
-use crate::vm::{Program, ScriptObservation, VmState};
+use crate::vm::{Program, SCRIPT_RNG_STREAM, ScriptObservation, VmState};
 
 /// Stable entity identifier (index + generation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -375,6 +375,15 @@ pub const MAX_POINTER_RAW: i32 = 1 << 24;
 pub const MAX_GEOMETRY_VERTICES: usize = 1 << 20;
 /// Largest magnitude of a geometry vertex coordinate; see [`crate::geom::MAX_COORD`].
 pub const MAX_GEOMETRY_COORD: i32 = crate::geom::MAX_COORD;
+/// Largest magnitude of an entity position (map pixels); positions are clamped to the map when
+/// entities move, snapshots may not exceed the geometry range.
+pub const MAX_ENTITY_COORD: i32 = crate::geom::MAX_COORD;
+/// RNG stream id of the gameplay stream (the script stream is [`SCRIPT_RNG_STREAM`]).
+pub const GAMEPLAY_RNG_STREAM: u64 = 1;
+/// Work budget of one movement order issued by the player or by an NPC's waypoint program
+/// (A* node expansions and smoothing cells, `nav.rs`); orders issued by the script are charged
+/// to the VM's per-tick budget instead.
+pub const ORDER_SEARCH_WORK: u64 = DEFAULT_SEARCH_WORK;
 
 /// Every check a walkable geometry must pass before it may drive movement: vertex budget and
 /// coordinate range (`-MAX_GEOMETRY_COORD..=MAX_GEOMETRY_COORD`).
@@ -434,7 +443,9 @@ pub struct World {
     /// `None` for worlds without a script.
     #[serde(default)]
     pub vm: Option<VmState>,
-    /// Navigation grid derived from `geometry` and `map_size` (cache; rebuilt on load).
+    /// Navigation grid derived from `geometry` and `map_size`: not serialised, built by every
+    /// constructor, `set_geometry` and `restore` before the world is committed (a world the core
+    /// hands out always has it; movement orders are refused, never unbounded, without it).
     #[serde(skip)]
     pub nav: Option<NavGrid>,
     /// Static animation data attached by the app (not part of the snapshot; re-attached on load).
@@ -442,15 +453,16 @@ pub struct World {
     pub catalog: Catalog,
 }
 
-/// Snapshot schema version (7: script VM state and entity `active` / `ai_locked` flags).
-pub const SNAPSHOT_VERSION: u32 = 8;
+/// Snapshot schema version (9: sequence barrier tokens, VM counters and budget no longer
+/// serialised, snapshots must be quiescent).
+pub const SNAPSHOT_VERSION: u32 = 9;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
     pub fn new(scenario: Scenario, seed: u64) -> Result<Self, String> {
         match scenario {
             Scenario::Synthetic(ref name) if name == "corridor" => {
-                Ok(Self::build(scenario, seed, None))
+                Self::build(scenario, seed, None)
             }
             Scenario::Synthetic(name) => Err(format!("unknown synthetic scenario '{name}'")),
             Scenario::MapView { .. } => {
@@ -483,7 +495,7 @@ impl World {
         if spec.actors.len() > MAX_ENTITIES {
             return Err(format!("{} actors exceed the limit", spec.actors.len()));
         }
-        let mut world = Self::build(scenario, seed, Some(spec.map));
+        let mut world = Self::build(scenario, seed, Some(spec.map))?;
         world.set_geometry(spec.geometry.clone())?;
         world.entities.clear();
         world.goal = (Fixed::from_int(-1000), Fixed::from_int(-1000));
@@ -572,56 +584,92 @@ impl World {
         Ok(world)
     }
 
-    /// Centre the camera on a map point, clamped to the map.
+    /// Centre the camera on a map point, clamped to the map. Any `i32` point is accepted: the
+    /// arithmetic is done in `i64`, so a hostile position lands at a map edge instead of wrapping.
     pub fn center_camera_on(&mut self, x: i32, y: i32) {
-        let max_x = (self.map_size.0 as i32 - self.viewport.0 as i32).max(0);
-        let max_y = (self.map_size.1 as i32 - self.viewport.1 as i32).max(0);
+        let max_x = (i64::from(self.map_size.0) - i64::from(self.viewport.0)).max(0);
+        let max_y = (i64::from(self.map_size.1) - i64::from(self.viewport.1)).max(0);
+        // Both bounds are below `MAX_MAP_SIZE`, so the clamped values fit `i32`.
         self.camera = (
-            (x - self.viewport.0 as i32 / 2).clamp(0, max_x),
-            (y - self.viewport.1 as i32 / 2).clamp(0, max_y),
+            (i64::from(x) - i64::from(self.viewport.0 / 2)).clamp(0, max_x) as i32,
+            (i64::from(y) - i64::from(self.viewport.1 / 2)).clamp(0, max_y) as i32,
         );
     }
 
-    /// Attach walkable geometry (map view and missions) and rebuild the navigation grid. Geometry
-    /// over the vertex budget or outside `+-MAX_GEOMETRY_COORD` is refused and the world is left
-    /// unchanged.
+    /// Attach walkable geometry (map view and missions) and rebuild the navigation grid. The
+    /// grid is built first, into a temporary; geometry over the vertex budget, outside
+    /// `+-MAX_GEOMETRY_COORD`, over the navigation budgets or whose grid cannot be allocated is
+    /// refused and the world is left unchanged.
     pub fn set_geometry(&mut self, geometry: Geometry) -> Result<(), String> {
         check_geometry(&geometry, self.map_size)?;
+        let nav = NavGrid::try_build(&geometry, self.map_size.0, self.map_size.1)
+            .map_err(|e| format!("navigation grid: {e}"))?;
         self.geometry = geometry;
-        self.nav = None;
-        self.ensure_nav();
+        self.nav = Some(nav);
         Ok(())
     }
 
-    /// Build the navigation grid if it is missing.
-    pub fn ensure_nav(&mut self) {
+    /// Build the navigation grid if it is missing (every constructor, `set_geometry` and
+    /// `restore` build it, so this only acts on a world whose `nav` was cleared by hand). A
+    /// failed build leaves `nav` empty and is reported; there is no degraded grid.
+    pub fn try_ensure_nav(&mut self) -> Result<(), NavError> {
         if self.nav.is_none() {
-            self.nav = Some(NavGrid::build(
+            self.nav = Some(NavGrid::try_build(
                 &self.geometry,
                 self.map_size.0,
                 self.map_size.1,
-            ));
+            )?);
         }
+        Ok(())
     }
 
-    /// Plan a path for entity `index` to `target` (map pixels). Targets on unwalkable ground are
-    /// moved to the nearest walkable cell (up to 32 cells away); unreachable targets clear the order.
+    /// [`World::try_ensure_nav`] for callers that cannot report the error: a failed build leaves
+    /// `nav` empty (movement orders are then refused). Prefer `try_ensure_nav`.
+    pub fn ensure_nav(&mut self) {
+        let _ = self.try_ensure_nav();
+    }
+
+    /// Plan a path for entity `index` to `target` (map pixels) within [`ORDER_SEARCH_WORK`]
+    /// (the budget of a player or program order). Targets on unwalkable ground are moved to the
+    /// nearest walkable cell; unreachable targets and an exhausted budget clear the order.
     pub(crate) fn plan_path(&mut self, index: usize, target: (Fixed, Fixed)) {
-        self.ensure_nav();
-        let Some(nav) = self.nav.as_ref() else { return };
+        let mut budget = ORDER_SEARCH_WORK;
+        let _ = self.plan_path_with(index, target, &mut budget);
+    }
+
+    /// [`World::plan_path`] charging the search and the smoothing to `budget`; an exhausted
+    /// budget (or a refused search allocation) clears the order and is returned. Without a
+    /// navigation grid the order is refused (`Ok`, no target).
+    pub(crate) fn plan_path_with(
+        &mut self,
+        index: usize,
+        target: (Fixed, Fixed),
+        budget: &mut u64,
+    ) -> Result<(), NavError> {
+        let Some(nav) = self.nav.as_ref() else {
+            self.entities[index].target = None;
+            self.entities[index].path.clear();
+            return Ok(());
+        };
         let e = &self.entities[index];
         let from = nav.cell_of(e.x.round(), e.y.round());
         let from = nav.nearest_walkable(from, 8).unwrap_or(from);
         let goal = nav.cell_of(target.0.round(), target.1.round());
-        // Like the original, an order on water or a wall walks to the nearest reachable ground.
         // Like the original, an order on water or behind a wall walks to the reachable cell
         // closest to it.
-        let Some(cells) = nav.find_path_near(from, goal) else {
+        let planned = nav
+            .find_path_with(from, goal, true, budget)
+            .and_then(|cells| match cells {
+                Some(cells) => nav
+                    .smooth_with(from, &cells, budget)
+                    .map(|s| Some((cells, s))),
+                None => Ok(None),
+            });
+        let Ok(Some((cells, smooth))) = planned else {
             self.entities[index].target = None;
             self.entities[index].path.clear();
-            return;
+            return planned.map(|_| ());
         };
-        let smooth = nav.smooth(from, &cells);
         let mut path: Vec<(Fixed, Fixed)> = smooth
             .iter()
             .map(|&c| {
@@ -644,6 +692,7 @@ impl World {
         let e = &mut self.entities[index];
         e.target = Some(target);
         e.path = path;
+        Ok(())
     }
 
     /// Create a map-view world; the app resolved and decoded the background already.
@@ -659,12 +708,14 @@ impl World {
             ));
         }
         match scenario {
-            Scenario::MapView { .. } => Ok(Self::build(scenario, seed, Some(info))),
+            Scenario::MapView { .. } => Self::build(scenario, seed, Some(info)),
             _ => Err("not a map view scenario".into()),
         }
     }
 
-    fn build(scenario: Scenario, seed: u64, map: Option<MapInfo>) -> Self {
+    /// The common part of every constructor; builds the navigation grid of the (empty) geometry
+    /// so that a world always carries one.
+    fn build(scenario: Scenario, seed: u64, map: Option<MapInfo>) -> Result<Self, String> {
         let f = Fixed::from_int;
         // Synthetic scenarios keep the small viewport of the determinism fixtures; retail maps and
         // missions use the original's 1024x768 frame (`docs/original/ui-flow.md`).
@@ -746,7 +797,10 @@ impl World {
                 ai_locked: false,
             });
         }
-        World {
+        let geometry = Geometry::default();
+        let nav = NavGrid::try_build(&geometry, map_size.0, map_size.1)
+            .map_err(|e| format!("navigation grid: {e}"))?;
+        Ok(World {
             scenario,
             seed,
             tick: 0,
@@ -759,15 +813,15 @@ impl World {
             keys_down: BTreeSet::new(),
             selected: None,
             entities,
-            rng: Rng::new(seed, 1),
+            rng: Rng::new(seed, GAMEPLAY_RNG_STREAM),
             goal: (f(600), f(240)),
             objective_reached: false,
-            geometry: Geometry::default(),
+            geometry,
             programs: Vec::new(),
             vm: None,
-            nav: None,
+            nav: Some(nav),
             catalog: Catalog::default(),
-        }
+        })
     }
 
     /// Attach animation data and give every player / guard the named set (idle, facing direction).
@@ -944,6 +998,10 @@ impl World {
             if e.speed < Fixed::ZERO || e.size < Fixed::ZERO {
                 return Err(format!("entity {:?} has a negative speed or size", e.id));
             }
+            let bound = Fixed::from_int(MAX_ENTITY_COORD);
+            if e.x.abs() > bound || e.y.abs() > bound {
+                return Err(format!("entity {:?} position out of range", e.id));
+            }
         }
         if let Some(sel) = self.selected
             && !ids.contains(&sel)
@@ -952,6 +1010,20 @@ impl World {
         }
         if let Some(vm) = &self.vm {
             vm.validate(self.programs.len(), self.entities.len())?;
+            if vm.rng.seed != self.seed || vm.rng.stream != SCRIPT_RNG_STREAM {
+                return Err(format!(
+                    "script rng stream identity ({}, {}) does not derive from the world seed {} and stream {SCRIPT_RNG_STREAM}",
+                    vm.rng.seed, vm.rng.stream, self.seed
+                ));
+            }
+        }
+        // Every stream derives from the world seed with its assigned id: a snapshot cannot
+        // smuggle in another generator.
+        if self.rng.seed != self.seed || self.rng.stream != GAMEPLAY_RNG_STREAM {
+            return Err(format!(
+                "gameplay rng stream identity ({}, {}) does not derive from the world seed {} and stream {GAMEPLAY_RNG_STREAM}",
+                self.rng.seed, self.rng.stream, self.seed
+            ));
         }
         self.rng.validate()
     }
@@ -1054,13 +1126,15 @@ impl World {
         self.selected = hit;
     }
 
+    /// A right click orders the selected player character to the pointer; only a living, active
+    /// one takes orders (a deactivated actor is deselected, but a snapshot may still name one).
     fn order_move_to_pointer(&mut self) {
         let Some(sel) = self.selected else { return };
         let target = self.pointer_in_map();
         if let Some(i) = self
             .entities
             .iter()
-            .position(|e| e.id == sel && e.kind == EntityKind::Player)
+            .position(|e| e.id == sel && e.kind == EntityKind::Player && e.alive && e.active)
         {
             self.plan_path(i, target);
         }
@@ -1090,9 +1164,11 @@ impl World {
                 e.wait_ticks -= 1;
                 continue;
             }
+            // A locked AI (script natives 134 / 135) holds its program or patrol where it is.
+            if e.ai_locked {
+                continue;
+            }
             match e.program.and_then(|p| programs.get(p as usize)) {
-                // A locked AI (script natives 134 / 135) holds its program where it is.
-                Some(_) if e.ai_locked => {}
                 Some(program) => {
                     if let Some(t) = run_program(e, program, rng) {
                         to_plan.push((i, t));
@@ -1210,20 +1286,33 @@ impl World {
     }
 
     /// Validate a snapshot (envelope versions, every world invariant, animation state against
-    /// the attached catalog) and, only if it is acceptable, make it the current state. The
-    /// catalog is kept (it is static data). On error the world is unchanged. Content identity
-    /// ([`Snapshot::check_content`]) is the caller's check: the core cannot fingerprint content.
+    /// the attached catalog), build the navigation grid of its geometry, and only if all of that
+    /// succeeded make it the current state. The catalog is kept (it is static data). On error
+    /// the world is unchanged, its grid included. Content identity ([`Snapshot::check_content`])
+    /// is the caller's check: the core cannot fingerprint content.
     pub fn restore(&mut self, snap: &Snapshot) -> Result<(), String> {
         snap.check_versions()?;
         snap.world.validate_with(&self.catalog)?;
+        let same_geometry = self.nav.is_some()
+            && self.geometry == snap.world.geometry
+            && self.map_size == snap.world.map_size;
+        let built = if same_geometry {
+            None
+        } else {
+            Some(
+                NavGrid::try_build(
+                    &snap.world.geometry,
+                    snap.world.map_size.0,
+                    snap.world.map_size.1,
+                )
+                .map_err(|e| format!("navigation grid: {e}"))?,
+            )
+        };
         let catalog = std::mem::take(&mut self.catalog);
-        let nav = self.nav.take();
-        let same_geometry =
-            self.geometry == snap.world.geometry && self.map_size == snap.world.map_size;
+        let nav = built.or_else(|| self.nav.take());
         *self = snap.world.clone();
         self.catalog = catalog;
-        self.nav = if same_geometry { nav } else { None };
-        self.ensure_nav();
+        self.nav = nav;
         Ok(())
     }
 
@@ -1582,7 +1671,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "0660868f2b2be1d690da3200e2263dead12e89deaa077c9dd3eb429f40eb5089";
+        "2f4caa37a61130017c55f21c9d230a1b8d85b601030eab55d58e0da7c2ea52f9";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -1762,7 +1851,7 @@ mod tests {
     #[test]
     fn hostile_geometry_snapshots_are_rejected_and_extremes_never_panic() {
         let mut w = corridor(4);
-        w.ensure_nav();
+        assert!(w.nav.is_some(), "built by the constructor");
         let before = w.hashes();
         let extremes = [
             i32::MIN,
@@ -2177,6 +2266,115 @@ mod tests {
         json["world"]["programs"][0][1] = serde_json::json!({ "turn": { "delta256": -255 } });
         let snap: Snapshot = serde_json::from_value(json).unwrap();
         w.restore(&snap).unwrap();
+    }
+
+    #[test]
+    fn deactivation_clears_selection_and_orders_need_alive_active() {
+        let mut w = corridor(8);
+        click(&mut w, 80, 240, Button::Left);
+        assert_eq!(w.selected, Some(w.entities[0].id));
+        // A snapshot may still select an inactive actor: the order is refused.
+        w.entities[0].active = false;
+        click(&mut w, 200, 240, Button::Right);
+        assert!(w.entities[0].target.is_none());
+        w.entities[0].active = true;
+        w.entities[0].alive = false;
+        click(&mut w, 200, 240, Button::Right);
+        assert!(w.entities[0].target.is_none());
+        w.entities[0].alive = true;
+        click(&mut w, 200, 240, Button::Right);
+        assert!(w.entities[0].target.is_some());
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn camera_centring_is_total_at_extremes() {
+        let mut w = World::new_map_view(
+            Scenario::MapView {
+                map: "test".into(),
+                ambiance: "Day".into(),
+            },
+            1,
+            MapInfo {
+                width: 2000,
+                height: 1000,
+            },
+        )
+        .unwrap();
+        for &x in &[i32::MIN, -1, 0, 1000, i32::MAX] {
+            for &y in &[i32::MIN, 0, 500, i32::MAX] {
+                w.center_camera_on(x, y);
+                w.validate().unwrap();
+            }
+        }
+        w.center_camera_on(i32::MIN, i32::MAX);
+        assert_eq!(w.camera, (0, 1000 - 768));
+        w.center_camera_on(i32::MAX, i32::MIN);
+        assert_eq!(w.camera, (2000 - 1024, 0));
+        w.center_camera_on(1000, 500);
+        assert_eq!(w.camera, (1000 - 512, 500 - 384));
+    }
+
+    #[test]
+    fn rng_streams_must_derive_from_the_world_seed() {
+        let mut w = corridor(21);
+        let before = w.hashes();
+        let mut snap = w.snapshot(None);
+        snap.world.rng = Rng::new(22, GAMEPLAY_RNG_STREAM);
+        assert!(w.restore(&snap).unwrap_err().contains("gameplay rng"));
+        let mut snap = w.snapshot(None);
+        snap.world.rng = Rng::new(21, 7);
+        assert!(w.restore(&snap).unwrap_err().contains("gameplay rng"));
+        let mut snap = w.snapshot(None);
+        snap.world.seed = 5;
+        assert!(w.restore(&snap).is_err());
+        assert_eq!(w.hashes(), before);
+        // Entity positions are bounded like geometry.
+        let mut json = serde_json::to_value(w.snapshot(None)).unwrap();
+        json["world"]["entities"][0]["x"] = serde_json::json!(i32::MAX);
+        let snap: Snapshot = serde_json::from_value(json).unwrap();
+        assert!(w.restore(&snap).unwrap_err().contains("position"));
+    }
+
+    #[test]
+    fn restore_and_set_geometry_build_the_grid_before_committing() {
+        let mut w = corridor(3);
+        let before = w.hashes();
+        let grid = w.nav.clone().expect("built by the constructor");
+        // A geometry over the navigation budget is refused by both paths with the world and its
+        // grid untouched (the vertex budget is met, the scan-conversion budget is not).
+        let rows = 4096u32;
+        let big: Vec<(i32, i32)> = (0..20_000)
+            .map(|i| (i % 7, (i * 13) % (rows as i32 * crate::nav::CELL)))
+            .collect();
+        let heavy = Geometry {
+            boundary: big.clone(),
+            obstacles: vec![big.clone(), big],
+            areas: Vec::new(),
+        };
+        let mut snap = w.snapshot(None);
+        snap.world.map_size = (8, rows * crate::nav::CELL as u32);
+        snap.world.viewport = (8, 8);
+        snap.world.geometry = heavy.clone();
+        let err = w.restore(&snap).unwrap_err();
+        assert!(err.contains("navigation"), "{err}");
+        assert_eq!(w.hashes(), before);
+        assert_eq!(w.nav.as_ref(), Some(&grid));
+        let mut v = w.clone();
+        v.map_size = (8, rows * crate::nav::CELL as u32);
+        v.viewport = (8, 8);
+        let err = v.set_geometry(heavy).unwrap_err();
+        assert!(err.contains("navigation"), "{err}");
+        assert_eq!(v.nav.as_ref(), Some(&grid));
+        assert!(v.geometry.boundary.is_empty());
+        // A restore into a world without a grid builds one for the snapshot's geometry.
+        let mut bare = corridor(3);
+        bare.nav = None;
+        bare.restore(&w.snapshot(None)).unwrap();
+        assert_eq!(bare.nav.as_ref(), Some(&grid));
+        bare.nav = None;
+        bare.try_ensure_nav().unwrap();
+        assert_eq!(bare.nav.as_ref(), Some(&grid));
     }
 
     #[test]

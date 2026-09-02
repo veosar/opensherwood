@@ -216,18 +216,21 @@ pub fn load(game: &GameDir, name: &str, lenient: bool) -> Result<(LoadedMission,
     let mission = rhm::parse(&data).map_err(|e| format!("{logical}: {e}"))?;
     let map = mission.header.map.clone();
     let script_path = format!("Data/Levels/{name}.scb");
-    let script = match game.read(&script_path) {
-        Ok(bytes) => match scb::parse(&bytes) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                eprintln!("opensherwood: {script_path}: {e}; mission runs without a script");
-                None
-            }
-        },
-        Err(e) => {
-            eprintln!("opensherwood: {script_path}: {e}; mission runs without a script");
+    // The script is the mission's authoritative logic: a missing or malformed one fails the load
+    // unless `lenient` (then the mission runs without a script, logged).
+    let script = match game
+        .read(&script_path)
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| scb::parse(&bytes).map_err(|e| e.to_string()))
+    {
+        Ok(s) => Some(s),
+        Err(e) if lenient => {
+            eprintln!(
+                "opensherwood: {script_path}: {e}; mission runs without a script (OPENSHERWOOD_LENIENT_ASSETS)"
+            );
             None
         }
+        Err(e) => return Err(format!("{script_path}: {e}")),
     };
     let profiles = game
         .read(PROFILE_TABLE_PATH)
@@ -323,14 +326,20 @@ fn npc_sprite<'a>(
     }
 }
 
-/// Build the spec from a loaded mission and the background size. Logs one line with the rail
-/// program translation summary.
-#[must_use]
-pub fn build_spec(
+/// Build the spec from a loaded mission and the background size (one log line with the rail and
+/// script translation summary). Refuses a mission whose script exists but cannot be translated or bound (unknown
+/// map index space, element table mismatch, invalid program) unless `lenient`; a mission file that has
+/// no script at all is accepted only when `lenient` let `load` skip it.
+///
+/// # Errors
+///
+/// The script's translation or binding error, unless `lenient`.
+pub fn build_spec_checked(
     loaded: &LoadedMission,
     map: MapInfo,
     geometry: Geometry,
-) -> (MissionSpec, Vec<String>) {
+    lenient: bool,
+) -> Result<(MissionSpec, Vec<String>), String> {
     let (spec, profiles, stats) = build_spec_with_stats(loaded, map, geometry);
     eprintln!(
         "opensherwood: mission {} on {}: {}",
@@ -338,7 +347,12 @@ pub fn build_spec(
         loaded.mission.header.map,
         stats.summary()
     );
-    (spec, profiles)
+    if let Some(err) = &stats.script_error
+        && !lenient
+    {
+        return Err(format!("mission script: {err}"));
+    }
+    Ok((spec, profiles))
 }
 
 /// [`build_spec`] returning the translation counts instead of logging them.
@@ -472,7 +486,13 @@ fn translate_script(
     actor_count: usize,
     stats: &mut ProgramStats,
 ) -> Option<opensherwood_core::Program> {
-    let map_elements = map_element_count(&mission.header.map).unwrap_or(0);
+    let Some(map_elements) = map_element_count(&mission.header.map) else {
+        stats.script_error = Some(format!(
+            "no element index space known for map {}",
+            mission.header.map
+        ));
+        return None;
+    };
     let binding = MissionBinding::from_mission(mission, map_elements, crate::engine::TICK_RATE);
     if binding.actor_count() != actor_count {
         stats.script_error = Some(format!(

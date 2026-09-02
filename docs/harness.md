@@ -24,7 +24,7 @@ Example session:
 
 ```
 -> {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"pytest"}}
-<- {"jsonrpc":"2.0","id":1,"result":{"protocol":3,"build":"0.1.0","ruleset":4,"capabilities":["synthetic","capture","mission","replay"],"content_fingerprint":null}}
+<- {"jsonrpc":"2.0","id":1,"result":{"protocol":4,"build":"0.1.0","ruleset":5,"capabilities":["synthetic","capture","mission","replay"],"content_fingerprint":null}}
 -> {"jsonrpc":"2.0","id":2,"method":"reset","params":{"scenario":{"synthetic":"corridor"},"seed":42}}
 -> {"jsonrpc":"2.0","id":3,"method":"step","params":{"ticks":10,"events":[{"tick_offset":0,"sequence":0,"kind":"pointer_move","x256":25600,"y256":19200},{"tick_offset":0,"sequence":1,"kind":"pointer_down","button":"right"},{"tick_offset":0,"sequence":2,"kind":"pointer_up","button":"right"}]}}
 <- {"jsonrpc":"2.0","id":3,"result":{"tick":10,"hashes":{"total":"...","actors":"..."}}}
@@ -34,12 +34,24 @@ Coordinates are logical pixels in 24.8 fixed point (`x256 = x * 256`).
 
 ## Replays
 
-`replay.start {checkpoint_every}` (right after `reset`, at tick 0) records every canonical event of subsequent
-`step` calls plus a checkpoint of all hashes every N ticks; `replay.stop {path?}` returns the `ReplayV1` JSON Lines
-(and writes it under the artifact directory); `replay.play {jsonl | path, stop_on_divergence}` resets to the
-replay's scenario and seed, feeds the events tick by tick and compares every checkpoint, reporting the first
-diverging tick and the subsystem hashes that differ. Replays recorded with another ruleset, protocol, hash schema
-or game content are rejected.
+Replay time is the **session tick** (ADR-0004, "Replay time is the session tick"): every tick of a `step` is
+one unit, whether a screen (briefing page, pause menu) consumed the tick's events or the world stepped, so the
+world tick lags behind the session tick by the number of screen frames. `replay.start {checkpoint_every}`
+(at session tick 0: right after `reset`, the mission's first text page may be showing) records the initial
+world hashes as the tick-0 checkpoint, then every canonical event of subsequent `step` calls (screen events
+included: the Enter that dismisses a page, the Escape that pauses) plus a checkpoint every N session ticks;
+a checkpoint is `{tick, world_tick, hashes}`. `replay.stop {path?}` appends the final checkpoint and returns
+the `ReplayV1` JSON Lines (and writes it under the artifact directory). `replay.play {jsonl | path,
+stop_on_divergence}` resets to the replay's scenario and seed, checks that the header equals the one the
+session would record now (protocol, ruleset, hash schema, content fingerprint, scenario, `time: "session"`,
+viewport, tick rate, seed, RNG streams; a mismatch names the fields), compares the tick-0 checkpoint before
+applying anything, then drives the same `advance` as recording did with the recorded events, comparing every
+checkpoint (hash parts and `world_tick`) and reporting the first diverging session tick and what differs.
+The header line: `{type: "header", replay_version: 1, protocol, ruleset, hash_schema, content_fingerprint,
+scenario, time: "session", viewport: [w, h], tick_rate: [num, den], seed, rng_streams: {name: {algorithm,
+seed, stream}}}`. `restore` is refused while a recording is active; Restart or Quit from the pause menu
+installs another world and discards the recording. The Python client wraps the three methods
+(`Engine.replay_start` / `replay_stop` / `replay_play`).
 
 Limits. A request line is at most 16 MiB; a longer line is answered with "request too large" and the rest of it is
 skipped through the reader's buffer without being stored. A replay file is at most 64 MiB, 2^20 events, 2^16
@@ -58,7 +70,8 @@ scenarios and `null` for synthetic ones. `restore {id | snapshot}` refuses a sna
 `content` differ from the session's, or whose world fails validation (geometry vertices within `+-2^20` map
 pixels, animation state resolvable in the attached sprite catalog, every other invariant of `World::validate`),
 and a refused restore or a failed `reset` leaves the session exactly as it was: world, background, screen,
-snapshot handles (ADR-0004, "Envelope and validation"). Both are refused while a menu screen is shown.
+snapshot handles (ADR-0004, "Envelope and validation"). Both are refused while a menu screen is shown, and
+`restore` while a replay is being recorded.
 
 ## Scenarios
 
@@ -77,14 +90,17 @@ shown), `mission_won`, `sequence_active`, `camera_target` (map pixels set by the
 `debriefing`, `unknown_natives` (`{id: count}` of natives without an implementation that were called),
 `faulted` (an unknown native stopped a callback), `lenient` and `unknown_calls` (see below). The app dismisses
 the text at the front of the queue through `World::vm_dismiss_text` when the briefing parchment closes (one
-dismissal per page); the harness does the same through `debug.vm {"dismiss_text": true}`, which is an inspection
-method, not a canonical input: a test that claims a player dismissed a page must do it through the screen.
+dismissal per page, on Enter, Escape or a click on the page). Tests dismiss pages the same way, with canonical
+input: `Engine.skip_briefing()` sends Enter once per page (one session tick each, recorded by an active
+replay). `debug.vm` is inspection only and cannot dismiss a page.
 
-`debug.vm` (counters, objectives, pending texts, scrolls with positions and activity) returns `{present, dismissed, classes, elements, locations, objectives, texts, mission_won,
+`debug.vm` (counters, objectives, pending texts, scrolls with positions and activity) returns `{present, classes, elements, locations, objectives, texts, mission_won,
 sequence_active, sequences, faulted, lenient, unknown_calls, pending_messages, camera_target, debriefing,
 mission_vars, counters, rng_draws}`; `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
 `traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives` and
-`objective_done_before_added`.
+`objective_done_before_added`. Its one mutation, `debug.vm {"win": true}`, marks the mission won: a documented
+harness shortcut used only by the end-of-mission flow test (`test_mission_won_shows_the_debriefing_then_the_menu`),
+because no mission can be won yet through play; it is not a player action and no other test may use it.
 
 Unknown natives (no row of `docs/formats/scb.md` with an effect) are a deterministic trap by default: the
 callback stops there, `faulted` becomes true, and the id is counted. `opensherwood --lenient-natives` selects

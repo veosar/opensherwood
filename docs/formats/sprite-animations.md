@@ -72,8 +72,7 @@ Robin's walk/run/sprint advances are 4/5/7, Soldier A's 2/3/5, so the hero moves
 
 Grouping the files by their full id sequence (`families.py`, scratch script) gives:
 
-- **Civilians** (15 files: Allan, Child, Godwin, ManCivilian*, WomanCivilian*, MarianneWedding, Priest,
-  PrinceJohn, Ranulph, TaxeCollector): 46 blocks. Prefix, then `34 36 35 37 39 38 40 41 47 44 48 45 49`
+- **Civilians** (15 sprite files: townsfolk, notables, the child, the priest, the tax collector, the wedding variant): 46 blocks. Prefix, then `34 36 35 37 39 38 40 41 47 44 48 45 49`
   (fall / lying / get-up set), `118 119 120 121 127 133` (kneel-and-cower set: kneel down, kneeling, one
   frame lying), `250 178 179 215 206 219 158 160 159 268 269 270`. Seen in `Child`: block 22 (id 41)
   falls flat, 23 (47) lies still, 27 (49) gets up, 32 (127) is curled up on the ground, 37 punches.

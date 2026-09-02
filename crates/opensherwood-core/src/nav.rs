@@ -13,7 +13,13 @@
 //! cell count and the total scan-conversion work (edge tests, each polygon scanned over its own
 //! rows only) are checked against [`MAX_POLYGONS`], [`MAX_CELLS`] and [`MAX_EDGE_TESTS`] before
 //! anything is allocated, allocations are fallible, and [`NavGrid::try_build`] reports the
-//! violation while [`NavGrid::build`] degrades to a grid with no walkable cell.
+//! violation; there is no constructor that degrades to an empty grid.
+//!
+//! Searching is bounded the same way: every A* node expansion and every cell visited by a
+//! line-clear test is charged to a work budget the caller owns ([`NavGrid::find_path_with`],
+//! [`NavGrid::smooth_with`]); an exhausted budget is [`NavError::WorkExhausted`], never a longer
+//! search. The search structures are allocated fallibly. The convenience wrappers without a budget
+//! parameter use [`DEFAULT_SEARCH_WORK`], which exceeds the work any accepted grid can need.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -32,6 +38,12 @@ pub const MAX_POLYGONS: usize = 1 << 16;
 /// edges`. Retail maps need under 150,000; the budget is about 500 times that and bounds the
 /// work a hostile snapshot can request to a fraction of a second.
 pub const MAX_EDGE_TESTS: u64 = 1 << 26;
+/// Work budget of the searches issued without an explicit budget (`find_path`, `find_path_near`,
+/// `smooth`, `line_clear`): node expansions plus line-clear cells. A* closes each cell at most
+/// once and pushes at most eight entries per closed cell, so `8 x MAX_CELLS` node pops finish any
+/// search on an accepted grid; smoothing a path of `p` cells needs at most `p x (width + height)`
+/// line-clear cells, which this budget bounds for retail-sized paths.
+pub const DEFAULT_SEARCH_WORK: u64 = 1 << 26;
 
 /// Neighbour offsets and step costs (10 straight, 14 diagonal).
 const DIRS: [(i32, i32, u32); 8] = [
@@ -66,11 +78,13 @@ pub enum NavError {
         /// Edge tests needed.
         edge_tests: u64,
     },
-    /// The allocator refused the grid.
+    /// The allocator refused the grid or a search structure.
     Allocation {
         /// Cells requested.
         cells: usize,
     },
+    /// A search or smoothing ran out of its work budget.
+    WorkExhausted,
 }
 
 impl fmt::Display for NavError {
@@ -87,8 +101,9 @@ impl fmt::Display for NavError {
                 "rasterising the geometry needs {edge_tests} edge tests (limit {MAX_EDGE_TESTS})"
             ),
             Self::Allocation { cells } => {
-                write!(f, "cannot allocate a navigation grid of {cells} cells")
+                write!(f, "cannot allocate a navigation structure of {cells} cells")
             }
+            Self::WorkExhausted => write!(f, "navigation work budget exhausted"),
         }
     }
 }
@@ -186,21 +201,6 @@ impl NavGrid {
         })
     }
 
-    /// [`NavGrid::try_build`] that never fails: when the geometry or the map is over budget the
-    /// grid has the map's dimensions and no walkable cell (movement is refused rather than
-    /// unbounded). Callers that can report an error should use `try_build`.
-    #[must_use]
-    pub fn build(geometry: &Geometry, map_w: u32, map_h: u32) -> Self {
-        Self::try_build(geometry, map_w, map_h).unwrap_or_else(|_| {
-            let (width, height) = Self::dimensions(map_w, map_h);
-            Self {
-                width,
-                height,
-                walkable: Vec::new(),
-            }
-        })
-    }
-
     /// Cell containing a map pixel.
     #[must_use]
     pub fn cell_of(&self, x: i32, y: i32) -> (i32, i32) {
@@ -265,35 +265,65 @@ impl NavGrid {
     }
 
     /// A* from cell `from` to cell `to` (8-connected, no corner cutting). Returns the cell path
-    /// including `to` and excluding `from`, or `None` when unreachable.
+    /// including `to` and excluding `from`, or `None` when unreachable (or when the
+    /// [`DEFAULT_SEARCH_WORK`] budget or an allocation fails).
     #[must_use]
     pub fn find_path(&self, from: (i32, i32), to: (i32, i32)) -> Option<Vec<(i32, i32)>> {
-        if !self.walkable(to) {
-            return None;
-        }
-        self.search(from, to, false)
+        let mut budget = DEFAULT_SEARCH_WORK;
+        self.find_path_with(from, to, false, &mut budget)
+            .ok()
+            .flatten()
     }
 
     /// A* towards `to`; when `to` is unreachable (or not walkable) the path ends at the reachable
     /// cell closest to it (what an order on water or behind a wall does in the original).
-    /// Returns `None` only when `from` is not walkable or no move is possible at all.
+    /// Returns `None` only when `from` is not walkable or no move is possible at all (or when the
+    /// [`DEFAULT_SEARCH_WORK`] budget or an allocation fails).
     #[must_use]
     pub fn find_path_near(&self, from: (i32, i32), to: (i32, i32)) -> Option<Vec<(i32, i32)>> {
-        self.search(from, to, true)
+        let mut budget = DEFAULT_SEARCH_WORK;
+        self.find_path_with(from, to, true, &mut budget)
+            .ok()
+            .flatten()
     }
 
-    fn search(&self, from: (i32, i32), to: (i32, i32), nearest: bool) -> Option<Vec<(i32, i32)>> {
+    /// A* with an explicit work budget: every node expansion (heap pop) costs one unit of
+    /// `budget`. `nearest` selects the [`NavGrid::find_path_near`] behaviour, otherwise an
+    /// unwalkable `to` is unreachable. `Ok(None)` = unreachable; `Err(WorkExhausted)` when the
+    /// budget ran out (it is then zero), `Err(Allocation)` when a search structure could not be
+    /// allocated. The budget is charged deterministically: the same grid, cells and budget give
+    /// the same result and the same remaining budget.
+    pub fn find_path_with(
+        &self,
+        from: (i32, i32),
+        to: (i32, i32),
+        nearest: bool,
+        budget: &mut u64,
+    ) -> Result<Option<Vec<(i32, i32)>>, NavError> {
+        if !nearest && !self.walkable(to) {
+            return Ok(None);
+        }
+        self.search(from, to, nearest, budget)
+    }
+
+    fn search(
+        &self,
+        from: (i32, i32),
+        to: (i32, i32),
+        nearest: bool,
+        budget: &mut u64,
+    ) -> Result<Option<Vec<(i32, i32)>>, NavError> {
         if !self.walkable(from) {
-            return None;
+            return Ok(None);
         }
         if from == to {
-            return Some(Vec::new());
+            return Ok(Some(Vec::new()));
         }
         let idx = |(x, y): (i32, i32)| (y * self.width + x) as usize;
         let n = (self.width * self.height) as usize;
-        let mut g = vec![u32::MAX; n];
-        let mut parent = vec![u32::MAX; n];
-        let mut closed = vec![false; n];
+        let mut g = alloc_filled(n, u32::MAX)?;
+        let mut parent = alloc_filled(n, u32::MAX)?;
+        let mut closed = alloc_filled(n, false)?;
         // Octile distance; `to` may be any cell, so the differences are formed in `i64` and the
         // result saturates (a target that far away is unreachable anyway).
         let h = |c: (i32, i32)| -> u32 {
@@ -304,19 +334,25 @@ impl NavGrid {
         };
         let mut open: BinaryHeap<Reverse<(u32, u32, u32)>> = BinaryHeap::new();
         g[idx(from)] = 0;
-        open.push(Reverse((h(from), 0, idx(from) as u32)));
+        heap_push(&mut open, Reverse((h(from), 0, idx(from) as u32)))?;
         let mut best = (h(from), idx(from));
-        let unwind = |end: usize, parent: &[u32]| {
+        let unwind = |end: usize, parent: &[u32]| -> Result<Vec<(i32, i32)>, NavError> {
             let mut path = Vec::new();
             let mut cur = end;
             while cur != idx(from) {
+                path.try_reserve(1)
+                    .map_err(|_| NavError::Allocation { cells: n })?;
                 path.push(((cur as i32) % self.width, (cur as i32) / self.width));
                 cur = parent[cur] as usize;
             }
             path.reverse();
-            path
+            Ok(path)
         };
         while let Some(Reverse((_, gc, ci))) = open.pop() {
+            if *budget == 0 {
+                return Err(NavError::WorkExhausted);
+            }
+            *budget -= 1;
             let ci = ci as usize;
             if closed[ci] || gc != g[ci] {
                 continue;
@@ -324,7 +360,7 @@ impl NavGrid {
             closed[ci] = true;
             let c = ((ci as i32) % self.width, (ci as i32) / self.width);
             if c == to {
-                return Some(unwind(ci, &parent));
+                return unwind(ci, &parent).map(Some);
             }
             let hc = h(c);
             if hc < best.0 {
@@ -347,21 +383,36 @@ impl NavGrid {
                 if ng < g[ni] {
                     g[ni] = ng;
                     parent[ni] = ci as u32;
-                    open.push(Reverse((ng.saturating_add(h(nb)), ng, ni as u32)));
+                    heap_push(
+                        &mut open,
+                        Reverse((ng.saturating_add(h(nb)), ng, ni as u32)),
+                    )?;
                 }
             }
         }
         if nearest && best.1 != idx(from) {
-            return Some(unwind(best.1, &parent));
+            return unwind(best.1, &parent).map(Some);
         }
-        None
+        Ok(None)
     }
 
     /// Whether every cell on the segment between two cells is walkable (supercover line). The
     /// walk is done in `i64` so any pair of `i32` cells is accepted; the first cell outside the
-    /// grid ends it with `false`.
+    /// grid ends it with `false`. Uses the [`DEFAULT_SEARCH_WORK`] budget (an exhausted budget
+    /// reads as "not clear").
     #[must_use]
     pub fn line_clear(&self, a: (i32, i32), b: (i32, i32)) -> bool {
+        let mut budget = DEFAULT_SEARCH_WORK;
+        self.line_clear_with(a, b, &mut budget).unwrap_or(false)
+    }
+
+    /// [`NavGrid::line_clear`] charging one unit of `budget` per cell visited.
+    pub fn line_clear_with(
+        &self,
+        a: (i32, i32),
+        b: (i32, i32),
+        budget: &mut u64,
+    ) -> Result<bool, NavError> {
         let walkable = |x: i64, y: i64| match (i32::try_from(x), i32::try_from(y)) {
             (Ok(x), Ok(y)) => self.walkable((x, y)),
             _ => false,
@@ -374,24 +425,28 @@ impl NavGrid {
         let sy = if y < by { 1 } else { -1 };
         let mut err = dx + dy;
         loop {
+            if *budget == 0 {
+                return Err(NavError::WorkExhausted);
+            }
+            *budget -= 1;
             if !walkable(x, y) {
-                return false;
+                return Ok(false);
             }
             if (x, y) == (bx, by) {
-                return true;
+                return Ok(true);
             }
             let e2 = 2 * err;
             if e2 >= dy {
                 // Moving horizontally: also require the vertical neighbour to avoid corner clipping.
                 if e2 <= dx && !walkable(x + sx, y) {
-                    return false;
+                    return Ok(false);
                 }
                 err += dy;
                 x += sx;
             }
             if e2 <= dx {
                 if e2 >= dy && !walkable(x, y + sy) {
-                    return false;
+                    return Ok(false);
                 }
                 err += dx;
                 y += sy;
@@ -399,23 +454,56 @@ impl NavGrid {
         }
     }
 
-    /// Drop intermediate cells that can be skipped with a clear line (greedy string pulling).
+    /// Drop intermediate cells that can be skipped with a clear line (greedy string pulling),
+    /// within the [`DEFAULT_SEARCH_WORK`] budget (when it runs out the path is returned as it was).
     #[must_use]
     pub fn smooth(&self, from: (i32, i32), path: &[(i32, i32)]) -> Vec<(i32, i32)> {
+        let mut budget = DEFAULT_SEARCH_WORK;
+        self.smooth_with(from, path, &mut budget)
+            .unwrap_or_else(|_| path.to_vec())
+    }
+
+    /// [`NavGrid::smooth`] charging every line-clear cell to `budget`.
+    pub fn smooth_with(
+        &self,
+        from: (i32, i32),
+        path: &[(i32, i32)],
+        budget: &mut u64,
+    ) -> Result<Vec<(i32, i32)>, NavError> {
         let mut out = Vec::new();
+        out.try_reserve(path.len())
+            .map_err(|_| NavError::Allocation { cells: path.len() })?;
         let mut anchor = from;
         let mut i = 0;
         while i < path.len() {
             let mut j = path.len() - 1;
-            while j > i && !self.line_clear(anchor, path[j]) {
+            while j > i && !self.line_clear_with(anchor, path[j], budget)? {
                 j -= 1;
             }
             out.push(path[j]);
             anchor = path[j];
             i = j + 1;
         }
-        out
+        Ok(out)
     }
+}
+
+/// A vector of `n` copies of `value`, or [`NavError::Allocation`].
+fn alloc_filled<T: Clone>(n: usize, value: T) -> Result<Vec<T>, NavError> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(n)
+        .map_err(|_| NavError::Allocation { cells: n })?;
+    v.resize(n, value);
+    Ok(v)
+}
+
+/// Push onto the open set with a fallible reservation.
+fn heap_push<T: Ord>(heap: &mut BinaryHeap<T>, item: T) -> Result<(), NavError> {
+    heap.try_reserve(1).map_err(|_| NavError::Allocation {
+        cells: heap.len().saturating_add(1),
+    })?;
+    heap.push(item);
+    Ok(())
 }
 
 /// An empty cell buffer with room for `n` cells, or [`NavError::Allocation`].
@@ -516,7 +604,7 @@ mod tests {
             obstacles: vec![vec![(90, 0), (110, 0), (110, 150), (90, 150)]],
             areas: Vec::new(),
         };
-        NavGrid::build(&g, 200, 200)
+        NavGrid::try_build(&g, 200, 200).unwrap()
     }
 
     #[test]
@@ -632,11 +720,6 @@ mod tests {
         let err = NavGrid::check_budget(&heavy, 8, rows * CELL as u32).unwrap_err();
         assert!(matches!(err, NavError::TooMuchWork { .. }), "{err}");
         assert!(NavGrid::try_build(&heavy, 8, rows * CELL as u32).is_err());
-        // The infallible constructor degrades to a grid with no walkable cell.
-        let degraded = NavGrid::build(&heavy, 8, rows * CELL as u32);
-        assert_eq!((degraded.width, degraded.height), (1, rows as i32));
-        assert!(!degraded.walkable((0, 0)));
-        assert!(degraded.find_path((0, 0), (0, 1)).is_none());
         // Cells.
         assert!(matches!(
             NavGrid::check_budget(&Geometry::default(), u32::MAX, u32::MAX),
@@ -656,6 +739,55 @@ mod tests {
     }
 
     #[test]
+    fn search_work_is_charged_and_bounded() {
+        let g = grid();
+        let (from, to) = (g.cell_of(20, 20), g.cell_of(180, 20));
+        let mut budget = DEFAULT_SEARCH_WORK;
+        let path = g
+            .find_path_with(from, to, false, &mut budget)
+            .unwrap()
+            .unwrap();
+        let used = DEFAULT_SEARCH_WORK - budget;
+        assert!(used > 0 && used <= 25 * 25 * 8, "{used} pops");
+        // The same search with the same budget gives the same result and the same charge.
+        let mut again = DEFAULT_SEARCH_WORK;
+        assert_eq!(
+            g.find_path_with(from, to, false, &mut again)
+                .unwrap()
+                .unwrap(),
+            path
+        );
+        assert_eq!(again, budget);
+        // One unit short: exhausted, the budget reads zero, no path.
+        let mut short = used - 1;
+        assert_eq!(
+            g.find_path_with(from, to, false, &mut short),
+            Err(NavError::WorkExhausted)
+        );
+        assert_eq!(short, 0);
+        let mut short = used - 1;
+        assert_eq!(
+            g.find_path_with(from, to, true, &mut short),
+            Err(NavError::WorkExhausted)
+        );
+        // Smoothing charges line-clear cells; a zero budget cannot even start.
+        let mut budget = DEFAULT_SEARCH_WORK;
+        let smooth = g.smooth_with(from, &path, &mut budget).unwrap();
+        assert!(budget < DEFAULT_SEARCH_WORK);
+        assert_eq!(smooth, g.smooth(from, &path));
+        let mut zero = 0;
+        assert_eq!(
+            g.smooth_with(from, &path, &mut zero),
+            Err(NavError::WorkExhausted)
+        );
+        assert_eq!(
+            g.line_clear_with((2, 2), (2, 2), &mut zero),
+            Err(NavError::WorkExhausted)
+        );
+        assert!(!g.line_clear((0, 0), (2, 2)));
+    }
+
+    #[test]
     fn extreme_inputs_never_overflow() {
         let ext = [i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX];
         // Hostile polygons through the scan conversion (bounds are enforced one level up, in the
@@ -672,9 +804,11 @@ mod tests {
         };
         let hostile = NavGrid::try_build(&g, 200, 200).unwrap();
         assert_eq!((hostile.width, hostile.height), (25, 25));
-        // Oversized maps degrade to a grid without walkable cells instead of allocating.
-        let huge = NavGrid::build(&Geometry::default(), u32::MAX, u32::MAX);
-        assert!(!huge.walkable((0, 0)));
+        // Oversized maps are refused instead of allocated.
+        assert!(matches!(
+            NavGrid::try_build(&Geometry::default(), u32::MAX, u32::MAX),
+            Err(NavError::TooManyCells { .. })
+        ));
         let grid = grid();
         for &x in &ext {
             for &y in &ext {

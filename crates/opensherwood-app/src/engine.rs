@@ -18,9 +18,9 @@ use crate::ui_assets;
 use opensherwood_core::Geometry;
 use opensherwood_protocol::{
     CaptureParams, CaptureResult, HelloResult, ObserveParams, ObserveResult, PROTOCOL_VERSION,
-    Replay, ReplayCheckpoint, ReplayEvent, ReplayHeader, ReplayPlayParams, ReplayPlayResult,
-    ReplayRecorder, ReplayStartParams, ReplayStopResult, ResetParams, RestoreParams, RngStreamInit,
-    RpcError, SnapshotResult, StepParams, StepResult, replay_limits,
+    REPLAY_TIME_SESSION, Replay, ReplayCheckpoint, ReplayEvent, ReplayHeader, ReplayPlayParams,
+    ReplayPlayResult, ReplayRecorder, ReplayStartParams, ReplayStopResult, ResetParams,
+    RestoreParams, RngStreamInit, RpcError, SnapshotResult, StepParams, StepResult, replay_limits,
 };
 use opensherwood_render::Occluder;
 use opensherwood_render::{Background, Framebuffer, NoSprites, SpriteFrame, SpriteSource, render};
@@ -107,6 +107,11 @@ pub struct Session {
     queued_input: Vec<InputEvent>,
     /// Replay being recorded, if any.
     recording: Option<Recording>,
+    /// The session tick: the number of `advance` calls since the current world was installed (a
+    /// `reset`, or Play! / Restart from a menu), whether a screen consumed the tick's events or
+    /// the world stepped. Replay time (`REPLAY_TIME_SESSION`): events and checkpoints are keyed by
+    /// it, so screens are part of the timeline and the world tick may lag behind it.
+    elapsed: u64,
     /// Audio output (window mode only; `None` when muted, headless or unavailable).
     audio: Option<opensherwood_audio::Audio>,
     /// Active screen.
@@ -124,6 +129,8 @@ pub struct Session {
     debriefings_lost: Vec<String>,
     /// The mission's end has been shown (the debriefing parchment leads back to the menu).
     ended: bool,
+    /// A non-blocking script text (native 202) shown over the world, with its remaining ticks.
+    notice: Option<(String, u32)>,
     /// Scenario and seed of the world that is installed (for Restart).
     current: Option<(Scenario, u64)>,
     /// HUD values.
@@ -151,6 +158,9 @@ enum Screen {
 
 /// The mission `Play!` starts with a fresh profile (`docs/original/campaign-flow.md`).
 pub const FIRST_MISSION: &str = "H01_Lin_VL";
+/// How long a non-blocking script text stays on screen (5 s at 60 ticks; the original's timing is
+/// not observed yet).
+const NOTICE_TICKS: u32 = 300;
 
 /// Tick rate used by replays and the window (ticks per second).
 pub const TICK_RATE: (u32, u32) = (60, 1);
@@ -237,6 +247,7 @@ impl Session {
             frame: None,
             queued_input: Vec::new(),
             recording: None,
+            elapsed: 0,
             audio: None,
             screen: Screen::World,
             ui_assets: None,
@@ -246,6 +257,7 @@ impl Session {
             debriefings_won: Vec::new(),
             debriefings_lost: Vec::new(),
             ended: false,
+            notice: None,
             current: None,
             hud: HudState::default(),
             lenient_natives: false,
@@ -379,17 +391,23 @@ impl Session {
             .unwrap_or_default()
     }
 
-    /// While the world is played and the script has a text page pending (native 202 / 203), show it on
-    /// the parchment; dismissing it lets the script's sequence continue.
+    /// While the world is played and the script has a text pending: a blocking page (native 203)
+    /// goes on the parchment and waits for the player, a non-blocking one (native 202) becomes a
+    /// notice drawn over the running world for a few seconds (the original's presentation of 202 is
+    /// not observed yet) and is dismissed in the VM at once.
     fn sync_text_screen(&mut self) {
         if !matches!(self.screen, Screen::World) {
             return;
         }
-        let Some(k) = self
+        let Some((k, blocking)) = self
             .world
             .as_ref()
             .and_then(|w| w.vm.as_ref())
-            .and_then(|vm| vm.pending_texts().first().copied())
+            .and_then(|vm| {
+                vm.pending_text_requests()
+                    .first()
+                    .map(|t| (t.text, t.blocking))
+            })
         else {
             return;
         };
@@ -398,7 +416,14 @@ impl Session {
             .and_then(|i| self.mission_texts.get(i).cloned())
             .unwrap_or_else(|| format!("[text {k}]"));
         let _ = self.ui_assets();
-        self.screen = Screen::Briefing(Briefing::new(vec![text]));
+        if blocking {
+            self.screen = Screen::Briefing(Briefing::new(vec![text]));
+        } else {
+            self.notice = Some((text, NOTICE_TICKS));
+            if let Some(w) = self.world.as_mut() {
+                w.vm_dismiss_text();
+            }
+        }
         self.frame = None;
     }
 
@@ -412,6 +437,12 @@ impl Session {
         self.frame = None;
         self.sync_text_screen();
         dismissed
+    }
+
+    /// The session tick (replay time): `advance` calls since the current world was installed.
+    #[must_use]
+    pub fn session_tick(&self) -> u64 {
+        self.elapsed
     }
 
     /// Input queued by the window that the session has not consumed (controlled mode ended).
@@ -462,9 +493,21 @@ impl Session {
         self.frame = None;
     }
 
-    /// Advance one tick: menus consume the events without ticking the world; the briefing pauses
-    /// the world; otherwise the world steps.
+    /// Advance one session tick: menus consume the events without ticking the world; the briefing
+    /// pauses the world; otherwise the world steps. Every call is one unit of replay time: the
+    /// events are recorded at the session tick they are applied at (screens included), the
+    /// session tick then advances, and a checkpoint of the world is recorded when due. This is
+    /// the one path `step`, the window and replay playback take, so a replay reproduces the
+    /// screens exactly as they were played.
     pub fn advance(&mut self, events: &[InputEvent]) {
+        self.record_events(events);
+        self.elapsed = self.elapsed.saturating_add(1);
+        self.advance_screen(events);
+        self.record_checkpoint();
+    }
+
+    /// The screen / world part of [`Session::advance`].
+    fn advance_screen(&mut self, events: &[InputEvent]) {
         match &mut self.screen {
             Screen::Menu(menu) => {
                 let mut chosen = None;
@@ -566,7 +609,16 @@ impl Session {
                 if escape_at.is_some() {
                     self.open_pause();
                 } else {
-                    self.step_recorded(events);
+                    if let Some(world) = self.world.as_mut() {
+                        world.step(events);
+                    }
+                    if let Some((_, left)) = self.notice.as_mut() {
+                        *left = left.saturating_sub(1);
+                        if *left == 0 {
+                            self.notice = None;
+                        }
+                        self.frame = None;
+                    }
                     self.sync_text_screen();
                     self.sync_mission_end();
                 }
@@ -681,6 +733,7 @@ impl Session {
             ruleset: opensherwood_core::RULESET_VERSION,
             content_fingerprint: fingerprint,
             scenario: world.scenario.clone(),
+            time: REPLAY_TIME_SESSION.to_string(),
             viewport: world.viewport,
             tick_rate: TICK_RATE,
             hash_schema: opensherwood_core::hash::HASH_SCHEMA_VERSION,
@@ -713,7 +766,7 @@ impl Session {
     /// check is conservative: every event is costed at its longest representation and every
     /// checkpoint the step can add at the recorder's reserve size.
     fn check_recording_quota(&self, ticks: u32, new_events: &[InputEvent]) -> Result<(), RpcError> {
-        let (Some(rec), Some(world)) = (self.recording.as_ref(), self.world.as_ref()) else {
+        let Some(rec) = self.recording.as_ref() else {
             return Ok(());
         };
         let quota = |what: &str| {
@@ -722,7 +775,7 @@ impl Session {
                 format!("step would exceed the replay recording quota ({what}); call replay.stop"),
             )
         };
-        if world.tick + u64::from(ticks) > replay_limits::MAX_TICK {
+        if self.session_tick().saturating_add(u64::from(ticks)) > replay_limits::MAX_TICK {
             return Err(quota(&format!("tick {}", replay_limits::MAX_TICK)));
         }
         if rec.recorder.events().len() + new_events.len() > replay_limits::MAX_EVENTS {
@@ -754,43 +807,64 @@ impl Session {
         Ok(())
     }
 
-    /// Run one tick, recording it if a replay is being recorded. Recording stops (and the
-    /// recording is marked failed) at the `replay_limits` quotas; RPC `step` refuses such a step
-    /// up front through [`Session::check_recording_quota`], this is the backstop for window mode.
-    fn step_recorded(&mut self, events: &[InputEvent]) {
-        let Some(world) = self.world.as_mut() else {
+    /// Record the events of the session tick about to be advanced, if a replay is being
+    /// recorded. Recording stops (and the recording is marked failed) at the `replay_limits`
+    /// quotas; RPC `step` refuses such a step up front through
+    /// [`Session::check_recording_quota`], this is the backstop for window mode.
+    fn record_events(&mut self, events: &[InputEvent]) {
+        let tick = self.elapsed;
+        let Some(rec) = self.recording.as_mut() else {
             return;
         };
-        let tick = world.tick;
-        if let Some(rec) = self.recording.as_mut()
-            && rec.failed.is_none()
-        {
-            // The recorder checks every quota (tick, count, ordering, bytes) per event and
-            // refuses without mutating; the first refusal ends the recording.
-            for (i, e) in events.iter().enumerate() {
-                if let Err(why) = rec.recorder.push_event(ReplayEvent {
-                    tick,
-                    sequence: i as u32,
-                    event: *e,
-                    intent: None,
-                }) {
-                    rec.failed = Some(why);
-                    break;
-                }
+        if rec.failed.is_some() {
+            return;
+        }
+        // The recorder checks every quota (tick, count, ordering, bytes) per event and
+        // refuses without mutating; the first refusal ends the recording.
+        for (i, e) in events.iter().enumerate() {
+            if let Err(why) = rec.recorder.push_event(ReplayEvent {
+                tick,
+                sequence: i as u32,
+                event: *e,
+                intent: None,
+            }) {
+                rec.failed = Some(why);
+                break;
             }
         }
-        world.step(events);
+    }
+
+    /// After a session tick: record a checkpoint of the world when one is due.
+    fn record_checkpoint(&mut self) {
+        let tick = self.elapsed;
+        let Some(rec) = self.recording.as_ref() else {
+            return;
+        };
+        if rec.failed.is_some()
+            || rec.checkpoint_every == 0
+            || !tick.is_multiple_of(rec.checkpoint_every)
+        {
+            return;
+        }
+        let (world_tick, hashes) = self.checkpoint_state();
         if let Some(rec) = self.recording.as_mut()
-            && rec.failed.is_none()
-            && rec.checkpoint_every > 0
-            && world.tick.is_multiple_of(rec.checkpoint_every)
             && let Err(why) = rec.recorder.push_checkpoint(ReplayCheckpoint {
-                tick: world.tick,
-                hashes: world.hashes(),
+                tick,
+                world_tick,
+                hashes,
             })
         {
             rec.failed = Some(why);
         }
+    }
+
+    /// What a checkpoint compares: the world's tick and hashes (defaults without a world).
+    fn checkpoint_state(&self) -> (u64, opensherwood_core::Hashes) {
+        self.world
+            .as_ref()
+            .map_or((0, opensherwood_core::Hashes::default()), |w| {
+                (w.tick, w.hashes())
+            })
     }
 
     /// Queue window input for the next `step` (controlled window mode).
@@ -964,6 +1038,7 @@ impl Session {
             self.snapshots.clear();
             self.queued_input.clear();
             self.recording = None;
+            self.elapsed = 0;
             self.open_menu();
             return Ok(());
         }
@@ -1009,7 +1084,8 @@ impl Session {
                     width: bg.width,
                     height: bg.height,
                 };
-                let (mut spec, profiles) = mission::build_spec(&mission_file, info, geometry);
+                let (mut spec, profiles) =
+                    mission::build_spec_checked(&mission_file, info, geometry, lenient_assets())?;
                 spec.lenient_natives = self.lenient_natives;
                 let mut world = World::new_mission(scenario, seed, &spec)?;
                 let catalog = self.load_catalog(&profiles)?;
@@ -1023,8 +1099,8 @@ impl Session {
         Ok(loaded)
     }
 
-    /// Make a freshly built world the session's world: the screen is the world, and snapshot
-    /// handles, queued input and any recording belonged to the previous world.
+    /// Make a freshly built world the session's world: the screen is the world, the session tick
+    /// is 0, and snapshot handles, queued input and any recording belonged to the previous world.
     fn install(&mut self, world: World, background: Option<Background>) {
         self.screen = Screen::World;
         self.current = Some((world.scenario.clone(), world.seed));
@@ -1041,6 +1117,7 @@ impl Session {
         self.snapshots.clear();
         self.queued_input.clear();
         self.recording = None;
+        self.elapsed = 0;
         // Presentation state derived from the installed world, never from session history.
         self.hud = HudState {
             money: ProfileSummary::default().money,
@@ -1099,6 +1176,9 @@ impl Session {
                     };
                     if in_mission && let Some(a) = self.ui_assets.as_ref() {
                         crate::ui::draw_hud(&mut frame, a, &self.hud);
+                        if let Some((text, _)) = &self.notice {
+                            crate::ui::draw_notice(&mut frame, a, text);
+                        }
                     }
                     match &self.screen {
                         Screen::Briefing(b) | Screen::Debriefing(b) => {
@@ -1262,6 +1342,11 @@ impl Session {
             }
             "restore" => {
                 self.require_world_screen()?;
+                if self.recording.is_some() {
+                    return Err(engine_err(
+                        "a replay is being recorded; call replay.stop before restore",
+                    ));
+                }
                 let p: RestoreParams = params_required(p)?;
                 let snap = match (p.snapshot, p.id) {
                     (Some(s), _) => s,
@@ -1350,22 +1435,29 @@ impl Session {
                 })
             }
             "replay.start" => {
-                self.require_world_screen()?;
                 let p: ReplayStartParams = params(p)?;
+                // Allowed at session tick 0 only: right after `reset`, even while the mission's
+                // first text page is shown (its dismissal is then part of the replay). The main
+                // menu has no world to record.
                 let world = self
                     .world
                     .as_ref()
                     .ok_or_else(|| engine_err("no world loaded; call reset first"))?;
-                if world.tick != 0 {
+                if self.session_tick() != 0 {
                     return Err(engine_err(
-                        "replay recording must start at tick 0 (call reset first)",
+                        "replay recording must start at session tick 0 (call reset first)",
                     ));
                 }
                 let header = self.replay_header(world)?;
                 let hashes = world.hashes();
                 let mut recorder = ReplayRecorder::new(header, &hashes).map_err(engine_err)?;
+                // The initial state: playback compares it before applying anything.
                 recorder
-                    .push_checkpoint(ReplayCheckpoint { tick: 0, hashes })
+                    .push_checkpoint(ReplayCheckpoint {
+                        tick: 0,
+                        world_tick: world.tick,
+                        hashes,
+                    })
                     .map_err(engine_err)?;
                 self.recording = Some(Recording {
                     recorder,
@@ -1383,16 +1475,18 @@ impl Session {
                 if let Some(why) = rec.failed {
                     return Err(engine_err(format!("recording discarded: {why}")));
                 }
-                let world = self.world()?;
-                // The final checkpoint goes into the bytes the recorder reserved for it (a
-                // checkpoint at tick 0 is dropped when others exist); the text is then built
-                // with fallible allocation and is within `replay_limits::MAX_BYTES` by
-                // construction, so the parser accepts it.
+                let tick = self.session_tick();
+                let (world_tick, hashes) = self.checkpoint_state();
+                // The final checkpoint goes into the bytes the recorder reserved for it, through
+                // the recorder's validated path; the text is then built with fallible allocation
+                // and is within `replay_limits::MAX_BYTES` by construction, so the parser
+                // accepts it.
                 let replay = rec
                     .recorder
                     .finish(ReplayCheckpoint {
-                        tick: world.tick,
-                        hashes: world.hashes(),
+                        tick,
+                        world_tick,
+                        hashes,
                     })
                     .map_err(|e| engine_err(format!("recording discarded: {e}")))?;
                 let jsonl = replay
@@ -1413,7 +1507,8 @@ impl Session {
                 })
             }
             "replay.play" => {
-                self.require_world_screen()?;
+                // Playback resets the session to the replay's scenario, so it is allowed from
+                // any screen.
                 let p: ReplayPlayParams = params(p)?;
                 let text = match (p.jsonl, p.path) {
                     (Some(t), _) => t,
@@ -1463,26 +1558,47 @@ impl Session {
                 }
                 self.reset(replay.header.scenario.clone(), replay.header.seed)
                     .map_err(engine_err)?;
+                // The header must be exactly what this session would record now: a replay with
+                // another viewport, tick rate, RNG stream identity or content is not played
+                // against a session that would produce different checkpoints.
+                let world = self
+                    .world
+                    .as_ref()
+                    .ok_or_else(|| engine_err("replay scenario has no world to play"))?;
+                let expected = self.replay_header(world)?;
+                if expected != replay.header {
+                    return Err(engine_err(format!(
+                        "replay header does not match the session after reset ({})",
+                        replay.header.diff(&expected).join(", ")
+                    )));
+                }
                 let mut events = replay.events.iter().peekable();
                 let mut checkpoints = replay.checkpoints.iter().peekable();
                 let mut checkpoints_ok = 0usize;
                 let mut first_divergence = None;
                 let mut tick_events: Vec<InputEvent> = Vec::new();
-                for tick in 0..last {
-                    tick_events.clear();
-                    while let Some(e) = events.peek()
-                        && e.tick == tick
-                    {
-                        tick_events.push(e.event);
-                        events.next();
+                let mut simulated = 0u64;
+                // Session tick `t` (0 = the state right after reset, compared before anything
+                // is applied) is reached by advancing with the events recorded at tick `t - 1`,
+                // through the same `advance` the recording went through (screens included).
+                for tick in 0..=last {
+                    if tick > 0 {
+                        tick_events.clear();
+                        while let Some(e) = events.peek()
+                            && e.tick == tick - 1
+                        {
+                            tick_events.push(e.event);
+                            events.next();
+                        }
+                        self.advance(&tick_events);
+                        simulated = tick;
                     }
-                    self.step_recorded(&tick_events);
-                    let hashes = self.world()?.hashes();
+                    let (world_tick, hashes) = self.checkpoint_state();
                     while let Some(c) = checkpoints.peek()
-                        && c.tick <= tick + 1
+                        && c.tick <= tick
                     {
-                        if c.tick == tick + 1 {
-                            let diff = c.hashes.diff(&hashes);
+                        if c.tick == tick {
+                            let diff = c.diff(world_tick, &hashes);
                             if diff.is_empty() {
                                 checkpoints_ok += 1;
                             } else if first_divergence.is_none() {
@@ -1496,12 +1612,12 @@ impl Session {
                     }
                 }
                 self.frame = None;
-                let world = self.world()?;
+                let (_, hashes) = self.checkpoint_state();
                 ok(ReplayPlayResult {
-                    ticks: world.tick,
+                    ticks: simulated,
                     checkpoints_ok,
                     first_divergence,
-                    hashes: world.hashes(),
+                    hashes,
                 })
             }
             "debug.nav" => {
@@ -1514,7 +1630,9 @@ impl Session {
                 }
                 let p: P = params_required(p)?;
                 let world = self.world()?;
-                world.ensure_nav();
+                world
+                    .try_ensure_nav()
+                    .map_err(|e| engine_err(format!("navigation grid: {e}")))?;
                 let nav = world.nav.as_ref().expect("ensured");
                 let cell = nav.cell_of(p.x, p.y);
                 let path = p.to.map(|(tx, ty)| {
@@ -1534,11 +1652,11 @@ impl Session {
                 }))
             }
             "debug.vm" => {
+                // Inspection only: text pages are dismissed through the briefing screen with
+                // canonical input (Enter / click), never from here. `win` is the one documented
+                // harness shortcut (the end-of-mission flow test; `docs/harness.md`).
                 #[derive(serde::Deserialize, Default)]
                 struct P {
-                    /// Dismiss the text at the front of the queue before reporting.
-                    #[serde(default)]
-                    dismiss_text: bool,
                     /// Mark the mission won (harness shortcut for the end-of-mission flow).
                     #[serde(default)]
                     win: bool,
@@ -1550,14 +1668,12 @@ impl Session {
                 {
                     vm.mission_won = true;
                 }
-                let dismissed = p.dismiss_text && self.dismiss_text();
                 let world = self.world()?;
                 let Some(vm) = world.vm.as_ref() else {
-                    return ok(json!({ "present": false, "dismissed": dismissed }));
+                    return ok(json!({ "present": false }));
                 };
                 ok(json!({
                     "present": true,
-                    "dismissed": dismissed,
                     "classes": vm.program.classes.len(),
                     "elements": vm.program.elements.len(),
                     "locations": vm.program.locations.len(),
@@ -1687,7 +1803,7 @@ mod session_tests {
             x256: i32::MIN,
             y256: i32::MIN,
         };
-        s.step_recorded(&[big, big, big, big]);
+        s.advance(&[big, big, big, big]);
         assert!(s.recording.as_ref().unwrap().failed.is_some());
         let err = s.dispatch("replay.stop", Some(json!({}))).unwrap_err();
         assert!(err.message.contains("discarded"), "{}", err.message);
@@ -1710,7 +1826,11 @@ mod session_tests {
         let cap = 4096;
         let mut recorder = ReplayRecorder::with_max_bytes(header, &hashes, cap).unwrap();
         recorder
-            .push_checkpoint(ReplayCheckpoint { tick: 0, hashes })
+            .push_checkpoint(ReplayCheckpoint {
+                tick: 0,
+                world_tick: 0,
+                hashes,
+            })
             .unwrap();
         s.recording.as_mut().unwrap().recorder = recorder;
         let mut recorded = 0;
@@ -1737,8 +1857,14 @@ mod session_tests {
         assert!(jsonl.len() <= cap, "{} > {cap}", jsonl.len());
         let replay = Replay::from_jsonl(jsonl).unwrap();
         assert_eq!(replay.events.len(), recorded);
-        assert_eq!(replay.checkpoints.len(), 1);
-        assert_eq!(replay.checkpoints[0].tick, s.world.as_ref().unwrap().tick);
+        // The initial checkpoint and the final one (session tick = world tick: no screen).
+        assert_eq!(replay.checkpoints.len(), 2);
+        assert_eq!(replay.checkpoints[0].tick, 0);
+        assert_eq!(replay.checkpoints[1].tick, s.session_tick());
+        assert_eq!(
+            replay.checkpoints[1].world_tick,
+            s.world.as_ref().unwrap().tick
+        );
     }
 
     #[test]
@@ -1791,7 +1917,7 @@ mod session_tests {
             .lines()
             .map(|line| {
                 let mut v: Value = serde_json::from_str(line).unwrap();
-                if v["type"] == "checkpoint" {
+                if v["type"] == "checkpoint" && v["tick"] != json!(0) {
                     v["tick"] = json!(limits::MAX_REPLAY_PLAY_TICKS + 1);
                 }
                 v.to_string() + "\n"

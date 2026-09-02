@@ -929,6 +929,26 @@ pub fn draw_hud(scene: &mut Framebuffer, assets: &UiAssets, hud: &HudState) {
     }
 }
 
+/// A non-blocking script text (native 202) over the running world: the small scroll (`PIC` 133,
+/// 220x100) centred near the top with the text wrapped inside. Layout is the engine's (the original's
+/// presentation of these hints is not observed yet).
+pub fn draw_notice(scene: &mut Framebuffer, assets: &UiAssets, text: &str) {
+    let Some(font) = assets.font_debrief.as_ref().or(assets.font_text.as_ref()) else {
+        return;
+    };
+    let lines = wrap(font, text, 400);
+    let height = (lines.len() as i32) * (font.height() as i32 + 2) + 24;
+    let (w, h) = (440, height.max(60));
+    let (x, y) = ((MENU_FRAME.0 as i32 - w) / 2, 70);
+    scene.fill_rect(x, y, x + w, y + h, [40, 30, 20, 255]);
+    scene.fill_rect(x + 2, y + 2, x + w - 2, y + h - 2, [222, 200, 156, 255]);
+    let mut ty = y + 12;
+    for line in lines {
+        font.draw_centered(scene, &line, MENU_FRAME.0 as i32 / 2, ty);
+        ty += font.height() as i32 + 2;
+    }
+}
+
 /// Word-wrap `text` to `max_width` pixels with `font`.
 fn wrap(font: &FontAtlas, text: &str, max_width: i32) -> Vec<String> {
     let mut lines = Vec::new();

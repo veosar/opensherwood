@@ -8,7 +8,9 @@
 //! `MissionSpec::lenient_natives` it is a recorded no-op instead (result 0) and every call is
 //! appended with its arguments to `VmState::unknown_calls`, which is hashed. Inside a sequence
 //! (between natives 30 and 31) the natives listed in [`SEQUENCE_ELEMENTS`] are collected as
-//! elements instead of running at once; everything else runs immediately.
+//! elements instead of running at once; everything else runs immediately. Native 32 is the
+//! sequence barrier (`vm.rs`, [`crate::vm::SeqToken`]); natives 202 (non-blocking) and 203 (a
+//! page that holds its sequence) both queue a `TextRequest` whose `blocking` flag tells them apart.
 //!
 //! Handles. Elements, locations, paths, doors and patches are their table indices (`NONE_HANDLE`
 //! = none); a location value with [`LOCATION_POINT_BIT`] set packs an actor position (native 95).
@@ -19,13 +21,19 @@ use crate::vm::{
     Element, LOCATION_POINT_BIT, Location, MAX_QUEUE, MISSION_VARIABLES, Message, NONE_HANDLE,
     Objective, SeqElement, UnknownCall, location_of_point,
 };
+
+/// Saturating increment of a per-id diagnostic counter.
+fn count(map: &mut std::collections::BTreeMap<u32, u64>, id: u32) {
+    let c = map.entry(id).or_insert(0);
+    *c = c.saturating_add(1);
+}
 use crate::world::{EntityKind, World};
 
 /// Natives that are elements of a sequence when called between natives 30 and 31 (observed:
 /// these ids are followed by the sync native 32 in the retail scripts; `docs/formats/scb.md`).
 pub const SEQUENCE_ELEMENTS: &[u32] = &[
-    33, 34, 35, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 59, 62,
-    64, 69, 70, 73, 203, 226, 243,
+    32, 33, 34, 35, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 59,
+    62, 64, 69, 70, 73, 203, 226, 243,
 ];
 
 /// Natives with a documented effect that the engine records without acting on (see the spec rows).
@@ -84,7 +92,7 @@ impl World {
     pub(crate) fn native_call(&mut self, id: u32, args: &[i32]) -> Option<i32> {
         if native_status(id) == NativeStatus::Unknown {
             let vm = self.vm.as_mut()?;
-            *vm.counters.unknown_natives.entry(id).or_insert(0) += 1;
+            count(&mut vm.counters.unknown_natives, id);
             if !vm.lenient {
                 vm.faulted = true;
                 return None;
@@ -163,7 +171,10 @@ impl World {
                 if let Some(vm) = self.vm.as_mut() {
                     match vm.objectives.iter_mut().find(|o| o.index == k) {
                         Some(o) => o.done = true,
-                        None => vm.counters.objective_done_before_added += 1,
+                        None => {
+                            vm.counters.objective_done_before_added =
+                                vm.counters.objective_done_before_added.saturating_add(1);
+                        }
                     }
                 }
                 0
@@ -182,24 +193,30 @@ impl World {
                 }
                 0
             }
-            // 31 (): end a sequence (high): the collected elements become an active sequence,
-            // queued behind any running one.
+            // 31 (): end a sequence (high): the collected elements become an active sequence
+            // that advances independently of the others (bounded in count and total elements).
             31 => {
                 if let Some(vm) = self.vm.as_mut()
                     && let Some(elements) = vm.collecting.take()
-                    && vm.sequences.len() < MAX_QUEUE
                 {
-                    vm.sequences.push(crate::vm::Sequence {
-                        elements,
-                        next: 0,
-                        wait: crate::vm::SeqWait::None,
-                    });
+                    let total: usize = vm.sequences.iter().map(|s| s.elements.len()).sum();
+                    if vm.sequences.len() < MAX_QUEUE
+                        && total.saturating_add(elements.len()) <= crate::vm::MAX_SEQUENCE_ELEMENTS
+                    {
+                        vm.sequences.push(crate::vm::Sequence {
+                            elements,
+                            next: 0,
+                            wait: crate::vm::SeqWait::None,
+                            tokens: Vec::new(),
+                        });
+                    }
                 }
                 0
             }
-            // 32 (): wait for the previous element (high): implicit, every element completes
-            // before the next runs. 56 (ticks): wait (high; 25 script ticks per second is the
-            // hypothesis); outside a sequence there is nothing to wait for.
+            // 32 (): barrier, wait for the previous elements (high): a sequence element
+            // (`SeqElement::Barrier`); outside a sequence there is nothing to wait for. 56
+            // (ticks): wait (high; 25 script ticks per second is the hypothesis); outside a
+            // sequence there is nothing to wait for either.
             32 | 56 => 0,
             // 33 (location): camera to location; 34 (location): camera returns to location
             // (medium). Outside a sequence they act at once.
@@ -315,10 +332,19 @@ impl World {
                 0
             }
             // 134 (actor, flag): lock the actor's AI; 135 (actor): unlock (medium). The flag of
-            // 134 is 0 in load-time helpers and 1 in freeze loops: both lock.
+            // 134 is 0 in load-time helpers and 1 in freeze loops: both lock. Locking halts the
+            // AI's current walk (low confidence, `docs/formats/scb.md` "Engine notes"): a guard
+            // stops where it is, its rail program stays on the same instruction and re-issues the
+            // walk when unlocked; a player character's orders are the player's and are not
+            // touched.
             134 | 135 => {
                 if let Some(i) = self.entity_of(arg(args, 0)) {
-                    self.entities[i].ai_locked = id == 134;
+                    let e = &mut self.entities[i];
+                    e.ai_locked = id == 134;
+                    if e.ai_locked && e.kind != EntityKind::Player {
+                        e.target = None;
+                        e.path.clear();
+                    }
                 }
                 0
             }
@@ -338,13 +364,19 @@ impl World {
             }
             // 159 () -> location: off-map location (low).
             159 => NONE_HANDLE,
-            // 160 (location, location) -> distance (high): map pixels, rounded.
+            // 160 (location, location) -> distance (high): map pixels, rounded to nearest. The
+            // differences are formed in `i64` and squared in `u128`, so any pair of positions
+            // gives the same answer in debug and release; a distance beyond `i32` saturates.
             160 => match (
                 self.location_position(arg(args, 0)),
                 self.location_position(arg(args, 1)),
             ) {
                 (Some(a), Some(b)) => {
-                    Fixed::length(Fixed::from_int(a.0 - b.0), Fixed::from_int(a.1 - b.1)).round()
+                    let dx = u128::from((i64::from(a.0) - i64::from(b.0)).unsigned_abs());
+                    let dy = u128::from((i64::from(a.1) - i64::from(b.1)).unsigned_abs());
+                    // floor(sqrt(s) + 1/2) = floor((floor(sqrt(4 s)) + 1) / 2).
+                    let rounded = (4 * (dx * dx + dy * dy)).isqrt().div_ceil(2);
+                    i32::try_from(rounded).unwrap_or(i32::MAX)
                 }
                 _ => i32::MAX,
             },
@@ -377,11 +409,12 @@ impl World {
                 }
                 0
             }
-            // 202 (k): show text k at once (high); 203 (k): show text k as a sequence element
-            // that waits for its dismissal (high). Outside a sequence 203 does not block.
+            // 202 (k): show text k at once, nothing waits for it (high); 203 (k): show text k as a
+            // sequence element that holds its sequence until dismissed (high). Outside a sequence
+            // 203 is requested at once and still flagged blocking (the app treats it as a page).
             202 | 203 => {
                 if let Some(vm) = self.vm.as_mut() {
-                    vm.show_text(arg(args, 0), id == 203);
+                    let _ = vm.show_text(arg(args, 0), id == 203);
                 }
                 0
             }
@@ -416,7 +449,7 @@ impl World {
             // Stub natives: recorded per id (see `STUB_NATIVES`).
             other => {
                 if let Some(vm) = self.vm.as_mut() {
-                    *vm.counters.stub_natives.entry(other).or_insert(0) += 1;
+                    count(&mut vm.counters.stub_natives, other);
                 }
                 0
             }
@@ -427,6 +460,8 @@ impl World {
     fn sequence_element(&self, id: u32, args: &[i32]) -> Option<SeqElement> {
         let scale = self.vm.as_ref().map_or((1, 1), |vm| vm.program.wait_scale);
         Some(match id {
+            // 32 (): barrier (high).
+            32 => SeqElement::Barrier,
             // 203 (k): text page (high).
             203 => SeqElement::Text(arg(args, 0)),
             // 56 (ticks): wait, scaled from script ticks to world ticks (high).
@@ -446,6 +481,13 @@ impl World {
                 let (x, y) = self.element_position(arg(args, 1))?;
                 SeqElement::Walk { entity, x, y }
             }
+            // 49 / 50 / 51 (actor, anim), 52 / 53 (actor): animations (medium / low), stubs
+            // whose completion token completes at once.
+            49..=53 => SeqElement::Animation {
+                id,
+                actor: arg(args, 0),
+                anim: arg(args, 1),
+            },
             other => SeqElement::Stub { id: other },
         })
     }
@@ -525,7 +567,8 @@ impl World {
         Some((entity, x, y))
     }
 
-    /// Natives 113 / 114: entities get their `active` flag; other elements are remembered.
+    /// Natives 113 / 114: entities get their `active` flag (a deactivated entity loses its
+    /// movement order and its selection); other elements are remembered.
     fn set_element_active(&mut self, handle: i32, active: bool) {
         match self.entity_of(handle) {
             Some(i) => {
@@ -534,6 +577,9 @@ impl World {
                 if !active {
                     e.target = None;
                     e.path.clear();
+                    if self.selected == Some(e.id) {
+                        self.selected = None;
+                    }
                 }
             }
             None => {
@@ -561,13 +607,22 @@ impl World {
         }
     }
 
-    /// Walk order for an entity through the pathfinding.
+    /// Walk order for an entity through the pathfinding, charged to the VM's work budget: when
+    /// the budget runs out the order is dropped (the entity stands, a barrier token completes)
+    /// and `budget_aborts` counts it.
     pub(crate) fn vm_walk(&mut self, entity: u32, x: i32, y: i32) {
         let i = entity as usize;
         if i >= self.entities.len() || !self.entities[i].alive || !self.entities[i].active {
             return;
         }
-        self.plan_path(i, (Fixed::from_int(x), Fixed::from_int(y)));
+        let mut budget = self.vm.as_ref().map_or(0, |vm| vm.budget);
+        let planned = self.plan_path_with(i, (Fixed::from_int(x), Fixed::from_int(y)), &mut budget);
+        if let Some(vm) = self.vm.as_mut() {
+            vm.budget = budget;
+            if planned.is_err() {
+                vm.counters.budget_aborts = vm.counters.budget_aborts.saturating_add(1);
+            }
+        }
     }
 
     /// Native 96: teleport; `None` puts the entity off the map (deactivated).

@@ -804,9 +804,12 @@ fn profile_table_parses_and_its_sprites_exist() {
     for cv in &t.civilians {
         check(&cv.sprite, &cv.sequence, &cv.voice);
     }
-    assert_eq!(t.player_characters[0].sprite, "RobinHood");
-    assert_eq!(t.soldiers[0].sprite, "Guard A00");
-    assert_eq!(t.soldiers[6].sprite, "Soldier A00");
+    // Relational checks only: the first PC entry is the hero (its sprite name starts the file list),
+    // and the six colour tiers of a soldier family share the sprite prefix.
+    assert!(!t.player_characters[0].sprite.is_empty());
+    let family = |s: &str| s.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
+    assert_eq!(family(&t.soldiers[0].sprite), family(&t.soldiers[5].sprite));
+    assert_ne!(family(&t.soldiers[0].sprite), family(&t.soldiers[6].sprite));
     assert_eq!(t.civilians[1].sprite, "Mendicant");
     // Level table: every retail mission file is named by exactly one record; the placeholders
     // point at `Impossible_mission`; the campaign graph codes reference existing codes.

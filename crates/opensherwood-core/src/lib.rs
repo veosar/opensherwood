@@ -24,7 +24,7 @@ pub use fixed::Fixed;
 pub use geom::Geometry;
 pub use hash::Hashes;
 pub use input::{Button, InputEvent, Key};
-pub use nav::NavGrid;
+pub use nav::{NavError, NavGrid};
 pub use vm::{Program, VmState};
 pub use world::{
     ActorSpec, Entity, EntityId, EntityKind, Instruction, MapInfo, MissionSpec, Observation,
@@ -32,4 +32,4 @@ pub use world::{
 };
 
 /// Ruleset version: bump when simulation semantics change so old replays/hashes are not compared.
-pub const RULESET_VERSION: u32 = 5;
+pub const RULESET_VERSION: u32 = 6;

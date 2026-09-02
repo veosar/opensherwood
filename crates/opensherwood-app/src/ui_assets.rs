@@ -58,7 +58,7 @@ pub mod texts {
     /// Question of the main menu quit confirmation: the original's wording lives elsewhere (not located
     /// yet, `docs/original/ui-flow.md` open questions); the leave question is used meanwhile.
     pub const CONFIRM_QUIT: usize = 31;
-    /// `Clover: %i` of the HUD.
+    /// The HUD's clover counter format (contains `%i`).
     pub const CLOVER_FORMAT: usize = 245;
     /// Indices into `INTERFACE` used by the menus (observed in the retail English table).
     pub const DIFFICULTY_NAMES: usize = 34; // easy, medium, hard

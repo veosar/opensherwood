@@ -5,8 +5,13 @@ use serde_json::Value;
 
 pub use opensherwood_core::{Hashes, InputEvent, Observation, Scenario, Snapshot};
 
-/// Protocol version reported by `hello`.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// Protocol version reported by `hello`. 4: replay time is the session tick (`ReplayHeader::time`
+/// = [`REPLAY_TIME_SESSION`]), checkpoints carry `world_tick`, the tick-0 checkpoint is kept.
+pub const PROTOCOL_VERSION: u32 = 4;
+
+/// The only replay time model: one unit per `advance` of the session (every `step` tick, whether
+/// a screen consumed the events or the world stepped). Screens are part of the timeline.
+pub const REPLAY_TIME_SESSION: &str = "session";
 
 /// Limits of a replay file (format-wide; checked while parsing and recording).
 pub mod replay_limits {
@@ -278,7 +283,7 @@ pub struct CaptureResult {
 /// `replay.start` params.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReplayStartParams {
-    /// Record a checkpoint (all hashes) every N ticks (0 = only at stop).
+    /// Record a checkpoint (all hashes) every N session ticks (0 = only at stop).
     #[serde(default)]
     pub checkpoint_every: u64,
 }
@@ -313,11 +318,11 @@ pub struct ReplayPlayParams {
 /// `replay.play` result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayPlayResult {
-    /// Ticks simulated.
+    /// Session ticks simulated.
     pub ticks: u64,
     /// Checkpoints that matched.
     pub checkpoints_ok: usize,
-    /// First checkpoint that did not match: (tick, differing parts).
+    /// First checkpoint that did not match: (session tick, differing hash parts, `world_tick`).
     pub first_divergence: Option<(u64, Vec<String>)>,
     /// Hashes at the end.
     pub hashes: Hashes,
@@ -336,6 +341,8 @@ pub struct ReplayHeader {
     pub content_fingerprint: Option<String>,
     /// Scenario.
     pub scenario: Scenario,
+    /// Time model of `tick` in events and checkpoints: always [`REPLAY_TIME_SESSION`].
+    pub time: String,
     /// Logical viewport.
     pub viewport: (u32, u32),
     /// Tick rate as a rational (numerator, denominator) in Hz.
@@ -360,6 +367,35 @@ pub struct RngStreamInit {
 }
 
 impl ReplayHeader {
+    /// Names of the fields that differ from `other` (for the "header does not match" report).
+    #[must_use]
+    pub fn diff(&self, other: &ReplayHeader) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut check = |name: &str, same: bool| {
+            if !same {
+                out.push(name.to_string());
+            }
+        };
+        check(
+            "replay_version",
+            self.replay_version == other.replay_version,
+        );
+        check("protocol", self.protocol == other.protocol);
+        check("ruleset", self.ruleset == other.ruleset);
+        check(
+            "content_fingerprint",
+            self.content_fingerprint == other.content_fingerprint,
+        );
+        check("scenario", self.scenario == other.scenario);
+        check("time", self.time == other.time);
+        check("viewport", self.viewport == other.viewport);
+        check("tick_rate", self.tick_rate == other.tick_rate);
+        check("hash_schema", self.hash_schema == other.hash_schema);
+        check("seed", self.seed == other.seed);
+        check("rng_streams", self.rng_streams == other.rng_streams);
+        out
+    }
+
     /// Check the header's versions and values.
     pub fn validate(&self) -> Result<(), String> {
         if self.replay_version != 1 {
@@ -387,6 +423,12 @@ impl ReplayHeader {
                 self.hash_schema
             ));
         }
+        if self.time != REPLAY_TIME_SESSION {
+            return Err(format!(
+                "replay time model '{}' is not '{REPLAY_TIME_SESSION}'",
+                self.time
+            ));
+        }
         if self.tick_rate.0 == 0 || self.tick_rate.1 == 0 {
             return Err("tick rate must be a positive rational".into());
         }
@@ -406,7 +448,7 @@ impl ReplayHeader {
 /// `ReplayV1` event line.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReplayEvent {
-    /// Absolute tick.
+    /// Session tick the event is applied at (see [`REPLAY_TIME_SESSION`]).
     pub tick: u64,
     /// Order inside the tick.
     pub sequence: u32,
@@ -421,10 +463,26 @@ pub struct ReplayEvent {
 /// `ReplayV1` checkpoint expectation line.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReplayCheckpoint {
-    /// Tick after which the hashes must match.
+    /// Session tick after which the hashes must match (0: the state right after `reset`, before
+    /// anything is applied).
     pub tick: u64,
+    /// World tick at that session tick (the world lags while a screen is shown).
+    pub world_tick: u64,
     /// Expected hashes.
     pub hashes: Hashes,
+}
+
+impl ReplayCheckpoint {
+    /// Names of what differs from the observed `(world_tick, hashes)`: the differing hash parts,
+    /// plus `world_tick` when the world advanced a different number of ticks.
+    #[must_use]
+    pub fn diff(&self, world_tick: u64, hashes: &Hashes) -> Vec<String> {
+        let mut parts = self.hashes.diff(hashes);
+        if self.world_tick != world_tick {
+            parts.push("world_tick".to_string());
+        }
+        parts
+    }
 }
 
 /// A line of a replay file.
@@ -626,6 +684,7 @@ impl ReplayRecorder {
         let bytes = line_bytes(&ReplayLine::Header(header.clone()))?;
         let reserve = line_bytes(&ReplayLine::Checkpoint(ReplayCheckpoint {
             tick: replay_limits::MAX_TICK,
+            world_tick: replay_limits::MAX_TICK,
             hashes: sample_hashes.clone(),
         }))?;
         if bytes.checked_add(reserve).is_none_or(|n| n > max_bytes) {
@@ -748,17 +807,29 @@ impl ReplayRecorder {
     /// Append an intermediate checkpoint: strictly after the last one, leaving room in the count
     /// for the final one, and within the bytes left. Nothing changes on error.
     pub fn push_checkpoint(&mut self, checkpoint: ReplayCheckpoint) -> Result<(), String> {
-        if checkpoint.tick > replay_limits::MAX_TICK {
-            return Err(format!(
-                "tick quota {} reached at tick {}",
-                replay_limits::MAX_TICK,
-                checkpoint.tick
-            ));
-        }
         if self.checkpoints.len() + 1 >= replay_limits::MAX_CHECKPOINTS {
             return Err(format!(
                 "checkpoint quota {} exceeded at tick {}",
                 replay_limits::MAX_CHECKPOINTS,
+                checkpoint.tick
+            ));
+        }
+        let budget = self.remaining();
+        self.accept_checkpoint(checkpoint, budget)
+    }
+
+    /// The one path every checkpoint (intermediate or final) takes: tick within the format's
+    /// quota, strictly after the last checkpoint, its line within `budget` bytes, capacity
+    /// reserved fallibly. Nothing changes on error.
+    fn accept_checkpoint(
+        &mut self,
+        checkpoint: ReplayCheckpoint,
+        budget: usize,
+    ) -> Result<(), String> {
+        if checkpoint.tick > replay_limits::MAX_TICK {
+            return Err(format!(
+                "tick quota {} reached at tick {}",
+                replay_limits::MAX_TICK,
                 checkpoint.tick
             ));
         }
@@ -771,9 +842,9 @@ impl ReplayRecorder {
             ));
         }
         let line = line_bytes(&ReplayLine::Checkpoint(checkpoint.clone()))?;
-        if !self.fits(line) {
+        if line > budget {
             return Err(format!(
-                "byte quota {} exceeded at tick {}",
+                "byte quota {} exceeded at tick {} ({line} bytes needed, {budget} left)",
                 self.max_bytes, checkpoint.tick
             ));
         }
@@ -785,40 +856,26 @@ impl ReplayRecorder {
         Ok(())
     }
 
-    /// Close the recording with the hashes at the current tick: the checkpoint is appended
-    /// (into the reserved bytes) unless one at that tick is already the last, and a checkpoint at
-    /// tick 0 is dropped when others exist (the header already fixes the initial state). The
-    /// result is within every limit of [`replay_limits`].
+    /// Close the recording with the hashes at the current tick. The final checkpoint goes through
+    /// the same validation and allocation as every other one (tick quota, ordering, fallible
+    /// capacity), into the bytes reserved for it; a checkpoint already recorded at that tick is
+    /// replaced by the final one. Nothing is dropped: the tick-0 checkpoint fixes the state right
+    /// after `reset` and playback compares it before applying anything. The result is within
+    /// every limit of [`replay_limits`], so [`Replay::from_jsonl`] accepts its text.
     pub fn finish(mut self, last: ReplayCheckpoint) -> Result<Replay, String> {
-        if self.checkpoints.last().is_none_or(|c| c.tick != last.tick) {
-            if let Some(prev) = self.checkpoints.last()
-                && last.tick <= prev.tick
-            {
-                return Err(format!(
-                    "final checkpoint at tick {} is not after the last one at tick {}",
-                    last.tick, prev.tick
-                ));
-            }
-            if self.checkpoints.len() >= replay_limits::MAX_CHECKPOINTS {
-                return Err(format!(
-                    "checkpoint quota {} exceeded",
-                    replay_limits::MAX_CHECKPOINTS
-                ));
-            }
-            let line = line_bytes(&ReplayLine::Checkpoint(last.clone()))?;
-            if line > self.reserve.saturating_add(self.remaining()) {
-                return Err(format!(
-                    "final checkpoint needs {line} bytes, {} are left",
-                    self.reserve.saturating_add(self.remaining())
-                ));
-            }
-            self.checkpoints.push(last);
-            self.bytes += line;
+        if self.checkpoints.last().is_some_and(|c| c.tick == last.tick) {
+            let same = self.checkpoints.pop().ok_or("no checkpoint to replace")?;
+            self.bytes -= line_bytes(&ReplayLine::Checkpoint(same))?;
         }
-        if self.checkpoints.len() > 1 && self.checkpoints[0].tick == 0 {
-            let first = self.checkpoints.remove(0);
-            self.bytes -= line_bytes(&ReplayLine::Checkpoint(first))?;
+        if self.checkpoints.len() >= replay_limits::MAX_CHECKPOINTS {
+            return Err(format!(
+                "checkpoint quota {} exceeded",
+                replay_limits::MAX_CHECKPOINTS
+            ));
         }
+        let budget = self.reserve.saturating_add(self.remaining());
+        self.accept_checkpoint(last, budget)
+            .map_err(|e| format!("final checkpoint: {e}"))?;
         debug_assert!(self.bytes <= self.max_bytes);
         Ok(Replay {
             header: self.header,
@@ -842,6 +899,7 @@ mod tests {
                 ruleset: opensherwood_core::RULESET_VERSION,
                 content_fingerprint: None,
                 scenario: Scenario::Synthetic("corridor".into()),
+                time: REPLAY_TIME_SESSION.into(),
                 viewport: (640, 480),
                 tick_rate: (30, 1),
                 hash_schema: opensherwood_core::hash::HASH_SCHEMA_VERSION,
@@ -880,6 +938,7 @@ mod tests {
             ruleset: opensherwood_core::RULESET_VERSION,
             content_fingerprint: None,
             scenario: Scenario::Synthetic("corridor".into()),
+            time: REPLAY_TIME_SESSION.into(),
             viewport: (640, 480),
             tick_rate: (60, 1),
             hash_schema: opensherwood_core::hash::HASH_SCHEMA_VERSION,
@@ -908,6 +967,7 @@ mod tests {
     fn checkpoint(tick: u64) -> ReplayCheckpoint {
         ReplayCheckpoint {
             tick,
+            world_tick: tick,
             hashes: hashes(),
         }
     }
@@ -969,24 +1029,62 @@ mod tests {
         assert!(r.push_checkpoint(checkpoint(0)).is_err());
         assert_eq!(r.bytes(), snapshot.bytes());
         assert_eq!(r.events().len(), snapshot.events().len());
-        // Stopping fits thanks to the reserve, drops the tick-0 checkpoint and stays within the cap.
+        // Stopping fits thanks to the reserve, keeps the tick-0 checkpoint and stays within the cap.
         let replay = r.finish(checkpoint(6)).unwrap();
-        assert_eq!(replay.checkpoints.len(), 1);
-        assert_eq!(replay.checkpoints[0].tick, 6);
+        assert_eq!(replay.checkpoints.len(), 2);
+        assert_eq!(replay.checkpoints[0].tick, 0);
+        assert_eq!(replay.checkpoints[1].tick, 6);
         let text = replay.to_jsonl().unwrap();
         assert!(text.len() <= cap, "{} > {cap}", text.len());
         assert_eq!(Replay::from_jsonl(&text).unwrap(), replay);
         // A cap that cannot hold the header and the final checkpoint is refused up front.
         assert!(ReplayRecorder::with_max_bytes(header(), &hashes(), header_bytes).is_err());
-        // A final checkpoint at the last recorded tick is not duplicated.
-        let mut r = ReplayRecorder::with_max_bytes(header(), &hashes(), cap).unwrap();
-        r.push_checkpoint(checkpoint(3)).unwrap();
-        let replay = r.finish(checkpoint(3)).unwrap();
-        assert_eq!(replay.checkpoints.len(), 1);
-        // A lone tick-0 checkpoint is kept.
+        // A lone tick-0 checkpoint finished at tick 0 is one checkpoint.
         let mut r = ReplayRecorder::with_max_bytes(header(), &hashes(), cap).unwrap();
         r.push_checkpoint(checkpoint(0)).unwrap();
         assert_eq!(r.finish(checkpoint(0)).unwrap().checkpoints.len(), 1);
+    }
+
+    #[test]
+    fn finish_takes_the_validated_path() {
+        // The final checkpoint replaces one already recorded at the same tick (the final hashes
+        // win), the byte accounting stays exact, and the text parses.
+        let mut r = ReplayRecorder::with_max_bytes(header(), &hashes(), 4096).unwrap();
+        r.push_checkpoint(checkpoint(0)).unwrap();
+        r.push_checkpoint(checkpoint(3)).unwrap();
+        let bytes_before = r.bytes();
+        let mut last = checkpoint(3);
+        last.hashes.parts.insert("total".into(), "cd".repeat(32));
+        let replaced_line = line_bytes(&ReplayLine::Checkpoint(last.clone())).unwrap();
+        let replay = r.finish(last.clone()).unwrap();
+        assert_eq!(replay.checkpoints.len(), 2);
+        assert_eq!(replay.checkpoints[1], last);
+        let text = replay.to_jsonl().unwrap();
+        assert_eq!(text.len(), bytes_before, "same tick, same line length");
+        assert_eq!(
+            replaced_line,
+            line_bytes(&ReplayLine::Checkpoint(checkpoint(3))).unwrap()
+        );
+        assert_eq!(Replay::from_jsonl(&text).unwrap(), replay);
+        // A final tick beyond the format's quota is refused: what `finish` returns always parses.
+        let mut r = ReplayRecorder::with_max_bytes(header(), &hashes(), 4096).unwrap();
+        r.push_checkpoint(checkpoint(0)).unwrap();
+        let err = r
+            .clone()
+            .finish(checkpoint(replay_limits::MAX_TICK + 1))
+            .unwrap_err();
+        assert!(err.contains("tick quota"), "{err}");
+        // ... and one at the quota itself is accepted and parses.
+        let replay = r.finish(checkpoint(replay_limits::MAX_TICK)).unwrap();
+        assert_eq!(
+            Replay::from_jsonl(&replay.to_jsonl().unwrap()).unwrap(),
+            replay
+        );
+        // A final checkpoint before the last recorded one is refused.
+        let mut r = ReplayRecorder::with_max_bytes(header(), &hashes(), 4096).unwrap();
+        r.push_checkpoint(checkpoint(0)).unwrap();
+        r.push_checkpoint(checkpoint(5)).unwrap();
+        assert!(r.finish(checkpoint(4)).is_err());
     }
 
     #[test]
@@ -1018,15 +1116,14 @@ mod tests {
         let replay = r.finish(checkpoint(replay_limits::MAX_TICK)).unwrap();
         let text = replay.to_jsonl().unwrap();
         assert!(text.len() <= replay_limits::MAX_BYTES);
-        // The dropped tick-0 checkpoint is the only slack left besides the unusable tail.
-        let slack = line_bytes(&ReplayLine::Checkpoint(checkpoint(0))).unwrap();
+        // Only the unusable tail (less than one worst-case event) is left below the cap.
         assert!(
-            text.len() + worst + slack > replay_limits::MAX_BYTES,
+            text.len() + worst > replay_limits::MAX_BYTES,
             "not at the cap"
         );
         let parsed = Replay::from_jsonl(&text).expect("the recorder's output parses");
         assert_eq!(parsed.events.len(), replay.events.len());
-        assert_eq!(parsed.checkpoints.len(), 1);
+        assert_eq!(parsed.checkpoints.len(), 2);
     }
 
     #[test]

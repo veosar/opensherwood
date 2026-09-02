@@ -47,6 +47,9 @@ pub enum TranslateError {
         /// Problem.
         what: String,
     },
+    /// The binding's tick rate is zero or its script-tick scaling does not fit `u32`.
+    #[error("tick rate {0}/{1} cannot be scaled to script ticks")]
+    TickRate(u32, u32),
 }
 
 /// What the translator learnt about a script besides the program.
@@ -226,14 +229,16 @@ pub fn translate_with_report(
         }
         classes.push(class);
     }
+    let (num, den) = binding.tick_rate;
+    let scaled = den
+        .checked_mul(SCRIPT_TICKS_PER_SECOND)
+        .filter(|&d| d > 0 && num > 0)
+        .ok_or(TranslateError::TickRate(num, den))?;
     let program = Program {
         classes,
         elements: binding.elements.iter().map(|(_, e)| *e).collect(),
         locations: binding.locations.iter().map(|(_, l)| l.clone()).collect(),
-        wait_scale: (
-            binding.tick_rate.0,
-            binding.tick_rate.1 * SCRIPT_TICKS_PER_SECOND,
-        ),
+        wait_scale: (num, scaled),
     };
     program.validate().map_err(|what| TranslateError::Class {
         class: 0,
@@ -1050,6 +1055,28 @@ mod tests {
             ),
             Err(TranslateError::Empty)
         ));
+    }
+
+    #[test]
+    fn tick_rate_scaling_is_checked() {
+        let level = class("StartUp", 0, &[("Initialize", 0, 0, 0, 0, vec![])]);
+        let script = Script {
+            version: 1.5,
+            classes: vec![level],
+        };
+        for rate in [(60, u32::MAX), (0, 1), (60, 0), (60, u32::MAX / 25 + 1)] {
+            let mut b = binding();
+            b.tick_rate = rate;
+            assert_eq!(
+                translate(&script, &b).unwrap_err(),
+                TranslateError::TickRate(rate.0, rate.1),
+                "{rate:?}"
+            );
+        }
+        let mut b = binding();
+        b.tick_rate = (u32::MAX, u32::MAX / 25);
+        let program = translate(&script, &b).unwrap();
+        assert_eq!(program.wait_scale, (u32::MAX, (u32::MAX / 25) * 25));
     }
 
     #[test]
