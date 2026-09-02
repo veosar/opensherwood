@@ -37,6 +37,7 @@ def test_every_mission_file_loads(binary, game_dir):
     unexpected = [f for f in failures if not f.lower().startswith("sherwood")]
     assert not unexpected, "\n".join(unexpected)
     assert len(failures) == 2, failures
+    assert all("no element index space" in f for f in failures), failures
 
 
 def test_mission_is_deterministic_across_processes(binary, game_dir):

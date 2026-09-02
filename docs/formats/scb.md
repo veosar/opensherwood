@@ -159,7 +159,7 @@ Callback signatures observed (parameter reads and what they are compared with):
 | `Initialize` | (2,0,0) elements; (2,4,4) / (2,4,8) level and some elements | none | returns 0/1 in the level class |
 | `PostInitialize` | (2,0,0) | none | level only; runs the briefing sequence (H01) |
 | `Hourglass` | (2,0,4) elements, (2,4,8) level | param0 = a time value: compared with stored values (`time - last > 15`, `time > timer`) | periodic tick |
-| `CheckVictoryCondition` | (2,4,8) | none; returns a mission variable | level only |
+| `CheckVictoryCondition` | (2,4,8) | none; returns 0 (running), 1 (won) or 2 (lost: H02 and Tac21 select a debriefing first, `n28(k); return_value 2`); H01 returns a mission variable | level only, read by the engine every tick |
 | `ProcessMessage` | (4,0,12) | param0 = message id (compared with immediates), param1 = argument (element index, flag), param2 rarely | message dispatch |
 | `ActionChange` | (3,0,8) | param0 or param1 compared with action ids 137 (most), 141, 136, 107, 102, 135, 280, 281 | actor changed action state |
 | `HandleEvent` | (3,0,8) / (3,0,4) | param1 == 31 (2 uses) | almost always empty |
@@ -189,19 +189,31 @@ consists mostly of the call, described by what its name says it does (`scb_seman
 | 4 | (index) -> door | door / passage of the map (per-map index range: Lincoln <= 52, Nottingham <= 94, Derby <= 29, Leicester <= 55, York <= 122) | medium | door-initialisation and door-locking helpers; used only with 186-189 and 191 |
 | 5 | (index) -> patch | map patch (visual alteration of the background) by per-map index (Lincoln <= 11 in all three Lincoln missions, Leicester <= 15, ...) | medium | patch-initialisation / refresh helpers; H01 drawbridge; only used with 144 / 145 |
 | 6 | (index) -> location | location of the mission's `GULP` chunk: points first (0..points-1), then polygons | high | bound exact in 11 files (max index = points + polygons - 1), H01: the persecution zone (last polygon) is `n6(26)` = 15 points + 11 |
+| 7 / 149 / 150 | (k) -> sound; (sound); (sound) | sound resource k (3..=19) of the level: 149 plays it once from a message handler (a "record crowd cheers" helper follows one such call), 150 starts it at level start (sherwood) | low | flow: 7's result is consumed only by 149 / 150 |
+| 8 / 98 / 156 / 152 | (index) -> building; (actor, building) -> bool; (actor, building); (actor) | building (interior) index of a per-map table (Nottingham <= 41, York <= 73, Leicester <= 15, Derby <= 7; -1 = outdoors, via 0x15); 98 = actor is inside building; 156 = put actor inside building (a "put actor in building" helper; the `Initialize` of the four town missions with interiors); 152 = take the actor out of its building (always right before a 156 or an off-map teleport) | medium (index space, 98, 156), low (152) | bound: ranges consistent across the missions of one map (`scb_xref.py ... 8`); flow: 8's result feeds only 156[1] and 98[1]; the "all enemies in the castle out of action" helper counts an enemy only while `n98(x, n8(-1)) == 0`; `n98(pc, n8(4)) == 1` in an "is a PC at the place" helper |
 | 9 | (index) -> path | patrol path (`RAIL` index) | high | max index < rail count in all 26 files that use it (exact in 3); consumed by 132 |
 | 10 | (element) -> index | index of an element (inverse of 3) | medium | passed as the argument of messages whose handler does `n3(param1)` (H01 msg 9; tutorial soldiers `n44(n111(), 1, n10(n74()), ...)`); native 59 takes it |
+| 12 / 13 | (patch) -> index; (location) -> index | index of a patch / of a location (inverses of 5 / 6, as 10 is of 3) | high | results are passed as message arguments (`n44(n111(), 1, n12(n5(k)), 0)`, `n44(..., n13(n6(k)), n10(n3(e)))`) and the handlers of the same files do `n145(n5(param1))` / `n45(n3(param1), n6(param2), 1)` |
+| 18 / 112 | (location); (0 / 31) | presentation setup before a cutscene (18 at a location; 112 with a constant: 31 around duel sequences, 0 before a speech) | low | 2 / 4 uses |
+| 20 | (location) | set the mission's deployment / start area (where the player characters are placed and the view begins) | low | 18 files, exactly one call per file, among the last statements of the level `Initialize`; only the forest missions (which start with a deployment phase) and five town missions; argument from 6 or `n95(actor)` |
+| 24 | (actor, v) | set a per-actor value: 444 on one or two key non-player actors at level start (14 uses), 0 at start and 100 when that actor is freed (S02) | low | `Initialize` (10) and one handler; 444 occurs nowhere else (not an attribute value of 117) |
 | 26 | (k, main) | add objective k = short-briefing text k; main = 1 for a primary objective, 0 for a secondary one | high | H01: `n26(0, 1)` at start = TEXT 1000283 string 0 (the observed initial objective), 1..5 added at the points where the campaign notes say those objectives appear (consistent with the notes, not traced); k < short-briefing count of the `.red` in every file |
 | 27 | (k) | objective k accomplished | high | H01: `n27(0)` when objective 1 is added, `n27(3)` / `n27(4)` when the steward / knight sub-goals complete |
 | 28 | (k) | select debriefing / ending variant k | medium | H01 `CheckVictoryCondition`: `if n2(2) == 1: n28(0)`; ambushes choose `n28(2)` or `n28(variable)` on a campaign flag; `Finalize(1) -> n28(1)`; k < debriefing count of the `.red` |
+| 29 | () | notification after an objective / capture change (`n178(x); n29()`; `n29(); var = var + 1` when a PC enters the exit zone) | low | 5 uses |
 | 30 / 31 | () | begin / end a sequence (script-driven cutscene or timed action list) | high | balanced in all 8176 functions, never nested; the executable has sequence / sequence-element classes (`docs/original/executable-notes.md`) |
 | 32 | () | sequence step: wait for the previous element to finish | high | 3914 uses, only between 30 and 31, after every element that takes time (text page, camera move, wait, animation) |
 | 33 | (location) | camera moves to location (sequence element) | medium | inside sequences, argument from 6 or 95; followed by 32 |
 | 34 | (location) | camera returns / jumps to location (last element of every cutscene: `n34(n95(actor))`) | medium | H01 briefing end (observed: camera on Robin after the parchment), end of all tutorial popups |
 | 35 | (float) | sequence element with a duration or rate (1.0 in 79 of 85 uses; 2.0; 0.5) at the start of cutscenes | low | always `n30(); n35(1f); n32(); n54()` |
+| 38 | (actor, 0 / 1) | sequence element toggling an actor presentation state (1 on the hero at the start of H04's briefing sequence; 0 on every PC when a zone is entered in H10, 1 again later) | low | 5 uses inside 30 / 31, followed by 32 |
+| 39 | (actor) | sequence element on an actor after a camera move or a teleport (appearance effect?) | low | 7 uses, followed by 32 or a walk |
+| 41 | (0 / 1 / 2) | sequence element without a target (screen transition / camera mode k): 0 and 1 in pairs around presentation blocks (`n41(1); n32(); n55()`), 2 before a duel shot | low | 24 uses |
+| 42 | (location, n) | sequence element at a location with a small count or duration n (2..=30), at the start of the ambush missions after a wait | low | 20 uses, always followed by 32 |
 | 43 | (target, msg) | send message msg to target's `ProcessMessage` | high | H01: the archer sends msg 1 to the sergeant, whose class handles msg 1; every message id sent is handled by some class of the same file |
 | 44 | (target, msg, arg, x) | send message with an argument (param1 of the handler); x in 0..=6 unknown (delay?) | high (first three) | H01 msg 9 with `n10(element)` -> handler uses `n3(param1)`; msg 13 with 1 / 0 = freeze / unfreeze NPCs |
 | 45 | (actor, location, mode) | move actor to location, mode 0..=2 | medium | a "send to deployment zone" helper; sequence element; H01 son moves to a point |
+| 46 / 47 | (actor, location, k, flag) | actor performs action k at location (46: k 1..=11, 47: k 2..=12; flag 0 / 1); sequence elements followed by 32 and often by 53 on the same actor | low | 19 / 15 uses |
 | 48 | (actor, location) | move actor to location (sequence element) | medium | a "run to alert path" helper?; sergeant walks to the archer's location `n48(sergeant, n95(archer))` |
 | 49 / 50 / 51 | (actor, anim) | play animation anim (51 in 418 `ActivatedByArrow`: target hit animation 210; 51 with 0 resets; 49 with 216 on the shouting sergeant) | medium | ranges 3..=270 in three natives; sequence elements |
 | 52 | (actor) | sequence element on an actor (wait for it?) | low | H01 msg 9 |
@@ -209,51 +221,191 @@ consists mostly of the call, described by what its name says it does (`scb_seman
 | 54 / 55 | () | enter / leave cutscene presentation (interface hidden, NPCs frozen by msg 13 around it) | medium-low | present in every popup sequence; not strictly paired per function |
 | 56 | (ticks) | wait (sequence element); 25 ticks per second is the hypothesis | high | 1604 uses; immediates 10, 15, 25, 40, ...; `seconds * 25` via 0x1b in 108 uses |
 | 59 | (archer, 4, target index) | archer shoots at target | low | an "archer shoots" helper; H01 archery training |
+| 62 | (actor, k, flag) | actor shows expression k (1..=20; a class variable named after an expression feeds it in H10), flag 0 / 1 or random | low | 10 uses; sequence element |
 | 64 | (actor, location, 0) | place / send actor at location | low | H01 msg 9 |
 | 69 | (actor, id) | actor performs remark / gesture id (2..=96) before its dialogue text | low | sergeant before text 5, the persecuted one before text 3 |
+| 70 | (actor, target, 1, range, reporter, msg) | actor hunts / duels target within range (float 40..=75); when it ends, message msg goes to reporter (555, 1001, 1002 are message ids handled in the same files) | low | 4 uses; the "hunt" helper of H12 |
+| 72 / 73 | (0) | presentation pair: 73 opens, 72 closes (variant 0), 7..=10 s apart at the start of every forest mission (`n30(); n73(0); n32(); n56(173..255); n32(); n72(0); n31()`); 73 alone in a sequence at the end of two `Initialize` | low | 10 / 11 uses, level class, forest missions only |
 | 74 | () -> actor | the actor this class belongs to ("self") | high | 1606 of 1622 uses in element `ProcessMessage`; fed to movement / AI natives |
 | 75 | () -> int | number of elements (loop bound for 3) | high | `for i < n75(): n3(i)` in every helper that scans actors |
 | 79 | (actor) -> bool | is a player character | high | gate of 269 `EnterZone` and of the target `ActivatedByArrow`; an executable error string names an is-actor-PC native |
 | 80 / 81 | (actor) -> bool | actor kind predicates (80: NPC?; 81: soldier?) | low | a "lock all soldiers' AI" helper (81), an "un-blip all NPCs inside" helper (80) |
 | 85 | (actor) -> bool | actor is unusable (dead / removed): helpers skip actors with `n85 == 1` | medium | the "activate all PCs" helper: `if n85(pc) == 0: n114(pc)`; the "kill actors in zone" helper skips them |
+| 86 | (actor, actor) -> bool | the two handles are the same actor (identity) | medium | 116 uses, every result compared with 0 / 1; a "kick everybody but Robin out of the duel place" helper skips an actor unless `n86(x, robin) == 0`, `n86(x, a) == 0`, `n86(x, b) == 0`; zone gate `n86(param0, n3(k)) == 1` = "the entering actor is k" |
 | 87, 88, 89, 90 | (actor) -> bool | status predicates or-ed by an "is actor neutralised" helper; 90 alone means "soldier out of action" in H01 | medium | H01 waits for `n90 == 1` on the courtyard lancers |
+| 92 | (actor, 100) | set an actor value to 100 (one PC at level start, after 180) | low | 1 use |
+| 93 / 94 / 133 | (element) -> dir; (actor, dir); (actor, location, dir) | facing direction 0..=15 (sixteen directions): 93 = direction of an element, 94 = set it, 133 = place actor at location facing dir (`n133(self, n95(self), n93(self))` = turn in place) | medium | 133's third argument is an immediate 0..=15 or `n93(...)`; 94 takes 2..=14 or `n93(...)`; 93 is compared with 2..=14 |
 | 95 | (actor) -> location | location of an actor | high | fed by 3 / 211, consumed by 33 / 34 / 48 / 160 |
 | 96 | (actor, location) | set actor location (teleport; `n6(-1)` = off map) | medium | the "eject" and "put out of map" helpers; an executable error string names a set-actor-location native |
 | 97 | (actor, zone) -> bool | actor is inside zone | medium | "is PC safe" and "kill actors in zone" helpers (loop over actors with the zone parameter) |
 | 99 | (actor) | reveal actor (un-blip) | low | the "un-blip" helpers |
+| 101 | (actor) -> action | current action id of the actor (compared with 52..=57 by an "is sword-fighting" helper) | low | 3 uses |
 | 102 | (actor, 10, 1) | inflict damage / kill | low | a "kill" helper |
+| 103 | (actor) | send the actor away (the kick-out helper calls it on every other actor found in the duel building; H01 on the actor entering the servant's zone; H10 on the main PC) | low | 8 uses |
 | 109 | (target, msg) | send message (second entry point; used from zones, scrolls, `ActionChange`) | high (delivers a message) | H01: `n109(archer, 1)` every 15 ticks drives the archer's msg-1 handler |
 | 110 | (target, msg, a, b) | send message with arguments (variant of 44) | low | 21 uses |
 | 111 | () -> actor | the player's character in the current context (H01: Robin); messages addressed to it reach the level script | medium | stored into an `Actor` class variable; `n34(n95(...))`-style camera code uses param0 instead; all messages sent to it in H01 and the tutorial are handled by the level class's `ProcessMessage` (Robin has no class in H01) |
 | 113 / 114 | (element) | deactivate / activate an element (hidden actors, scrolls that appear later) | high | the "deactivate all PCs" (113) / "activate all PCs" (114) helpers; H01 tutorial scrolls activate each other |
 | 117 / 118 | (element, attr, value) / (element, attr) -> value | set / get an element attribute (attr 1 on the knight = his purse / money; attr 0 on an archer incremented by the sergeant) | medium | H01 objective 4 completes when `n118(knight, 1) == 0` |
+| 119 | () -> bool | victory predicate of H04 (`== 1` -> won) | low | 1 use |
+| 125 | (actor, 1 / 3 / 7) | actor AI mode: 1 right after a new patrol path (132), 7 when a rail point is reached (then an animation), 3 once | low | 65 uses |
+| 126 | (actor) -> state | actor state code compared with 1 and 2 (`== 1`, `op28 1`, `op28 2`); polled in `Hourglass`, tested on the actor entering a zone | low | 18 uses |
+| 128 | (actor) -> bool | actor is able to act (alive / conscious): required `== 1` by every zone that reacts to an actor, by the "eject" helper, and by the "all enemies out of action" helpers for an enemy to still count | medium-low | 103 uses, all `== 1` |
 | 132 | (actor, path) | assign patrol path (actor follows the `RAIL`) | high | 949 uses with `n9`; "new post", "swap path" and "alert reserve soldier" helpers |
 | 134 / 135 | (actor, flag) / (actor) | lock / unlock the actor's AI | medium | "lock / unlock everybody's AI" and "lock NPC AI" helpers; msg 13 freeze in H01 |
 | 140 | (actor, 0/1) | patrol mode flag (run?) set right after 132 | low | |
+| 143 | (element, 0 / 1) | animated element off / on (an "initialise animations" helper switches 14 map elements off at start, handlers switch them on) | low | 20 uses; the 113 / 114 pattern of the H01 lights |
 | 144 / 145 | (patch) -> bool / (patch) | patch is active / activate patch (also used as one-shot flags) | medium | H01 drawbridge: rope cut -> `n145(n5(4)); n145(n5(3))`; zones: `if n144(n5(k)) == 0: n145(n5(k)); ...` |
 | 159 | () -> location | off-map location | low | the "put out of map" helper |
 | 160 | (location, location) -> distance | distance between locations | high | compared with radii 10..=150; an executable error string names a get-distance native |
 | 161 | (n) -> int | random number in 0..n | medium | `0.01 * float(n161(100))`, thresholds |
+| 163 / 164 / 172 / 173 | () -> int; (i) -> actor; () -> int; () -> bool | sherwood camp: 163 = a count (compared with `n204(zone)` and `n174()`), 164 = its i-th member, 172 = a code (compared with 16968 and 0), 173 = periodic chance (`== 0` -> a random camp action) | low | sherwood only |
+| 177 | (actor, 0 / 1) | actor flag: 1 when an enemy arrives at its post or is initialised (`n133(...); n134(x, 0); n177(x, 1)`), 0 when it is parked (before a rail-point turn) | low | 381 uses, 352 with 1, mostly `ProcessMessage` of enemy classes |
+| 178 / 223 / 234 | (element); (element) -> bool; () -> bool | capture flags on banner elements of the tactical missions: 178 = mark captured (once the guards near it are out of action), 223 = is captured (victory `n223(banner) == 1`), 234 = all captured (a "refresh banners" helper) | medium | Tac01 `Hourglass`: soldiers 57 / 58 out of action and `n223(105) == 0` -> `n178(105)`; its `CheckVictoryCondition` returns 1 when 105 or 106 is marked |
+| 180 | (actor, 0 / 1) | actor flag: 1 on the player characters at start (an "initialise PCs" helper), 0 on the actor caught when a trap object fires (the trap's `ActionChange`: patch on, `n180(actor, 0)`) | low | 41 uses |
+| 182 | (door) -> bool | door state predicate (`== 0` -> once: a patch, an actor moves, `n191(0, door)`) | low | 3 uses in `Hourglass` |
 | 186 - 189 | (door, 1) | lock / unlock door variants | low | the door-locking helper calls 186, 187, 188, 189 |
 | 191 | (state, door) | open / close door (0 at level start, 1 when the player reaches the area) | low | H01 door-initialisation pattern |
+| 192 | () -> element | this class's element for non-actor classes (scrolls, objects, zones): the counterpart of 74 | medium | 139 uses in element `Hourglass` / `IsTaken`, fed to 193 / 194 (state), 113, 95, 233 |
 | 193 / 194 | (element) -> state / (element, state) | get / set an element state 0..=3 (bit 1 toggled with `+ 2`, or set to 3) on scrolls and zones | low | H01 msg 7, `Hourglass` |
 | 195 | (k) -> int | campaign / progress flag k (0..=11) | low | ambush debriefing choice `if n195(6) == 1` |
 | 196 | (k, flags) | availability of player action / skill k (0..=11) | low | H01 `Initialize` disables 6, 7, 8, 9, 3; tutorials enable with or-ed flags |
 | 197 / 198 | (actor, k) -> flag / (actor, a, b) | actor visibility / blip flags | low | "mark to un-blip" (198) and "un-blip marked NPC" (197, 198) helpers |
+| 199 / 200 | (k, location, n); (k, location) | production zones of the camp (sherwood): kind k 0..=12 at a location; 199 adds a capacity (5, 20, 170, 340) | low | the sherwood "initialise production zones" helper only |
 | 202 | (k) | show text k of the level's text list immediately (dialogue line / hint) | high | k < text count of the matching `.red` in all 30 files; H01 hints 13, 14, 15, 17, 19, 21 appear in the handlers of the matching tutorial scrolls |
 | 203 | (k) | show text k as a sequence element (parchment page; waits for dismissal) | high | H01 `PostInitialize` shows 0, 1, 2 = the three observed briefing pages; popups 3..=22 inside cutscenes |
 | 204 | (zone) -> int | presence / count of (player) actors in zone | low | H01 persecution zone `ExitZone`, an "is every enemy in zone" helper |
+| 205 | (zone, i) -> actor | i-th actor inside zone (loops `for i < n204(zone)`) | medium | 26 uses; result fed to 80 / 81 / 82 / 99 / 243 |
+| 210 | (k) -> bool | campaign progress flag k (0..=25): sherwood's `Initialize` derives the camp's needs from ten of them, H02's `CheckVictoryCondition` tests 25 | low | 11 uses, all `== 0 / 1` |
 | 211 | () -> actor | the main player character | medium | `n34(n95(n211()))` = camera on Robin after the briefing (observed) |
+| 212 | (actor, location, 1, d) | actor moves away from a location by d (25..=50 or 100 + random) | low | 7 uses; sequence element |
+| 213 | (location, location, t) -> location | point between the two locations at fraction t (t = 0.01 x random(100), or 0.1) | medium | 14 uses, arguments from 6 / 95 and a random float; result to 45 or a nested 213 |
+| 214 / 247 / 248 / 258 / 261 | (element); (element); (x) -> bool; (x) -> bool; () -> bool | one-shot calls of sherwood and H07 (`Initialize`, `PostInitialize`, random-training helpers) | low | 1..=2 uses each |
+| 215 | (k) -> element | campaign roster slot k (0..=6): the camp attaches an information scroll to each slot present (`n85(n215(k)) == 0`) | low | 14 uses |
 | 216 / 217 | () -> int / (i) -> actor | number of player characters / player character i | high | the "activate all PCs" helper loops `for i < n216(): n217(i)` |
 | 218 | (leader, member) | group members under a leader | low | H01 sergeant collects the archers after training |
+| 219 / 220 | (actor) | actor orders: 219 right before an "alert soldier" helper (wake / alert), 220 after `n177(x, 1); n228(...)` and in `ReachPoint` (stop / clear orders) | low | 18 / 51 uses |
+| 221 | (actor) -> bool | actor is mounted (a "save riders" helper keeps those with 1; zones and the eject helper require 0) | low | 89 uses |
+| 222 | (element) -> bool | object was used / taken (polled in element `Hourglass`, sets a "used" flag) | low | 94 uses, all `== 1` |
 | 224 | (location, 30.0, 10.0, flags) | set a trap at location | low | "set trap" and "add repulsive zone for hole" helpers |
+| 226 | (0 / 1) | cutscene flag paired with 54 / 55 (`n226(1); n54()` ... `n226(0); n55()`) | low | 73 uses |
+| 228 | (actor, k, ticks) | timed actor state k (1 in 140 uses; 0, 2, 4, 5, 6) for n ticks (`seconds x 25`, 10..=100), right after 177 | low | 170 uses |
+| 229 | (actor) | actor drops out (right before a kill 102 or an off-map teleport 96 in the "kill" / "eject" helpers; PCs are deactivated instead) | low | 49 uses |
+| 231 / 246 | (zone) -> bool | group presence in a zone: 231 = a group is inside (civilians in a house, an army position), 246 = the player characters are all inside (victory `n246(exit zone) == 1` in H03, H04, S04) | low | 5 / 3 uses |
+| 232 | (actor) | actor joins the player's party (freed prisoners: `n114(x); n232(x)`; S03 at start) | medium | 10 uses |
 | 233 | (actor, element) | actor goes to / addresses element (an actor, a scroll, a zone) | medium | H01: the servant goes to Robin, the son goes to a scroll position, the persecuted one goes to a zone |
 | 235 | (element) -> bool | element taken / used (purse object) | low | H01 steward objective |
+| 236 / 237 | () -> int; (v) | get / set the player's money (`n237(n236() + 25)`, `n236() < 100000`, `n237(n236() - 2000)`) | high | 8 / 5 uses |
+| 240 | (actor) -> bool | actor is present (active on the map): the "all enemies out of action" helpers require `== 1`; `== 0` or-ed with 89 declares the messenger lost in Tac21 | medium-low | 22 uses |
 | 243 | (actor) | highlight actor during a cutscene | low | 340 uses in `IsTaken`, always inside a sequence on the actor the text talks about |
+| 244 | (patch, 0) | clear a patch flag (the beam-me spots of absent player characters: `if n85(pc) == 1: n244(patch, 0)`) | low | 87 uses, second argument always 0 |
+| 245 | () -> int | number of player characters (compared with mission variable 3 = `n216()` at start, incremented per PC entering the exit zone) | medium | 2 uses |
+| 250 | (0) -> actor | player character by campaign id (0 = the main character; `n34(n95(n250(0)))` replaces `n211()` in the forest missions) | medium | 13 uses, always 0; result to 95 / 10 / an `Actor` variable |
+| 253 / 255 | (k) -> bool | campaign character k is alive / present (253: k 25..=28, `== 0` -> mission lost with `n28(k); return 2`; 255: k 1, 2, 23, 26, all `== 0` -> "no heroes") | medium-low | 14 uses, all in `CheckVictoryCondition` |
+| 254 | (patch, 0 / 1) | patch flag (1 at start, 0 when its door opens and its actors are activated) | low | 3 uses |
+| 256 | (actor) -> id | campaign character id of an actor (compared with 1..=5) | low | sherwood |
+| 264 | (actor, k, 1) | actor start pose / idle k (61, 74, 114: none is an animation id of 49 - 51) with flag 1, after locking the AI | low | 12 uses, `Initialize` only |
 
 Message ids are designer-defined per mission (1.., 100.., 1000.., 2987..3017, 4000.., 5000..); a handler compares
 `param0` with immediates and every id that is compared is sent by some 43 / 44 / 109 / 110 call of the same file
 in all but a few files (`scb_semantics.py --messages`), so the engine itself sends few or none of them.
+
+### Natives at load per mission
+
+The engine runs `Initialize` on every class (level first, then the elements in table order), then the level's
+`PostInitialize`, then the first elements of the sequences those callbacks opened; messages go out on the next
+tick. So the natives reached at load are those of the two callbacks and of the helper functions they call.
+`scb_load_natives.py` computes that closure statically (every branch taken) against the engine's implemented /
+stub lists (`natives.rs`); a run of the engine with `--lenient-natives` (2026-09-02, seed 1, all missions,
+500 ticks each) confirmed which of them are hit, which follow at tick 1 (`Hourglass` of every class,
+`CheckVictoryCondition`), and which appear within the first 500 ticks. A strict VM stops a callback at the
+first unknown id ("first trap"; a second trap is the level's `PostInitialize`), so the whole load column must
+be handled before a mission gets past `Initialize`. 244 is reached statically in every forest mission but hit
+only when a player-character slot is empty (`n85(pc) == 1`), i.e. in the five files that mark it.
+
+| Mission | Unknown at load (hit) | First strict trap | Tick 1 | Within 500 ticks |
+|---|---|---|---|---|
+| Emb01_FoA_EC | 20, 42, 72, 73, 250 | 20; 73 | - | 177, 228 |
+| Emb02_FoC_MK | 42, 46, 244 | 244 | - | - |
+| Emb03_FoC_MP | 42, 72, 73, 250 | 250 | - | - |
+| Emb04_FoA_MP | 42, 72, 73, 250 | 73 | - | 133, 177, 220, 228 |
+| Emb05_FoB_MP | 12, 20, 72, 73, 244, 250 | 244; 250 | - | 177, 228 |
+| Emb06_FoC_EC | 13, 20, 42, 72, 73, 250 | 20; 73 | - | - |
+| Emb07_FoB_JMS | - | - | 255 | - |
+| Emb08_FoA_JMS | 180, 228, 244 | 228 | 255 | - |
+| Emb09_FoB_JMS | 12, 72, 73, 244 | 244; 12 | - | 177, 228 |
+| EmbTut_FoC_EC | 20, 42, 72, 73 | 20; 73 | - | 228 |
+| H01_Lin_VL | - | - | - | - |
+| H02_Not_EC | 24, 264 | 24 | 8, 98, 192, 222, 240, 253 | - |
+| H03_Der_MK | 42 | 42 | 222, 240 | - |
+| H04_Lei_VL | 38, 254 | 254; 38 | 93, 119, 126, 133, 192, 222 | - |
+| H05_Lin_EC | 24, 177 | 24 | 182, 192, 222, 240 | - |
+| H07_Not_MK | 20, 92, 177, 180, 205, 244, 247, 264 | 20 | 8, 98, 231, 240 | - |
+| H09_Not_VL | - | - | 126, 192, 222 | - |
+| H10_Yor_VL | 24, 236, 237 | 236 | 192, 222, 253 | - |
+| H12_Not_MP | 8, 20, 156, 177 | 177 | 46, 98 | - |
+| S01_Not_VL | 24 | 24 | 192 | - |
+| S02_Lei_MP | 8, 20, 24, 156, 177, 254, 264 | 264 | 182, 253 | - |
+| S03_FoB_MP | 8, 20, 38, 70, 125, 156, 177, 232, 250 | 232; 250 | 47, 93, 98, 133 | - |
+| S04_Der_EC | - | - | 192, 222, 240, 246 | - |
+| S05_Yrk_EC | 8, 20, 24, 156, 264 | 264 | 98, 222, 240, 245 | - |
+| Str01_Lin_EC | - | - | 182, 222 | - |
+| Str02_Der_MP | 20 | 20 | - | - |
+| Str03_Yor_MK | 143 | 143 | 223, 231, 234 | - |
+| Tac01_FoA_MP | 20, 250 | 20; 250 | 223 | - |
+| Tac02_FoB_EC | 20 | 20 | 178 | - |
+| Tac03_FoC_MP | 39, 250 | 250 | 223 | - |
+| Tac04_FoA_EC | 20, 42, 250 | 250; 42 | 178 | - |
+| Tac05_FoC_MP | 177 | 177 | 178 | - |
+| Tac06_FoB_EC | 20 | 20 | 178 | - |
+| Tac17_FoC_EC | 20, 42, 72, 73, 250 | 20; 73 | 178 | - |
+| Tac18_FoA_EC | 20, 42, 72, 73, 244 | 244; 73 | 178 | 133, 177, 220, 228 |
+| Tac19_FoB_EC | 12, 20, 72, 73 | 12; 20 | 178 | 177, 228 |
+| Tac21_FoB_EC | 20, 39, 250 | 20; 39 | 29, 178, 240 | - |
+| sherwood | (static) 7, 150, 205, 210, 213, 214, 215, 256, 261 | refused: no element index space (Index spaces) | 86, 101, 112, 125, 126, 163, 164, 172, 173, 205, 213, 229, 232, 240, 248, 255, 256, 258 (static) | - |
+| SherwoodOutro | (static) 180 | refused (same) | - | - |
+
+Union of the load column over the 37 loadable files: 8, 12, 13, 20, 24, 38, 39, 42, 46, 70, 72, 73, 92, 125, 143,
+156, 177, 180, 205, 228, 232, 236, 237, 244, 247, 250, 254, 264 (28 ids; 20 blocks 18 files, 250 eleven, 42 ten,
+72 / 73 ten). Tick 1 adds 8, 29, 46, 47, 93, 98, 119, 126, 133, 178, 182, 192, 222, 223, 231, 234, 240, 245, 246,
+253, 255 (21 ids); the first 500 ticks add 133, 177, 220, 228 (ambush messages of seven forest missions). The
+lenient run reached tick 500 in every loadable mission without a fault, so with the load ids handled every
+mission runs past `Initialize` / `PostInitialize`; with the tick-1 ids at the values below the early game
+traps nowhere. Unknown ids that are never reached in those 500 ticks (by frequency): 221 (89), 226 (73),
+200 (55), 229 (49), 41 (24), 219 (18), 62 (10), 94 (10), 21 (8), 40 (7), 179 (7), 212 (7), and 30 more with
+five uses or fewer.
+
+**Stub policy.** A *recorded stub* is a no-op returning 0 (`STUB_NATIVES`). Whether that is safe depends on
+whether the script branches on the result; the table gives the value that keeps the scripts sane where 0 does
+not, and what a first implementation would be where the row is confident enough.
+
+| Id | 0-stub safe? | Notes |
+|---|---|---|
+| 7, 149, 150; 18, 112; 20; 24, 92; 29; 103; 125; 143; 152, 156; 177; 180; 214, 247; 219, 220; 226; 228; 229; 244; 254; 264 | yes | no result, or the result is never branched on; 20 is safe because the engine already places the player characters from the mission file |
+| 38, 39, 41, 42, 46, 47, 62, 72, 73, 212 | yes, as sequence stubs | they sit before a 32 barrier: the completion token must complete at once (the 49 - 53 treatment) |
+| 8 | yes at load | the result reaches only 156 / 98; implement as the index itself (-1 = outdoors) together with 98 |
+| 98 | yes (never-win only) | branches every tick in six town missions; with 0 the "enemies in the castle" helpers never succeed; sane: 1 iff the building argument is the outdoors handle (-1), the engine has no interiors |
+| 12, 13 | no | the handler would act on patch / location 0; implement as the index (high) |
+| 70 | yes at load | the reporter message (555 / 1001 / 1002) never arrives, so the hunt flows of H12 / S02 / S03 stall later |
+| 86 | yes | zones keyed on one actor never fire and the kick-out helper kicks nobody; implement as handle equality (medium) |
+| 93, 94, 133 | 93, 94 yes; 133 loses placements | ambush enemies are placed with 133 after tick 100: implement 133 as 96 (teleport) ignoring the direction |
+| 101, 126 | yes | branches compare with 52..=57 / 1 / 2 |
+| 119 | yes | 1 would win H04 at tick 1 |
+| 128 | **no** | zones reacting to actors never fire and every "all enemies out of action" helper returns 1 at once: return 1 |
+| 178, 223, 234 | yes (never-win) | tactical missions cannot be won until 223 reads a per-element flag set by 178 |
+| 182 | either | a run-once flag guards the branch; 1 avoids a spurious door close at tick 1 |
+| 192 | **no** | 0 addresses element 0 (a map element) with 193 / 194 / 113: return the class's own element (as 74 does for actors) |
+| 205 | return -1 | 0 would be a map element handed to 80 / 81 / 99 / 243 |
+| 210, 215, 256, 261, 163, 164, 172, 173, 199, 200, 248, 258 | yes | sherwood only (refused today); 210 = 0 means nothing accomplished |
+| 213 | yes (wrong walks) | 0 is location 0; implement the interpolation (medium) |
+| 221, 222 | yes | 0 = not mounted / not used: the zones fire as for unmounted actors; objects count as unused until implemented |
+| 231, 246 | yes | 1 would win H03 / H04 / S04 at tick 1 |
+| 232 | yes at load | the actor does not join the party (S03's companion stays uncontrollable) |
+| 236, 237 | yes | implement as one VM integer (H10 sets 100000 at load, S05 subtracts 2000) |
+| 240 | **no** | with 0, Tac21 is won at tick 1 (its messenger counts as lost) and the "all enemies out of action" helpers succeed: return 1 |
+| 245 | yes (never-win) | H02 / S05 win when mission variable 3 reaches it; implement as the number of live player characters |
+| 250 | no | 0 would be element 0: return the main player character (211's value) |
+| 253, 255 | **no** | every `CheckVictoryCondition` that tests 253 returns 2 (lost) at tick 1 (H02, H05, H10, S02, Tac21) and 255 = 0 sets "no heroes" (Emb07, Emb08): return 1 |
 
 ## Index spaces
 
@@ -390,8 +542,8 @@ What a first VM needs for this mission: the calling convention above; natives 0-
 43-45, 48-52, 56, 59, 64, 69, 74, 75, 79, 80, 85, 90, 95, 96, 99, 103, 109, 111, 113, 114, 117, 118, 130,
 132-135, 137, 140, 144, 145, 186, 191, 193, 194, 196, 197, 198, 202-204, 211, 216-218, 233, 235, 243, 4 and
 5 as at least stubs; message delivery to classes by element; the periodic `Hourglass`; the sequence model
-(30 / 32 / 31 with blocking elements). Natives 103, 130 and 137 are used by this mission but have no table
-row yet (single uses; effect unknown).
+(30 / 32 / 31 with blocking elements). Natives 130 and 137 are used by this mission but have no table
+row yet (single uses; effect unknown); 103 has one (low).
 
 ## Engine notes
 
@@ -447,7 +599,9 @@ jump shapes, `--natives` argument / result data flow per native id, `--imm` imme
 `--handlers` natives per callback, `--params` callback parameter usage, `--messages` message ids sent versus
 handled, `--find` opcode contexts, `--pseudo` folded expression listing of one file), `scb_xref.py` (native
 immediate ranges against `.rhm` counts and `.red` text counts), `scb_elements.py` (element index bases from
-object self-references).
+object self-references), `scb_load_natives.py` (natives reachable from the load-time callbacks through helper calls, per
+mission and per id, against the engine's known set read from `natives.rs`: `--missions`, `--ids`, `--all-unknown`,
+`--context --id N`; any callback set with `--callbacks`).
 
 ## Plan
 
@@ -484,3 +638,13 @@ GOG English, executable SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e9
 in the ADR-0003 sense except the counts and the briefing / objective correspondence. Text sweep 2026-09-02
 (review 4, findings 1 and 15): executable messages and paths, designer helper / variable / element names
 removed or paraphrased; walkthrough statements annotated with their minimum dependency confidence.
+
+Natives at load per mission and the second batch of native rows (2026-09-02, analyst session, data files only):
+`python harness/tools/probe/scb_load_natives.py <gamedir>/DATA/Levels --known-rs
+crates/opensherwood-core/src/natives.rs --missions --ids --all-unknown`, the same with `--callbacks
+Hourglass,CheckVictoryCondition`, `--context --id ...` for the call shapes, `scb_semantics.py --natives` for the
+arities and result consumers, `scb_xref.py ... 8 7 24 210 215 264 42 46 133 228 125` for the immediate ranges
+against the mission tables, folded listings (`--pseudo --fn`) of the helpers named in the rows (described by
+role), and a black-box run of the engine over all missions with `--lenient-natives` (500 ticks, seed 1) for the
+hit / tick-1 / 500-tick columns. Helper and variable names of the scripts are paraphrased; no game text is
+reproduced.
