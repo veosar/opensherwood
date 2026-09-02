@@ -35,6 +35,9 @@ struct Args {
     /// Do not open an audio device.
     #[arg(long)]
     mute: bool,
+    /// Start in a resizable window instead of borderless fullscreen.
+    #[arg(long)]
+    windowed: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -65,5 +68,14 @@ fn main() -> anyhow::Result<()> {
         }
         return rpc::serve_stdio(session);
     }
-    window::run(session, rpc, &args.scenario, args.scale, args.mute)
+    window::run(
+        session,
+        rpc,
+        &args.scenario,
+        window::Presentation {
+            scale: args.scale,
+            mute: args.mute,
+            windowed: args.windowed || rpc,
+        },
+    )
 }

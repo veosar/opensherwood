@@ -21,16 +21,26 @@ use crate::rpc;
 /// Simulation ticks per second in window mode.
 pub const TICK_RATE: u32 = 60;
 
+/// How the window is presented.
+#[derive(Debug, Clone, Copy)]
+pub struct Presentation {
+    /// Integer scale of the logical viewport when windowed.
+    pub scale: u32,
+    /// Do not open an audio device.
+    pub mute: bool,
+    /// Resizable window instead of borderless fullscreen (the default).
+    pub windowed: bool,
+}
+
 /// Run the window until it is closed.
 pub fn run(
     mut session: Session,
     rpc: bool,
     scenario: &str,
-    scale: u32,
-    mute: bool,
+    presentation: Presentation,
 ) -> anyhow::Result<()> {
     let scenario = Session::parse_scenario(scenario).map_err(anyhow::Error::msg)?;
-    session.set_audio(mute);
+    session.set_audio(presentation.mute);
     session.reset(scenario, 0).map_err(anyhow::Error::msg)?;
     let (vw, vh) = session.world.as_ref().map_or((640, 480), |w| w.viewport);
     let event_loop = EventLoop::new().context("creating the event loop")?;
@@ -40,7 +50,8 @@ pub fn run(
         rpc: rpc.then(rpc::spawn_stdin_reader),
         gpu: None,
         viewport: (vw, vh),
-        scale: scale.max(1),
+        scale: presentation.scale.max(1),
+        windowed: presentation.windowed,
         pending: Vec::new(),
         last_tick: Instant::now(),
         accumulator: Duration::ZERO,
@@ -69,6 +80,7 @@ struct App {
     gpu: Option<Gpu>,
     viewport: (u32, u32),
     scale: u32,
+    windowed: bool,
     pending: Vec<InputEvent>,
     last_tick: Instant,
     accumulator: Duration,
@@ -454,12 +466,15 @@ impl ApplicationHandler for App {
         if self.gpu.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
+        let mut attrs = Window::default_attributes()
             .with_title("OpenSherwood")
             .with_inner_size(LogicalSize::new(
                 self.viewport.0 * self.scale,
                 self.viewport.1 * self.scale,
             ));
+        if !self.windowed {
+            attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+        }
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -515,6 +530,16 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.repeat {
+                    return;
+                }
+                if event.state == ElementState::Pressed
+                    && event.physical_key == PhysicalKey::Code(KeyCode::F11)
+                    && let Some(g) = &self.gpu
+                {
+                    let fullscreen = g.window.fullscreen().is_none();
+                    g.window.set_fullscreen(
+                        fullscreen.then_some(winit::window::Fullscreen::Borderless(None)),
+                    );
                     return;
                 }
                 if let PhysicalKey::Code(code) = event.physical_key

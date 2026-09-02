@@ -39,16 +39,13 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest@0.9.98
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r harness/requirements.txt
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo nextest run --workspace --locked
+      - run: cargo test --workspace --locked
       - run: cargo build --workspace --release --locked
       - run: python -m pytest harness/tests/synthetic -q
       - name: Cross-platform determinism digest
