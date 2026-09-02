@@ -1,0 +1,72 @@
+# --- Build output
+/target/
+**/target/
+*.pdb
+*.ilk
+*.obj
+*.o
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.exe
+!scripts/**/*.exe
+
+# --- Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Local-only state
+/.env
+/.local/
+/re/                      # private reverse-engineering workspace (Ghidra projects, decompiler output) - NEVER committed
+/goldens/                 # locally generated reference screenshots (contain game imagery) - NEVER committed
+/harness/out/
+/harness/captures/
+*.gwr.tmp
+
+# --- GAME ASSETS: never commit anything from the game install (see docs/legal.md)
+*.rhs
+*.rhp
+*.rhm
+*.scb
+*.bks
+*.dic
+*.res
+*.RES
+*.red
+*.pak
+*.sxt
+*.map
+*.min
+*.bfn
+*.tfn
+*.fnt
+*.ttc
+*.sfk
+*.fxg
+*.cpf
+*.bck
+*.vid
+*.bik
+*.wav
+*.ogg
+*.mp3
+*.bmp
+Continue
+Continue_t
+Restart
+Restart_t
+Profiles
