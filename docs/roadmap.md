@@ -1,0 +1,59 @@
+# Roadmap
+
+Milestones have exit criteria that the harness can verify. A milestone is done when its checklist is green in CI
+(synthetic tests) and on a machine with game data (data tests). Dates are not promised.
+
+## M0: Governance and deterministic kernel (in progress)
+
+- [x] Repository, GPLv3, legal policy, provenance rules, ADRs
+- [x] Format specs for everything observed so far (`docs/formats/`)
+- [ ] `AGENTS.md`, `CLAUDE.md`, skills mirrored and CI-checked
+- [ ] Cargo workspace: formats, assets, core, script, render, protocol, app, tools
+- [ ] Headless app speaking JSON-RPC over stdio: `hello`, `reset`, `step`, `observe`, `snapshot`, `restore`, `capture`, `shutdown`
+- [ ] Synthetic world (no game data) that replays, snapshots, restores, hashes and renders identically on every platform
+- [ ] `ReplayV1` reader/writer; canonical state hash with subsystem hashes
+- [ ] Python harness: RPC client, synthetic pytest suite, snapshot/restore fuzz
+- [ ] CI on Linux/Windows/macOS: fmt, clippy, nextest, pytest synthetic, skill sync check, no-assets check
+- [ ] `locksley-tools inspect` for SRES / image blobs / RHS / chunk containers (already specified)
+
+## M1: Feasibility gates
+
+- [ ] Exact decode of `.map` / `.min` / `.pak` / `.sxt` (pixel-exact vs decompressed data; channel order verified against a screenshot)
+- [ ] SRES pictures decoded and viewable locally
+- [ ] Sprite bank: one independently verified frame, then all frames of one profile, then Day/Night/Fog variants
+- [ ] SCB disassembler consumes the tutorial script with every unknown explicitly listed
+- [ ] RHP: motion geometry / path graph chunk decoded well enough to draw it and compare with the original's `EULER` / `MOTION` overlays
+- [ ] RHM: actor list (`BOYZ`) decoded for the tutorial
+- [ ] First controlled oracle trace of the original (see `docs/oracle.md`)
+
+## M2: Scene vertical slice
+
+- [ ] VFS resolves base + language overlay (`2047/data`) + mod overlays; content fingerprint
+- [ ] Tutorial map renders with static entities, camera, picking, selection, one animated actor
+- [ ] Pixel comparison against a local screenshot of the original (masked, perceptual threshold)
+
+## M3: Movement slice
+
+- [ ] Path graph, layers, sectors, doors; pointer-driven movement with the original's rules (walk/run, crouch)
+- [ ] Replay and restore remain deterministic through movement
+
+## M4: Tutorial slice
+
+- [ ] SCB instructions needed by `EmbTut_FoC_EC`, objectives, stimuli (sight cones, noise), AI patrols, alarm, combat basics, items, win/lose
+- [ ] An input-only replay completes the tutorial
+
+## M5: Representative campaign
+
+- [ ] One mission of each archetype (ambush, town infiltration, castle, street, tactical, Sherwood camp) completable by replay
+- [ ] Campaign graph, internal saves, menus, briefing/debriefing, music states
+- [ ] Nightly regression matrix over recorded replays
+
+## M6: Full campaign
+
+- [ ] Every reachable mission has a deterministic replay; the campaign can be completed with player-level input only
+
+## M7+: Compatibility and features
+
+- [ ] Original save import/export, arbitrary resolution and widescreen, QoL, rebindable input, gamepad
+- [ ] Mission/map editor, Lua mods (Spellforge-compatible API), custom campaigns
+- [ ] Android, co-op experiments, Desperados: Wanted Dead or Alive data support

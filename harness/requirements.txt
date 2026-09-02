@@ -1,0 +1,5 @@
+pytest>=8
+numpy>=1.26
+pillow>=10
+opencv-python-headless>=4.9
+scikit-image>=0.22

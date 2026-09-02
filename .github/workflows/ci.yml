@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  policy:
+    name: Policy checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/check_no_assets.py
+      - run: python scripts/sync_skills.py --check
+
+  build-test:
+    name: Build and test (${{ matrix.os }})
+    needs: policy
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r harness/requirements.txt
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo nextest run --workspace
+      - run: cargo build --workspace --release
+      - run: python -m pytest harness/tests/synthetic -q
+        env:
+          LOCKSLEY_BIN: target/release/locksley
+      - name: Upload synthetic artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-${{ matrix.os }}
+          path: harness/out/synthetic
+          if-no-files-found: ignore
