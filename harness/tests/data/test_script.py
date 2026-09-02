@@ -3,7 +3,7 @@
 `docs/formats/scb.md` ("First mission script walkthrough", "Engine") and ADR-0008. The first mission's
 `PostInitialize` adds the primary objective 0 and plays one sequence: text pages 0, 1, 2, then the camera
 returns to the hero. Every player action here is canonical input: pages are dismissed with Enter through
-the briefing screen (`Engine.skip_briefing`), walks are right clicks, the pause menu is Escape. `debug.vm`
+the briefing screen (`Engine.skip_briefing`), walks are left clicks on the ground, the pause menu is Escape. `debug.vm`
 only inspects, except `{"win": true}`, the documented shortcut of the end-of-mission test (docs/harness.md).
 """
 
@@ -169,7 +169,7 @@ def test_mission_replay_round_trip_from_the_first_page(binary, game_dir, tmp_pat
         assert e.skip_briefing() == 3
         sx, sy = _select_hero(e)
         before = _hero(e)
-        e.step(1, pointer_click(sx + 60, sy, "right"))
+        e.step(1, pointer_click(sx + 60, sy, "left"))
         e.step(60)
         hero = _hero(e)
         assert (hero["x"], hero["y"]) != (before["x"], before["y"]), "the walk order took"
@@ -232,13 +232,13 @@ def test_mission_snapshot_restore_continuation(binary, game_dir, tmp_path):
         e.reset({"mission": FIRST_MISSION}, seed=5)
         assert e.skip_briefing() == 3
         sx, sy = _select_hero(e)
-        e.step(1, pointer_click(sx + 80, sy + 20, "right"))
+        e.step(1, pointer_click(sx + 80, sy + 20, "left"))
         e.step(20)
         snap = e.snapshot()
         assert snap["snapshot"]["content"], "retail snapshots carry the content fingerprint"
 
         def suffix() -> list[dict]:
-            hashes = e.step(30, pointer_click(sx - 60, sy + 40, "right"), hash_every_tick=True)["per_tick"]
+            hashes = e.step(30, pointer_click(sx - 60, sy + 40, "left"), hash_every_tick=True)["per_tick"]
             hashes.append({"frame": e.capture()["hash"]})
             hashes += e.step(90, hash_every_tick=True)["per_tick"]
             hashes.append({"frame": e.capture()["hash"]})
@@ -299,8 +299,8 @@ def test_every_mission_script_translates_and_runs_300_ticks_strictly(binary, gam
 
 
 def walk_to(e, tx, ty, max_steps=400):
-    """Order the selected player to (tx, ty) with right clicks (re-issued if the camera moved the
-    point off screen) and step until the order completes or the step limit is reached."""
+    """Order the selected player to (tx, ty) with left clicks (re-issued if the camera moved the
+    point off screen; a re-issue within the double-click window makes it a run, which is fine here) and step until the order completes or the step limit is reached."""
     for _ in range(max_steps):
         o = e.observe()
         if o.get("ui"):
@@ -312,7 +312,7 @@ def walk_to(e, tx, ty, max_steps=400):
             cam = o["camera"]
             sx, sy = tx - cam[0], ty - cam[1]
             if 0 <= sx < 1024 and 0 <= sy < 768:
-                e.step(1, pointer_click(sx, sy, "right"))
+                e.step(1, pointer_click(sx, sy, "left"))
             else:
                 key = "right" if sx >= 1024 else "left" if sx < 0 else "down" if sy >= 768 else "up"
                 e.step(40, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": key}])

@@ -178,10 +178,10 @@ def flow_map(win: Window, eng: Engine) -> bool:
     sel = eng.observe()["selected"]
     print("selected after real click:", sel)
     ok &= sel is not None
-    # 2. Real right click: order a move; verify a target is set.
-    win.click(300, 300, "right")
+    # 2. Real left click on the ground: order a walk; verify a target is set.
+    win.click(300, 300)
     player = next(e for e in eng.observe()["entities"] if e["kind"] == "player")
-    print("target after real right click:", player["target"])
+    print("target after real ground click:", player["target"])
     ok &= player["target"] is not None
     # 3. Hold the right arrow for a moment: camera must scroll.
     import pyautogui
@@ -224,7 +224,7 @@ def flow_menu(win: Window, eng: Engine) -> bool:
     sel = eng.observe(entities=False)["selected"]
     print("selected Robin:", sel)
     ok &= sel is not None
-    win.click(rx - 150, ry + 30, "right")
+    win.click(rx - 150, ry + 30)
     p = next(e for e in eng.observe()["entities"] if e["kind"] == "player")
     print("walk target:", p["target"])
     ok &= p["target"] is not None

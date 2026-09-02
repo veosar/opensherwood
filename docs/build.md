@@ -68,7 +68,8 @@ borderless fullscreen at the desktop resolution, letterboxed), `--scale N` (inte
 
 ## Window controls (current)
 
-Left click selects a unit, right click orders the selected unit to walk there, arrow keys or the pointer at the
+Left click selects a unit or orders the selected unit to walk there (double click: run), right click cancels the
+selected unit's order or deselects, `c` / `s` crouch / stand, arrow keys or the pointer at the
 window edge scroll the camera. The window is letterboxed to the logical 640x480 viewport (integer `--scale` on
 start; resizable). Simulation runs at 60 ticks per second in window mode.
 

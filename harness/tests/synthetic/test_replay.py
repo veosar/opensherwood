@@ -18,7 +18,7 @@ def record(engine: Engine, seed: int = 11) -> dict:
     engine.reset("corridor", seed=seed)
     engine.replay_start(checkpoint_every=25)
     engine.step(1, pointer_click(80, 240, "left"))
-    engine.step(1, pointer_click(600, 240, "right"))
+    engine.step(1, pointer_click(600, 240, "left"))
     engine.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": "right"}])
     engine.step(200)
     return engine.replay_stop(path="replays/corridor.jsonl")
@@ -75,7 +75,7 @@ def test_record_then_play_matches_every_checkpoint(engine):
 def test_tampered_replay_reports_first_divergence(engine):
     rec = record(engine)
 
-    # Move the right click 100 px: the actor hashes must diverge at the first checkpoint after it.
+    # Move the walk order's click 100 px: the actor hashes must diverge at the first checkpoint after it.
     def move_click(obj):
         if obj["type"] == "event" and obj["kind"] == "pointer_move" and obj["tick"] == 1:
             obj["x256"] += 100 * 256

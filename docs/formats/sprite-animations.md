@@ -169,7 +169,9 @@ of all placed frames (150 x 155); what it bounds is unknown.
 
 - What blocks with all-zero durations (id 50) and the two-frame transition ids (2, 4, 5, 8, 9, 51, 15,
   17, 34, 39) are used for; probably blend/turn tables.
-- Whether `run` (7) or `sprint` (10) is the double-click "run" of the game and which the AI uses.
+- Whether `run` (7) or `sprint` (10) is the double-click "run" of the game and which the AI uses. The engine
+  plays 7 for the double-click run and 14 / 16 for a crouched character (hypothesis, `docs/harness.md`
+  "Orders and movement modes").
 - `Animation::unknown_0x02` = `frames - 1` in 112,608 of 148,512 animations; the others are smaller
   (loop start? last key frame?).
 - The meaning of the displacement on Soldier A's idle blocks, and of ids not listed above.

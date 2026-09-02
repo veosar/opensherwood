@@ -32,7 +32,7 @@ def test_capture_writes_png_and_changes_with_state(engine):
     # Player circle is green at (80, 240)
     assert img.getpixel((80, 240))[:3] == (40, 200, 60)
     engine.step(1, pointer_click(80, 240, "left"))
-    engine.step(1, pointer_click(300, 240, "right"))
+    engine.step(1, pointer_click(300, 240, "left"))
     engine.step(60)
     b = engine.capture("cap_b.png")
     assert a["hash"] != b["hash"]

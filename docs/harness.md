@@ -26,11 +26,28 @@ Example session:
 -> {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"pytest"}}
 <- {"jsonrpc":"2.0","id":1,"result":{"protocol":5,"build":"0.1.0","ruleset":5,"capabilities":["synthetic","capture","mission","replay"],"content_fingerprint":null}}
 -> {"jsonrpc":"2.0","id":2,"method":"reset","params":{"scenario":{"synthetic":"corridor"},"seed":42}}
--> {"jsonrpc":"2.0","id":3,"method":"step","params":{"ticks":10,"events":[{"tick_offset":0,"sequence":0,"kind":"pointer_move","x256":25600,"y256":19200},{"tick_offset":0,"sequence":1,"kind":"pointer_down","button":"right"},{"tick_offset":0,"sequence":2,"kind":"pointer_up","button":"right"}]}}
+-> {"jsonrpc":"2.0","id":3,"method":"step","params":{"ticks":10,"events":[{"tick_offset":0,"sequence":0,"kind":"pointer_move","x256":25600,"y256":19200},{"tick_offset":0,"sequence":1,"kind":"pointer_down","button":"left"},{"tick_offset":0,"sequence":2,"kind":"pointer_up","button":"left"}]}}
 <- {"jsonrpc":"2.0","id":3,"result":{"tick":10,"hashes":{"total":"...","actors":"..."}}}
 ```
 
-Coordinates are logical pixels in 24.8 fixed point (`x256 = x * 256`).
+Coordinates are logical pixels in 24.8 fixed point (`x256 = x * 256`). Keys are `"escape"`, `"enter"`,
+`"space"`, `"up"` ... for the named keys, `{"letter": "c"}`, `{"digit": 1}`, `{"function": 11}` for the others
+(`opensherwood_core::input::Key`).
+
+## Orders and movement modes
+
+The documented rules of `docs/original/ui-flow.md` 9.4, all through canonical input: a **left click** on a
+character selects him, a left click on the ground orders the selected player character to **walk** there, a
+second left click within 20 ticks and 8 map pixels of the first (`DOUBLE_CLICK_TICKS`, `DOUBLE_CLICK_DISTANCE`)
+makes that order a **run**; a **right click** on the selected character cancels his order, a right click anywhere
+else deselects. `c` crouches the selected player character, `s` stands him up. `observe` entities carry `gait`
+(`walk` / `run`: the mode of the current order, `walk` again once it ends) and `posture` (`standing` /
+`crouched`). Speeds: running is `RUN_SPEED_FACTOR` (2) times the walking speed, sneaking (any order while
+crouched) the walking speed over `CROUCH_SPEED_DIVISOR` (2); both are hypotheses documented in
+`crates/opensherwood-core/src/world.rs` (the animation table's per-frame `advance` is a distance per frame, not a
+speed). Running plays the run block (action 7), crouching the crouched idle / sneak blocks (14 / 16) of profiles
+that have them; the double-click memory (`last_ground_click`), gait and posture are in the snapshot and the
+`world` / `actors` hashes.
 
 ## Replays
 

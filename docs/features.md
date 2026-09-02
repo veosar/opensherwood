@@ -30,6 +30,14 @@ fheroes2, VCMI) and by what the original executable already contains (developer 
   probabilistic choices draw from the gameplay RNG stream, so runs are reproducible from the seed. Not yet:
   reactions to the player (view cones, alarms), synchronisation between patrols (`CheckForSync`), scripted
   rails, carts.
+- **Movement modes.** The manual's mouse rules (`docs/original/ui-flow.md` 9.4): left click selects a character
+  or walks the selected one to the ground point, a double click (second press within 20 ticks and 8 px) runs
+  there, a right click on the selected character cancels his order and a right click elsewhere deselects; `c`
+  / `s` crouch / stand. Running uses the run block (action 7) at twice the walking speed, crouching the
+  crouched idle and sneak blocks (14 / 16) at half speed; both speeds are hypotheses (the table's per-frame
+  advance is a distance per frame). Gait, posture and the double-click memory are in the snapshot and hash.
+  Not yet: distance-timed walk cycles, the run / sprint distinction (ids 7 / 10), noise, crouch transitions
+  (13 / 18), the HUD kneel / stand icons, multi-selection.
 - **Mission scripts.** Every retail mission's compiled script (`.scb`) is translated to the core VM and runs
   (ADR-0008, `docs/formats/scb.md` "Engine"): `Initialize` / `PostInitialize` at load, `Hourglass` and
   `CheckVictoryCondition` every tick, messages between classes, sequences (text pages that wait for the player,

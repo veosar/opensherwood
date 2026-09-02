@@ -27,9 +27,9 @@ pub use input::{Button, InputEvent, Key};
 pub use nav::{NavError, NavGrid};
 pub use vm::{Program, VmState};
 pub use world::{
-    ActorSpec, Entity, EntityId, EntityKind, Instruction, MapInfo, MissionSpec, Observation,
-    Scenario, Snapshot, Team, World,
+    ActorSpec, Entity, EntityId, EntityKind, Gait, GroundClick, Instruction, MapInfo, MissionSpec,
+    Observation, Posture, Scenario, Snapshot, Team, World,
 };
 
 /// Ruleset version: bump when simulation semantics change so old replays/hashes are not compared.
-pub const RULESET_VERSION: u32 = 7;
+pub const RULESET_VERSION: u32 = 8;

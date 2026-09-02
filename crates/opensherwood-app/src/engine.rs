@@ -47,7 +47,9 @@ impl SpriteSource for Sprites {
 
 /// Build the core's animation set from a parsed profile using the documented block layout
 /// (`docs/formats/sprite-animations.md`): 16-direction blocks per action; idle = action 0,
-/// walk = action 6. Falls back to the first animations when the profile has no table.
+/// walk = action 6, run = action 7, crouched idle = 14, crouched walk (sneak) = 16. A profile
+/// without a run or crouch block (soldiers and civilians have no crouch set) names its standing
+/// block for it. Falls back to the first animations when the profile has no table.
 fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSet {
     use opensherwood_formats::anim_table::{AnimationTable, Direction};
     // Frame anchors are relative to a canvas whose origin (the entity position) is the sequence's
@@ -73,22 +75,28 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
     let n = animations.len().max(1) as u32;
     let mut idle = [0u32; 8];
     let mut walk = [0u32; 8];
+    let mut run = [0u32; 8];
+    let mut crouch_idle = [0u32; 8];
+    let mut crouch_walk = [0u32; 8];
     let table = AnimationTable::from_profile(profile);
-    for (o, (i, w)) in idle.iter_mut().zip(walk.iter_mut()).enumerate() {
+    for o in 0..8 {
         let dir = Direction::from_octant(o);
-        *i = table
-            .as_ref()
-            .and_then(|t| t.idle(dir))
-            .map_or(o as u32 % n, |a| a as u32);
-        *w = table
-            .as_ref()
-            .and_then(|t| t.walk(dir))
-            .map_or((8 + o as u32) % n, |a| a as u32);
+        let lookup = |f: fn(&AnimationTable, Direction) -> Option<usize>| {
+            table.as_ref().and_then(|t| f(t, dir)).map(|a| a as u32)
+        };
+        idle[o] = lookup(AnimationTable::idle).unwrap_or(o as u32 % n);
+        walk[o] = lookup(AnimationTable::walk).unwrap_or((8 + o as u32) % n);
+        run[o] = lookup(AnimationTable::run).unwrap_or(walk[o]);
+        crouch_idle[o] = lookup(AnimationTable::crouch_idle).unwrap_or(idle[o]);
+        crouch_walk[o] = lookup(AnimationTable::sneak).unwrap_or(walk[o]);
     }
     AnimSet {
         animations,
         idle,
         walk,
+        run,
+        crouch_idle,
+        crouch_walk,
     }
 }
 

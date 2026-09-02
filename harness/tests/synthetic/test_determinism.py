@@ -7,12 +7,13 @@ from opensherwood_harness import Engine, pointer_click
 
 
 def play_corridor(engine: Engine, seed: int = 11, hash_every_tick: bool = False) -> list[dict]:
-    """Select the player, order it to the goal, run 300 ticks. Returns per-tick hashes (or final only)."""
+    """Select the player (left click), order it to the goal (a left click on the ground), run 300 ticks.
+    Returns per-tick hashes (or final only)."""
     engine.reset("corridor", seed=seed)
     per_tick: list[dict] = []
     r = engine.step(1, pointer_click(80, 240, "left"), hash_every_tick=hash_every_tick)
     per_tick += r.get("per_tick", []) or [r["hashes"]]
-    r = engine.step(1, pointer_click(600, 240, "right"), hash_every_tick=hash_every_tick)
+    r = engine.step(1, pointer_click(600, 240, "left"), hash_every_tick=hash_every_tick)
     per_tick += r.get("per_tick", []) or [r["hashes"]]
     r = engine.step(398, hash_every_tick=hash_every_tick)
     per_tick += r.get("per_tick", []) or [r["hashes"]]
@@ -48,7 +49,7 @@ def test_player_reaches_goal_through_input_only(engine):
 def test_order_without_selection_does_nothing(engine):
     engine.reset("corridor", seed=5)
     before = engine.observe()
-    engine.step(1, pointer_click(300, 300, "right"))
+    engine.step(1, pointer_click(300, 300, "left"))
     engine.step(50)
     after = engine.observe()
     p0 = next(e for e in before["entities"] if e["kind"] == "player")
@@ -59,7 +60,7 @@ def test_order_without_selection_does_nothing(engine):
 def test_snapshot_restore_is_transparent(engine):
     engine.reset("corridor", seed=9)
     engine.step(1, pointer_click(80, 240, "left"))
-    engine.step(1, pointer_click(500, 400, "right"))
+    engine.step(1, pointer_click(500, 400, "left"))
     engine.step(40)
     snap = engine.snapshot()
     suffix_a = engine.step(120, hash_every_tick=True)["per_tick"]
@@ -77,12 +78,12 @@ def test_restore_fuzz_every_10_ticks(engine):
     """Snapshot at many points; restoring and replaying the tail must reproduce the straight run."""
     engine.reset("corridor", seed=21)
     engine.step(1, pointer_click(80, 240, "left"))
-    engine.step(1, pointer_click(600, 240, "right"))
+    engine.step(1, pointer_click(600, 240, "left"))
     straight = engine.step(200, hash_every_tick=True)["per_tick"]
     for at in range(0, 200, 10):
         engine.reset("corridor", seed=21)
         engine.step(1, pointer_click(80, 240, "left"))
-        engine.step(1, pointer_click(600, 240, "right"))
+        engine.step(1, pointer_click(600, 240, "left"))
         if at:
             engine.step(at)
         snap = engine.snapshot()

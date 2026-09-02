@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from opensherwood_harness import Engine, pointer_click
+from opensherwood_harness import Engine, key_press, pointer_click
 
 
 def test_tutorial_loads_with_its_actors(binary, game_dir):
@@ -55,7 +55,7 @@ def test_mission_is_deterministic_across_processes(binary, game_dir):
             sx, sy = robin["x"] // 256 - cam[0], robin["y"] // 256 - cam[1]
             e.step(1, pointer_click(sx, sy, "left"))
             assert e.observe(entities=False)["selected"] is not None
-            e.step(1, pointer_click(sx - 100, sy, "right"))
+            e.step(1, pointer_click(sx - 100, sy, "left"))
             r = e.step(200)
             totals.append(r["hashes"]["total"])
     assert totals[0] == totals[1]
@@ -77,7 +77,7 @@ def test_walking_into_an_obstacle_stops_and_occluders_hide_the_sprite(binary, ga
         e.step(1, pointer_click(sx, sy, "left"))
         # West along the bank: the big tree's obstacle polygon is in the way and the target is on
         # the river, so the path bends around the tree and ends on the closest reachable ground.
-        e.step(1, pointer_click(sx - 260, sy + 40, "right"))
+        e.step(1, pointer_click(sx - 260, sy + 40, "left"))
         p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
         assert p["target"] is not None and len(p["path"]) >= 2, "expected a multi-point path"
         e.step(700)
@@ -119,3 +119,72 @@ def test_npc_sprites_come_from_the_profile_table(binary, game_dir):
     assert len(sets) >= 6, sets
     assert max(sets.values()) < sum(sets.values()) // 2, sets
     assert any(n == 1 for n in sets.values()), sets
+
+
+def _hero_on_screen(e):
+    """Select the first player character with a left click; returns his viewport position."""
+    obs = e.observe()
+    robin = next(x for x in obs["entities"] if x["kind"] == "player")
+    cam = obs["camera"]
+    sx, sy = robin["x"] // 256 - cam[0], robin["y"] // 256 - cam[1]
+    e.step(1, pointer_click(sx, sy, "left"))
+    assert e.observe(entities=False)["selected"] is not None
+    return sx, sy
+
+
+def _hero(e):
+    return next(x for x in e.observe()["entities"] if x["kind"] == "player")
+
+
+def test_double_click_runs_and_c_s_crouch_and_stand(binary, game_dir):
+    """H01 (Lincoln), `docs/original/ui-flow.md` 9.4: a left click on the ground walks, a double
+    click runs (twice as far in the same ticks, the run animation block), `c` crouches Robin (the
+    crouched idle / sneak blocks, half speed) and `s` stands him up. Every action is canonical input."""
+    covered = {}
+    for mode in ("walk", "run"):
+        with Engine(binary=binary, game_dir=game_dir, timeout=120) as e:
+            e.reset({"mission": "H01_Lin_VL"}, seed=0)
+            e.skip_briefing()
+            sx, sy = _hero_on_screen(e)
+            start = _hero(e)
+            walk_anim = None
+            e.step(1, pointer_click(sx - 150, sy + 30, "left"))
+            if mode == "run":
+                e.step(1, pointer_click(sx - 150, sy + 30, "left"))
+            p = _hero(e)
+            assert p["target"] is not None and p["gait"] == mode and p["posture"] == "standing"
+            e.step(20)
+            p = _hero(e)
+            covered[mode] = abs(p["x"] - start["x"]) + abs(p["y"] - start["y"])
+            covered[mode + "_anim"] = p["anim"]["animation"]
+    assert covered["run"] > covered["walk"] * 3 // 2, covered
+    assert covered["run_anim"] != covered["walk_anim"], "running uses another animation block"
+
+    with Engine(binary=binary, game_dir=game_dir, timeout=120) as e:
+        e.reset({"mission": "H01_Lin_VL"}, seed=0)
+        e.skip_briefing()
+        sx, sy = _hero_on_screen(e)
+        standing_idle = _hero(e)["anim"]["animation"]
+        e.step(1, key_press({"letter": "c"}))
+        p = _hero(e)
+        assert p["posture"] == "crouched"
+        e.step(5)
+        crouched_idle = _hero(e)["anim"]["animation"]
+        assert crouched_idle != standing_idle, "Robin has a crouched idle block (action 14)"
+        start = _hero(e)
+        e.step(1, pointer_click(sx - 150, sy + 30, "left"))
+        e.step(20)
+        p = _hero(e)
+        sneaked = abs(p["x"] - start["x"]) + abs(p["y"] - start["y"])
+        assert p["anim"]["animation"] not in (crouched_idle, standing_idle, covered["walk_anim"])
+        assert 0 < sneaked < covered["walk"], (sneaked, covered)
+        e.step(1, key_press({"letter": "s"}))
+        p = _hero(e)
+        assert p["posture"] == "standing"
+        # Right click on the selected character cancels his order; on the ground it deselects.
+        cam = e.observe(entities=False)["camera"]
+        e.step(1, pointer_click(p["x"] // 256 - cam[0], p["y"] // 256 - cam[1], "right"))
+        p = _hero(e)
+        assert p["target"] is None and e.observe(entities=False)["selected"] is not None
+        e.step(1, pointer_click(sx + 200, sy, "right"))
+        assert e.observe(entities=False)["selected"] is None

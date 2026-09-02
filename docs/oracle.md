@@ -21,14 +21,14 @@ Normalised traces (no pixels, no strings copied from the game) may be shared wit
 
 ## First experiment (M1 gate)
 
-Mission `EmbTut_FoC_EC`, one right-click movement:
+Mission `EmbTut_FoC_EC`, one left-click movement (the original walks on a left click, `ui-flow.md` 9.4):
 
 1. Fingerprint the executable and the data manifest.
 2. Analyst identifies the central update function and the player actor's stable id and position fields.
 3. Hook the time functions; pause at the update boundary; advance under harness control.
 4. Capture per tick: tick number, controlled time, actor id, position / elevation / facing, order, movement
    state, animation frame.
-5. Inject one fixed pointer move + right click in a fixed-size window.
+5. Inject one fixed pointer move + left click in a fixed-size window.
 6. Record 200 steps. Validate the destination against the game's own actor overlay (`BIG BROTHER`) and the
    screen projection.
 
