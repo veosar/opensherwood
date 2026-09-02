@@ -954,11 +954,16 @@ fn wrap(font: &FontAtlas, text: &str, max_width: i32) -> Vec<String> {
     lines
 }
 
-/// The original pauses with a green tint: keep green, halve red and blue.
+/// The original's paused / briefing scene is a green-tinted luminance image. Fitted on 2026-09-02 against
+/// the analyst's capture of the first briefing (same camera, parchment and HUD masked, 500k pixels):
+/// `out = lum * (0.124, 0.429, 0.287)` for (r, g, b) with `lum = 0.299 r + 0.587 g + 0.114 b`, residual
+/// 4-6 levels per channel (a per-channel scale fits worse, 5-7). Offsets of a few levels are ignored.
 fn tint_green(fb: &mut Framebuffer) {
     for px in fb.rgba.chunks_exact_mut(4) {
-        px[0] /= 2;
-        px[2] /= 2;
+        let lum = (77 * u32::from(px[0]) + 150 * u32::from(px[1]) + 29 * u32::from(px[2])) >> 8;
+        px[0] = ((lum * 32) >> 8) as u8;
+        px[1] = ((lum * 110) >> 8) as u8;
+        px[2] = ((lum * 73) >> 8) as u8;
     }
 }
 

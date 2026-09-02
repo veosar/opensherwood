@@ -202,7 +202,9 @@ top-right corner (x = 995, y = 8). Visible for about 1.7 s on this machine.
 
 ### 9.2 Briefing parchment (`m1_brief_page1..3.png`)
 
-The mission is loaded and drawn **green-tinted (paused)** behind a vertical parchment (~496x463 at (264,148),
+The mission is loaded and drawn **green-tinted (paused)** (measured on `m1_brief_page1.png` against the engine's
+untinted frame at the same camera: each output channel is a multiple of the luminance, (r, g, b) =
+lum x (0.12, 0.43, 0.29), residual 4-6 levels; the camera is centred on the hero, offset 0,0) behind a vertical parchment (~496x463 at (264,148),
 `PIC` 147 *inferred*). Text in the dark-brown `Debrief` font, left-aligned at x = 318, wrapped to ~400 px, with
 a 120x160 character picture at (600,205) (the `Level.res` `PIC` entries 1000007/1000010/... are 120x160 and
 `DEFAULT.RES` `PICC` 252..267 are 5-frame 120x160 sets; which one is used here is *unknown*). One string per

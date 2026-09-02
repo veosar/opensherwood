@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from opensherwood_harness import Engine
+from opensherwood_harness import Engine, pointer_click
 from opensherwood_harness.compare import compare
 
 HARNESS = Path(__file__).resolve().parents[2]
@@ -35,5 +35,29 @@ def test_main_menu_matches_the_original_outside_the_masked_regions(binary, game_
         e.capture(path="menu_for_oracle.png")
     result = compare(tmp_path / "menu_for_oracle.png", ORIGINAL, MASKS, diff_out=tmp_path / "menu_diff.png")
     print("menu vs original:", result)
+    assert result.ssim > 0.97, str(result)
+    assert result.fraction_over_32 < 0.01, str(result)
+
+
+BRIEFING_ORIGINAL = HARNESS / "captures" / "original" / "m1_brief_page1.png"
+BRIEFING_MASKS = [
+    (264, 148, 496, 463),  # parchment (portrait picture and text layout are not reproduced yet)
+    (0, 0, 1024, 60),  # HUD top (money / clover text)
+    (0, 600, 1024, 168),  # HUD bottom (portrait frame, foliage)
+]
+
+
+def test_first_briefing_scene_matches_the_original_behind_the_parchment(binary, game_dir, tmp_path):
+    """Camera on the hero and the green tint: measured against the analyst's capture at offset (0, 0)."""
+    if not BRIEFING_ORIGINAL.is_file():
+        pytest.skip("no local capture of the original briefing")
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=120) as e:
+        e.reset({"menu": "main"}, seed=0)
+        e.step(1, pointer_click(748, 358, "left"))
+        e.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "pointer_move", "x256": 1000 * 256, "y256": 700 * 256}])
+        assert e.observe(entities=False)["ui"]["screen"] == "briefing"
+        e.capture(path="briefing_for_oracle.png")
+    result = compare(tmp_path / "briefing_for_oracle.png", BRIEFING_ORIGINAL, BRIEFING_MASKS, diff_out=tmp_path / "briefing_diff.png")
+    print("briefing vs original:", result)
     assert result.ssim > 0.97, str(result)
     assert result.fraction_over_32 < 0.01, str(result)
