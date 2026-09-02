@@ -3,7 +3,7 @@
 
 use opensherwood_assets::GameDir;
 use opensherwood_formats::font;
-use opensherwood_formats::image_blob::Image16;
+use opensherwood_formats::image_blob::{Image16, RgbaBudget};
 use opensherwood_formats::sres;
 use opensherwood_render::{FontAtlas, SpriteFrame};
 
@@ -51,12 +51,6 @@ pub mod ids {
 
 /// Text ids in `Level.res` (`docs/original/campaign-flow.md`).
 pub mod texts {
-    /// Briefing pages of the first mission.
-    pub const FIRST_MISSION_BRIEFING: u32 = 1_000_105;
-    /// Number of briefing pages at the start of that entry (the rest are tutorial popups).
-    pub const FIRST_MISSION_BRIEFING_PAGES: usize = 3;
-    /// Short briefings (objectives) of the first mission; string 0 is the initial objective.
-    pub const FIRST_MISSION_OBJECTIVES: u32 = 1_000_283;
     /// Interface string table (menu labels, dialog wording, option names).
     pub const INTERFACE: u32 = 1_000_507;
     /// Question of the in-mission leave confirmation.
@@ -83,39 +77,33 @@ const UI_COLOUR_KEY: u16 = 0x07C0;
 
 /// Decode a UI picture: RGB565 to RGBA8; with `keyed`, the colour key becomes transparent. Unlike the
 /// sprite preview converter no shadow key is applied.
-fn frame_with(img: &Image16, keyed: bool) -> SpriteFrame {
-    let mut rgba = Vec::with_capacity(img.pixels.len() * 4);
-    for &p in &img.pixels {
-        if keyed && p == UI_COLOUR_KEY {
-            rgba.extend_from_slice(&[0, 0, 0, 0]);
-            continue;
-        }
-        let r = ((p >> 11) & 0x1F) as u8;
-        let g = ((p >> 5) & 0x3F) as u8;
-        let b = (p & 0x1F) as u8;
-        rgba.extend_from_slice(&[
-            (r << 3) | (r >> 2),
-            (g << 2) | (g >> 4),
-            (b << 3) | (b >> 2),
-            255,
-        ]);
-    }
-    SpriteFrame {
+fn frame_with(img: &Image16, keyed: bool, budget: &mut RgbaBudget) -> Option<SpriteFrame> {
+    let rgba = img
+        .try_to_rgba8_with(budget, |p| {
+            if keyed && p == UI_COLOUR_KEY {
+                return [0, 0, 0, 0];
+            }
+            let r = ((p >> 11) & 0x1F) as u8;
+            let g = ((p >> 5) & 0x3F) as u8;
+            let b = (p & 0x1F) as u8;
+            [
+                (r << 3) | (r >> 2),
+                (g << 2) | (g >> 4),
+                (b << 3) | (b >> 2),
+                255,
+            ]
+        })
+        .map_err(|e| eprintln!("opensherwood: UI picture {}x{}: {e}", img.width, img.height))
+        .ok()?;
+    Some(SpriteFrame {
         width: u32::from(img.width),
         height: u32::from(img.height),
         rgba,
-    }
+    })
 }
 
-/// Widgets, parchments, cursors and HUD pieces: keyed.
-fn frame(img: &Image16) -> SpriteFrame {
-    frame_with(img, true)
-}
-
-/// Full-width backgrounds: opaque, every pixel is content.
-fn opaque(img: &Image16) -> SpriteFrame {
-    frame_with(img, false)
-}
+/// Bytes of decoded UI pictures a single `load` may materialise.
+const UI_RGBA_BUDGET: usize = 64 * 1024 * 1024;
 
 fn load_font(game: &GameDir, name: &str) -> Option<FontAtlas> {
     let data = game.read(&format!("Data/Interface/Fonts/{name}")).ok()?;
@@ -132,12 +120,15 @@ pub fn load(game: &GameDir) -> UiAssets {
             .map_err(|e| eprintln!("opensherwood: DEFAULT.RES: {e}"))
             .ok()
     });
+    let budget = std::cell::RefCell::new(RgbaBudget::new(UI_RGBA_BUDGET));
     let pic_with = |id: u32, keyed: bool| -> Option<SpriteFrame> {
         let a = archive.as_ref()?;
-        let conv = if keyed { frame } else { opaque };
+        let mut b = budget.borrow_mut();
         match &a.get(id)?.body {
-            sres::Body::Picture(p) => Some(conv(p)),
-            sres::Body::PictureCollection(v) => v.first().map(conv),
+            sres::Body::Picture(p) => frame_with(p, keyed, &mut b),
+            sres::Body::PictureCollection(v) => {
+                v.first().and_then(|p| frame_with(p, keyed, &mut b))
+            }
             _ => None,
         }
     };
@@ -146,8 +137,12 @@ pub fn load(game: &GameDir) -> UiAssets {
         let Some(a) = archive.as_ref() else {
             return Vec::new();
         };
+        let mut b = budget.borrow_mut();
         match a.get(id).map(|e| &e.body) {
-            Some(sres::Body::Widget { pictures, .. }) => pictures.iter().map(frame).collect(),
+            Some(sres::Body::Widget { pictures, .. }) => pictures
+                .iter()
+                .filter_map(|p| frame_with(p, true, &mut b))
+                .collect(),
             _ => Vec::new(),
         }
     };

@@ -16,6 +16,7 @@ use crate::hash::{Encoder, HASH_SCHEMA_VERSION, Hashes, total};
 use crate::input::{Button, InputEvent, Key, button_tag, encode_key};
 use crate::nav::NavGrid;
 use crate::rng::Rng;
+use crate::vm::{Program, ScriptObservation, VmState};
 
 /// Stable entity identifier (index + generation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -89,6 +90,17 @@ pub struct Entity {
     /// Program counter: index of the next instruction to execute.
     #[serde(default)]
     pub pc: u32,
+    /// Active (script natives 113 / 114): inactive entities are not drawn, not stepped and not
+    /// pickable.
+    #[serde(default = "default_true")]
+    pub active: bool,
+    /// The script locked this entity's AI (natives 134 / 135): its waypoint program is paused.
+    #[serde(default)]
+    pub ai_locked: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// One instruction of an NPC waypoint program. Programs are plain data translated by the app
@@ -223,6 +235,10 @@ pub struct ActorSpec {
     /// Waypoint program (empty = none: the actor stands idle unless it has a `patrol`).
     #[serde(default)]
     pub program: Vec<Instruction>,
+    /// Active at start (`false` for the mission's hidden player characters, which a script
+    /// activates later; `docs/formats/rhm.md`, `SCOT` placement flag `0x88`).
+    #[serde(default = "default_true")]
+    pub active: bool,
 }
 
 /// A mission ready to be simulated: map size, walkable geometry and actors. Built by the app from
@@ -235,6 +251,18 @@ pub struct MissionSpec {
     pub geometry: Geometry,
     /// Actors in file order (order is authoritative).
     pub actors: Vec<ActorSpec>,
+    /// The mission script translated to the core IR (`None` = no script: the mission runs
+    /// without objectives, texts or scripted events).
+    #[serde(default)]
+    pub script: Option<Program>,
+    /// Every rail of the mission as a compiled program, by `RAIL` index (script native 132
+    /// assigns them; empty rails give empty programs).
+    #[serde(default)]
+    pub rails: Vec<Vec<Instruction>>,
+    /// Unknown-native policy of the script VM: `false` (default) traps, `true` records no-ops
+    /// (`opensherwood_core::natives`).
+    #[serde(default)]
+    pub lenient_natives: bool,
 }
 
 /// Serialisable snapshot of the whole authoritative state, with the versions it was made under
@@ -325,6 +353,10 @@ pub struct Observation {
     pub rng_draws: u64,
     /// Objective state for the synthetic scenario.
     pub objective_reached: bool,
+    /// Script state (objectives, pending texts, victory, unknown natives), if the world runs a
+    /// script.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<ScriptObservation>,
 }
 
 /// Scroll speed in pixels per tick for keyboard and edge scrolling.
@@ -346,11 +378,17 @@ pub const MAX_GEOMETRY_COORD: i32 = crate::geom::MAX_COORD;
 
 /// Every check a walkable geometry must pass before it may drive movement: vertex budget and
 /// coordinate range (`-MAX_GEOMETRY_COORD..=MAX_GEOMETRY_COORD`).
-fn check_geometry(geometry: &Geometry) -> Result<(), String> {
+fn check_geometry(geometry: &Geometry, map_size: (u32, u32)) -> Result<(), String> {
     if geometry.vertex_count() > MAX_GEOMETRY_VERTICES {
         return Err("geometry has too many vertices".into());
     }
-    geometry.check_bounds().map_err(|e| format!("geometry {e}"))
+    geometry
+        .check_bounds()
+        .map_err(|e| format!("geometry {e}"))?;
+    // The navigation grid must be buildable within its work budget before the geometry is accepted.
+    NavGrid::check_budget(geometry, map_size.0, map_size.1)
+        .map(|_| ())
+        .map_err(|e| format!("geometry navigation budget: {e}"))
 }
 
 /// The world.
@@ -392,6 +430,10 @@ pub struct World {
     /// in first-use order).
     #[serde(default)]
     pub programs: Vec<Vec<Instruction>>,
+    /// The mission script VM (ADR-0008): program, class variables, scheduler queues, sequences;
+    /// `None` for worlds without a script.
+    #[serde(default)]
+    pub vm: Option<VmState>,
     /// Navigation grid derived from `geometry` and `map_size` (cache; rebuilt on load).
     #[serde(skip)]
     pub nav: Option<NavGrid>,
@@ -400,8 +442,8 @@ pub struct World {
     pub catalog: Catalog,
 }
 
-/// Snapshot schema version (6: `content` fingerprint in the envelope).
-pub const SNAPSHOT_VERSION: u32 = 6;
+/// Snapshot schema version (7: script VM state and entity `active` / `ai_locked` flags).
+pub const SNAPSHOT_VERSION: u32 = 7;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -492,6 +534,8 @@ impl World {
                 anim: Some(AnimState::new(a.profile.clone(), 0)),
                 program,
                 pc: 0,
+                active: a.active,
+                ai_locked: false,
             });
         }
         // The original opens a mission with the camera on the hero.
@@ -499,7 +543,32 @@ impl World {
             let (cx, cy) = (hero.x.round(), hero.y.round());
             world.center_camera_on(cx, cy);
         }
+        // Every rail becomes a program the script can assign (native 132), shared like the
+        // actors' own programs.
+        let mut paths = Vec::with_capacity(spec.rails.len());
+        for (i, rail) in spec.rails.iter().enumerate() {
+            if rail.is_empty() {
+                paths.push(None);
+                continue;
+            }
+            if rail.len() > MAX_PROGRAM_LEN {
+                return Err(format!("rail {i} program too long"));
+            }
+            let idx = world
+                .programs
+                .iter()
+                .position(|p| p == rail)
+                .unwrap_or_else(|| {
+                    world.programs.push(rail.clone());
+                    world.programs.len() - 1
+                });
+            paths.push(Some(idx as u32));
+        }
         world.validate()?;
+        if let Some(program) = &spec.script {
+            world.attach_script(program.clone(), paths, spec.lenient_natives)?;
+            world.validate()?;
+        }
         Ok(world)
     }
 
@@ -517,7 +586,7 @@ impl World {
     /// over the vertex budget or outside `+-MAX_GEOMETRY_COORD` is refused and the world is left
     /// unchanged.
     pub fn set_geometry(&mut self, geometry: Geometry) -> Result<(), String> {
-        check_geometry(&geometry)?;
+        check_geometry(&geometry, self.map_size)?;
         self.geometry = geometry;
         self.nav = None;
         self.ensure_nav();
@@ -537,7 +606,7 @@ impl World {
 
     /// Plan a path for entity `index` to `target` (map pixels). Targets on unwalkable ground are
     /// moved to the nearest walkable cell (up to 32 cells away); unreachable targets clear the order.
-    fn plan_path(&mut self, index: usize, target: (Fixed, Fixed)) {
+    pub(crate) fn plan_path(&mut self, index: usize, target: (Fixed, Fixed)) {
         self.ensure_nav();
         let Some(nav) = self.nav.as_ref() else { return };
         let e = &self.entities[index];
@@ -627,6 +696,8 @@ impl World {
             anim: None,
             program: None,
             pc: 0,
+            active: true,
+            ai_locked: false,
         });
         entities.push(Entity {
             id: id(1),
@@ -645,6 +716,8 @@ impl World {
             anim: None,
             program: None,
             pc: 0,
+            active: true,
+            ai_locked: false,
         });
         let obstacles: &[(i32, i32, i32, i32)] = if map.is_some() {
             &[]
@@ -669,6 +742,8 @@ impl World {
                 anim: None,
                 program: None,
                 pc: 0,
+                active: true,
+                ai_locked: false,
             });
         }
         World {
@@ -689,6 +764,7 @@ impl World {
             objective_reached: false,
             geometry: Geometry::default(),
             programs: Vec::new(),
+            vm: None,
             nav: None,
             catalog: Catalog::default(),
         }
@@ -760,7 +836,7 @@ impl World {
         if self.entities.len() > MAX_ENTITIES {
             return Err(format!("{} entities exceed the limit", self.entities.len()));
         }
-        check_geometry(&self.geometry)?;
+        check_geometry(&self.geometry, self.map_size)?;
         if self.programs.len() > MAX_ENTITIES {
             return Err(format!("{} programs exceed the limit", self.programs.len()));
         }
@@ -776,7 +852,7 @@ impl World {
                         arms.len() <= 256 && arms.iter().all(|&(_, pc)| in_range(pc))
                     }
                     Instruction::Face { facing256 } => (0..256).contains(facing256),
-                    Instruction::Turn { delta256 } => delta256.abs() < 256,
+                    Instruction::Turn { delta256 } => delta256.unsigned_abs() < 256,
                     Instruction::GoTo { x, y } => {
                         x.unsigned_abs() <= MAX_MAP_SIZE && y.unsigned_abs() <= MAX_MAP_SIZE
                     }
@@ -874,6 +950,9 @@ impl World {
         {
             return Err(format!("selected entity {sel:?} does not exist"));
         }
+        if let Some(vm) = &self.vm {
+            vm.validate(self.programs.len(), self.entities.len())?;
+        }
         self.rng.validate()
     }
 
@@ -883,6 +962,7 @@ impl World {
             self.apply(*e);
         }
         self.scroll();
+        self.vm_tick();
         self.simulate();
         self.tick = self.tick.saturating_add(1);
     }
@@ -966,7 +1046,9 @@ impl World {
         let hit = self
             .entities
             .iter()
-            .filter(|e| e.alive && matches!(e.kind, EntityKind::Player | EntityKind::Guard))
+            .filter(|e| {
+                e.alive && e.active && matches!(e.kind, EntityKind::Player | EntityKind::Guard)
+            })
             .find(|e| Fixed::length(e.x - px, e.y - py) <= e.size)
             .map(|e| e.id);
         self.selected = hit;
@@ -1001,7 +1083,7 @@ impl World {
         let programs = &self.programs;
         let rng = &mut self.rng;
         for (i, e) in self.entities.iter_mut().enumerate() {
-            if !(e.alive && e.kind == EntityKind::Guard && e.target.is_none()) {
+            if !(e.alive && e.active && e.kind == EntityKind::Guard && e.target.is_none()) {
                 continue;
             }
             if e.wait_ticks > 0 {
@@ -1009,6 +1091,8 @@ impl World {
                 continue;
             }
             match e.program.and_then(|p| programs.get(p as usize)) {
+                // A locked AI (script natives 134 / 135) holds its program where it is.
+                Some(_) if e.ai_locked => {}
                 Some(program) => {
                     if let Some(t) = run_program(e, program, rng) {
                         to_plan.push((i, t));
@@ -1034,7 +1118,7 @@ impl World {
             }
         }
         for e in &mut self.entities {
-            if !e.alive || e.kind == EntityKind::Obstacle {
+            if !e.alive || !e.active || e.kind == EntityKind::Obstacle {
                 continue;
             }
             let Some((fx, fy)) = e.target else { continue };
@@ -1087,6 +1171,9 @@ impl World {
             }
         }
         for e in &mut self.entities {
+            if !e.active {
+                continue;
+            }
             let Some(anim) = e.anim.as_mut() else {
                 continue;
             };
@@ -1158,6 +1245,7 @@ impl World {
             },
             rng_draws: self.rng.draws,
             objective_reached: self.objective_reached,
+            script: self.script_observation(),
         }
     }
 
@@ -1209,6 +1297,8 @@ impl World {
                 .i32(e.speed.raw())
                 .i32(e.facing256)
                 .u8(u8::from(e.alive))
+                .u8(u8::from(e.active))
+                .u8(u8::from(e.ai_locked))
                 .u32(e.wait_ticks)
                 .u32(e.patrol_index)
                 .u32(e.patrol.len() as u32);
@@ -1279,6 +1369,16 @@ impl World {
             .u64(self.rng.stream)
             .u64(self.rng.state())
             .u64(self.rng.draws);
+        match &self.vm {
+            Some(vm) => r
+                .u8(1)
+                .str("script")
+                .u64(vm.rng.seed)
+                .u64(vm.rng.stream)
+                .u64(vm.rng.state())
+                .u64(vm.rng.draws),
+            None => r.u8(0),
+        };
         parts.insert("rng".into(), r.finish());
 
         let mut g = Encoder::new("pathfinding");
@@ -1302,13 +1402,28 @@ impl World {
         }
         parts.insert("pathfinding".into(), g.finish());
 
-        // Subsystems that do not exist yet hash to a versioned constant so the set of parts is
-        // stable across milestones and their appearance is a visible ruleset change.
-        for name in ["scripts", "scheduler", "campaign"] {
-            let mut e = Encoder::new(name);
-            e.u8(0);
-            parts.insert(name.into(), e.finish());
+        // Script VM (ADR-0008): program identity and script-visible state under `scripts`, the
+        // queues, sequences and pending texts under `scheduler`; a world without a script
+        // encodes the absence.
+        let mut s = Encoder::new("scripts");
+        let mut q = Encoder::new("scheduler");
+        if let Some(vm) = &self.vm {
+            s.u8(1);
+            vm.encode_scripts(&mut s);
+            q.u8(1);
+            vm.encode_scheduler(&mut q);
+        } else {
+            s.u8(0);
+            q.u8(0);
         }
+        parts.insert("scripts".into(), s.finish());
+        parts.insert("scheduler".into(), q.finish());
+
+        // The campaign subsystem does not exist yet: it hashes to a versioned constant so the
+        // set of parts is stable across milestones and its appearance is a visible ruleset change.
+        let mut e = Encoder::new("campaign");
+        e.u8(0);
+        parts.insert("campaign".into(), e.finish());
 
         let t = total(&parts);
         parts.insert("total".into(), t);
@@ -1467,7 +1582,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "e07fc914c38cb5009bbf3cb162a432984b1555ad1c2e3a77823adea7be5032fc";
+        "9c949d3a37e74397dcb19e1049a46948fd1d805cb4a231d6bdc31d59e5fb6c84";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -1808,6 +1923,7 @@ mod tests {
                     facing256: 64,
                     patrol: vec![],
                     program: vec![],
+                    active: true,
                 },
                 ActorSpec {
                     profile: "Soldier A00".into(),
@@ -1817,8 +1933,12 @@ mod tests {
                     facing256: -32,
                     patrol: vec![(300, 200), (300, 400)],
                     program: vec![],
+                    active: true,
                 },
             ],
+            script: None,
+            rails: Vec::new(),
+            lenient_natives: false,
         };
         let w = World::new_mission(Scenario::Mission("EmbTut".into()), 1, &spec).unwrap();
         assert_eq!(w.entities.len(), 2);
@@ -1858,6 +1978,7 @@ mod tests {
             facing256: 0,
             patrol: vec![],
             program: vec![],
+            active: true,
         }];
         for (i, p) in programs.iter().enumerate() {
             actors.push(ActorSpec {
@@ -1868,6 +1989,7 @@ mod tests {
                 facing256: 0,
                 patrol: vec![],
                 program: p.clone(),
+                active: true,
             });
         }
         let spec = MissionSpec {
@@ -1881,6 +2003,9 @@ mod tests {
                 areas: Vec::new(),
             },
             actors,
+            script: None,
+            rails: Vec::new(),
+            lenient_natives: false,
         };
         World::new_mission(Scenario::Mission("T".into()), 9, &spec).unwrap()
     }
@@ -2042,6 +2167,16 @@ mod tests {
         let mut snap = w.snapshot(None);
         snap.world.programs[0][1] = Jump { pc: 1000 };
         assert!(w.restore(&snap).is_err());
+        // A `Turn` by `i32::MIN` (through JSON, as a hostile client would send it) is refused
+        // without panicking in either build mode.
+        let mut json = serde_json::to_value(w.snapshot(None)).unwrap();
+        json["world"]["programs"][0][1] = serde_json::json!({ "turn": { "delta256": i32::MIN } });
+        let snap: Snapshot = serde_json::from_value(json).unwrap();
+        assert!(w.restore(&snap).unwrap_err().contains("out of range"));
+        let mut json = serde_json::to_value(w.snapshot(None)).unwrap();
+        json["world"]["programs"][0][1] = serde_json::json!({ "turn": { "delta256": -255 } });
+        let snap: Snapshot = serde_json::from_value(json).unwrap();
+        w.restore(&snap).unwrap();
     }
 
     #[test]

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use opensherwood_formats::dic::{self, FrameRecord};
+use opensherwood_formats::image_blob::RgbaBudget;
 use opensherwood_formats::rhs;
 use opensherwood_formats::sprite_decode::{self, DecodeLimits, Pages};
 
@@ -31,6 +32,9 @@ pub const LIMITS: DecodeLimits = DecodeLimits::RETAIL;
 pub const MAX_FRAME_DIMENSION: u16 = LIMITS.max_dimension;
 /// Largest frame stream accepted, in bytes (a 4096x4096 span frame is at most ~33 MiB).
 pub const MAX_STREAM_BYTES: u32 = LIMITS.max_stream_bytes;
+/// Bytes of RGBA8 frames the bank materialises before its cache is cleared: the cumulative
+/// budget every decoded frame is charged to (the largest accepted frame, 4096x4096, is 64 MiB).
+pub const CACHE_LIMIT: usize = 256 * 1024 * 1024;
 
 /// The open sprite bank.
 pub struct SpriteBank {
@@ -39,9 +43,8 @@ pub struct SpriteBank {
     bks: File,
     bks_path: PathBuf,
     cache: HashMap<u32, Arc<SpriteImage>>,
-    cache_bytes: usize,
-    /// Maximum bytes of decoded frames kept in the cache before it is cleared.
-    pub cache_limit: usize,
+    /// RGBA bytes materialised and held by `cache`.
+    budget: RgbaBudget,
 }
 
 impl std::fmt::Debug for SpriteBank {
@@ -111,8 +114,7 @@ impl SpriteBank {
             bks,
             bks_path,
             cache: HashMap::new(),
-            cache_bytes: 0,
-            cache_limit: 256 * 1024 * 1024,
+            budget: RgbaBudget::new(CACHE_LIMIT),
         })
     }
 
@@ -128,7 +130,21 @@ impl SpriteBank {
         self.frames.get(index as usize)
     }
 
-    /// Decode (or fetch from cache) one frame.
+    /// RGBA bytes of the frames currently cached.
+    #[must_use]
+    pub fn cached_bytes(&self) -> usize {
+        self.budget.used()
+    }
+
+    /// Number of frames currently cached.
+    #[must_use]
+    pub fn cached_frames(&self) -> usize {
+        self.cache.len()
+    }
+
+    /// Decode (or fetch from cache) one frame. The RGBA form is charged to the bank's budget
+    /// ([`CACHE_LIMIT`]): when it does not fit next to the cached frames the cache is cleared
+    /// first, and a frame that does not fit on its own is an error.
     pub fn frame(&mut self, index: u32) -> Result<Arc<SpriteImage>, AssetError> {
         if let Some(f) = self.cache.get(&index) {
             return Ok(f.clone());
@@ -155,20 +171,22 @@ impl SpriteBank {
                     message: e.to_string(),
                 }
             })?;
+        let format = |e: opensherwood_formats::reader::FormatError| AssetError::Format {
+            path: format!("sprite frame {index}"),
+            message: e.to_string(),
+        };
+        let bytes = img.rgba8_len().map_err(format)?;
+        if bytes > self.budget.remaining() {
+            self.cache.clear();
+            self.budget.reset();
+        }
+        let rgba =
+            sprite_decode::to_rgba8_keyed_budgeted(&img, &mut self.budget).map_err(format)?;
         let sprite = Arc::new(SpriteImage {
             width: u32::from(img.width),
             height: u32::from(img.height),
-            rgba: sprite_decode::to_rgba8_keyed(&img),
+            rgba,
         });
-        if sprite.rgba.len() > self.cache_limit / 4 {
-            // Unusually large frame: serve it but never let it evict the whole cache.
-            return Ok(sprite);
-        }
-        if self.cache_bytes + sprite.rgba.len() > self.cache_limit {
-            self.cache.clear();
-            self.cache_bytes = 0;
-        }
-        self.cache_bytes += sprite.rgba.len();
         self.cache.insert(index, sprite.clone());
         Ok(sprite)
     }

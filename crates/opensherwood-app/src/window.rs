@@ -383,6 +383,9 @@ impl App {
                     // The client closed stdin: leave controlled mode and tick autonomously again.
                     eprintln!("opensherwood: rpc client disconnected, resuming autonomous ticking");
                     self.rpc = None;
+                    // Input the client never stepped through goes to the first autonomous tick.
+                    let stranded = self.session.take_queued_input();
+                    self.pending.splice(0..0, stranded);
                     self.last_tick = Instant::now();
                     self.accumulator = Duration::ZERO;
                     break;

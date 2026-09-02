@@ -256,7 +256,7 @@ fn main() -> anyhow::Result<()> {
                 &out,
                 u32::from(img.width),
                 u32::from(img.height),
-                &img.to_rgba8_565(),
+                &img.to_rgba8_565()?,
             )?;
             println!("wrote {} ({}x{})", out.display(), img.width, img.height);
             Ok(())
@@ -284,7 +284,7 @@ fn main() -> anyhow::Result<()> {
                 &out,
                 u32::from(img.width),
                 u32::from(img.height),
-                &img.to_rgba8_565(),
+                &img.to_rgba8_565()?,
             )?;
             println!("wrote {} ({}x{})", out.display(), img.width, img.height);
             Ok(())
@@ -323,7 +323,7 @@ fn main() -> anyhow::Result<()> {
                 &out,
                 u32::from(img.width),
                 u32::from(img.height),
-                &sprite_decode::to_rgba8_keyed(&img),
+                &sprite_decode::to_rgba8_keyed(&img)?,
             )?;
             let enc = if rec.page == dic::NO_PAGE {
                 String::from("span encoded")
@@ -423,7 +423,7 @@ fn main() -> anyhow::Result<()> {
             let mut canvas = OverlayCanvas {
                 w: usize::from(img.width),
                 h: usize::from(img.height),
-                rgba: img.to_rgba8_565(),
+                rgba: img.to_rgba8_565()?,
             };
             draw_mission(&mut canvas, &m);
             write_png(&out, img.width.into(), img.height.into(), &canvas.rgba)?;
@@ -454,7 +454,7 @@ fn main() -> anyhow::Result<()> {
             let mut canvas = RhpCanvas {
                 w: i64::from(img.width),
                 h: i64::from(img.height),
-                px: img.to_rgba8_565(),
+                px: img.to_rgba8_565()?,
             };
             draw_rhp(&mut canvas, &m);
             write_png(

@@ -163,9 +163,9 @@ The active set is stored in `DATA/Configuration/keyset1.cfg` / `keyset2.cfg` (76
   x = 236 and "<difficulty> / <progress> %" right-aligned to x = 628. The selected row is orange, others grey.
 - **Select** returns to the main menu with that profile. **Rename** turns the row into an edit field with a
   caret. **Delete** (not tested). **New** opens the "New player" parchment (`select_new_clicked.png`):
-  vertical scroll (~496x463, `PIC` 147, *inferred*) centred, title "New player", label "Name", a text field
-  (about 400x22 at (316,290), `NPTF` 191 424x39 *inferred*) that has keyboard focus immediately, label
-  "Difficulty level" with three wax seals **Easy (444,428) / Medium (504,428) / Hard (580,428)** (Medium
+  vertical scroll (~496x463, `PIC` 147, *inferred*) centred, a title, a name label, a text field
+  (about 400x22 at (316,290), `NPTF` 191 424x39 *inferred*) that has keyboard focus immediately, a difficulty
+  label with three wax seals **easy (444,428) / medium (504,428) / hard (580,428)** (medium
   pre-selected, orange V mark), then the blue **V** (480,542) / red **X** (540,542) seals. Typing the name and
   clicking V adds the profile as a new selected row (`select_new_confirmed.png`); the main menu then shows it with
   Money L100, Score 0, Progress 0 % (`menu_main_analyst.png`).
@@ -182,7 +182,7 @@ Cancel buttons (manual p.8; not captured because in-mission mouse input could no
 
 ## 7. Show movies (`menu_movies.png`)
 
-Title "Show movies"; a framed thumbnail 264x134 at (300,225) (`BTTN` 297 = Intro, 3 states; `BTTN` 298 = Outro,
+Screen title; a framed thumbnail 264x134 at (300,225) (`BTTN` 297 = Intro, 3 states; `BTTN` 298 = Outro,
 presumably shown after the campaign) with a still from `2047/data/Cinematics/Intro.vid`; OK at the bottom.
 Clicking the thumbnail was not tested. Escape returns to the main menu.
 
@@ -217,13 +217,13 @@ Manual p.11 numbers the elements; observed positions at 1024x768:
 
 | # | Element | Position | Resource (matched by eye) |
 |---|---|---|---|
-| 1 | Game information: "Money: L100" / "Clover: 0", yellow outlined text | (4,4) and (4,20) | font `tooltips.tfn` (*inferred*); clover icon `BTTN` 165 |
-| 2 | Mini-map scroll ("Map Scroll"), opens the mini-map; right-click closes it | top-right, scroll at ~(945,25)-(1000,75) | `BTTN` 61 (61x52) *inferred* |
-| 3 | "Towers" = zoom levels (normal / near / distant), two small tower icons | (998,8)-(1024,60) | `BTTN` 4 (26x46) / 5 (26x54) |
+| 1 | Game information: the money and clover counters (L100 / 0 at the start), yellow outlined text | (4,4) and (4,20) | font `tooltips.tfn` (*inferred*); clover icon `BTTN` 165 |
+| 2 | Mini-map scroll, opens the mini-map; right-click closes it | top-right, scroll at ~(945,25)-(1000,75) | `BTTN` 61 (61x52) *inferred* |
+| 3 | Zoom towers = zoom levels (normal / near / distant), two small tower icons | (998,8)-(1024,60) | `BTTN` 4 (26x46) / 5 (26x54) |
 | - | Robin's eyes in the foliage (top-right corner) - decoration / hidden button? | (950,0)-(1024,60) | `BTTN` 60 (74x60) |
 | 4 | Hero portrait: parchment with the face, name "Robin / Hood" in two lines, action icons (bow, fist = knock out, purse = throw purse) and two counters "0" (arrows) and "0" (purses / money bags) | (70,632)-(185,765) | portrait faces `PIC` 136..155 (40x50) and `PICC` 242..244; frame *unknown* |
-| 7 | Crouch / stand figures ("Kneel" icon) left of the portrait: a small standing Robin and a kneeling Robin | (5,660)-(45,760) | `BTTN` 3 (43x62 standing) / `BTTN` 2 (43x45 kneeling) |
-| 5 / 9 | "Draw up a plan" (quick-action programming) scroll bottom-right; the "Bugle" (start quick actions) appears next to it when a plan exists | (950,700)-(1010,755) | `BTTN` 251 (74x53) or `BTTN` 1 (43x41) |
+| 7 | Crouch / stand figures left of the portrait: a small standing Robin and a kneeling Robin | (5,660)-(45,760) | `BTTN` 3 (43x62 standing) / `BTTN` 2 (43x45 kneeling) |
+| 5 / 9 | Quick-action plan scroll bottom-right; the bugle icon (start quick actions) appears next to it when a plan exists | (950,700)-(1010,755) | `BTTN` 251 (74x53) or `BTTN` 1 (43x41) |
 | - | Foliage border along the bottom | y = 655..768, full width | `PIC` 50 (871x110) + 51 (734x110) + corners 46/47 |
 | 6 / 8 | Field of vision (Alt) and health meter around a selected character | not captured | - |
 
@@ -236,7 +236,7 @@ between 90 and 140 px wide (`actors.res` is the only other archive), so it is pr
 pieces; the foliage pieces 46..51 match nowhere with confidence above 0.68, their placement is unknown.
 
 Money is the campaign money (L100 at the start). The top-right seal that ends a mission (manual p.10) appears
-only when the mission is won; the tutorial text of mission 1 calls it "the top right icon".
+only when the mission is won; the tutorial text of mission 1 refers to it as an icon at the top right.
 
 ### 9.4 Camera, selection, orders (from the manual p.15-16 and 26-27; not reproduced with input, see Provenance)
 
@@ -311,9 +311,9 @@ retail build should be able to show the win screen through `winner` (untested, s
 | 157..160 | BTTN | 88x41 | purse / archer / cart / tower -> shield (Sherwood or campaign actions) |
 | 184 / 185, 277 / 278 | BTTN | 31x72, 44x46 | list arrows, gold "<< >>" coins (dialogue paging?) |
 | 284 (+285..295) | PIC | 30x38 | mouse cursors (plain arrow = 284) |
-| 161 | PIC | 640x480 | CD picture ("insert CD" screen, not seen) |
+| 161 | PIC | 640x480 | CD picture (the disc-check screen, not seen) |
 | 164 | PIC | 160x100 | "?" placeholder (movie thumbnail?) |
-| 37 | TEXT | 34 strings | UI strings starting with "Mission Failed" |
+| 37 | TEXT | 34 strings | UI strings (the first is the mission-failed message) |
 
 ## Provenance
 

@@ -8,9 +8,16 @@
 //! Every public function accepts any `i32` (cell or pixel) input without overflowing: cell
 //! arithmetic widens to `i64`, the scan conversion to `i128`, so debug and release builds behave
 //! identically on hostile input (ADR-0004). Coordinates far outside the grid are simply not walkable.
+//!
+//! Building a grid is bounded in time and memory as well as in arithmetic: the polygon count, the
+//! cell count and the total scan-conversion work (edge tests, each polygon scanned over its own
+//! rows only) are checked against [`MAX_POLYGONS`], [`MAX_CELLS`] and [`MAX_EDGE_TESTS`] before
+//! anything is allocated, allocations are fallible, and [`NavGrid::try_build`] reports the
+//! violation while [`NavGrid::build`] degrades to a grid with no walkable cell.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::fmt;
 
 use crate::geom::Geometry;
 
@@ -18,6 +25,13 @@ use crate::geom::Geometry;
 pub const CELL: i32 = 8;
 /// Upper bound on cells (a 32768x32768 map at 8 px would be 16M cells; keep it sane).
 pub const MAX_CELLS: usize = 4 << 20;
+/// Most polygons (boundary, areas and obstacles together) a grid is built from. Retail maps have
+/// at most about a thousand.
+pub const MAX_POLYGONS: usize = 1 << 16;
+/// Most edge tests one build may perform: the sum over polygons of `rows the polygon spans x its
+/// edges`. Retail maps need under 150,000; the budget is about 500 times that and bounds the
+/// work a hostile snapshot can request to a fraction of a second.
+pub const MAX_EDGE_TESTS: u64 = 1 << 26;
 
 /// Neighbour offsets and step costs (10 straight, 14 diagonal).
 const DIRS: [(i32, i32, u32); 8] = [
@@ -34,6 +48,53 @@ const DIRS: [(i32, i32, u32); 8] = [
 /// Sort key for nearest-cell searches: squared distance, then y, then x.
 type RankedCell = (i64, i32, i32);
 
+/// Why a grid could not be built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NavError {
+    /// The map needs more cells than [`MAX_CELLS`].
+    TooManyCells {
+        /// Cells requested.
+        cells: u64,
+    },
+    /// More polygons than [`MAX_POLYGONS`].
+    TooManyPolygons {
+        /// Polygons in the geometry.
+        polygons: usize,
+    },
+    /// Scan conversion would need more than [`MAX_EDGE_TESTS`] edge tests.
+    TooMuchWork {
+        /// Edge tests needed.
+        edge_tests: u64,
+    },
+    /// The allocator refused the grid.
+    Allocation {
+        /// Cells requested.
+        cells: usize,
+    },
+}
+
+impl fmt::Display for NavError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooManyCells { cells } => {
+                write!(f, "navigation grid needs {cells} cells (limit {MAX_CELLS})")
+            }
+            Self::TooManyPolygons { polygons } => {
+                write!(f, "geometry has {polygons} polygons (limit {MAX_POLYGONS})")
+            }
+            Self::TooMuchWork { edge_tests } => write!(
+                f,
+                "rasterising the geometry needs {edge_tests} edge tests (limit {MAX_EDGE_TESTS})"
+            ),
+            Self::Allocation { cells } => {
+                write!(f, "cannot allocate a navigation grid of {cells} cells")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NavError {}
+
 /// Rasterised walkability.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NavGrid {
@@ -45,56 +106,99 @@ pub struct NavGrid {
 }
 
 impl NavGrid {
-    /// Rasterise `geometry` for a map of `map_w x map_h` pixels. Cells whose centre is inside the
-    /// boundary (if any) and outside every obstacle are walkable.
-    #[must_use]
-    pub fn build(geometry: &Geometry, map_w: u32, map_h: u32) -> Self {
-        // `u32 / 8` always fits `i32`.
-        let width = map_w.div_ceil(CELL as u32).max(1) as i32;
-        let height = map_h.div_ceil(CELL as u32).max(1) as i32;
-        let n = u64::from(width as u32) * u64::from(height as u32);
-        if n > MAX_CELLS as u64 {
-            return Self {
-                width,
-                height,
-                walkable: vec![false; 1],
-            };
+    /// Grid dimensions in cells for a map of `map_w x map_h` pixels (`u32 / 8` always fits `i32`).
+    fn dimensions(map_w: u32, map_h: u32) -> (i32, i32) {
+        (
+            map_w.div_ceil(CELL as u32).max(1) as i32,
+            map_h.div_ceil(CELL as u32).max(1) as i32,
+        )
+    }
+
+    /// Check the cost of building a grid for `geometry` on a `map_w x map_h` map without building
+    /// it: polygon count, cell count and the exact number of edge tests the scan conversion will
+    /// perform (each polygon over the rows it spans). Returns that number. Total over any input.
+    pub fn check_budget(geometry: &Geometry, map_w: u32, map_h: u32) -> Result<u64, NavError> {
+        let (width, height) = Self::dimensions(map_w, map_h);
+        let cells = u64::from(width as u32) * u64::from(height as u32);
+        if cells > MAX_CELLS as u64 {
+            return Err(NavError::TooManyCells { cells });
         }
-        let bounded = geometry.boundary.len() >= 3 || !geometry.areas.is_empty();
-        let mut walkable = vec![!bounded; n as usize];
-        if geometry.boundary.len() >= 3 {
-            fill_polygon(&geometry.boundary, width, height, &mut walkable, true);
+        let polygons = usize::from(!geometry.boundary.is_empty())
+            .saturating_add(geometry.areas.len())
+            .saturating_add(geometry.obstacles.len());
+        if polygons > MAX_POLYGONS {
+            return Err(NavError::TooManyPolygons { polygons });
         }
-        for a in geometry.areas.iter().filter(|a| a.len() >= 3) {
-            fill_polygon(a, width, height, &mut walkable, true);
-        }
-        for o in &geometry.obstacles {
-            if o.len() >= 3 {
-                fill_polygon(o, width, height, &mut walkable, false);
+        let mut edge_tests = 0u64;
+        for (poly, _) in Self::polygons(geometry) {
+            edge_tests = edge_tests.saturating_add(polygon_work(poly, height));
+            if edge_tests > MAX_EDGE_TESTS {
+                return Err(NavError::TooMuchWork { edge_tests });
             }
+        }
+        Ok(edge_tests)
+    }
+
+    /// Polygons in raster order with the value they paint: boundary and areas walkable, then
+    /// obstacles blocked. Polygons with fewer than three vertices are skipped.
+    fn polygons(geometry: &Geometry) -> impl Iterator<Item = (&[(i32, i32)], bool)> {
+        std::iter::once(geometry.boundary.as_slice())
+            .chain(geometry.areas.iter().map(Vec::as_slice))
+            .map(|p| (p, true))
+            .chain(geometry.obstacles.iter().map(|p| (p.as_slice(), false)))
+            .filter(|(p, _)| p.len() >= 3)
+    }
+
+    /// Rasterise `geometry` for a map of `map_w x map_h` pixels. Cells whose centre is inside the
+    /// boundary (if any) and outside every obstacle are walkable. Geometry over the budgets
+    /// ([`NavGrid::check_budget`]) or a refused allocation is an error; nothing is allocated
+    /// before the budgets pass.
+    pub fn try_build(geometry: &Geometry, map_w: u32, map_h: u32) -> Result<Self, NavError> {
+        let mut budget = Self::check_budget(geometry, map_w, map_h)?;
+        let (width, height) = Self::dimensions(map_w, map_h);
+        let n = width as usize * height as usize;
+        let bounded = geometry.boundary.len() >= 3 || !geometry.areas.is_empty();
+        let mut walkable = alloc_cells(n)?;
+        walkable.resize(n, !bounded);
+        for (poly, value) in Self::polygons(geometry) {
+            fill_polygon(poly, width, height, &mut walkable, value, &mut budget)?;
         }
         // Keep paths one cell away from every edge so straight moves between cell centres never
         // cross a polygon boundary (erode the walkable set by one cell).
-        let eroded: Vec<bool> = (0..walkable.len())
-            .map(|i| {
-                let (cx, cy) = ((i as i32) % width, (i as i32) / width);
-                (-1..=1).all(|dy| {
-                    (-1..=1).all(|dx| {
-                        let (x, y) = (cx + dx, cy + dy);
-                        x >= 0
-                            && y >= 0
-                            && x < width
-                            && y < height
-                            && walkable[(y * width + x) as usize]
-                    })
+        let mut eroded = alloc_cells(n)?;
+        eroded.extend((0..n).map(|i| {
+            let (cx, cy) = ((i as i32) % width, (i as i32) / width);
+            (-1..=1).all(|dy| {
+                (-1..=1).all(|dx| {
+                    let (x, y) = (cx + dx, cy + dy);
+                    x >= 0
+                        && y >= 0
+                        && x < width
+                        && y < height
+                        && walkable[(y * width + x) as usize]
                 })
             })
-            .collect();
-        Self {
+        }));
+        Ok(Self {
             width,
             height,
             walkable: eroded,
-        }
+        })
+    }
+
+    /// [`NavGrid::try_build`] that never fails: when the geometry or the map is over budget the
+    /// grid has the map's dimensions and no walkable cell (movement is refused rather than
+    /// unbounded). Callers that can report an error should use `try_build`.
+    #[must_use]
+    pub fn build(geometry: &Geometry, map_w: u32, map_h: u32) -> Self {
+        Self::try_build(geometry, map_w, map_h).unwrap_or_else(|_| {
+            let (width, height) = Self::dimensions(map_w, map_h);
+            Self {
+                width,
+                height,
+                walkable: Vec::new(),
+            }
+        })
     }
 
     /// Cell containing a map pixel.
@@ -314,16 +418,68 @@ impl NavGrid {
     }
 }
 
-/// Scanline fill of a polygon at cell resolution (cell centres), even-odd rule. Intersections are
-/// computed in `i128` (a product of two `i32` differences times 256 needs 73 bits), so the
-/// rasteriser is total over `i32` polygons whether or not they passed `Geometry::check_bounds`.
-fn fill_polygon(poly: &[(i32, i32)], width: i32, height: i32, cells: &mut [bool], value: bool) {
+/// An empty cell buffer with room for `n` cells, or [`NavError::Allocation`].
+fn alloc_cells(n: usize) -> Result<Vec<bool>, NavError> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(n)
+        .map_err(|_| NavError::Allocation { cells: n })?;
+    Ok(v)
+}
+
+/// Rows of a `height`-row grid whose cell centres (`cy * CELL + CELL / 2`) lie in the polygon's
+/// vertical extent `[min_y, max_y)`, the only rows an edge of the polygon can cross. `None` when
+/// the polygon misses the grid entirely. Any `i32` polygon is accepted (`i64` arithmetic).
+fn row_range(poly: &[(i32, i32)], height: i32) -> Option<(i32, i32)> {
+    let min_y = i64::from(poly.iter().map(|p| p.1).min()?);
+    let max_y = i64::from(poly.iter().map(|p| p.1).max()?);
+    let half = i64::from(CELL / 2);
+    let cell = i64::from(CELL);
+    // Smallest cy with cy * CELL + half >= min_y, largest with cy * CELL + half < max_y.
+    let lo = (min_y - half + cell - 1).div_euclid(cell).max(0);
+    let hi = (max_y - half - 1)
+        .div_euclid(cell)
+        .min(i64::from(height) - 1);
+    (lo <= hi).then_some((lo as i32, hi as i32))
+}
+
+/// Edge tests scanning one polygon costs: rows it spans times its edges.
+fn polygon_work(poly: &[(i32, i32)], height: i32) -> u64 {
+    match row_range(poly, height) {
+        Some((lo, hi)) => (u64::from((hi - lo) as u32) + 1) * poly.len() as u64,
+        None => 0,
+    }
+}
+
+/// Scanline fill of a polygon at cell resolution (cell centres), even-odd rule, over the rows the
+/// polygon spans only. Intersections are computed in `i128` (a product of two `i32` differences
+/// times 256 needs 73 bits), so the rasteriser is total over `i32` polygons whether or not they
+/// passed `Geometry::check_bounds`. Every edge test is charged to `budget`; running out is an
+/// error (the caller's [`NavGrid::check_budget`] makes that unreachable for accepted input).
+fn fill_polygon(
+    poly: &[(i32, i32)],
+    width: i32,
+    height: i32,
+    cells: &mut [bool],
+    value: bool,
+    budget: &mut u64,
+) -> Result<(), NavError> {
     let n = poly.len();
     let sub = 256i128;
     let cell = i128::from(CELL);
-    for cy in 0..height {
+    let Some((lo, hi)) = row_range(poly, height) else {
+        return Ok(());
+    };
+    let mut xs: Vec<i128> = Vec::new();
+    for cy in lo..=hi {
         let y = i128::from(cy) * cell + cell / 2;
-        let mut xs: Vec<i128> = Vec::new();
+        xs.clear();
+        let needed = n as u64;
+        if *budget < needed {
+            return Err(NavError::TooMuchWork {
+                edge_tests: MAX_EDGE_TESTS.saturating_add(needed - *budget),
+            });
+        }
+        *budget -= needed;
         for i in 0..n {
             let (x1, y1) = (i128::from(poly[i].0), i128::from(poly[i].1));
             let (x2, y2) = (
@@ -347,6 +503,7 @@ fn fill_polygon(poly: &[(i32, i32)], width: i32, height: i32, cells: &mut [bool]
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -413,6 +570,92 @@ mod tests {
     }
 
     #[test]
+    fn scans_only_the_rows_a_polygon_spans() {
+        // Rows: centres at 4, 12, 20, ...; a polygon over y in [10, 30) touches rows 1..=3.
+        let poly = [(0, 10), (50, 10), (50, 30), (0, 30)];
+        assert_eq!(row_range(&poly, 100), Some((1, 3)));
+        assert_eq!(polygon_work(&poly, 100), 3 * 4);
+        // Entirely above or below the grid: no rows, no work.
+        assert_eq!(row_range(&[(0, -100), (5, -100), (5, -50)], 100), None);
+        assert_eq!(row_range(&[(0, 900), (5, 900), (5, 950)], 100), None);
+        // Extreme polygons still get a clamped row range.
+        assert_eq!(
+            row_range(&[(i32::MIN, i32::MIN), (i32::MAX, i32::MAX), (0, 0)], 25),
+            Some((0, 24))
+        );
+        // The estimate is what the build charges: an exact budget succeeds, one short fails.
+        let g = Geometry {
+            boundary: vec![(0, 0), (200, 0), (200, 200), (0, 200)],
+            obstacles: vec![poly.to_vec()],
+            areas: Vec::new(),
+        };
+        let cost = NavGrid::check_budget(&g, 200, 200).unwrap();
+        assert_eq!(cost, 25 * 4 + 3 * 4);
+        let mut cells = vec![true; 25 * 25];
+        let mut exact = 3 * 4;
+        fill_polygon(&poly, 25, 25, &mut cells, false, &mut exact).unwrap();
+        assert_eq!(exact, 0);
+        let mut short = 3 * 4 - 1;
+        assert!(matches!(
+            fill_polygon(&poly, 25, 25, &mut cells, false, &mut short),
+            Err(NavError::TooMuchWork { .. })
+        ));
+    }
+
+    #[test]
+    fn budgets_bound_polygons_cells_and_work() {
+        let square = |y: i32| vec![(0, y), (100, y), (100, y + 100), (0, y + 100)];
+        // Polygon count.
+        let many = Geometry {
+            boundary: Vec::new(),
+            obstacles: (0..=MAX_POLYGONS).map(|_| square(0)).collect(),
+            areas: Vec::new(),
+        };
+        assert!(matches!(
+            NavGrid::check_budget(&many, 8, 8),
+            Err(NavError::TooManyPolygons { .. })
+        ));
+        assert!(matches!(
+            NavGrid::try_build(&many, 8, 8),
+            Err(NavError::TooManyPolygons { .. })
+        ));
+        // Work: a few polygons with very many edges over the whole height of a large map.
+        let rows = 4096u32;
+        let big: Vec<(i32, i32)> = (0..20_000)
+            .map(|i| (i % 7, (i * 13) % (rows as i32 * CELL)))
+            .collect();
+        let heavy = Geometry {
+            boundary: big.clone(),
+            obstacles: vec![big.clone(), big],
+            areas: Vec::new(),
+        };
+        let err = NavGrid::check_budget(&heavy, 8, rows * CELL as u32).unwrap_err();
+        assert!(matches!(err, NavError::TooMuchWork { .. }), "{err}");
+        assert!(NavGrid::try_build(&heavy, 8, rows * CELL as u32).is_err());
+        // The infallible constructor degrades to a grid with no walkable cell.
+        let degraded = NavGrid::build(&heavy, 8, rows * CELL as u32);
+        assert_eq!((degraded.width, degraded.height), (1, rows as i32));
+        assert!(!degraded.walkable((0, 0)));
+        assert!(degraded.find_path((0, 0), (0, 1)).is_none());
+        // Cells.
+        assert!(matches!(
+            NavGrid::check_budget(&Geometry::default(), u32::MAX, u32::MAX),
+            Err(NavError::TooManyCells { .. })
+        ));
+        // Retail-like input is far inside every budget.
+        let retail = Geometry {
+            boundary: (0..3000)
+                .map(|i| (i, if i % 2 == 0 { 0 } else { 3520 }))
+                .collect(),
+            obstacles: (0..1000).map(|i| square(i * 3)).collect(),
+            areas: Vec::new(),
+        };
+        let cost = NavGrid::check_budget(&retail, 2304, 3520).unwrap();
+        assert!(cost < MAX_EDGE_TESTS / 16, "{cost}");
+        assert!(NavGrid::try_build(&retail, 2304, 3520).is_ok());
+    }
+
+    #[test]
     fn extreme_inputs_never_overflow() {
         let ext = [i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX];
         // Hostile polygons through the scan conversion (bounds are enforced one level up, in the
@@ -427,9 +670,9 @@ mod tests {
             obstacles: vec![vec![(i32::MAX, i32::MIN), (i32::MIN, i32::MAX), (7, 7)]],
             areas: Vec::new(),
         };
-        let hostile = NavGrid::build(&g, 200, 200);
+        let hostile = NavGrid::try_build(&g, 200, 200).unwrap();
         assert_eq!((hostile.width, hostile.height), (25, 25));
-        // Oversized maps degrade to a single blocked cell instead of allocating.
+        // Oversized maps degrade to a grid without walkable cells instead of allocating.
         let huge = NavGrid::build(&Geometry::default(), u32::MAX, u32::MAX);
         assert!(!huge.walkable((0, 0)));
         let grid = grid();

@@ -8,6 +8,7 @@ from opensherwood_harness import Engine, pointer_click
 def test_robin_can_walk_from_the_first_mission_start(binary, game_dir):
     with Engine(binary=binary, game_dir=game_dir, timeout=120) as e:
         e.reset({"mission": "H01_Lin_VL"}, seed=0)
+        e.skip_briefing()
         obs = e.observe()
         robin = next(x for x in obs["entities"] if x["kind"] == "player")
         cam = obs["camera"]

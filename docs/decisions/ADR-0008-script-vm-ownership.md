@@ -19,10 +19,16 @@ settled before any interpreter is written: a VM living above core cannot be snap
    temporaries, class variable storage, scheduler of pending callbacks, sequence state) and the interpreter.
    All of it is fixed point or integers, deterministic, part of `World`, of the snapshot (`scripts` and
    `scheduler` hash parts) and of `validate`.
-2. **Natives are core functions.** A native call is dispatched by number to a function of `World` (or of a
-   `Natives` table inside core) that acts on entities, objectives, timers, texts and camera through the same
-   code paths the player's orders use. Unknown natives are no-ops that record their number (observable through
-   `observe`, counted per mission at load) so unimplemented behaviour is visible, never silent.
+2. **Natives are core functions.** A native call is dispatched by number to a function of `World`
+   (`opensherwood-core::natives`) that acts on entities, objectives, timers, texts and camera through the same
+   code paths the player's orders use. Natives with a documented effect the engine does not model yet are
+   *stubs*: recorded no-ops counted per id. A native with no documented row is *unknown*, and calling one is a
+   deterministic trap by default: the id is counted, the running callback stops at that instruction (its
+   frames are discarded, later callbacks still run) and the script is marked `faulted`, observable through
+   `observe.script` and `debug.vm`; the call sites are counted per mission at load. The permissive behaviour
+   (unknown native = recorded no-op returning 0) exists only behind the explicit `lenient_natives` flag of the
+   mission spec (`--lenient-natives` on the binary), and in that mode every unknown call is appended with its
+   arguments to the VM state, snapshotted and hashed. Unimplemented behaviour is visible, never silent.
 3. **`opensherwood-script` translates.** It depends on `opensherwood-formats` and `opensherwood-core` and
    converts an `Scb` container into the core IR (opcode mapping, calling convention, element index spaces per
    `docs/formats/scb.md`), validating jump targets, function addresses, variable slots and parameter counts.
@@ -36,9 +42,13 @@ settled before any interpreter is written: a VM living above core cannot be snap
 
 ## Consequences
 
-- `World` grows a `vm: Option<VmState>` and `objectives`, `texts_shown`, `timers` state; `RULESET_VERSION`,
-  `SNAPSHOT_VERSION` and `HASH_SCHEMA_VERSION` are bumped when they land.
+- `World` grows a `vm: Option<VmState>` (program, class variables, mission variables, objectives, message
+  queue, sequences, pending texts, camera target, patches, attributes, states, the `script` RNG stream) and
+  entities gain `active` / `ai_locked` flags; ruleset 5, snapshot schema 7 and hash schema 6 (2026-09-02).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
 - The synthetic corridor has no script: its hashes only change through the schema bump.
+- The app dismisses the script's text pages through `World::vm_dismiss_text` (the briefing parchment, the
+  `debug.vm` inspection method); no canonical input event exists for it yet, so a replay does not reproduce
+  dismissals: an open question for the replay format.
 - `opensherwood-script` keeps its place in the dependency graph (above core), which stays acyclic:
   core defines the IR, script produces it, the app hands it to core at mission load.

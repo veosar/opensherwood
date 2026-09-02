@@ -17,6 +17,7 @@ opensherwood-render.workspace = true
 opensherwood-protocol.workspace = true
 opensherwood-assets.workspace = true
 opensherwood-formats.workspace = true
+opensherwood-script.workspace = true
 opensherwood-audio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

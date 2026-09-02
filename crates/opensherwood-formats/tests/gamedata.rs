@@ -490,7 +490,7 @@ fn every_mission_parses_and_its_references_resolve() {
     assert_eq!(m.mobiles[0].animations[0].sprite, "chariot05");
     let pcs = m.player_characters();
     assert_eq!(pcs[0].name, None);
-    assert_eq!(pcs[1].name.as_deref(), Some("hidden_pc01_80000048"));
+    assert!(pcs[1].name.as_deref().is_some_and(|n| n.len() > 9 && n[n.len() - 8..].chars().all(|c| c.is_ascii_hexdigit())));
     assert_eq!((pcs[0].placement.x, pcs[0].placement.y), (1228, 462));
     // Beam-me points sit on the map edges (1408x960).
     for p in &m.brains.beam_points {

@@ -25,7 +25,7 @@ The organisation of the animation list (16-direction blocks per action, action i
 u32  bank_generation        (0x0003EBC9)
 u16  sequence_count
 sequence[sequence_count]:
-    char[32] name           NUL padded, French ("Robin des bois", "ACCESSOIRES Piece d'or", "Croisement01 - papillon01")
+    char[32] name           NUL padded, French designer wording (a character's name, an accessory description, or `<map> - <element label>` for map animations)
     u16  animation_count
     u16  width, u16 height  bounding box of all frames
     u32  origin_x           150 for characters/objects, 0 or 70 for map animations: the canvas point that
@@ -44,7 +44,7 @@ sequence[sequence_count]:
             u16  unknown_0x0c   0; 414/421 on cart animations
 ```
 
-Examples: `RobinHood.rhs` = 1 sequence "Robin des bois", 90x108, 2272 animations, 13,472 frame refs (actions x 8
+Examples: `RobinHood.rhs` = 1 sequence, 90x108, 2272 animations, 13,472 frame refs (actions x 8
 directions x variants); `Child.rhs` = 736 animations; `ACCESSORIES_Coin.rhs` = 48 one-frame animations of a 6x6 coin
 (probably one per ground orientation); `Cr01fx.rhs` = 4 map animations (butterflies, woodpecker) with 66-99 frame
 loops. Idle animations use ping-pong frame orders (a, a+1, a+2, a+3, a+2, a+1) with durations 6,2,2,15,4,...
@@ -129,8 +129,8 @@ both `0x07C0` and `0x001F` skipped when blitting), except that here the second w
 ### Rendered checks
 
 Decoding with the rules above gives (looked at as PNG, not committed): frame 17970 (`ACCESSORIES_Coin.rhs`) a
-6x5 gold coin with two `0x001F` pixels above it; frames 1097.. (`Cr01fx.rhs` "papillon01") a blue butterfly;
-frame 1394 ("picvert01") a green woodpecker on a trunk; frame 286393 (`RobinHood.rhs` animation 0) a 36x69
+6x5 gold coin with two `0x001F` pixels above it; frames 1097.. (`Cr01fx.rhs`, the butterfly sequence) a blue butterfly;
+frame 1394 (the woodpecker sequence) a green woodpecker on a trunk; frame 286393 (`RobinHood.rhs` animation 0) a 36x69
 archer in green with a bow, standing on a blue `0x001F` blob; frames 2603/2604 (span encoded, 419x363 and
 117x133) a stone building and a stone wall.
 

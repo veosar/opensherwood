@@ -1,5 +1,10 @@
 //! Deterministic CPU compositor (ADR-0002). The framebuffer is the authoritative picture; presenters
 //! only display it.
+//!
+//! Every public drawing function is total over its inputs: positions are `i32` and sizes `u32`
+//! at the extremes of their types, and the arithmetic that combines them is done in `i64` (or
+//! checked) so debug and release builds agree and nothing indexes out of bounds. A source buffer
+//! shorter than its declared size is ignored, never read past.
 
 pub mod text;
 
@@ -57,20 +62,28 @@ impl Occluder {
         (self.width as usize).div_ceil(8)
     }
 
-    /// Whether the mask covers map pixel `(mx, my)`.
+    /// Whether the mask covers map pixel `(mx, my)`. Total over any position and any mask
+    /// geometry: a pixel outside the mask, or a mask row `bits` does not hold, is not covered.
     #[must_use]
     pub fn covers(&self, mx: i32, my: i32) -> bool {
-        let (lx, ly) = (mx - self.x, my - self.y);
-        if lx < 0 || ly < 0 || lx >= self.width as i32 || ly >= self.height as i32 {
+        let (lx, ly) = (
+            i64::from(mx) - i64::from(self.x),
+            i64::from(my) - i64::from(self.y),
+        );
+        if lx < 0 || ly < 0 || lx >= i64::from(self.width) || ly >= i64::from(self.height) {
             return false;
         }
-        let idx = ly as usize * self.stride() + (lx as usize >> 3);
-        self.bits
-            .get(idx)
+        // Both are below `u32::MAX` here, so they fit `usize` on every target.
+        let (lx, ly) = (lx as usize, ly as usize);
+        let idx = ly
+            .checked_mul(self.stride())
+            .and_then(|row| row.checked_add(lx >> 3));
+        idx.and_then(|i| self.bits.get(i))
             .is_some_and(|b| b & (0x80 >> (lx & 7)) != 0)
     }
 
-    /// y of the depth line at map x (clamped to the segment), or the mask bottom.
+    /// y of the depth line at map x (clamped to the segment), or the mask bottom. The result is
+    /// clamped to `i32` (a mask bottom beyond `i32::MAX` is as far down as anything can be).
     #[must_use]
     pub fn depth_y(&self, mx: i32) -> i32 {
         match self.line {
@@ -78,13 +91,44 @@ impl Occluder {
                 if x1 == x2 {
                     y1.max(y2)
                 } else {
-                    let t = ((mx - x1).clamp(0.min(x2 - x1), 0.max(x2 - x1))) as i64;
-                    (i64::from(y1) + t * i64::from(y2 - y1) / i64::from(x2 - x1)) as i32
+                    let (x1, y1, x2, y2) =
+                        (i64::from(x1), i64::from(y1), i64::from(x2), i64::from(y2));
+                    let dx = x2 - x1;
+                    let t = (i64::from(mx) - x1).clamp(0.min(dx), 0.max(dx));
+                    // |t| and |y2 - y1| are below 2^32: their product needs `i128`.
+                    let y = i128::from(y1) + i128::from(t) * i128::from(y2 - y1) / i128::from(dx);
+                    // The interpolation stays between y1 and y2, both `i32`.
+                    y.clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i32
                 }
             }
-            None => self.y + self.height as i32,
+            None => to_i32(i64::from(self.y) + i64::from(self.height)),
         }
     }
+}
+
+/// Intersection of two ranges (empty when they do not overlap).
+fn intersect(a: std::ops::Range<i64>, b: std::ops::Range<i64>) -> std::ops::Range<i64> {
+    let start = a.start.max(b.start);
+    start..a.end.min(b.end).max(start)
+}
+
+/// Clamp an `i64` coordinate into `i32` (positions past the `i32` range are off every buffer).
+fn to_i32(v: i64) -> i32 {
+    v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+/// Bytes an RGBA8 buffer of `w x h` pixels needs, `None` when the product overflows `usize`.
+fn rgba_len(w: u32, h: u32) -> Option<usize> {
+    (w as usize)
+        .checked_mul(h as usize)
+        .and_then(|n| n.checked_mul(4))
+}
+
+/// Source pixel range `0..n` (as `i64`) that lands inside `0..extent` when drawn at `pos`.
+fn visible_span(pos: i64, n: u32, extent: u32) -> std::ops::Range<i64> {
+    let start = (-pos).max(0);
+    let end = i64::from(n).min(i64::from(extent) - pos);
+    start..end.max(start)
 }
 
 impl Framebuffer {
@@ -146,7 +190,7 @@ impl Framebuffer {
         let rr = i64::from(r) * i64::from(r);
         for y in Self::clip_range(cy, r, self.height) {
             for x in Self::clip_range(cx, r, self.width) {
-                let (dx, dy) = (i64::from(x - cx), i64::from(y - cy));
+                let (dx, dy) = (i64::from(x) - i64::from(cx), i64::from(y) - i64::from(cy));
                 if dx * dx + dy * dy <= rr {
                     self.put(x, y, c);
                 }
@@ -161,7 +205,7 @@ impl Framebuffer {
         let inner = i64::from(r - 1) * i64::from(r - 1);
         for y in Self::clip_range(cy, r, self.height) {
             for x in Self::clip_range(cx, r, self.width) {
-                let (dx, dy) = (i64::from(x - cx), i64::from(y - cy));
+                let (dx, dy) = (i64::from(x) - i64::from(cx), i64::from(y) - i64::from(cy));
                 let d = dx * dx + dy * dy;
                 if d <= rr && d > inner {
                     self.put(x, y, c);
@@ -250,6 +294,7 @@ impl Framebuffer {
     }
 
     /// Copy an opaque RGBA region of `src` (source rectangle at `sx,sy`) to `dx,dy`, clipped.
+    /// Ignored when `src` is shorter than `src_w * src_h * 4` bytes.
     #[allow(clippy::too_many_arguments)]
     pub fn blit_region(
         &mut self,
@@ -263,31 +308,26 @@ impl Framebuffer {
         w: u32,
         h: u32,
     ) {
-        if src.len() < src_w as usize * src_h as usize * 4 {
+        if rgba_len(src_w, src_h).is_none_or(|n| src.len() < n) {
             return;
         }
-        for row in 0..h as i32 {
-            let syy = sy + row;
-            let dyy = dy + row;
-            if syy < 0 || syy >= src_h as i32 || dyy < 0 || dyy >= self.height as i32 {
-                continue;
-            }
-            let x_start = (-sx).max(-dx).max(0);
-            let x_end = (w as i32)
-                .min(src_w as i32 - sx)
-                .min(self.width as i32 - dx);
-            if x_end <= x_start {
-                continue;
-            }
-            let si = ((syy as u32 * src_w) as i32 + sx + x_start) as usize * 4;
-            let di = ((dyy as u32 * self.width) as i32 + dx + x_start) as usize * 4;
-            let n = (x_end - x_start) as usize * 4;
+        let (sx, sy, dx, dy) = (i64::from(sx), i64::from(sy), i64::from(dx), i64::from(dy));
+        // Rows and columns of the `w x h` rectangle that lie inside both the source and the buffer.
+        let rows = intersect(visible_span(sy, h, src_h), visible_span(dy, h, self.height));
+        let cols = intersect(visible_span(sx, w, src_w), visible_span(dx, w, self.width));
+        if rows.is_empty() || cols.is_empty() {
+            return;
+        }
+        let n = ((cols.end - cols.start) * 4) as usize;
+        let (src_w, fb_w) = (i64::from(src_w), i64::from(self.width));
+        for row in rows {
+            // In range on both sides, so the products are below the checked buffer lengths.
+            let si = (((sy + row) * src_w + sx + cols.start) * 4) as usize;
+            let di = (((dy + row) * fb_w + dx + cols.start) * 4) as usize;
             self.rgba[di..di + n].copy_from_slice(&src[si..si + n]);
         }
     }
 
-    /// Blit an RGBA image: alpha 0 skipped, alpha 255 copied, other alphas blended (integer math).
-    /// Ignored when `rgba` is shorter than `w * h * 4`.
     /// Like `blit_rgba`, but a destination pixel is written only when `visible(x, y)` holds for its
     /// screen position (used to hide the parts of a character standing behind an occluder).
     pub fn blit_rgba_masked(
@@ -299,64 +339,50 @@ impl Framebuffer {
         rgba: &[u8],
         visible: impl Fn(i32, i32) -> bool,
     ) {
-        if rgba.len() < w as usize * h as usize * 4 {
+        self.blit_rgba_with(x, y, w, h, rgba, Some(&visible));
+    }
+
+    /// Blit an RGBA image: alpha 0 skipped, alpha 255 copied, other alphas blended (integer math).
+    /// Ignored when `rgba` is shorter than `w * h * 4`.
+    pub fn blit_rgba(&mut self, x: i32, y: i32, w: u32, h: u32, rgba: &[u8]) {
+        self.blit_rgba_with(x, y, w, h, rgba, None);
+    }
+
+    fn blit_rgba_with(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        rgba: &[u8],
+        visible: Option<&dyn Fn(i32, i32) -> bool>,
+    ) {
+        if rgba_len(w, h).is_none_or(|n| rgba.len() < n) {
             return;
         }
-        for sy in 0..h as i32 {
+        let (x, y) = (i64::from(x), i64::from(y));
+        let rows = visible_span(y, h, self.height);
+        let cols = visible_span(x, w, self.width);
+        let (w, fb_w) = (i64::from(w), i64::from(self.width));
+        for sy in rows {
             let dy = y + sy;
-            if dy < 0 || dy >= self.height as i32 {
-                continue;
-            }
-            for sx in 0..w as i32 {
+            for sx in cols.clone() {
                 let dx = x + sx;
-                if dx < 0 || dx >= self.width as i32 {
-                    continue;
-                }
-                let si = ((sy as u32 * w + sx as u32) * 4) as usize;
-                if rgba[si + 3] == 0 || !visible(dx, dy) {
-                    continue;
-                }
+                let si = ((sy * w + sx) * 4) as usize;
                 let a = u32::from(rgba[si + 3]);
-                let di = ((dy as u32 * self.width + dx as u32) * 4) as usize;
+                if a == 0 {
+                    continue;
+                }
+                // `dx` and `dy` lie inside the buffer, so they fit `i32`.
+                if visible.is_some_and(|v| !v(dx as i32, dy as i32)) {
+                    continue;
+                }
+                let di = ((dy * fb_w + dx) * 4) as usize;
                 if a == 255 {
                     self.rgba[di..di + 3].copy_from_slice(&rgba[si..si + 3]);
                 } else {
                     for c in 0..3 {
-                        let sc = u32::from(rgba[si + c]);
-                        let dc = u32::from(self.rgba[di + c]);
-                        self.rgba[di + c] = ((sc * a + dc * (255 - a)) / 255) as u8;
-                    }
-                }
-                self.rgba[di + 3] = 255;
-            }
-        }
-    }
-
-    pub fn blit_rgba(&mut self, x: i32, y: i32, w: u32, h: u32, rgba: &[u8]) {
-        if rgba.len() < w as usize * h as usize * 4 {
-            return;
-        }
-        for sy in 0..h {
-            let dy = y + sy as i32;
-            if dy < 0 || dy >= self.height as i32 {
-                continue;
-            }
-            for sx in 0..w {
-                let dx = x + sx as i32;
-                if dx < 0 || dx >= self.width as i32 {
-                    continue;
-                }
-                let i = ((sy * w + sx) * 4) as usize;
-                let a = u32::from(rgba[i + 3]);
-                if a == 0 {
-                    continue;
-                }
-                let di = ((dy as u32 * self.width + dx as u32) * 4) as usize;
-                if a == 255 {
-                    self.rgba[di..di + 3].copy_from_slice(&rgba[i..i + 3]);
-                } else {
-                    for c in 0..3 {
-                        let s = u32::from(rgba[i + c]);
+                        let s = u32::from(rgba[si + c]);
                         let d = u32::from(self.rgba[di + c]);
                         self.rgba[di + c] = ((s * a + d * (255 - a)) / 255) as u8;
                     }
@@ -467,7 +493,9 @@ pub fn render(
         }
         None => fb.clear(palette::GROUND),
     }
-    let px = |f: Fixed, c: i32| f.round() - c;
+    // Viewport position of a map coordinate; the difference is formed in `i64` and clamped, so a
+    // hostile camera or position lands off-screen instead of overflowing.
+    let px = |f: Fixed, c: i32| to_i32(i64::from(f.round()) - i64::from(c));
     fb.circle(
         px(world.goal.0, cx),
         px(world.goal.1, cy),
@@ -475,7 +503,7 @@ pub fn render(
         palette::GOAL,
     );
     // Ground markers first (target lines, selection circles), then sprites in depth order.
-    for e in world.entities.iter().filter(|e| e.alive) {
+    for e in world.entities.iter().filter(|e| e.alive && e.active) {
         if e.kind == EntityKind::Obstacle {
             let (hw, hh) = (e.patrol[0].0, e.patrol[0].1);
             fb.fill_rect(
@@ -500,7 +528,7 @@ pub fn render(
             fb.circle(
                 px(e.x, cx),
                 px(e.y, cy),
-                e.size.round() + 3,
+                e.size.round().saturating_add(3),
                 palette::SELECTION,
             );
         }
@@ -511,7 +539,7 @@ pub fn render(
         .entities
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.alive && e.kind != EntityKind::Obstacle)
+        .filter(|(_, e)| e.alive && e.active && e.kind != EntityKind::Obstacle)
         .map(|(i, e)| (e.y.round(), i))
         .collect();
     order.sort_unstable();
@@ -531,22 +559,25 @@ pub fn render(
             fb.fill_circle(px(e.x, cx), px(e.y, cy), e.size.round(), c);
             continue;
         };
-        let x = px(e.x, cx) + spec.offset_x;
-        let y = px(e.y, cy) + spec.offset_y;
+        let x = to_i32(i64::from(px(e.x, cx)) + i64::from(spec.offset_x));
+        let y = to_i32(i64::from(px(e.y, cy)) + i64::from(spec.offset_y));
         let (fx, fy) = (e.x.round(), e.y.round());
-        // Occluders the character stands behind and whose mask overlaps the sprite rectangle.
+        // Occluders the character stands behind and whose mask overlaps the sprite rectangle
+        // (rectangle arithmetic in `i64`: sizes are `u32`, positions any `i32`).
+        let (x0, y0) = (i64::from(x), i64::from(y));
+        let (x1, y1) = (x0 + i64::from(frame.width), y0 + i64::from(frame.height));
         let behind: Vec<&Occluder> = background
             .map(|bg| {
                 bg.occluders
                     .iter()
                     .filter(|o| fy < o.depth_y(fx))
                     .filter(|o| {
-                        let (ox0, oy0) = (o.x - cx, o.y - cy);
-                        let (ox1, oy1) = (ox0 + o.width as i32, oy0 + o.height as i32);
-                        x < ox1
-                            && x + frame.width as i32 > ox0
-                            && y < oy1
-                            && y + frame.height as i32 > oy0
+                        let (ox0, oy0) = (
+                            i64::from(o.x) - i64::from(cx),
+                            i64::from(o.y) - i64::from(cy),
+                        );
+                        let (ox1, oy1) = (ox0 + i64::from(o.width), oy0 + i64::from(o.height));
+                        x0 < ox1 && x1 > ox0 && y0 < oy1 && y1 > oy0
                     })
                     .collect()
             })
@@ -555,7 +586,10 @@ pub fn render(
             fb.blit_rgba(x, y, frame.width, frame.height, &frame.rgba);
         } else {
             fb.blit_rgba_masked(x, y, frame.width, frame.height, &frame.rgba, |sx, sy| {
-                let (mx, my) = (sx + cx, sy + cy);
+                let (mx, my) = (
+                    to_i32(i64::from(sx) + i64::from(cx)),
+                    to_i32(i64::from(sy) + i64::from(cy)),
+                );
                 !behind.iter().any(|o| o.covers(mx, my))
             });
         }
@@ -564,8 +598,20 @@ pub fn render(
         Fixed::from_raw(world.pointer.0).round(),
         Fixed::from_raw(world.pointer.1).round(),
     );
-    fb.line(mx - 4, my, mx + 4, my, palette::POINTER);
-    fb.line(mx, my - 4, mx, my + 4, palette::POINTER);
+    fb.line(
+        mx.saturating_sub(4),
+        my,
+        mx.saturating_add(4),
+        my,
+        palette::POINTER,
+    );
+    fb.line(
+        mx,
+        my.saturating_sub(4),
+        mx,
+        my.saturating_add(4),
+        palette::POINTER,
+    );
     fb
 }
 
@@ -675,6 +721,132 @@ mod tests {
         fb.put(4, 4, [1, 1, 1, 255]);
         fb.fill_rect(-10, -10, 100, 100, [7, 7, 7, 255]);
         assert!(fb.rgba.chunks_exact(4).all(|p| p == [7, 7, 7, 255]));
+    }
+
+    #[test]
+    fn occluder_math_is_total_at_extremes() {
+        let ext = [i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX];
+        let sizes = [0u32, 1, 7, 8, 9, u32::MAX - 1, u32::MAX];
+        for &x in &ext {
+            for &y in &ext {
+                for &w in &sizes {
+                    for &h in &sizes {
+                        let o = Occluder {
+                            x,
+                            y,
+                            width: w,
+                            height: h,
+                            bits: vec![0xFF; 16],
+                            line: Some(((x, y), (y, x))),
+                        };
+                        for &mx in &ext {
+                            for &my in &ext {
+                                let _ = o.covers(mx, my);
+                            }
+                            let _ = o.depth_y(mx);
+                        }
+                        let bottom = Occluder { line: None, ..o };
+                        for &mx in &ext {
+                            let d = bottom.depth_y(mx);
+                            assert_eq!(
+                                i64::from(d),
+                                (i64::from(y) + i64::from(h))
+                                    .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Coverage reads only the bytes the mask has: a huge declared size with a short `bits`.
+        let sparse = Occluder {
+            x: 0,
+            y: 0,
+            width: u32::MAX,
+            height: u32::MAX,
+            bits: vec![0x80],
+            line: None,
+        };
+        assert!(sparse.covers(0, 0));
+        assert!(!sparse.covers(1, 0));
+        assert!(!sparse.covers(i32::MAX, i32::MAX));
+        // The depth line is interpolated exactly between its ends, clamped beyond them.
+        let line = Occluder {
+            line: Some(((i32::MIN, i32::MIN), (i32::MAX, i32::MAX))),
+            ..sparse
+        };
+        assert_eq!(line.depth_y(i32::MIN), i32::MIN);
+        assert_eq!(line.depth_y(i32::MAX), i32::MAX);
+        assert_eq!(line.depth_y(0), 0);
+        let vertical = Occluder {
+            line: Some(((5, i32::MAX), (5, i32::MIN))),
+            ..line
+        };
+        assert_eq!(vertical.depth_y(i32::MIN), i32::MAX);
+    }
+
+    #[test]
+    fn blits_are_total_at_extremes() {
+        let ext = [
+            i32::MIN,
+            i32::MIN + 1,
+            -5,
+            -1,
+            0,
+            1,
+            3,
+            i32::MAX - 1,
+            i32::MAX,
+        ];
+        let sizes = [0u32, 1, 4, 5, u32::MAX - 1, u32::MAX];
+        let src: Vec<u8> = [9, 8, 7, 255].repeat(16);
+        let mut fb = Framebuffer::new(4, 4);
+        for &x in &ext {
+            for &y in &ext {
+                for &w in &sizes {
+                    for &h in &sizes {
+                        // Oversized declarations are ignored (the buffer is too short), small
+                        // ones are clipped; nothing panics.
+                        fb.blit_rgba(x, y, w, h, &src);
+                        fb.blit_rgba_masked(x, y, w, h, &src, |_, _| true);
+                        fb.blit_region(&src, w, h, x, y, x, y, w, h);
+                        fb.blit_region(&src, 4, 4, x, y, x, y, w, h);
+                        fb.blit_region(&src, 4, 4, x, y, 0, 0, w, h);
+                        fb.blit_region(&src, w, h, 0, 0, x, y, 4, 4);
+                        fb.fill_circle(x, y, 2, [1, 1, 1, 255]);
+                        fb.circle(x, y, i32::MAX, [1, 1, 1, 255]);
+                        fb.fill_rect(x, y, y, x, [1, 1, 1, 255]);
+                        fb.line(x, y, y, x, [1, 1, 1, 255]);
+                        fb.put(x, y, [1, 1, 1, 255]);
+                    }
+                }
+            }
+        }
+        // A blit that lands lands exactly, whatever the extreme it was offset from.
+        let mut fb = Framebuffer::new(4, 4);
+        fb.blit_rgba(3, 3, 4, 4, &src);
+        assert_eq!(
+            &fb.rgba[(3 * 4 + 3) * 4..(3 * 4 + 3) * 4 + 4],
+            &[9, 8, 7, 255]
+        );
+        assert_eq!(&fb.rgba[0..4], &[0, 0, 0, 255]);
+        fb.blit_rgba(-3, -3, 4, 4, &src);
+        assert_eq!(&fb.rgba[0..4], &[9, 8, 7, 255]);
+        assert_eq!(&fb.rgba[4..8], &[0, 0, 0, 255]);
+        // A masked blit sees buffer positions, never source ones.
+        let mut seen = std::cell::RefCell::new(Vec::new());
+        fb.blit_rgba_masked(-3, -3, 4, 4, &src, |x, y| {
+            seen.borrow_mut().push((x, y));
+            true
+        });
+        assert_eq!(seen.get_mut().as_slice(), &[(0, 0)]);
+        // A mask with no room in `bits` never covers; alpha 0 pixels are skipped without asking.
+        let clear = [0u8; 64];
+        fb.clear([2, 2, 2, 255]);
+        fb.blit_rgba_masked(0, 0, 4, 4, &clear, |_, _| {
+            panic!("asked for a transparent pixel")
+        });
+        assert!(fb.rgba.chunks_exact(4).all(|p| p == [2, 2, 2, 255]));
     }
 
     #[test]
