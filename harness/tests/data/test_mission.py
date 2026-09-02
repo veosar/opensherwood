@@ -70,10 +70,13 @@ def test_walking_into_an_obstacle_stops_and_occluders_hide_the_sprite(binary, ga
         cam = e.observe(entities=False)["camera"]
         sx, sy = rx - cam[0], ry - cam[1]
         e.step(1, pointer_click(sx, sy, "left"))
-        # West along the bank: the big tree's obstacle polygon is in the way.
+        # West along the bank: the big tree's obstacle polygon is in the way and the target is on
+        # the river, so the path bends around the tree and ends on the closest reachable ground.
         e.step(1, pointer_click(sx - 260, sy + 40, "right"))
-        e.step(400)
+        p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
+        assert p["target"] is not None and len(p["path"]) >= 2, "expected a multi-point path"
+        e.step(700)
         p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
         assert p["target"] is None
-        assert p["x"] // 256 > rx - 260 + 20, "walked through the obstacle"
-        assert p["x"] // 256 < rx, "did not move at all"
+        assert abs(p["x"] // 256 - (rx - 260)) < 60, "did not get near the target"
+        assert p["x"] // 256 < rx - 150, "did not move far enough"
