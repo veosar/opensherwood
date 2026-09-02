@@ -34,8 +34,10 @@ pub mod ids {
     pub const EYES: u32 = 60;
     pub const MAP_SCROLL: u32 = 61;
     pub const TOWERS: u32 = 4;
+    pub const TOWERS_FAR: u32 = 5;
     pub const STAND: u32 = 3;
-    pub const PLAN: u32 = 251;
+    pub const KNEEL: u32 = 2;
+    pub const PLAN: u32 = 1;
     /// Portrait faces start here (136 = the hero of the first mission).
     pub const PORTRAIT_FIRST: u32 = 136;
     /// Small scroll used behind the portrait until the original's frame is identified.
@@ -165,7 +167,9 @@ pub fn load(game: &GameDir) -> UiAssets {
         eyes: widget(ids::EYES).into_iter().next(),
         map_scroll: widget(ids::MAP_SCROLL).into_iter().next(),
         towers: widget(ids::TOWERS).into_iter().next(),
+        towers_far: widget(ids::TOWERS_FAR).into_iter().next(),
         stand: widget(ids::STAND).into_iter().next(),
+        kneel: widget(ids::KNEEL).into_iter().next(),
         plan: widget(ids::PLAN).into_iter().next(),
         portrait: pic(ids::PORTRAIT_FIRST),
         portrait_scroll: pic(ids::SMALL_SCROLL),
