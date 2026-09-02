@@ -15,50 +15,55 @@ from opensherwood_harness import Engine, key_press, pointer_click
 
 FIRST_MISSION = "H01_Lin_VL"
 
+# Ticks every loadable mission runs in strict mode without a fault (`docs/formats/scb.md`, "Natives at load
+# per mission": the lenient run of 2026-09-02 reached tick 500 everywhere; the strict run of 2026-09-03 too).
+EARLY_TICKS = 300
+
 # Script state right after loading each mission with seed 1 (`PostInitialize` ran): whether an unknown
 # native trapped (`faulted`), how many traps, and the stub natives called (`{id: calls}`). Derived from the
-# engine on 2026-09-02 (ruleset 5, 33 of 37 loadable scripts trap in `PostInitialize`); a change here is a
-# deliberate edit that goes with the native that caused it, never a silent drift. The two missions strict
-# loading refuses are listed with `None`.
+# engine on 2026-09-03 (ruleset 7, hash schema 9: every native the load-time closure reaches is implemented
+# or a recorded stub, so no loadable script traps); a change here is a deliberate edit that goes with the
+# native that caused it, never a silent drift. The two missions strict loading refuses are listed with
+# `None`.
 EXPECTED_AT_LOAD: dict[str, tuple[bool, int, dict[str, int]] | None] = {
-    "Emb01_FoA_EC": (True, 2, {"224": 3, "51": 1}),
-    "Emb02_FoC_MK": (True, 1, {"224": 3}),
-    "Emb03_FoC_MP": (True, 1, {"224": 3}),
-    "Emb04_FoA_MP": (True, 1, {"224": 3, "51": 1}),
-    "Emb05_FoB_MP": (True, 2, {"224": 4}),
-    "Emb06_FoC_EC": (True, 2, {"224": 4, "51": 1}),
-    "Emb07_FoB_JMS": (False, 0, {"188": 1, "224": 4, "54": 1}),
-    "Emb08_FoA_JMS": (True, 1, {"54": 1}),
-    "Emb09_FoB_JMS": (True, 2, {"195": 1, "224": 4}),
-    "EmbTut_FoC_EC": (True, 2, {"224": 3}),
+    "Emb01_FoA_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 3}),
+    "Emb02_FoC_MK": (False, 0, {"54": 1, "224": 3, "244": 4}),
+    "Emb03_FoC_MP": (False, 0, {"51": 1, "54": 1, "73": 1, "224": 3}),
+    "Emb04_FoA_MP": (False, 0, {"51": 1, "54": 1, "73": 1, "224": 3}),
+    "Emb05_FoB_MP": (False, 0, {"20": 1, "54": 1, "73": 1, "224": 4, "244": 4}),
+    "Emb06_FoC_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 4}),
+    "Emb07_FoB_JMS": (False, 0, {"54": 1, "188": 1, "224": 4}),
+    "Emb08_FoA_JMS": (False, 0, {"51": 1, "54": 1, "180": 1, "224": 4, "228": 2, "244": 4}),
+    "Emb09_FoB_JMS": (False, 0, {"54": 1, "73": 2, "195": 1, "224": 4, "244": 1}),
+    "EmbTut_FoC_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 3}),
     "H01_Lin_VL": (False, 0, {"186": 2, "191": 6, "198": 5}),
-    "H02_Not_EC": (True, 1, {}),
-    "H03_Der_MK": (True, 1, {"186": 6, "188": 1, "189": 4, "191": 1, "195": 1, "218": 6, "50": 1, "51": 1, "99": 17}),
-    "H04_Lei_VL": (True, 2, {}),
-    "H05_Lin_EC": (True, 1, {}),
-    "H07_Not_MK": (True, 1, {}),
+    "H02_Not_EC": (False, 0, {"24": 1, "186": 10, "187": 2, "188": 9, "189": 9, "191": 8, "198": 17, "264": 3}),
+    "H03_Der_MK": (False, 0, {"42": 2, "50": 1, "51": 1, "53": 7, "54": 1, "99": 17, "186": 6, "188": 1, "189": 4, "191": 1, "195": 1, "218": 6}),
+    "H04_Lei_VL": (False, 0, {"38": 1, "51": 2, "191": 2, "195": 1, "198": 17, "254": 1}),
+    "H05_Lin_EC": (False, 0, {"24": 2, "80": 176, "99": 1, "177": 2, "186": 9, "191": 7, "198": 48}),
+    "H07_Not_MK": (False, 0, {"20": 1, "50": 1, "80": 2, "92": 1, "99": 1, "140": 2, "177": 3, "180": 5, "186": 15, "187": 15, "188": 15, "189": 15, "191": 4, "195": 1, "205": 2, "218": 3, "244": 1, "247": 1, "264": 5}),
     "H09_Not_VL": (False, 0, {"186": 4, "187": 4, "188": 1, "189": 1, "191": 8, "198": 8}),
-    "H10_Yor_VL": (True, 1, {"35": 1, "54": 1}),
-    "H12_Not_MP": (True, 1, {"191": 8}),
-    "S01_Not_VL": (True, 1, {"35": 1, "54": 1}),
-    "S02_Lei_MP": (True, 1, {}),
-    "S03_FoB_MP": (True, 2, {}),
+    "H10_Yor_VL": (False, 0, {"24": 2, "35": 1, "51": 1, "54": 1, "99": 1, "186": 3, "187": 3, "191": 4, "195": 2, "198": 8}),
+    "H12_Not_MP": (False, 0, {"20": 1, "50": 1, "52": 1, "156": 32, "177": 7, "186": 16, "187": 8, "188": 5, "189": 3, "191": 8}),
+    "S01_Not_VL": (False, 0, {"24": 1, "35": 1, "54": 1, "186": 9, "187": 9, "188": 1, "189": 3, "191": 8, "198": 9}),
+    "S02_Lei_MP": (False, 0, {"20": 1, "24": 1, "50": 1, "51": 2, "99": 1, "156": 24, "177": 3, "186": 3, "187": 1, "189": 2, "191": 5, "254": 1, "264": 1}),
+    "S03_FoB_MP": (False, 0, {"20": 1, "38": 1, "54": 1, "125": 3, "140": 4, "156": 1, "177": 14, "232": 1}),
     "S04_Der_EC": (False, 0, {"186": 5, "187": 1, "188": 5, "189": 5, "191": 3, "198": 7}),
-    "S05_Yrk_EC": (True, 1, {"54": 1}),
+    "S05_Yrk_EC": (False, 0, {"20": 1, "24": 3, "51": 1, "54": 1, "99": 3, "156": 1, "186": 7, "188": 4, "189": 6, "191": 4, "198": 10, "218": 7, "264": 3}),
     "SherwoodOutro": None,  # no script element index space for the Sherwood map yet (docs/formats/scb.md)
-    "Str01_Lin_EC": (False, 0, {"186": 1, "188": 1, "189": 1, "191": 7, "198": 42, "80": 215, "99": 12}),
-    "Str02_Der_MP": (True, 1, {"140": 5, "189": 4, "191": 1, "195": 2, "198": 11, "81": 166}),
-    "Str03_Yor_MK": (True, 1, {"186": 7, "188": 1, "189": 3, "191": 4, "195": 1, "51": 1, "99": 4}),
-    "Tac01_FoA_MP": (True, 2, {"224": 6}),
-    "Tac02_FoB_EC": (True, 1, {"198": 55, "224": 9, "54": 1}),
-    "Tac03_FoC_MP": (True, 1, {"224": 2}),
-    "Tac04_FoA_EC": (True, 2, {"224": 5, "54": 1}),
-    "Tac05_FoC_MP": (True, 1, {"140": 8}),
-    "Tac06_FoB_EC": (True, 1, {"224": 3, "54": 1}),
-    "Tac17_FoC_EC": (True, 2, {"224": 4, "51": 1}),
-    "Tac18_FoA_EC": (True, 2, {"224": 3, "51": 1}),
-    "Tac19_FoB_EC": (True, 2, {"224": 2}),
-    "Tac21_FoB_EC": (True, 2, {"186": 1, "188": 1, "189": 1, "224": 4}),
+    "Str01_Lin_EC": (False, 0, {"80": 215, "99": 12, "186": 1, "188": 1, "189": 1, "191": 7, "198": 42}),
+    "Str02_Der_MP": (False, 0, {"20": 1, "81": 166, "140": 5, "189": 4, "191": 1, "195": 2, "198": 11}),
+    "Str03_Yor_MK": (False, 0, {"51": 1, "99": 4, "143": 14, "186": 7, "188": 1, "189": 3, "191": 4, "195": 1}),
+    "Tac01_FoA_MP": (False, 0, {"20": 1, "54": 1, "224": 6}),
+    "Tac02_FoB_EC": (False, 0, {"20": 1, "54": 1, "198": 55, "224": 9}),
+    "Tac03_FoC_MP": (False, 0, {"39": 1, "52": 1, "54": 1, "224": 2}),
+    "Tac04_FoA_EC": (False, 0, {"20": 1, "54": 1, "224": 5}),
+    "Tac05_FoC_MP": (False, 0, {"140": 8, "177": 8, "198": 8}),
+    "Tac06_FoB_EC": (False, 0, {"20": 1, "54": 1, "224": 3}),
+    "Tac17_FoC_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 4}),
+    "Tac18_FoA_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 3, "244": 5}),
+    "Tac19_FoB_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 2}),
+    "Tac21_FoB_EC": (False, 0, {"20": 1, "186": 1, "188": 1, "189": 1, "224": 4}),
     "sherwood": None,  # no script element index space for the Sherwood map yet (docs/formats/scb.md)
 }
 
@@ -250,14 +255,17 @@ def test_mission_snapshot_restore_continuation(binary, game_dir, tmp_path):
         assert suffix() == straight
 
 
-def test_every_mission_script_translates(binary, game_dir, tmp_path):
+def test_every_mission_script_translates_and_runs_300_ticks_strictly(binary, game_dir, tmp_path):
     """Every retail script loads and its state after `PostInitialize` is the expected one
-    (`EXPECTED_AT_LOAD`): faults, traps and stub calls are asserted, not printed."""
+    (`EXPECTED_AT_LOAD`): faults, traps and stub calls are asserted, not printed. Then every loadable
+    mission runs `EARLY_TICKS` ticks in strict mode (no page dismissed: the briefing sequences stay
+    on their first page, `Hourglass` / `CheckVictoryCondition` / messages / zones run) without a fault,
+    a trap, a run-time fault or a budget abort, and none is won or lost by tick `EARLY_TICKS`."""
     names = sorted(p.stem for p in (game_dir / "DATA" / "Levels").glob("*.scb"))
     assert len(names) == 39
     assert set(names) == set(EXPECTED_AT_LOAD), "the expectation table lists every script"
     mismatches = []
-    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=600) as e:
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=900) as e:
         for name in names:
             expected = EXPECTED_AT_LOAD[name]
             try:
@@ -273,6 +281,19 @@ def test_every_mission_script_translates(binary, game_dir, tmp_path):
             got = (vm["faulted"], vm["counters"]["traps"], vm["counters"]["stub_natives"])
             if got != expected:
                 mismatches.append(f"{name}: (faulted, traps, stubs) {got} != {expected}")
+            if expected is None:
+                mismatches.append(f"{name}: loaded although the table says refused")
+                continue
+            e.step(EARLY_TICKS)
+            vm = e.call("debug.vm")
+            c = vm["counters"]
+            if vm["faulted"] or c["traps"] or c["faults"] or c["budget_aborts"]:
+                mismatches.append(
+                    f"{name}: after {EARLY_TICKS} ticks faulted={vm['faulted']} traps={c['traps']} "
+                    f"faults={c['faults']} budget_aborts={c['budget_aborts']} unknown={c['unknown_natives']}"
+                )
+            if vm["mission_won"] or vm["mission_lost"]:
+                mismatches.append(f"{name}: won={vm['mission_won']} lost={vm['mission_lost']} by tick {EARLY_TICKS}")
     assert sum(v is None for v in EXPECTED_AT_LOAD.values()) == 2, "exactly the two Sherwood missions are refused"
     assert not mismatches, "\n".join(mismatches)
 
@@ -350,8 +371,8 @@ def test_mission_won_shows_the_debriefing_then_the_menu(binary, game_dir, tmp_pa
         # which launches automatically behind its own briefing.
         obs = e.observe(entities=False)
         assert obs["scenario"]["mission"].lower() != "h01_lin_vl", obs["scenario"]
-        # Its script traps in `Initialize` on a native without a documented row (strict mode), so no
-        # briefing page is shown yet; the load itself and the transition are what this test proves.
+        # Its script runs its load-time callbacks without a trap; the load itself and the transition
+        # are what this test proves (whether its first sequence opens a page is the script's business).
         vm = e.call("debug.vm", {})
-        assert vm["present"]
+        assert vm["present"] and not vm["faulted"] and vm["counters"]["traps"] == 0
         assert obs.get("ui") is None or obs["ui"]["screen"] == "briefing"

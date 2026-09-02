@@ -92,7 +92,8 @@ expires), and `restore` while a replay is being recorded.
 
 While a mission with a script is loaded, `observe` carries a `script` object: `objectives` (`[{index, primary,
 done}]` in the order the script added them), `texts` (pending text indices of the level's text list, first is
-shown), `mission_won`, `sequence_active`, `camera_target` (map pixels set by the last camera native),
+shown), `mission_won`, `mission_lost` (`CheckVictoryCondition` returned 1 / 2; both sticky), `sequence_active`,
+`camera_target` (map pixels set by the last camera native),
 `debriefing`, `unknown_natives` (`{id: count}` of natives without an implementation that were called),
 `faulted` (an unknown native stopped a callback), `lenient` and `unknown_calls` (see below). The app dismisses
 the text at the front of the queue through `World::vm_dismiss_text` when the briefing parchment closes (one
@@ -101,8 +102,8 @@ input: `Engine.skip_briefing()` sends Enter once per page (one session tick each
 replay). `debug.vm` is inspection only and cannot dismiss a page.
 
 `debug.vm` (counters, objectives, pending texts, scrolls with positions and activity) returns `{present, classes, elements, locations, objectives, texts, mission_won,
-sequence_active, sequences, faulted, lenient, unknown_calls, pending_messages, camera_target, debriefing,
-mission_vars, counters, rng_draws}`; `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
+mission_lost, money, sequence_active, sequences, faulted, lenient, unknown_calls, pending_messages, camera_target, debriefing,
+mission_vars, counters, rng_draws}` (`money` is the script's integer of natives 236 / 237); `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
 `traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives` and
 `objective_done_before_added`. Its one mutation, `debug.vm {"win": true}`, marks the mission won: a documented
 harness shortcut used only by the end-of-mission flow test (`test_mission_won_shows_the_debriefing_then_the_menu`),

@@ -1073,6 +1073,12 @@ pub struct VmState {
     pub camera_target: Option<(i32, i32)>,
     /// `CheckVictoryCondition` returned 1.
     pub mission_won: bool,
+    /// `CheckVictoryCondition` returned 2 (sticky, like `mission_won`).
+    #[serde(default)]
+    pub mission_lost: bool,
+    /// The player's money (natives 236 / 237).
+    #[serde(default)]
+    pub money: i32,
     /// Active patches (natives 144 / 145).
     pub patches: BTreeSet<i32>,
     /// Player action availability flags (native 196).
@@ -1139,6 +1145,8 @@ impl VmState {
             next_text_id: 1,
             camera_target: None,
             mission_won: false,
+            mission_lost: false,
+            money: 0,
             patches: BTreeSet::new(),
             actions: BTreeMap::new(),
             attributes: Vec::new(),
@@ -1335,6 +1343,7 @@ impl VmState {
             None => e.u8(0),
         };
         e.u8(u8::from(self.mission_won));
+        e.u8(u8::from(self.mission_lost)).i32(self.money);
         e.u32(self.patches.len() as u32);
         for p in &self.patches {
             e.i32(*p);
@@ -1595,6 +1604,9 @@ pub struct ScriptObservation {
     pub text_requests: Vec<TextRequest>,
     /// `CheckVictoryCondition` returned 1.
     pub mission_won: bool,
+    /// `CheckVictoryCondition` returned 2.
+    #[serde(default)]
+    pub mission_lost: bool,
     /// Unknown native calls by id.
     pub unknown_natives: BTreeMap<u32, u64>,
     /// A sequence is running.
@@ -1628,7 +1640,7 @@ pub mod callbacks {
     pub const POST_INITIALIZE: &str = "PostInitialize";
     /// Every tick, `(time)`.
     pub const HOURGLASS: &str = "Hourglass";
-    /// Level class, every tick; 1 = won.
+    /// Level class, every tick; 1 = won, 2 = lost.
     pub const CHECK_VICTORY: &str = "CheckVictoryCondition";
     /// `(msg, arg, arg2)`.
     pub const PROCESS_MESSAGE: &str = "ProcessMessage";
@@ -1696,6 +1708,7 @@ impl World {
             texts: vm.pending_texts(),
             text_requests: vm.texts.clone(),
             mission_won: vm.mission_won,
+            mission_lost: vm.mission_lost,
             unknown_natives: vm.counters.unknown_natives.clone(),
             sequence_active: !vm.sequences.is_empty(),
             camera_target: vm.camera_target,
@@ -1826,10 +1839,20 @@ impl World {
         if self.vm_out_of_work() {
             return;
         }
-        if let Some(CallOutcome::Returned(1)) = self.vm_callback(0, callbacks::CHECK_VICTORY, &[])
-            && let Some(vm) = self.vm.as_mut()
-        {
-            vm.mission_won = true;
+        // `docs/formats/scb.md`, "Calling convention": 0 running, 1 won, 2 lost (a debriefing is
+        // usually selected with native 28 first). Both outcomes are sticky.
+        match self.vm_callback(0, callbacks::CHECK_VICTORY, &[]) {
+            Some(CallOutcome::Returned(1)) => {
+                if let Some(vm) = self.vm.as_mut() {
+                    vm.mission_won = true;
+                }
+            }
+            Some(CallOutcome::Returned(2)) => {
+                if let Some(vm) = self.vm.as_mut() {
+                    vm.mission_lost = true;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -3106,6 +3129,12 @@ pub(crate) mod tests {
         v.vm.as_mut().unwrap().mission_vars[9] = 1;
         assert_ne!(v.hashes().get("scripts"), h0.get("scripts"));
         let mut v = w.clone();
+        v.vm.as_mut().unwrap().money = 25;
+        assert_ne!(v.hashes().get("scripts"), h0.get("scripts"));
+        let mut v = w.clone();
+        v.vm.as_mut().unwrap().mission_lost = true;
+        assert_ne!(v.hashes().get("scripts"), h0.get("scripts"));
+        let mut v = w.clone();
         v.vm.as_mut().unwrap().send(Message {
             target: 0,
             id: 1,
@@ -4141,5 +4170,215 @@ pub(crate) mod tests {
         assert_eq!(crate::natives::unpack_point(v), Some((1234, 567)));
         assert_eq!(crate::natives::unpack_point(5), None);
         assert_eq!(location_of_point(-5, 40000), location_of_point(0, 0x7fff));
+    }
+
+    /// The stub policy table of `docs/formats/scb.md` ("Natives at load per mission"): the
+    /// low-confidence natives with a required return value and the index / identity natives
+    /// implemented from it, in strict mode, without a trap.
+    #[test]
+    fn policy_values_of_the_stub_table_are_pinned() {
+        // Elements: hero 0, guards 1 / 2, scroll 3, zone 4.
+        let mut init = native(128, &[1], Some(cv(0)), 0);
+        init.extend(native(240, &[1], Some(cv(1)), 0));
+        init.extend(native(253, &[27], Some(cv(2)), 0));
+        init.extend(native(255, &[1], Some(cv(3)), 0));
+        init.extend(native(205, &[4, 0], Some(cv(4)), 0));
+        init.extend(native(119, &[], Some(cv(5)), 0));
+        init.extend(native(231, &[4], Some(cv(6)), 0));
+        init.extend(native(246, &[4], Some(cv(7)), 0));
+        init.extend(native(8, &[4], Some(cv(8)), 0));
+        init.extend(native(98, &[0, -1], Some(cv(9)), 0));
+        init.extend(native(98, &[0, 4], Some(cv(10)), 0));
+        init.extend(native(12, &[7], Some(cv(11)), 0));
+        init.extend(native(13, &[9], Some(cv(12)), 0));
+        init.extend(native(86, &[1, 1], Some(cv(13)), 0));
+        init.extend(native(86, &[1, 2], Some(cv(14)), 0));
+        init.extend(native(250, &[0], Some(cv(15)), 0));
+        init.extend(native(211, &[], Some(cv(16)), 0));
+        init.extend(native(245, &[], Some(cv(17)), 0));
+        init.extend(native(20, &[0], None, 0));
+        init.extend(native(192, &[], Some(cv(18)), 0));
+        let level = class("StartUp", 19, &[("Initialize", 0, false, 0, 4, init)]);
+        let w = mission_world(2, Some(program(vec![level], 2)));
+        let vm = w.vm.as_ref().unwrap();
+        assert!(
+            !vm.faulted && vm.counters.traps == 0 && vm.counters.faults == 0,
+            "{:?}",
+            vm.counters
+        );
+        assert!(vm.counters.unknown_natives.is_empty());
+        let v = &vm.class_vars[0];
+        assert_eq!(v[0], 1, "128: able to act");
+        assert_eq!(v[1], 1, "240: present");
+        assert_eq!(v[2], 1, "253: campaign character alive");
+        assert_eq!(v[3], 1, "255: campaign character present");
+        assert_eq!(v[4], NONE_HANDLE, "205: no actor in the zone");
+        assert_eq!(v[5], 0, "119: not won");
+        assert_eq!((v[6], v[7]), (0, 0), "231 / 246: nobody inside");
+        assert_eq!(v[8], 4, "8: the building index itself");
+        assert_eq!((v[9], v[10]), (1, 0), "98: outdoors only");
+        assert_eq!((v[11], v[12]), (7, 9), "12 / 13: index inverses");
+        assert_eq!((v[13], v[14]), (1, 0), "86: handle equality");
+        assert_eq!((v[15], v[16]), (0, 0), "250(0) is 211's value: the hero");
+        assert_eq!(v[17], 1, "245: one live player character");
+        assert_eq!(v[18], NONE_HANDLE, "192: the level class has no element");
+        for id in [128, 240, 253, 255, 205, 119, 231, 246, 20] {
+            assert_eq!(
+                vm.counters.stub_natives.get(&id),
+                Some(&1),
+                "stub {id} recorded"
+            );
+        }
+        for id in [8, 12, 13, 86, 98, 245, 250, 192] {
+            assert_eq!(
+                crate::natives::native_status(id),
+                crate::natives::NativeStatus::Implemented
+            );
+            assert!(
+                !vm.counters.stub_natives.contains_key(&id),
+                "{id} is implemented"
+            );
+        }
+        for (id, _) in crate::natives::STUB_POLICY_VALUES {
+            assert_eq!(
+                crate::natives::native_status(*id),
+                crate::natives::NativeStatus::Stub
+            );
+        }
+        w.validate().unwrap();
+    }
+
+    /// Native 192 returns the element of the calling class for non-actor classes, as 74 does.
+    #[test]
+    fn native_192_is_the_calling_classs_own_element() {
+        let mut init = native(192, &[], Some(cv(0)), 0);
+        init.extend(native(74, &[], Some(cv(1)), 0));
+        let level = class("StartUp", 0, &[]);
+        let mut scroll = class("Scroll", 2, &[("Initialize", 0, false, 0, 4, init)]);
+        scroll.element = Some(1);
+        let w = mission_world(0, Some(program(vec![level, scroll], 0)));
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[1], vec![1, 1]);
+        assert!(!vm.faulted);
+    }
+
+    /// Natives 93 / 94 / 133: sixteen directions on the 256-unit facing, direction 0 = facing 0
+    /// (`natives::FACING_UNITS_PER_DIRECTION`, low confidence, pinned here); 133 teleports as 96.
+    #[test]
+    fn facing_natives_map_sixteen_directions_onto_facing256() {
+        let mut init = native(94, &[1, 5], None, 0);
+        init.extend(native(93, &[1], Some(cv(0)), 0));
+        init.extend(native(133, &[2, 0, 12], None, 0));
+        init.extend(native(93, &[2], Some(cv(1)), 0));
+        init.extend(native(93, &[3], Some(cv(2)), 0));
+        init.extend(native(94, &[2, -1], None, 0));
+        init.extend(native(93, &[2], Some(cv(3)), 0));
+        let level = class("StartUp", 4, &[("Initialize", 0, false, 0, 4, init)]);
+        let w = mission_world(2, Some(program(vec![level], 2)));
+        let vm = w.vm.as_ref().unwrap();
+        assert!(!vm.faulted);
+        assert_eq!(vm.class_vars[0], vec![5, 12, 0, 15]);
+        assert_eq!(w.entities[1].facing256, 80);
+        assert_eq!(
+            (w.entities[2].x, w.entities[2].y),
+            (Fixed::from_int(200), Fixed::from_int(200)),
+            "133 placed the guard at location 0"
+        );
+        assert_eq!(w.entities[2].facing256, 240, "-1 wraps to direction 15");
+        w.validate().unwrap();
+    }
+
+    /// Natives 236 / 237 share one hashed integer that survives a snapshot.
+    #[test]
+    fn money_natives_share_one_hashed_integer() {
+        let mut init = native(237, &[100_000], None, 0);
+        init.extend(native(236, &[], Some(cv(0)), 0));
+        // Hourglass: n237(n236() - 2000).
+        let mut hourglass = native(236, &[], Some(tv(0)), 0);
+        hourglass.push(Instr::LoadInt {
+            dst: tv(1),
+            value: 2000,
+        });
+        hourglass.push(Instr::Binary {
+            op: BinOp::Sub,
+            dst: tv(2),
+            a: tv(0),
+            b: tv(1),
+        });
+        hourglass.push(Instr::PushArg { src: tv(2) });
+        hourglass.push(Instr::Native { id: 237, argc: 1 });
+        let level = class(
+            "StartUp",
+            1,
+            &[
+                ("Initialize", 0, false, 0, 4, init),
+                ("Hourglass", 1, false, 0, 4, hourglass),
+            ],
+        );
+        let mut w = mission_world(0, Some(program(vec![level], 0)));
+        assert_eq!(w.vm.as_ref().unwrap().class_vars[0][0], 100_000);
+        assert_eq!(w.vm.as_ref().unwrap().money, 100_000);
+        w.step(&[]);
+        w.step(&[]);
+        assert_eq!(w.vm.as_ref().unwrap().money, 96_000);
+        let snap = w.snapshot(None);
+        let mut w2 = mission_world(0, None);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.vm.as_ref().unwrap().money, 96_000);
+        assert_eq!(w2.hashes(), w.hashes());
+        w.step(&[]);
+        assert_ne!(w2.hashes().get("scripts"), w.hashes().get("scripts"));
+    }
+
+    /// `CheckVictoryCondition` returning 2 marks the mission lost (sticky, observable).
+    #[test]
+    fn check_victory_condition_two_marks_the_mission_lost() {
+        // Initialize: cv0 = 4. Hourglass: cv0 = cv0 - 1. CheckVictoryCondition: n28(1); return cv0.
+        let init = vec![Instr::LoadInt {
+            dst: cv(0),
+            value: 4,
+        }];
+        let hourglass = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::Binary {
+                op: BinOp::Sub,
+                dst: cv(0),
+                a: cv(0),
+                b: tv(0),
+            },
+        ];
+        let mut victory = native(28, &[1], None, 0);
+        victory.push(Instr::SetResult { src: cv(0) });
+        let level = class(
+            "StartUp",
+            1,
+            &[
+                ("Initialize", 0, false, 0, 4, init),
+                ("Hourglass", 1, false, 0, 4, hourglass),
+                ("CheckVictoryCondition", 0, true, 0, 4, victory),
+            ],
+        );
+        let mut w = mission_world(0, Some(program(vec![level], 0)));
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert!(!vm.mission_lost && !vm.mission_won, "3 = still running");
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert!(vm.mission_lost && !vm.mission_won, "2 = lost");
+        assert_eq!(vm.debriefing, Some(1));
+        let obs = w.script_observation().unwrap();
+        assert!(obs.mission_lost && !obs.mission_won);
+        w.step(&[]);
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert!(vm.mission_lost, "sticky");
+        assert!(
+            vm.mission_won,
+            "1 = won is recorded independently and stays"
+        );
+        w.validate().unwrap();
     }
 }

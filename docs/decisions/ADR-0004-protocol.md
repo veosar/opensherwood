@@ -13,10 +13,12 @@ text dismissals draw from what the tick left) and charging instructions, argumen
 zone / scroll scan or native 204 looks at, every polygon edge tested (zones, natives 97 / 204), sequence
 elements and every stage of the path searches the script issues (initialisation, expansions, unwinding,
 smoothing, conversion); programs must have balanced parameter / argument stacks; AI locking halts an NPC's
-walk, native 160 and camera centring are computed in `i64`), hash schema 8 (`scripts` and `scheduler` parts carry the VM state including sequence tokens and the
+walk, native 160 and camera centring are computed in `i64`), hash schema 9 (`scripts` and `scheduler` parts carry the VM state including sequence tokens and the
 barrier wait; frames and stacks are no longer encoded because a snapshot must be quiescent; entity `active` /
-`ai_locked` flags under `actors`, the `script` RNG stream under `rng`), snapshot schema 9 (`vm` state without
-its diagnostic `counters` and per-tick `budget`, sequence `tokens`, entity flags).
+`ai_locked` flags under `actors`, the `script` RNG stream under `rng`; schema 9 adds the player's `money`
+(natives 236 / 237) and `mission_lost` (`CheckVictoryCondition` = 2) to `scripts`), snapshot schema 10 (`vm`
+state without its diagnostic `counters` and per-tick `budget`, sequence `tokens`, entity flags, `money` and
+`mission_lost`).
 Any change to canonical bytes bumps the ruleset or hash schema and regenerates
 `harness/fixtures/synthetic_corridor.json` (see `docs/decisions/reviews/2026-09-02-codex-m0-review-disposition.md`).
 
