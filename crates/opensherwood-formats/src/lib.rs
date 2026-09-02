@@ -11,6 +11,7 @@ pub mod chunk;
 pub mod dic;
 pub mod image_blob;
 pub mod reader;
+pub mod rhm;
 pub mod rhs;
 pub mod scb;
 pub mod sprite_decode;

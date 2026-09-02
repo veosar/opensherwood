@@ -10,7 +10,10 @@ for the subsystem you analyse. If you have read disassembly in this session, do 
 
 ## Setup
 
-- Work on a private copy of the game (`OPENSHERWOOD_GAME_DIR`), never on the store installation.
+- Work on a private copy of the game, never on the store installation, and never on the copy the engine
+  tests use (`OPENSHERWOOD_GAME_DIR`): the running original opens `DATA/robinhood.bks` exclusively, which makes
+  the engine's sprite bank unreadable while the game runs. Use a second copy (on the maintainer's machine:
+  `C:\Users\przem\source\gamedata\robinhood_oracle`).
 - cnc-ddraw `ddraw.ini`: `windowed=true`, `fullscreen=false`, `renderer=gdi` or `opengl`, `maxfps=60`,
   `devmode=true` (does not lock the cursor) so screenshots and injection are easy.
 - The community developer-console executable (rhmods.com) enables F11; the retail build has the same commands
