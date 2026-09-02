@@ -1,0 +1,136 @@
+# Original game: campaign flow (black-box observation)
+
+Status: **observed** for everything up to the start of the first mission; later stages are taken from the
+printed manual and the text resources and are marked *manual* / *inferred*. Coordinates: 1024x768 logical
+pixels, see `ui-flow.md`. Screenshot file names refer to `harness/captures/original/` (git-ignored).
+
+## 1. From the main menu to the first mission
+
+Precondition: a profile selected in **Select player** (a fresh one: Medium difficulty, Money L100, Score 0,
+Progress 0 %). Then:
+
+| Step | t (s after click) | What happens | File |
+|---|---|---|---|
+| click **Play!** (748,364) | 0 | main menu disappears | `play_000_000.9s.png` |
+| | ~0.9-2.5 | **loading screen**: painting of Robin drawing his bow, progress bar y = 700, "v1.1" top right | `play_001_001.8s.png`, `play_002_002.2s.png` |
+[original game text removed]
+| V seal (508,552) or Enter | | briefing page 2 | `m1_brief_page2.png` |
+| V seal / Enter | | briefing page 3 | `m1_brief_page3.png` |
+| V seal / Enter | | parchment closes, game unpauses, camera on Robin outside the gate of Lincoln castle; HUD shows Money L100, Clover 0, Robin's portrait | `m1_brief_page1.png` (background), `pause_menu.png` |
+
+There is **no intro video, no cutscene, no campaign map and no Sherwood camp** before the first mission; the
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+
+### The first mission
+
+[original game text removed]
+[original game text removed]
+  `DATA/Levels/H01_Lin_VL.rhm` (Lincoln, proto-level `Lincoln`), day ambiance (*inferred* from the file names and
+  the first `.red` value; the mission file was not verified by loading it).
+- Player characters: Robin Hood only. Start position: in front of the castle gate on a muddy yard with a pig
+  sty and a barn to the left, two guards on the wall above the gate, a mendicant to the right.
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+- The remaining strings of 1000105 (3..22) are the in-mission dialogue and tutorial popups: the clover charm
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+- `RHLevelHA.red` (u32 values): `1000017, 1000007, 0, 23, 1000105, 1000103, 1000106, 1000001, 1000107, 1000083,
+  1000108, 1000108, 1000109, 1000110, 1000110, 1000089, 1000111, 1000112, 1000113, 1000114, 1000115, 1000116,
+  1000117, 1000118, 1000117, 1000119, 1000120, 1000121, 1, 1000349, 1, 1000350, 6, 1000283`: title, unused goal,
+  0, then `23` and 23 ids (1000105 = the text list, the others are probably the `WAVE` voice entries of each
+  string), `1` + 1000349 (debriefing when won), `1` + 1000350 (debriefing when lost), `6` + 1000283 (six short
+  briefings). This refines the stub in `docs/formats/red.md` (*inferred* layout, consistent with all 57 files:
+  every file ends with `n_won, id, n_lost, id, n_short, id`).
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+- **Tutorial**: there is no separate training mission in the flow; the first mission *is* the tutorial (popup
+  hints above). `Levels/EmbTut_FoC_EC.rhm` ("Emb" = ambush, "Tut" = tutorial) exists in the data but is not
+  reached from Play! with a fresh profile; when it is used is *unknown* (possibly the first ambush, see below).
+  It is therefore not mandatory in the sense of a separate step.
+
+## 2. After the first mission (*manual* p.9-14, `Level.res`, not observed)
+
+1. Mission 2 launches automatically after the debriefing of mission 1. By the `.red` order the second story
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+[original game text removed]
+2. After mission 2 the **Sherwood Forest camp** (level `Sherwood.rhm`) becomes the hub: new recruits appear,
+   workshops (arrows, feast, archery training, combat training) produce items between missions, hovering a
+   character shows a small parchment with his sword / bow ability icons.
+3. **Campaign map**: the "MAP" icon at the top right of the Sherwood screen opens a map of Sherwood and the
+   surrounding towns (`DEFAULT.RES` PIC 123, 629x480, with town buttons 125..129 and troop arrows 227..236).
+   Hovering a location shows a one-line description, clicking opens a detailed parchment (briefing + accept /
+   close seals). After accepting, a red seal and a row of boxes (required team size, required abilities, forced
+   portraits) appear at the top right of the Sherwood screen; the player gathers the team on the path leading out
+   of the forest (top right), or clicks the "SEND" icon, then clicks the blue seal to start.
+4. Missions: up to 5 characters; a message shows the objectives at the start and whenever they change (the
+   Escape menu repeats the current ones); a message announces victory, after which a seal at the top right leaves
+   the mission (secondary objectives can still be pursued); a mission is lost when a main character is killed; in
+   ambush missions the seal is present from the start and clicking it retreats (mission lost, men survive).
+5. After a mission the team returns to Sherwood; the campaign statistics (money, score, lives saved) appear on
+   the map parchment ("Money: ... Score: ... Lives saved: ..." per the manual's screenshot on p.10).
+
+## Provenance
+
+Same session as `ui-flow.md` (build SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`,
+GOG English, 1024x768, private copy `C:\Users\przem\source\gamedata\robinhood_oracle`, 2026-09-02). Observed:
+the Play! -> loading -> briefing -> mission sequence with a fresh profile (`Analyst`, Medium) and with the shipped
+profile. Texts: `python harness/tools/original/sres_text.py <gamedir>/2047/data/Text/Level.res 1000017 1000105
+1000283 1000349 1000350`; `.red` values dumped as little-endian u32 with a one-line Python script. Manual:
+`Manual.pdf` shipped with the GOG build (pages 9-14 of the printed numbering). Level-to-file mapping is inferred
+from the `RHLevel??.red` names and the `H01_Lin_VL` naming scheme; it has not been confirmed by loading the file.
+
+## Open questions
+
+1. Confirm that `RHLevelHA.red` / `H01_Lin_VL.rhm` is what Play! loads (e.g. with the console `REPORT` command or
+   by renaming the file in a private copy).
+2. What triggers `EmbTut_FoC_EC` (tutorial ambush) and the intro video (`2047/data/Cinematics/Intro.vid`,
+   TEXT 1000056 "into"); is the video shown on the very first start of a fresh installation?
+3. The debriefing screen after a mission (layout, statistics, buttons) and the automatic transition to mission 2.
+4. The Sherwood camp screen and the campaign map: exact positions of the MAP / SEND icons, the team boxes, the
+   red / blue seals; which `.red` order corresponds to the mission availability graph (`Campaign.bck`,
+   `RHCampaign`).
+5. Meaning of the second and third `.red` values (`1000007` = "NOTUSED" text; `0/1/2/3/4` then a variable block
+   before the `23` count in the H/S files).
