@@ -3,17 +3,74 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use opensherwood_assets::GameDir;
-use opensherwood_core::{InputEvent, MapInfo, Scenario, Snapshot, World};
+use std::sync::Arc;
+
+use opensherwood_assets::{GameDir, SpriteBank};
+use opensherwood_core::{
+    AnimSet, Catalog, FrameSpec, InputEvent, MapInfo, Scenario, Snapshot, World,
+};
 use opensherwood_protocol::{
     CaptureParams, CaptureResult, HelloResult, ObserveResult, PROTOCOL_VERSION, ResetParams,
     RestoreParams, RpcError, SnapshotResult, StepParams, StepResult,
 };
-use opensherwood_render::{Background, Framebuffer, render};
+use opensherwood_render::{Background, Framebuffer, NoSprites, SpriteFrame, SpriteSource, render};
 use serde_json::{Value, json};
 
 /// Result of an RPC method.
 pub type RpcResult = Result<Value, RpcError>;
+
+/// Sprite bank adapter for the renderer.
+struct Sprites {
+    bank: SpriteBank,
+}
+
+impl SpriteSource for Sprites {
+    fn frame(&mut self, index: u32) -> Option<Arc<SpriteFrame>> {
+        let img = self.bank.frame(index).ok()?;
+        Some(Arc::new(SpriteFrame {
+            width: img.width,
+            height: img.height,
+            rgba: img.rgba.clone(),
+        }))
+    }
+}
+
+/// Build the core's animation set from a parsed profile. Until `docs/formats/sprite-animations.md`
+/// establishes the real layout, the first 8 animations are used as idle and the next 8 as walk.
+fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSet {
+    // Frame anchors are relative to a canvas whose origin (the entity position) is the sequence's
+    // `origin_x/origin_y` (150,150 for characters); see docs/formats/sprites.md.
+    let animations: Vec<Vec<FrameSpec>> = profile
+        .sequences
+        .iter()
+        .flat_map(|s| {
+            let (ox, oy) = (s.origin_x as i32, s.origin_y as i32);
+            s.animations.iter().map(move |a| {
+                a.frames
+                    .iter()
+                    .map(|f| FrameSpec {
+                        frame: f.frame,
+                        duration: f.duration.max(1),
+                        offset_x: i32::from(f.anchor_x) - ox,
+                        offset_y: i32::from(f.anchor_y) - oy,
+                    })
+                    .collect()
+            })
+        })
+        .collect();
+    let n = animations.len().max(1) as u32;
+    let mut idle = [0u32; 8];
+    let mut walk = [0u32; 8];
+    for d in 0..8u32 {
+        idle[d as usize] = d % n;
+        walk[d as usize] = (8 + d) % n;
+    }
+    AnimSet {
+        animations,
+        idle,
+        walk,
+    }
+}
 
 /// One engine instance.
 pub struct Session {
@@ -22,6 +79,7 @@ pub struct Session {
     /// The world, if a scenario is loaded.
     pub world: Option<World>,
     background: Option<Background>,
+    sprites: Option<Sprites>,
     snapshots: BTreeMap<String, Snapshot>,
     next_snapshot: u64,
     frame: Option<Framebuffer>,
@@ -65,6 +123,7 @@ impl Session {
             artifacts,
             world: None,
             background: None,
+            sprites: None,
             snapshots: BTreeMap::new(),
             next_snapshot: 0,
             frame: None,
@@ -112,7 +171,28 @@ impl Session {
                     width: bg.width,
                     height: bg.height,
                 };
-                (World::new_map_view(scenario, seed, info)?, Some(bg))
+                let mut world = World::new_map_view(scenario, seed, info)?;
+                if self.sprites.is_none() {
+                    match SpriteBank::open(game) {
+                        Ok(bank) => self.sprites = Some(Sprites { bank }),
+                        Err(e) => eprintln!("opensherwood: sprite bank unavailable: {e}"),
+                    }
+                }
+                if self.sprites.is_some() {
+                    let mut catalog = Catalog::default();
+                    for name in ["RobinHood", "Soldier A00"] {
+                        match SpriteBank::load_profile(game, name) {
+                            Ok(profile) => {
+                                catalog
+                                    .sets
+                                    .insert(name.to_string(), anim_set_from_profile(&profile));
+                            }
+                            Err(e) => eprintln!("opensherwood: profile {name}: {e}"),
+                        }
+                    }
+                    world.attach_catalog(catalog, Some("RobinHood"), Some("Soldier A00"));
+                }
+                (world, Some(bg))
             }
             _ => (World::new(scenario, seed)?, None),
         };
@@ -134,7 +214,11 @@ impl Session {
     pub fn frame(&mut self) -> Option<&Framebuffer> {
         let world = self.world.as_ref()?;
         if self.frame.is_none() {
-            self.frame = Some(render(world, self.background.as_ref()));
+            let frame = match self.sprites.as_mut() {
+                Some(s) => render(world, self.background.as_ref(), s),
+                None => render(world, self.background.as_ref(), &mut NoSprites),
+            };
+            self.frame = Some(frame);
         }
         self.frame.as_ref()
     }

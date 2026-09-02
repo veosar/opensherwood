@@ -1,6 +1,8 @@
 //! Deterministic CPU compositor (ADR-0002). The framebuffer is the authoritative picture; presenters
 //! only display it.
 
+use std::sync::Arc;
+
 use opensherwood_core::{EntityKind, Fixed, World};
 
 /// RGBA8 framebuffer, row-major, no padding.
@@ -158,18 +160,34 @@ impl Framebuffer {
         }
     }
 
-    /// Blit an RGBA image (alpha 0 = skip, otherwise opaque copy).
+    /// Blit an RGBA image: alpha 0 skipped, alpha 255 copied, other alphas blended (integer math).
     pub fn blit_rgba(&mut self, x: i32, y: i32, w: u32, h: u32, rgba: &[u8]) {
         for sy in 0..h {
+            let dy = y + sy as i32;
+            if dy < 0 || dy >= self.height as i32 {
+                continue;
+            }
             for sx in 0..w {
-                let i = ((sy * w + sx) * 4) as usize;
-                if rgba[i + 3] != 0 {
-                    self.put(
-                        x + sx as i32,
-                        y + sy as i32,
-                        [rgba[i], rgba[i + 1], rgba[i + 2], 255],
-                    );
+                let dx = x + sx as i32;
+                if dx < 0 || dx >= self.width as i32 {
+                    continue;
                 }
+                let i = ((sy * w + sx) * 4) as usize;
+                let a = u32::from(rgba[i + 3]);
+                if a == 0 {
+                    continue;
+                }
+                let di = ((dy as u32 * self.width + dx as u32) * 4) as usize;
+                if a == 255 {
+                    self.rgba[di..di + 3].copy_from_slice(&rgba[i..i + 3]);
+                } else {
+                    for c in 0..3 {
+                        let s = u32::from(rgba[i + c]);
+                        let d = u32::from(self.rgba[di + c]);
+                        self.rgba[di + c] = ((s * a + d * (255 - a)) / 255) as u8;
+                    }
+                }
+                self.rgba[di + 3] = 255;
             }
         }
     }
@@ -195,6 +213,33 @@ impl Framebuffer {
             w.write_image_data(&self.rgba)?;
         }
         Ok(out)
+    }
+}
+
+/// A decoded sprite frame (RGBA8, alpha 0 = transparent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpriteFrame {
+    /// Width.
+    pub width: u32,
+    /// Height.
+    pub height: u32,
+    /// Pixels.
+    pub rgba: Vec<u8>,
+}
+
+/// Supplies decoded sprite frames by bank index (the app implements it over the sprite bank).
+pub trait SpriteSource {
+    /// Frame by index, or `None` if it cannot be provided.
+    fn frame(&mut self, index: u32) -> Option<Arc<SpriteFrame>>;
+}
+
+/// A source with no sprites (synthetic scenarios).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoSprites;
+
+impl SpriteSource for NoSprites {
+    fn frame(&mut self, _index: u32) -> Option<Arc<SpriteFrame>> {
+        None
     }
 }
 
@@ -227,9 +272,14 @@ pub mod palette {
     pub const VOID: Color = [0, 0, 0, 255];
 }
 
-/// Render a world into a new framebuffer at its logical viewport size, with an optional background.
+/// Render a world into a new framebuffer at its logical viewport size, with an optional background
+/// and sprites from `sprites` for entities that carry animation state.
 #[must_use]
-pub fn render(world: &World, background: Option<&Background>) -> Framebuffer {
+pub fn render(
+    world: &World,
+    background: Option<&Background>,
+    sprites: &mut dyn SpriteSource,
+) -> Framebuffer {
     let mut fb = Framebuffer::new(world.viewport.0, world.viewport.1);
     let (cx, cy) = world.camera;
     match background {
@@ -269,7 +319,19 @@ pub fn render(world: &World, background: Option<&Background>) -> Framebuffer {
                 } else {
                     palette::GUARD
                 };
-                fb.fill_circle(px(e.x, cx), px(e.y, cy), e.size.round(), c);
+                let sprite = e
+                    .anim
+                    .as_ref()
+                    .and_then(|a| a.current(&world.catalog))
+                    .and_then(|spec| sprites.frame(spec.frame).map(|f| (spec, f)));
+                match sprite {
+                    Some((spec, frame)) => {
+                        let x = px(e.x, cx) + spec.offset_x;
+                        let y = px(e.y, cy) + spec.offset_y;
+                        fb.blit_rgba(x, y, frame.width, frame.height, &frame.rgba);
+                    }
+                    None => fb.fill_circle(px(e.x, cx), px(e.y, cy), e.size.round(), c),
+                }
                 if let Some((tx, ty)) = e.target {
                     fb.line(
                         px(e.x, cx),
@@ -307,8 +369,8 @@ mod tests {
     #[test]
     fn rendering_is_deterministic_and_png_encodes() {
         let w = World::new(Scenario::Synthetic("corridor".into()), 1).unwrap();
-        let a = render(&w, None);
-        let b = render(&w, None);
+        let a = render(&w, None, &mut NoSprites);
+        let b = render(&w, None, &mut NoSprites);
         assert_eq!(a.hash(), b.hash());
         assert_eq!(a.rgba.len(), 640 * 480 * 4);
         let png = a.encode_png().unwrap();

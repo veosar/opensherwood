@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::anim::{AnimState, Catalog, direction_of};
 use crate::fixed::Fixed;
 use crate::hash::{Encoder, Hashes, total};
 use crate::input::{Button, InputEvent, Key};
@@ -59,6 +60,8 @@ pub struct Entity {
     pub facing256: i32,
     /// Alive.
     pub alive: bool,
+    /// Sprite animation state, if the entity is drawn with a sprite.
+    pub anim: Option<AnimState>,
 }
 
 /// Scenario selection for `reset`.
@@ -159,6 +162,9 @@ pub struct World {
     pub goal: (Fixed, Fixed),
     /// Whether the player reached the goal.
     pub objective_reached: bool,
+    /// Static animation data attached by the app (not part of the snapshot; re-attached on load).
+    #[serde(skip)]
+    pub catalog: Catalog,
 }
 
 /// Snapshot schema version.
@@ -211,6 +217,7 @@ impl World {
             wait_ticks: 0,
             facing256: 0,
             alive: true,
+            anim: None,
         });
         entities.push(Entity {
             id: id(1),
@@ -225,6 +232,7 @@ impl World {
             wait_ticks: 0,
             facing256: 64,
             alive: true,
+            anim: None,
         });
         let obstacles: &[(i32, i32, i32, i32)] = if map.is_some() {
             &[]
@@ -245,6 +253,7 @@ impl World {
                 wait_ticks: 0,
                 facing256: 0,
                 alive: true,
+                anim: None,
             });
         }
         World {
@@ -263,6 +272,28 @@ impl World {
             rng: Rng::new(seed, 1),
             goal: (f(600), f(240)),
             objective_reached: false,
+            catalog: Catalog::default(),
+        }
+    }
+
+    /// Attach animation data and give every player / guard the named set (idle, facing direction).
+    pub fn attach_catalog(
+        &mut self,
+        catalog: Catalog,
+        player_set: Option<&str>,
+        guard_set: Option<&str>,
+    ) {
+        self.catalog = catalog;
+        for e in &mut self.entities {
+            let set = match e.kind {
+                EntityKind::Player => player_set,
+                EntityKind::Guard => guard_set,
+                EntityKind::Obstacle => None,
+            };
+            e.anim = set.and_then(|name| {
+                let s = self.catalog.sets.get(name)?;
+                Some(AnimState::new(name, s.idle[direction_of(e.facing256)]))
+            });
         }
     }
 
@@ -423,6 +454,21 @@ impl World {
                 }
             }
         }
+        for e in &mut self.entities {
+            let Some(anim) = e.anim.as_mut() else {
+                continue;
+            };
+            let Some(set) = self.catalog.sets.get(&anim.set) else {
+                continue;
+            };
+            let dir = direction_of(e.facing256);
+            let wanted = if e.target.is_some() {
+                set.walk[dir]
+            } else {
+                set.idle[dir]
+            };
+            anim.advance(&self.catalog, wanted);
+        }
         if let Some(p) = self.entities.iter().find(|e| e.kind == EntityKind::Player)
             && Fixed::length(p.x - self.goal.0, p.y - self.goal.1) <= Fixed::from_int(16)
         {
@@ -447,7 +493,9 @@ impl World {
                 snap.version
             ));
         }
+        let catalog = std::mem::take(&mut self.catalog);
         *self = snap.world.clone();
+        self.catalog = catalog;
         Ok(())
     }
 
@@ -511,6 +559,15 @@ impl World {
                 .u8(u8::from(e.alive))
                 .u32(e.wait_ticks)
                 .u32(e.patrol_index);
+            match &e.anim {
+                Some(st) => a
+                    .u8(1)
+                    .str(&st.set)
+                    .u32(st.animation)
+                    .u32(st.frame)
+                    .u32(st.elapsed),
+                None => a.u8(0),
+            };
         }
         parts.insert("actors".into(), a.finish());
 

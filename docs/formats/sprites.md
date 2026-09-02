@@ -25,8 +25,8 @@ sequence[sequence_count]:
     char[32] name           NUL padded, French ("Robin des bois", "ACCESSOIRES Piece d'or", "Croisement01 - papillon01")
     u16  animation_count
     u16  width, u16 height  bounding box of all frames
-    u32  unknown_0x26       150 for characters/objects, 0 or 70 for map animations
-    u32  unknown_0x2a       150, 10, 140 ...
+    u32  origin_x           150 for characters/objects, 0 or 70 for map animations: the canvas point that
+    u32  origin_y           coincides with the entity position (150, 10, 140 ...); see "Placing frames" below
     animation[animation_count]:
         u16  frame_count
         u16  unknown_0x02   observed = frame_count - 1 (loop/key frame?)
@@ -47,6 +47,15 @@ directions x variants); `Child.rhs` = 736 animations; `ACCESSORIES_Coin.rhs` = 4
 loops. Idle animations use ping-pong frame orders (a, a+1, a+2, a+3, a+2, a+1) with durations 6,2,2,15,4,...
 
 Across all profiles: 962,305 frame references, 404,807 unique frame indices, range 0..404854.
+
+## Placing frames
+
+A frame is drawn with its top-left corner at `(entity_x - origin_x + anchor_x, entity_y - origin_y + anchor_y)`.
+For characters the canvas is 300x300 with the entity position at its centre (150,150): the 6x5 coin has anchors
+(147,148), i.e. it is centred on its position; Robin's idle frames (36x69, anchors (133,87)) put the feet a few
+pixels below the position. Verified by rendering Robin and a soldier on the Sherwood background at known map
+positions with the engine (`harness/tools/drive.py --scenario map:sherwood`): with this rule the sprites stand
+on their positions; with anchors taken as offsets from the position they land 150 pixels up-left.
 
 ## `.dic` layout
 

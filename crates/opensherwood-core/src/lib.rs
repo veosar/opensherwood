@@ -7,12 +7,14 @@
 //! Milestone M0 ships a *synthetic* world (no game data) that exercises the whole determinism contract:
 //! canonical input, RNG streams, movement, selection, snapshot/restore and hashing.
 
+pub mod anim;
 pub mod fixed;
 pub mod hash;
 pub mod input;
 pub mod rng;
 pub mod world;
 
+pub use anim::{AnimSet, AnimState, Catalog, FrameSpec, direction_of};
 pub use fixed::Fixed;
 pub use hash::Hashes;
 pub use input::{Button, InputEvent, Key};

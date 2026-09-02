@@ -43,10 +43,11 @@ pub struct Sequence {
     pub width: u16,
     /// Bounding box height.
     pub height: u16,
-    /// Typically 150; unknown.
-    pub unknown_0x26: u32,
-    /// Typically 150; unknown.
-    pub unknown_0x2a: u32,
+    /// Canvas origin x: frame anchors are relative to a canvas whose point (origin_x, origin_y)
+    /// is the entity's position (150 for characters and objects, 0/70 for map animations).
+    pub origin_x: u32,
+    /// Canvas origin y.
+    pub origin_y: u32,
     /// Animations in file order (for characters: 2048 = actions x 8 directions x variants).
     pub animations: Vec<Animation>,
 }
@@ -94,8 +95,8 @@ pub fn parse(data: &[u8]) -> Result<Profile, FormatError> {
         let anim_count = r.u16("rhs animation count")?;
         let width = r.u16("rhs width")?;
         let height = r.u16("rhs height")?;
-        let unknown_0x26 = r.u32("rhs unknown_0x26")?;
-        let unknown_0x2a = r.u32("rhs unknown_0x2a")?;
+        let origin_x = r.u32("rhs origin x")?;
+        let origin_y = r.u32("rhs origin y")?;
         let mut animations = Vec::with_capacity(usize::from(anim_count));
         for _ in 0..anim_count {
             let n = r.u16("rhs frame count")?;
@@ -125,8 +126,8 @@ pub fn parse(data: &[u8]) -> Result<Profile, FormatError> {
             name,
             width,
             height,
-            unknown_0x26,
-            unknown_0x2a,
+            origin_x,
+            origin_y,
             animations,
         });
     }

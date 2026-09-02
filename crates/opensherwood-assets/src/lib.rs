@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+pub mod sprites;
+pub use sprites::{SpriteBank, SpriteImage};
+
 /// Errors of this crate.
 #[derive(Debug, Error)]
 pub enum AssetError {
@@ -21,6 +24,14 @@ pub enum AssetError {
     /// A logical path did not resolve.
     #[error("asset not found: {0}")]
     Missing(String),
+    /// A file was found but could not be parsed.
+    #[error("{path}: {message}")]
+    Format {
+        /// Logical path.
+        path: String,
+        /// Parser message.
+        message: String,
+    },
     /// I/O failure.
     #[error("io error on {path}: {source}")]
     Io {

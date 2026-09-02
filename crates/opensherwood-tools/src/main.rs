@@ -114,12 +114,12 @@ fn main() -> anyhow::Result<()> {
             for s in &p.sequences {
                 let nframes: usize = s.animations.iter().map(|a| a.frames.len()).sum();
                 println!(
-                    "  {:?}: {}x{} unknown_0x26={} unknown_0x2a={} animations={} frame refs={}",
+                    "  {:?}: {}x{} origin=({},{}) animations={} frame refs={}",
                     s.name,
                     s.width,
                     s.height,
-                    s.unknown_0x26,
-                    s.unknown_0x2a,
+                    s.origin_x,
+                    s.origin_y,
                     s.animations.len(),
                     nframes
                 );
