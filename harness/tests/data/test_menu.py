@@ -130,3 +130,26 @@ def test_exit_needs_confirmation(binary, game_dir):
         assert e.observe(entities=False)["ui"]["screen"] == "dialog"
         e.step(1, [key("escape")])
         assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
+
+
+def test_hud_kneel_and_stand_icons_change_the_posture(binary, game_dir):
+    """Clicks on the HUD figures act like the c / s keys; clicks on other widgets do not reach the map."""
+    with Engine(binary=binary, game_dir=game_dir, timeout=120) as e:
+        e.reset({"mission": "H01_Lin_VL"}, seed=0)
+        e.skip_briefing()
+        obs = e.observe()
+        robin = next(x for x in obs["entities"] if x["kind"] == "player")
+        cam = obs["camera"]
+        e.step(2, pointer_click(robin["x"] // 256 - cam[0], robin["y"] // 256 - cam[1], "left"))
+
+        def posture():
+            return next(x for x in e.observe()["entities"] if x["kind"] == "player")["posture"]
+
+        assert posture() == "standing"
+        e.step(2, pointer_click(20, 740, "left"))  # kneeling figure
+        assert posture() == "crouched"
+        e.step(2, pointer_click(20, 690, "left"))  # standing figure
+        assert posture() == "standing"
+        e.step(2, pointer_click(960, 60, "left"))  # map scroll: consumed, no walk order
+        p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
+        assert p["target"] is None and e.observe(entities=False)["selected"] is not None

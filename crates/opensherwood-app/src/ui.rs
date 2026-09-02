@@ -893,6 +893,53 @@ pub struct HudState {
     pub hero_name: Vec<String>,
 }
 
+/// HUD widget rectangles (x, y, w, h) at 1024x768, located by template matching (see `draw_hud`).
+pub mod hud_rects {
+    /// Robin's eyes in the leaves (decoration).
+    pub const EYES: (i32, i32, i32, i32) = (924, 0, 74, 60);
+    /// Towers: zoom levels.
+    pub const TOWERS: (i32, i32, i32, i32) = (998, 0, 26, 100);
+    /// Map scroll: minimap.
+    pub const MAP_SCROLL: (i32, i32, i32, i32) = (941, 38, 61, 52);
+    /// Standing figure: stand up.
+    pub const STAND: (i32, i32, i32, i32) = (1, 661, 43, 62);
+    /// Kneeling figure: crouch.
+    pub const KNEEL: (i32, i32, i32, i32) = (0, 721, 43, 45);
+    /// Plan scroll (quick actions).
+    pub const PLAN: (i32, i32, i32, i32) = (964, 701, 43, 41);
+    /// Portrait parchment.
+    pub const PORTRAIT: (i32, i32, i32, i32) = (70, 640, 220, 110);
+}
+
+/// What a click on the HUD does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HudAction {
+    /// Crouch the selected character (kneel icon).
+    Crouch,
+    /// Stand the selected character up (standing figure).
+    Stand,
+    /// A widget without behaviour yet: the click is consumed, not passed to the world.
+    Consumed,
+}
+
+/// The HUD element under a logical-pixel position, if any (`ui-flow.md` 9.3).
+#[must_use]
+pub fn hud_hit(x: i32, y: i32) -> Option<HudAction> {
+    use hud_rects as r;
+    if hit(r::KNEEL, x, y) {
+        Some(HudAction::Crouch)
+    } else if hit(r::STAND, x, y) {
+        Some(HudAction::Stand)
+    } else if [r::EYES, r::TOWERS, r::MAP_SCROLL, r::PLAN, r::PORTRAIT]
+        .iter()
+        .any(|&rc| hit(rc, x, y))
+    {
+        Some(HudAction::Consumed)
+    } else {
+        None
+    }
+}
+
 /// Draw the HUD over the scene (`ui-flow.md` 9.3). Widget positions were located by template matching the
 /// decoded pictures in the original's pause capture (2026-09-02, correlation 0.93-0.998): eyes (924,0),
 /// map scroll (941,38), towers (998,0) and (998,46), standing figure (1,661), kneeling figure (0,721),
