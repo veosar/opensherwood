@@ -1,6 +1,8 @@
 //! Deterministic CPU compositor (ADR-0002). The framebuffer is the authoritative picture; presenters
 //! only display it.
 
+pub mod text;
+
 use std::sync::Arc;
 
 use opensherwood_core::{EntityKind, Fixed, World};
@@ -288,6 +290,8 @@ impl Framebuffer {
         Ok(out)
     }
 }
+
+pub use text::FontAtlas;
 
 /// A decoded sprite frame (RGBA8, alpha 0 = transparent).
 #[derive(Debug, Clone, PartialEq, Eq)]

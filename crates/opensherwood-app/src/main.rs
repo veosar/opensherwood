@@ -3,6 +3,7 @@
 //! drive and screenshot the real window).
 
 mod engine;
+mod mission;
 mod rpc;
 mod window;
 

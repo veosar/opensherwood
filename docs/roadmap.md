@@ -26,9 +26,11 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 - [x] Channel order of the 16-bit pixels verified (RGB565; decoded minimap and slides look right)
 - [x] SRES pictures decoded and viewable locally (`opensherwood-tools export-sres`)
 - [x] Sprite bank: both encodings decoded, every one of the 404,855 frames consumed exactly, frames rendered and checked (`docs/formats/sprites.md`)
-- [ ] SCB disassembler consumes the tutorial script with every unknown explicitly listed
-- [ ] RHP: motion geometry / path graph chunk decoded well enough to draw it and compare with the original's `EULER` / `MOTION` overlays
-- [ ] RHM: actor list (`BOYZ`) decoded for the tutorial
+- [x] SCB container decoded (classes, variables, functions, 9-byte instructions) with a raw disassembler; opcode semantics still unknown
+- [x] RHP: occluder masks, motion boundary + obstacles, projection areas, bonds, zones decoded and overlaid on the backgrounds (path graph still raw)
+- [x] RHM: all chunks decoded for all 39 missions (actors, rails/patrol programs, waypoints, beam points, zones, scrolls, carts)
+- [x] Fonts decoded (SBFONT glyph strips) and text rendering in the engine
+- [x] `mission:<name>` scenario: every retail mission loads its actors at their positions on the right background
 - [ ] First controlled oracle trace of the original (see `docs/oracle.md`)
 
 ## M2: Scene vertical slice

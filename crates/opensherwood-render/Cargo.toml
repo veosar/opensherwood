@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 opensherwood-core.workspace = true
+opensherwood-formats.workspace = true
 blake3.workspace = true
 png.workspace = true
 

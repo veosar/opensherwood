@@ -494,6 +494,11 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if std::env::var_os("OPENSHERWOOD_TRACE_INPUT").is_some()
+            && !matches!(event, WindowEvent::RedrawRequested)
+        {
+            eprintln!("opensherwood: event {event:?}");
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -508,6 +513,13 @@ impl ApplicationHandler for App {
                 self.pending.push(InputEvent::PointerMove { x256, y256 });
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                if std::env::var_os("OPENSHERWOOD_TRACE_INPUT").is_some() {
+                    eprintln!(
+                        "opensherwood: mouse {button:?} {state:?} at {:?} -> logical {:?}",
+                        self.pointer,
+                        self.to_logical(self.pointer)
+                    );
+                }
                 let button = match button {
                     MouseButton::Left => Button::Left,
                     MouseButton::Right => Button::Right,

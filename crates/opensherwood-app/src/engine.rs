@@ -9,6 +9,8 @@ use opensherwood_assets::{GameDir, SpriteBank};
 use opensherwood_core::{
     AnimSet, Catalog, FrameSpec, InputEvent, MapInfo, Scenario, Snapshot, World,
 };
+
+use crate::mission;
 use opensherwood_protocol::{
     CaptureParams, CaptureResult, HelloResult, ObserveParams, ObserveResult, PROTOCOL_VERSION,
     Replay, ReplayCheckpoint, ReplayEvent, ReplayHeader, ReplayPlayParams, ReplayPlayResult,
@@ -317,6 +319,47 @@ impl Session {
         }
     }
 
+    /// Decode a retail background.
+    fn load_background(game: &GameDir, map: &str, ambiance: &str) -> Result<Background, String> {
+        let logical = format!("Data/Levels/{ambiance}/{map}.map");
+        let data = game.read(&logical).map_err(|e| e.to_string())?;
+        let img = opensherwood_formats::image_blob::parse_file(&data)
+            .map_err(|e| format!("{logical}: {e}"))?;
+        Ok(Background {
+            width: u32::from(img.width),
+            height: u32::from(img.height),
+            rgba: img.to_rgba8_565(),
+        })
+    }
+
+    /// Open the sprite bank once and build a catalog for the given profiles.
+    fn load_catalog(&mut self, profiles: &[String]) -> Catalog {
+        let mut catalog = Catalog::default();
+        let Some(game) = self.game.as_ref() else {
+            return catalog;
+        };
+        if self.sprites.is_none() {
+            match SpriteBank::open(game) {
+                Ok(bank) => self.sprites = Some(Sprites { bank }),
+                Err(e) => eprintln!("opensherwood: sprite bank unavailable: {e}"),
+            }
+        }
+        if self.sprites.is_none() {
+            return catalog;
+        }
+        for name in profiles {
+            match SpriteBank::load_profile(game, name) {
+                Ok(profile) => {
+                    catalog
+                        .sets
+                        .insert(name.clone(), anim_set_from_profile(&profile));
+                }
+                Err(e) => eprintln!("opensherwood: profile {name}: {e}"),
+            }
+        }
+        catalog
+    }
+
     /// Load a scenario (what `reset` does).
     pub fn reset(&mut self, scenario: Scenario, seed: u64) -> Result<(), String> {
         let (world, background) = match &scenario {
@@ -325,43 +368,37 @@ impl Session {
                     .game
                     .as_ref()
                     .ok_or("map scenarios need a game directory")?;
-                let logical = format!("Data/Levels/{ambiance}/{map}.map");
-                let data = game.read(&logical).map_err(|e| e.to_string())?;
-                let img = opensherwood_formats::image_blob::parse_file(&data)
-                    .map_err(|e| format!("{logical}: {e}"))?;
-                let bg = Background {
-                    width: u32::from(img.width),
-                    height: u32::from(img.height),
-                    rgba: img.to_rgba8_565(),
-                };
+                let bg = Self::load_background(game, map, ambiance)?;
                 let info = MapInfo {
                     width: bg.width,
                     height: bg.height,
                 };
                 let mut world = World::new_map_view(scenario, seed, info)?;
-                if self.sprites.is_none() {
-                    match SpriteBank::open(game) {
-                        Ok(bank) => self.sprites = Some(Sprites { bank }),
-                        Err(e) => eprintln!("opensherwood: sprite bank unavailable: {e}"),
-                    }
-                }
-                if self.sprites.is_some() {
-                    let mut catalog = Catalog::default();
-                    for name in ["RobinHood", "Soldier A00"] {
-                        match SpriteBank::load_profile(game, name) {
-                            Ok(profile) => {
-                                catalog
-                                    .sets
-                                    .insert(name.to_string(), anim_set_from_profile(&profile));
-                            }
-                            Err(e) => eprintln!("opensherwood: profile {name}: {e}"),
-                        }
-                    }
+                let catalog =
+                    self.load_catalog(&["RobinHood".to_string(), "Soldier A00".to_string()]);
+                if !catalog.sets.is_empty() {
                     world.attach_catalog(catalog, Some("RobinHood"), Some("Soldier A00"));
                 }
                 (world, Some(bg))
             }
-            _ => (World::new(scenario, seed)?, None),
+            Scenario::Mission(name) => {
+                let game = self.game.as_ref().ok_or("missions need a game directory")?;
+                let (mission_file, map) = mission::load(game, name)?;
+                let ambiance = "Day";
+                let bg = Self::load_background(game, &map, ambiance)?;
+                let info = MapInfo {
+                    width: bg.width,
+                    height: bg.height,
+                };
+                let (spec, profiles) = mission::build_spec(&mission_file, info);
+                let mut world = World::new_mission(scenario, seed, &spec)?;
+                let catalog = self.load_catalog(&profiles);
+                if !catalog.sets.is_empty() {
+                    world.attach_catalog(catalog, None, None);
+                }
+                (world, Some(bg))
+            }
+            Scenario::Synthetic(_) => (World::new(scenario, seed)?, None),
         };
         self.world = Some(world);
         self.background = background;

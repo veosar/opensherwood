@@ -1288,7 +1288,7 @@ pub fn parse(data: &[u8]) -> Result<Mission, FormatError> {
 mod tests {
     use super::*;
 
-    fn chunk(tag: &[u8; 4], version: u32, body: &[u8]) -> Vec<u8> {
+    fn chunk(tag: [u8; 4], version: u32, body: &[u8]) -> Vec<u8> {
         let mut v = tag.to_vec();
         v.extend_from_slice(&((body.len() + 4) as u32).to_le_bytes());
         v.extend_from_slice(&version.to_le_bytes());
@@ -1341,8 +1341,8 @@ mod tests {
         borg.extend_from_slice(&(-1i16).to_le_bytes());
         borg.push(0);
         let mut boyz = 2u16.to_le_bytes().to_vec();
-        boyz.extend(chunk(b"SCOT", 4, &scot));
-        boyz.extend(chunk(b"BORG", 4, &borg));
+        boyz.extend(chunk(*b"SCOT", 4, &scot));
+        boyz.extend(chunk(*b"BORG", 4, &borg));
 
         // RAIL: one rail with a named point and a point with a program.
         let program: Vec<u8> = vec![
@@ -1358,24 +1358,26 @@ mod tests {
 
         let mut gulp = 0u16.to_le_bytes().to_vec();
         gulp.extend_from_slice(&1u16.to_le_bytes());
-        gulp.extend_from_slice(&[7, 3, 0, 1, 0, 1, 0, 2, 0, 1, 0, 1, 0, 2, 0, 9, 0, 0, 0, 0, 0]);
+        gulp.extend_from_slice(&[
+            7, 3, 0, 1, 0, 1, 0, 2, 0, 1, 0, 1, 0, 2, 0, 9, 0, 0, 0, 0, 1,
+        ]);
         gulp.extend(pstr("trou01_v2_8000003e"));
 
         let mut hirn = 2u16.to_le_bytes().to_vec();
-        hirn.extend(chunk(b"HOLE", 2, &[1, 0, 5, 0, 6, 0, 0, 0, 0, 0, 9, 0]));
-        hirn.extend(chunk(b"POW ", 2, &[0, 0]));
+        hirn.extend(chunk(*b"HOLE", 2, &[1, 0, 5, 0, 6, 0, 0, 0, 0, 0, 9, 0]));
+        hirn.extend(chunk(*b"POW ", 2, &[0, 0]));
 
-        let mut body = chunk(b"FOOT", 4, &foot);
-        body.extend(chunk(b"POUF", 3, &[0, 0]));
-        body.extend(chunk(b"BOYZ", 3, &boyz));
-        body.extend(chunk(b"ZORG", 2, &[0, 0]));
-        body.extend(chunk(b"HIRN", 2, &hirn));
-        body.extend(chunk(b"RAIL", 3, &rail));
-        body.extend(chunk(b"SKRO", 4, &[0, 0]));
-        body.extend(chunk(b"TING", 3, &[0, 0]));
-        body.extend(chunk(b"GULP", 2, &gulp));
-        body.extend(chunk(b"CAVE", 3, &[1, 0, 1, 0, 7, 0, 1]));
-        chunk(b"DUTY", 2, &body)
+        let mut body = chunk(*b"FOOT", 4, &foot);
+        body.extend(chunk(*b"POUF", 3, &[0, 0]));
+        body.extend(chunk(*b"BOYZ", 3, &boyz));
+        body.extend(chunk(*b"ZORG", 2, &[0, 0]));
+        body.extend(chunk(*b"HIRN", 2, &hirn));
+        body.extend(chunk(*b"RAIL", 3, &rail));
+        body.extend(chunk(*b"SKRO", 4, &[0, 0]));
+        body.extend(chunk(*b"TING", 3, &[0, 0]));
+        body.extend(chunk(*b"GULP", 2, &gulp));
+        body.extend(chunk(*b"CAVE", 3, &[1, 0, 1, 0, 7, 0, 1]));
+        chunk(*b"DUTY", 2, &body)
     }
 
     #[test]
