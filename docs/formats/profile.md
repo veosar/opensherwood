@@ -99,13 +99,16 @@ several entries share a sprite (the spare entries and the green variants reuse f
 `unknown_pre` reads as `u16[5], u8, u16[5]`: e.g. halberdiers `(80..120, 10..30, 40..60, 0, 0), 1, (0, 5..80,
 10..50, 0, 0)`; the `u8` is 1 for the two pole-arm families and 0 otherwise. Officers, knights and the
 antagonists have non-zero fourth / fifth values (`80, 35` ... `0, 100`); the antagonists are `(250, 100, 100,
-0, 100)`. Hit points and combat skills is the obvious reading; unverified. `unknown_post`: `u16` (3
-halberdier / lancer, 5 swordsman / archer / crossbowman / trainer, 7 officer, 10 knight / antagonist, 15
-mounted, 1 merry man), a flag byte (eight distinct values in `0xc0..=0xf1`), five `u16` (ranges /
-percentages, zero for the green variants), a `u16` *class id* unique per unit type (`0x0b..=0x14` for the
-regular kinds, `0x15..=0x1b` for the hostile green variants), 8 zero bytes, `f32[4] = -6, -3, 6, 3`, `u8 1`,
-`f32[2] = 150, 150` (the 300x300 sprite canvas centre, see [sprites.md](sprites.md)), `u16` (`0x40`; 3 for
-mounted knights, 10 for the antagonists) and two `u32` (0..3).
+0, 100)`. Hit points and combat skills is the obvious reading; unverified. `unknown_post` (55 bytes; layout
+re-read on 2026-09-03, `cpf_stats.py`): `u16` (3 halberdier / lancer, 5 swordsman / archer / crossbowman /
+trainer, 7 officer, 10 knight / antagonist, 15 mounted, 1 merry man), a flag byte (eight distinct values in
+`0xc0..=0xf1`), **four** `u16` (percentages falling with the tier, zero for the green spare variants; see
+"Stat field hypotheses"), a `u16` *class id* unique per unit type (`0x0b..=0x14` for the regular kinds,
+`0x15..=0x1b` for the hostile green variants), `u16 0`, `u16` ranged kind (3 archers, 4 crossbowmen, 2 the
+merry man with a bow, 0 otherwise), `u16 0`, `u8 0`, `f32[4] = -6, -3, 6, 3`, `u8 1`, `f32[2] = 150, 150` (the
+300x300 sprite canvas centre, see [sprites.md](sprites.md)), `u16` (`0x40`; 3 for mounted knights, 10 for the
+antagonists) and two `u32` (0..3). (An earlier reading of this block as "five `u16`, class, 8 zero bytes"
+was off by the ranged-kind word.)
 
 #### CV table (24 entries; `OILE.profile` indexes it)
 
@@ -173,13 +176,72 @@ lists.)
 - `music_*`: base names of files in `Musics/` (a `<place>_<state>` naming scheme): the ambient, alarm and
   fight tracks of the level (see [sound.md](sound.md)).
 
-### Tables A and B (unknown)
+### Tables A and B (structure known, meaning hypothesised)
 
 Table A: 27 blocks of a 28-byte head (`u16[14]`, starting `20 50 75 150` or `25 50 70 150` or `45 65 90 150`)
-and ten 32-byte records (`u16[16]`, first word always 2). Ten records per block equals the PC count, so
-"one parameter set per player character for 27 actions / skills" is the working hypothesis. Table B: four
-81-byte records (`u16[20], u8, u16[20]`) with values 0..400 that differ only in a few words; the four
-difficulty presets is the hypothesis (`Configuration` is what the community "Rhuce" stat editor patches).
+and ten 32-byte records (`u16[16]`, first word always 2). Reading of 2026-09-03 (see "Stat field
+hypotheses" below): the 27 blocks are indexed by the **combat class id** (the PC records' first `u16`,
+1..10, and the SD class ids `0x0b..0x1b` are together exactly 1..27), and the ten records are the manual's
+nine melee attacks plus the block, in the manual's order. The earlier "one set per player character"
+reading is superseded. Table B: four 81-byte records (`u16[20], u8, u16[20]`) with values 0..400 that
+differ only in a few words; the four difficulty presets is the hypothesis (`Configuration` is what the
+community "Rhuce" stat editor patches).
+
+### Stat field hypotheses (analyst, 2026-09-03; every reading `hypothesis` unless marked)
+
+Method: `harness/tools/probe/cpf_stats.py --tiers --tables`; every SD column was classified by whether
+it changes with the colour tier (00..04) inside a family and whether it differs between the seven families;
+the readings were then matched against the manual's descriptions of the soldier kinds (paraphrased in
+[../original/stealth-and-combat.md](../original/stealth-and-combat.md)). Nothing was checked against
+the running game.
+
+SD `unknown_pre` = `u16 p0, p1, p2, p3, p4; u8 pole; u16 q0, q1, q2, q3, q4`:
+
+| Field | Values (blue..black per family) | Reading | Why |
+|---|---|---|---|
+| `p0` | +10 per tier: halberdier / swordsman / crossbowman 80..120, archer 30..70, lancer 45..85, officer 130..170, knight 105..145, mounted 105..145, merry men / trainer 80, antagonists 250 | **hit points** | the largest and most uniform column; archers "delicate", lancers "not tough", officers and knights "very tough", antagonists near-immortal |
+| `p1`, `p2` | +5 per tier: halberdier (10..30, 40..60), swordsman (30..50, 40..60), archer (40..60, 0..20), officer (70..90, 50..70), knight (80..100, 80..100), lancer (0..20, 10..30), crossbowman (20..40, 30..50), merry men (80, 100), antagonists (100, 100) | melee attack and defence skills (which is which is open; `p2` low for archers = "delicate", high for knights = armour) | vary with tier and family, present for every kind |
+| `p3` | officers only, 80, 60, 40, 20, 0 | officer's chance to send his men rather than fight, fading with rank | the only falling `pre` column; matches the manual's officer note |
+| `p4` | officers 35..75, knights 50..90, mounted 60..100, trainer 95, antagonists 100, else 0 | **knock-out resistance** | exactly the kinds the manual calls hard / impossible to knock out |
+| `pole` | 1 halberdier, lancer; 0 else | pole weapon (reach; see table A heads) | the two families with 45 / 65 / 90 reach in table A |
+| `q0` | archer 30..70, crossbowman 30..70, merry man with bow 100, trainer 80, else 0 | **ranged skill** | non-zero exactly for the units with a bow / crossbow set in their sprite |
+| `q1`, `q2` | halberdier / swordsman (5..80, 10..50), officer (40..100, 60..100), knight (60..100, 80..100), lancer (0..60, 10..50), mounted (60..100, 80..100), archer / crossbowman constant (30, 10), merry man with staff (100, 70), trainer (90, 100), antagonists (100, 100) | melee experience values (parry / counter chances?) that the tier raises for melee kinds only | steepest tier dependence; constant for ranged kinds |
+| `q3` | 0 soldiers, 1 officers, 2 knights / mounted / antagonists / merry men / trainer | a rank or behaviour class | constant per family |
+| `q4` | 0 | - | - |
+
+SD `unknown_post` = `u16 w0; u8 flags; u16 s0, s1, s2, s3; u16 class; u16 0; u16 ranged_kind; u16 0; u8 0;
+f32[4]; u8 1; f32[2]; u16 t; u32 a, b`:
+
+| Field | Values | Reading | Why |
+|---|---|---|---|
+| `w0` | 3 pole-arms, 5 swordsman / archer / crossbowman / trainer, 7 officer, 10 knight / antagonist, 15 mounted, 1 merry men | a value / danger rating of the unit | constant per family, ordered by strength |
+| `flags` | bit 0 set on every mission-usable enemy and the hostile green variants, clear on the merry men and the unused green spares; bit 5 on halberdier, swordsman, archer, lancer, crossbowman; bit 4 on halberdier, archer, trainer; bits 1-2 on mounted knights; bit 3 on the antagonists | bit 0 = hostile; bit 3 = principal enemy (duel only); bits 1-2 = mounted; bits 4-5 unknown (4: stays at post?) | value sets |
+| `s0..s3` | fall 5 or 10 per tier; per family (s0, s1, s2, s3) = halberdier (0, 0, 75, 25), swordsman (50, 100, 0, 75), archer (100, 0, 0, 50), officer (0, 80, 25, 100), knight (0, 75, 0, 0), lancer (75, 0, 100, 0), crossbowman (0, 50, 50, 0), mounted (0, 25, 0, 25), trainer (100, 100, 100, 100) at the blue tier | **stimulus susceptibility** in percent: purse, apple, beer, whistle | matches the manual's stimulus table in 29 of 32 cells (purse and beer in all eight kinds; see stealth-and-combat.md section 5); `inferred`, medium-high |
+| `class` | `0x0b` merry man with staff, `0x0c` halberdier, `0x0d` archer / merry man with bow / trainer, `0x0e` lancer, `0x0f` swordsman, `0x10` officer, `0x11` knight, `0x12` mounted, `0x13` antagonists, `0x14` crossbowman; `0x15..0x1b` the seven hostile green kinds | combat class = table A block index + 1 | 27 = 10 PC ids + 17 class ids, exact |
+| `ranged_kind` | 3 archers, 4 crossbowmen, 2 merry man with bow | projectile weapon kind | non-zero only with `q0` |
+| `t` | 0x40; 3 mounted; 10 antagonists | unknown | - |
+| `a` | 3 halberdier / lancer, 1 swordsman / officer, 2 knight / mounted, 0 archer / crossbowman / merry men; antagonists 1, 1, 2, 1 | melee weapon kind (0 none, 1 sword, 2 two-handed, 3 pole) | the knights' two-handed sword, the pole arms |
+| `b` | 2 halberdier / knight / mounted, 1 swordsman / officer / crossbowman, 0 archer / lancer / merry men | armour (0 none, 1 mail or shield, 2 plate) | archers "delicate", lancers "peasants", crossbowmen "chain mail", cavalry "heavy armour" |
+
+PC `unknown_pre` = `u16[4]`: `(256 for the seven named heroes else 0, bow, x, sword)`: the bow column is
+100 / 20 / 10 for the hero, the lady and the moustached merry man - exactly the three the manual allows
+to shoot - and 0 for the rest (`inferred`); the fourth column is 50 hero, 70 big man, 10 friar, 20
+craftsman, 100 red-clad swordsman, 30 lady, 20 merry men (sword skill, the swordsman highest); the third
+(20 / 30 / 1 / 1 / 20 / 20 / 1 / 20 / 1) is `unknown`. PC `unknown_post` starts with the combat class id
+(1..10), then small `u16` values that look like a per-hero list of action ids (`unknown`), the same
+floats as the SD records, and ends in two `u16` (100 / 80 hero, 50 / 100 friar and lady, 200 / 200 the
+red-clad swordsman, 100 / 100 others) - candidates for speed or strength percentages (`unknown`).
+
+Table A, per block (class): head `u16[14]` = four distances (`20 50 75 150`, `25 50 70 150`, `45 65 90 150`
+for the pole-arm classes: melee reach bands), then seven per-class weights (0..100; e.g. all 10 for
+halberdiers, 50 x5, 60, 100 for knights) and three trailing words (0 / 1 / 256, 30..40, 40..50); ten
+records `u16[16]` = the manual's attacks in order (quick jab, slow blow, finishing blow, attack left /
+right, half-circle left / right, circle left / right, block), where rows 3 / 4, 5 / 6, 7 / 8 are mirror
+pairs (word 8 = 0 / 1), words 2 / 3 look like damage / effect (100 / 100 on the finishing blow), word 5 a
+hit chance (45..100), word 6 a figure class (0..6), words 10..12 angles (90 / 22 / 45 ...), word 15 an
+energy cost (5, 10, 50, 10, 10, 25, 25, 50, 50, 0). Table B: two 6 x 3 percentage grids per record
+(`(100 100 100) (80 90 95) ... (0 50 75)` and `(75 100 100) ... (0 0 50)`) with four records differing in
+five words; a chance-by-band table (knock-out by health band x difficulty?) is the guess.
 
 ## Other configuration files
 
@@ -202,7 +264,9 @@ join in `harness/tools/probe/rhm_profiles.py` (see [rhm.md](rhm.md)); voice code
 `Sounds/Exclamations/` and the `WAVE` paths in `Text/actors.res`; level codes against `Text/RHLevel??.red`;
 `map` against the `FOOT` chunk of every `.rhm`. Analyst session 2026-09-02. The index-role descriptions come
 from the designer labels and the sprite names of the file, rewritten in our own words (2026-09-02 text sweep
-after review 4). Tests depending on this: see "Parser".
+after review 4). Stat field hypotheses and the corrected SD `unknown_post` layout: analyst session
+2026-09-03, `harness/tools/probe/cpf_stats.py` plus the manual's unit descriptions and stimulus table
+(paraphrased in `docs/original/stealth-and-combat.md`). Tests depending on this: see "Parser".
 
 ## Parser
 
