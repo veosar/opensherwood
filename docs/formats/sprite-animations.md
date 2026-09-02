@@ -5,7 +5,7 @@ Status: block structure, direction order and action-id tagging **verified** on a
 (Robin, Soldier A, Child); the rest of the ids are listed with their structure only. The per-frame
 "advance" and the per-animation displacement are **inferred** (consistent across all files, not checked
 against the running game). Container layout: `docs/formats/sprites.md`. Helper:
-`crates/opensherwood-formats/src/anim_table.rs`. Tool: `harness/tools/re/anim_sheet.py`.
+`crates/opensherwood-formats/src/anim_table.rs`. Tool: `harness/tools/probe/anim_sheet.py`.
 
 ## Blocks of 16 directions
 
@@ -181,7 +181,7 @@ of all placed frames (150 x 155); what it bounds is unknown.
 Observation only, no executable analysis. All scripts run with `OPENSHERWOOD_GAME_DIR` set on the GOG
 data; no image was committed.
 
-- `harness/tools/re/anim_sheet.py`: `--first/--last` renders first frames in a 16-column grid (direction
+- `harness/tools/probe/anim_sheet.py`: `--first/--last` renders first frames in a 16-column grid (direction
   sheets); `--blocks A:B --dir 4` renders every frame of one direction per block (action strips);
   `--strip N` renders one animation. Sheets viewed: RobinHood blocks 0..89, Soldier A00 blocks 0..25
   and animations 0..32 at 3x, Child blocks 0..46.

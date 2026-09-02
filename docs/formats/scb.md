@@ -105,7 +105,7 @@ from the GPL-3 OpenDeathValley disassembler (see Provenance); the numbering clea
 
 Confidence: **high** = a structural invariant over the whole corpus that has no plausible alternative reading;
 **medium** = consistent with every use found, but an alternative reading exists; **low** = a guess from a handful
-of uses. Evidence cites the probes in `harness/tools/re/` (see Provenance).
+of uses. Evidence cites the probes in `harness/tools/probe/` (see Provenance).
 
 | Opcode | Meaning | Confidence | Evidence |
 |---|---|---|---|
@@ -416,7 +416,7 @@ in `crates/opensherwood-core/src/natives.rs` (`IMPLEMENTED_NATIVES`, `STUB_NATIV
 raw disassembly (`enter`, `call`, `native`, `jump`, `jump_cond` for the established roles; `op_XX` with decoded
 operands otherwise; raw fields are appended whenever the layout does not cover a non-zero field).
 
-Probes (`harness/tools/re/`, observation only, no game bytes embedded): `scb_probe.py` (container walk,
+Probes (`harness/tools/probe/`, observation only, no game bytes embedded): `scb_probe.py` (container walk,
 histograms), `scb_opstats.py` (per-opcode operand statistics), `scb_semantics.py` (`--ops` opcode contexts and
 jump shapes, `--natives` argument / result data flow per native id, `--imm` immediate ranges per file,
 `--handlers` natives per callback, `--params` callback parameter usage, `--messages` message ids sent versus
@@ -434,7 +434,7 @@ compatible with theirs is the modding target; the SCB VM is needed only to run t
 
 ## Provenance
 
-Container and operand encoding: structural hypothesis tested over all 39 files (`harness/tools/re/scb_probe.py`,
+Container and operand encoding: structural hypothesis tested over all 39 files (`harness/tools/probe/scb_probe.py`,
 `scb_opstats.py`: every file consumed exactly; opcode and operand histograms; prologue / call / jump target checks;
 class-name join with the missions). Community knowledge: the OpenDeathValley project
 (<https://github.com/OpenDeathValley/OpenDeathValley>, GPL-3.0, `components/files/odv_scb_handler.c` and
@@ -450,10 +450,10 @@ the 39 retail scripts (`scb_semantics.py --ops/--natives/--imm/--handlers/--para
 references against the `rhm` tool output of the paired mission files and the `RHLevel??.red` u32 lists
 (`scb_xref.py`, `scb_elements.py`), the `rhp` tool output of the nine maps, and the observed behaviour of the
 first mission (`docs/original/campaign-flow.md`: briefing pages, initial objective, the list of popup texts and
-objectives of TEXT 1000105 / 1000283). Commands: `python harness/tools/re/scb_semantics.py <gamedir>/DATA/Levels
---ops`, `... --natives`, `... <gamedir>/DATA/Levels/H01_Lin_VL.scb --pseudo`, `python harness/tools/re/scb_xref.py
+objectives of TEXT 1000105 / 1000283). Commands: `python harness/tools/probe/scb_semantics.py <gamedir>/DATA/Levels
+--ops`, `... --natives`, `... <gamedir>/DATA/Levels/H01_Lin_VL.scb --pseudo`, `python harness/tools/probe/scb_xref.py
 <gamedir>/DATA/Levels <gamedir>/DATA/Text target/release/opensherwood-tools.exe`, `python
-harness/tools/re/scb_elements.py <gamedir>/DATA/Levels target/release/opensherwood-tools.exe`. Game build:
+harness/tools/probe/scb_elements.py <gamedir>/DATA/Levels target/release/opensherwood-tools.exe`. Game build:
 GOG English, executable SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`; data copy
 `C:\Users\przem\source\gamedata\robinhood`. Confidence is stated per row; nothing in these sections is `observed`
 in the ADR-0003 sense except the counts and the briefing / objective correspondence. Text sweep 2026-09-02

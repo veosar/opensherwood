@@ -19,7 +19,7 @@ analyst session; write down the exact open question in the spec.
    file with no leftover bytes. Record tag order, versions and sizes per file in the spec table.
 4. **Compression**: look for `78 DA`/`78 9C` (zlib), `BZh` (bzip2), and check decompressed sizes against
    width x height x bytes-per-pixel guesses.
-5. **Hypothesis testing**: write a throwaway Python script (keep it in `harness/tools/re/` if reusable, no game bytes
+5. **Hypothesis testing**: write a throwaway Python script (keep it in `harness/tools/probe/` if reusable, no game bytes
    inside) that parses *every* file of the type under the hypothesis and prints: files fully consumed, field ranges,
    histograms. A hypothesis is accepted only if it consumes all files exactly and the field ranges make sense.
 6. **Cross-reference**: ids found in one format must resolve in another (e.g. RHS frame ids into the DIC table,
