@@ -1599,6 +1599,7 @@ dependencies = [
  "opensherwood-formats",
  "opensherwood-protocol",
  "opensherwood-render",
+ "opensherwood-script",
  "pollster",
  "serde",
  "serde_json",
@@ -1665,7 +1666,9 @@ dependencies = [
 name = "opensherwood-script"
 version = "0.1.0"
 dependencies = [
+ "opensherwood-core",
  "opensherwood-formats",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

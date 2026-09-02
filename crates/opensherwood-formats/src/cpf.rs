@@ -49,7 +49,7 @@ pub struct PlayerProfile {
     pub label: String,
     /// `u16[4]` ability values; which is which is unknown.
     pub unknown_pre: [u8; 8],
-    /// Voice-set code (`PCRH`, ...): `Sounds/Exclamations/actor<code>.dat`.
+    /// Voice-set code (four letters: a two-letter kind prefix and two more): `Sounds/Exclamations/actor<code>.dat`.
     pub voice: String,
     /// Id, small words, six `f32` and two trailing `u16` (see the spec).
     pub unknown_post: [u8; 82],
@@ -62,11 +62,11 @@ pub struct SoldierProfile {
     pub sprite: String,
     /// Sequence name inside that `.rhs` (French).
     pub sequence: String,
-    /// Designer label, French: unit type + colour (`Lancier Bleu`).
+    /// Designer label (French: unit type and colour).
     pub label: String,
     /// `u16[5], u8, u16[5]`: hit points and combat skills is the reading; unverified.
     pub unknown_pre: [u8; 21],
-    /// Voice-set code (`SDHL`, `VPGG`, ...).
+    /// Voice-set code (four letters, kind prefix first).
     pub voice: String,
     /// Tier word, flag byte, ranges, class id, sprite canvas centre ... (see the spec).
     pub unknown_post: [u8; 55],
@@ -401,7 +401,7 @@ mod tests {
 
     fn actor(out: &mut Vec<u8>, sprite: &str, label: &str, pre: usize, voice: &str, post: usize) {
         pstr(out, sprite);
-        pstr(out, "seq");
+        pstr(out, "seq_a");
         pstr(out, label);
         out.extend(std::iter::repeat_n(0xaa, pre));
         code4(out, voice);
@@ -410,9 +410,9 @@ mod tests {
 
     fn level_bytes(out: &mut Vec<u8>, code: &str, after: &[&str], k: u16) {
         code4(out, code);
-        pstr(out, "Lincoln");
-        pstr(out, "H01_Lin_VL");
-        pstr(out, "title");
+        pstr(out, "map_a");
+        pstr(out, "mission_a");
+        pstr(out, "title_a");
         out.extend_from_slice(&0u32.to_le_bytes()); // unknown_a
         out.extend_from_slice(&6u32.to_le_bytes()); // location
         out.push(1); // unknown_c
@@ -440,11 +440,12 @@ mod tests {
         for v in [0u16, 0, 0, 0, 10, 2, 3] {
             out.extend_from_slice(&v.to_le_bytes());
         }
-        pstr(out, "Lincoln_D");
-        pstr(out, "Cast_Alarm");
-        pstr(out, "Cast_Fight");
+        pstr(out, "music_a");
+        pstr(out, "music_b");
+        pstr(out, "music_c");
     }
 
+    /// Synthetic table with invented names: nothing here is copied from a game file.
     fn sample() -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&1u32.to_le_bytes());
@@ -453,16 +454,16 @@ mod tests {
         out.extend_from_slice(&2u32.to_le_bytes());
         out.extend(std::iter::repeat_n(0x33, 2 * TABLE_B_RECORD));
         out.extend_from_slice(&2u32.to_le_bytes());
-        actor(&mut out, "RobinHood", "", 8, "PCRH", 82);
-        actor(&mut out, "LittleJohn", "", 8, "PCLJ", 82);
+        actor(&mut out, "unit_alpha", "", 8, "XX01", 82);
+        actor(&mut out, "unit_beta", "", 8, "XX02", 82);
         out.extend_from_slice(&1u32.to_le_bytes());
-        actor(&mut out, "Guard A00", "Hallebardier Bleu", 21, "SDHL", 55);
+        actor(&mut out, "unit_gamma", "label_x", 21, "XX03", 55);
         out.extend_from_slice(&2u32.to_le_bytes());
-        level_bytes(&mut out, "HA", &[], 0);
-        level_bytes(&mut out, "SA", &["HA"], 1);
+        level_bytes(&mut out, "QA", &[], 0);
+        level_bytes(&mut out, "QB", &["QA"], 1);
         out.extend_from_slice(&2u32.to_le_bytes());
-        actor(&mut out, "Mendicant", "Mendiant", 8, "CVMT", 0);
-        actor(&mut out, "Priest", "Pretre", 8, "", 0);
+        actor(&mut out, "unit_delta", "label_y", 8, "XX04", 0);
+        actor(&mut out, "unit_eps", "label_z", 8, "", 0);
         out
     }
 
@@ -475,30 +476,30 @@ mod tests {
         assert_eq!(t.table_a[0].unknown_records.len(), TABLE_A_RECORDS);
         assert_eq!(t.table_b.len(), 2);
         assert_eq!(t.player_characters.len(), 2);
-        assert_eq!(t.player_characters[1].sprite, "LittleJohn");
-        assert_eq!(t.player_characters[1].voice, "PCLJ");
+        assert_eq!(t.player_characters[1].sprite, "unit_beta");
+        assert_eq!(t.player_characters[1].voice, "XX02");
         assert_eq!(t.soldiers.len(), 1);
-        assert_eq!(t.soldiers[0].sprite, "Guard A00");
-        assert_eq!(t.soldiers[0].label, "Hallebardier Bleu");
-        assert_eq!(t.soldiers[0].voice, "SDHL");
+        assert_eq!(t.soldiers[0].sprite, "unit_gamma");
+        assert_eq!(t.soldiers[0].label, "label_x");
+        assert_eq!(t.soldiers[0].voice, "XX03");
         assert_eq!(t.soldiers[0].unknown_pre, [0xaa; 21]);
         assert_eq!(t.soldiers[0].unknown_post, [0xbb; 55]);
         assert_eq!(t.levels.len(), 2);
-        let sa = t.level("SA").unwrap();
-        assert_eq!(sa.map, "Lincoln");
-        assert_eq!(sa.mission_file, "H01_Lin_VL");
+        let sa = t.level("QB").unwrap();
+        assert_eq!(sa.map, "map_a");
+        assert_eq!(sa.mission_file, "mission_a");
         assert_eq!(sa.location, 6);
-        assert_eq!(sa.after, vec!["HA".to_string()]);
-        assert_eq!(sa.until, vec!["SA".to_string()]);
+        assert_eq!(sa.after, vec!["QA".to_string()]);
+        assert_eq!(sa.until, vec!["QB".to_string()]);
         assert_eq!(sa.unknown_fixed, [0, 10000]);
         assert_eq!(sa.unknown_k, vec![1]);
         assert_eq!(sa.unknown_slots, [-1, -1, -1]);
         assert_eq!(sa.unknown_m, [0, 0, 0, 0, 10, 2, 3]);
-        assert_eq!(sa.music_fight, "Cast_Fight");
-        assert!(t.level("HA").unwrap().unknown_k.is_empty());
+        assert_eq!(sa.music_fight, "music_c");
+        assert!(t.level("QA").unwrap().unknown_k.is_empty());
         assert_eq!(t.civilians.len(), 2);
-        assert_eq!(t.civilians[0].sprite, "Mendicant");
-        assert_eq!(t.civilians[0].voice, "CVMT");
+        assert_eq!(t.civilians[0].sprite, "unit_delta");
+        assert_eq!(t.civilians[0].voice, "XX04");
         assert_eq!(t.civilians[1].voice, "");
         assert!(t.level("ZZ").is_none());
     }

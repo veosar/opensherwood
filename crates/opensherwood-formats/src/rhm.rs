@@ -62,7 +62,7 @@ pub struct Polygon {
 pub struct Tenant {
     /// Sprite bank name (`Animations/<Variant>/<sprite>.rhs`), e.g. "Trapcr03".
     pub sprite: String,
-    /// Editor label, e.g. "Croisement03 - piege02h".
+    /// Editor label (`<map> - <trap label>`).
     pub label: String,
     /// Undecoded body (see spec: position, flag bytes, empty polygons, an id list).
     pub body: Vec<u8>,
@@ -77,7 +77,7 @@ pub struct PlayerCharacter {
     pub unknown_0x12: u32,
     /// Ten bytes, single `1`s at various offsets in a few files; zero otherwise.
     pub unknown_0x16: [u8; 10],
-    /// Script class name (`hidden_pc01_80000048`); `None` for the ordinary PCs.
+    /// Script class name (`<label>_<8 hex digits>`); `None` for the ordinary PCs.
     pub name: Option<String>,
     /// Byte after the name: 0, or 4 (one record per story mission), 2, 5.
     pub unknown_trailer: u8,
@@ -174,7 +174,7 @@ pub struct Object {
     pub unknown_0x10: u16,
     /// Placement qualifier c.
     pub unknown_0x12: u16,
-    /// Sprite bank name ("TG_BowTarget", "Trapcr03", "chariot05").
+    /// Sprite bank name (a `Characters/<name>.rhs` base name).
     pub sprite: String,
     /// Label; for animated elements it equals a `POUF` entry label.
     pub label: String,
@@ -374,7 +374,7 @@ pub struct RailPoint {
     pub point: Point,
     /// 0 = program, 1 = name.
     pub kind: u8,
-    /// Name (`kind == 1`), e.g. "Point1__0___8000039f" (referenced by scripts).
+    /// Name (`kind == 1`), shaped `<label>__<n>___<8 hex digits>` (referenced by scripts).
     pub name: Option<String>,
     /// Command tables (`kind == 0`; empty payload gives an empty list).
     pub tables: Vec<CommandTable>,
@@ -394,9 +394,9 @@ pub struct Scroll {
 /// `FLIM` item inside a `TING` entry: the animation of a mobile element.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MobileAnimation {
-    /// Sprite bank name ("chariot05").
+    /// Sprite bank name.
     pub sprite: String,
-    /// Sequence name ("chariot05_cart8").
+    /// Sequence name inside that bank.
     pub animation: String,
     /// Offset x (negative).
     pub dx: i16,
@@ -1328,7 +1328,7 @@ mod tests {
         scot.extend_from_slice(&3u32.to_le_bytes());
         scot.extend_from_slice(&[0u8; 10]);
         scot.push(1);
-        scot.extend(pstr("hidden_pc01_80000048"));
+        scot.extend(pstr("pc_hidden_80000001"));
         scot.push(4);
         let mut borg = 1u16.to_le_bytes().to_vec();
         borg.extend(placement_bytes(30, 40, 8, 3));
@@ -1353,7 +1353,7 @@ mod tests {
         let mut rail = 1u16.to_le_bytes().to_vec();
         rail.extend_from_slice(&2u16.to_le_bytes());
         rail.extend_from_slice(&[1, 0, 2, 0, 0, 0, 0, 0, 1]);
-        rail.extend(pstr("Point1__0___8000039f"));
+        rail.extend(pstr("point_a__0___80000002"));
         rail.extend_from_slice(&[3, 0, 4, 0, 0, 0, 0, 0, 0]);
         rail.extend_from_slice(&(program.len() as u16).to_le_bytes());
         rail.extend(program);
@@ -1363,7 +1363,7 @@ mod tests {
         gulp.extend_from_slice(&[
             7, 3, 0, 1, 0, 1, 0, 2, 0, 1, 0, 1, 0, 2, 0, 9, 0, 0, 0, 0, 1,
         ]);
-        gulp.extend(pstr("trou01_v2_8000003e"));
+        gulp.extend(pstr("hole_v2_80000003"));
 
         let mut hirn = 2u16.to_le_bytes().to_vec();
         hirn.extend(chunk(*b"HOLE", 2, &[1, 0, 5, 0, 6, 0, 0, 0, 0, 0, 9, 0]));
@@ -1389,14 +1389,14 @@ mod tests {
         assert_eq!(m.header.mission_id, 20);
         let pcs = m.player_characters();
         assert_eq!(pcs.len(), 1);
-        assert_eq!(pcs[0].name.as_deref(), Some("hidden_pc01_80000048"));
+        assert_eq!(pcs[0].name.as_deref(), Some("pc_hidden_80000001"));
         assert_eq!(pcs[0].unknown_trailer, 4);
         let npcs = m.npcs();
         assert_eq!(npcs[0].profile, 30);
         assert_eq!(npcs[0].members, vec![5, 6]);
         assert_eq!(npcs[0].rail, 0);
         assert_eq!(m.rails.len(), 1);
-        assert_eq!(m.rails[0][0].name.as_deref(), Some("Point1__0___8000039f"));
+        assert_eq!(m.rails[0][0].name.as_deref(), Some("point_a__0___80000002"));
         let tables = &m.rails[0][1].tables;
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].blocks[0].percent, 100);
@@ -1416,7 +1416,7 @@ mod tests {
         assert_eq!(m.script_areas.polygons[0].polygon.points.len(), 3);
         assert_eq!(
             m.script_areas.polygons[0].name.as_deref(),
-            Some("trou01_v2_8000003e")
+            Some("hole_v2_80000003")
         );
         assert_eq!(m.brains.waypoints[0].direction, 9);
         assert_eq!(m.cave[0].ids, vec![7]);

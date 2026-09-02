@@ -35,11 +35,12 @@ Missions (`Levels/*.rhm`): `EmbTut_FoC_EC`, `Emb01..09` (ambush, forest areas A/
 `H03_Der_MK`, `H04_Lei_VL`, `H05_Lin_EC`, `H07_Not_MK`, `H09_Not_VL`, `H10_Yor_VL`, `H12_Not_MP`, `S01_Not_VL`,
 `S02_Lei_MP`, `S03_FoB_MP`, `S04_Der_EC`, `S05_Yrk_EC`, `Str01_Lin_EC`, `Str02_Der_MP`, `Str03_Yor_MK`,
 `Tac01..06`, `Tac17..19`, `Tac21`, `Sherwood`, `SherwoodOutro`. Locations: Lincoln (Lin), Nottingham (Not),
-Derby (Der), Leicester (Lei), York (Yor/Yrk), forest areas (FoA/FoB/FoC = Croisement01..03), Sherwood camp.
+Derby (Der), Leicester (Lei), York (Yor/Yrk), forest areas (FoA/FoB/FoC = the three forest crossings), Sherwood camp.
 
-Characters (`Characters/*.rhs`): RobinHood, RobinTown, LittleJohn, WillScarlet, Scatlock, Stuteley, Friar Tuck,
-LadyMarian, MarianneWedding, Allan, Godwin, Guisbourne, Longchamp (+Dead), PrinceJohn, Ranulph, Sherif, Priest,
-TaxeCollector, Trainer, Mendicant, Child, civilians (Man/Woman x Friend/Old/Poor/Rich), MerryMan A/B/C/Bow/Staff,
-Soldier A00-A05 / B00-B05, Guard A/B 00-05, Archer 00-05, Crossbowman 00-05, Knight 01-03, Officer 02-05,
-Officier B00-B04, ACCESSORIES_* (ale, apple, arrow, coat, coin, moneybag, net, stone, wasp, waspsting),
-BONUS_* (pickups), RELIC_* (ampulla, arrow, book, crown, sceptre, spoon, stamp, sword), Blip00, TG_* (training targets).
+Character sprites (`Characters/*.rhs`, 117 files; names are not listed here, the engine reads them from
+`Configuration/profile.cpf`, see `docs/formats/profile.md`): 82 humanoid profiles (10 player characters, about
+a dozen named story characters including an armed and an unarmed version of each antagonist, 12 generic
+townspeople and civilians, 5 merry-man variants, 48 soldier and knight sprites (seven families in up to six
+colour tiers, three mounted knights and a few extra officer variants), a trainer, a corpse), 10 accessory sprites (thrown
+and carried items), 13 bonus pick-ups, 8 relics, 3 training-target objects and one blip marker. File-name
+prefixes group the non-humanoid ones (`ACCESSORIES_`, `BONUS_`, `RELIC_`, `TG_`).

@@ -1,6 +1,6 @@
 [package]
 name = "opensherwood-script"
-description = "SCB bytecode VM for OpenSherwood (placeholder until the instruction set is specified)"
+description = "SCB bytecode to core IR translator for OpenSherwood (ADR-0008)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,8 @@ rust-version.workspace = true
 
 [dependencies]
 opensherwood-formats.workspace = true
+opensherwood-core.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

@@ -89,6 +89,7 @@ def test_guards_follow_their_rail_programs(binary, game_dir):
     for _ in range(2):
         with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
             e.reset({"mission": "H01_Lin_VL"}, seed=5)
+            e.skip_briefing()
             before = {x["id"]["index"]: (x["x"], x["y"]) for x in e.observe()["entities"] if x["kind"] == "guard"}
             assert len(before) >= 30
             r = e.step(600)

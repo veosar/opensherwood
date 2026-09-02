@@ -61,8 +61,10 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 
 ## M4: Tutorial slice
 
-- [ ] SCB instructions needed by the first mission (`H01_Lin_VL`, which is the tutorial in the retail flow; `EmbTut_FoC_EC` is not reached from Play!), objectives, stimuli (sight cones, noise), AI patrols, alarm, combat basics, items, win/lose
-- [ ] An input-only replay completes the tutorial
+- [x] Script VM in core (ADR-0008): all 39 retail scripts translate; the first mission (`H01_Lin_VL`, the tutorial in the retail flow; `EmbTut_FoC_EC` is not reached from Play!) runs its load-time callbacks, briefing sequence, objective 0, `Hourglass` and `CheckVictoryCondition` deterministically (`harness/tests/data/test_script.py`)
+- [ ] Natives the first mission needs beyond stubs: scroll pick-up (`IsTaken`), object activation (`ActivatedBy*`), rail point events (`ReachPoint`), action changes, doors, animations, remarks; in-mission text popups presented by the app
+- [ ] Stimuli (sight cones, noise), alarm, combat basics, items, win/lose
+- [ ] An input-only replay completes the tutorial (needs a canonical input for text dismissal)
 
 ## M5: Representative campaign
 

@@ -42,6 +42,10 @@ struct Args {
     /// Start in a resizable window instead of borderless fullscreen.
     #[arg(long)]
     windowed: bool,
+    /// Mission scripts: treat unknown natives as recorded no-ops instead of stopping the
+    /// callback (the calls are logged in the snapshot; see docs/harness.md).
+    #[arg(long)]
+    lenient_natives: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -65,7 +69,8 @@ fn main() -> anyhow::Result<()> {
         Some("stdio") => true,
         Some(other) => anyhow::bail!("unsupported --rpc transport '{other}' (only 'stdio')"),
     };
-    let session = engine::Session::new(game, artifacts);
+    let mut session = engine::Session::new(game, artifacts);
+    session.set_lenient_natives(args.lenient_natives);
     if args.headless {
         if !rpc {
             anyhow::bail!("--headless without --rpc stdio does nothing");

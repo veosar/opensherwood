@@ -47,16 +47,135 @@ pub struct Image16 {
     pub pixels: Vec<u16>,
 }
 
-impl Image16 {
-    /// Convert to RGBA8 assuming RGB565 (channel order still `partial` in the spec).
+/// Cumulative budget of RGBA8 bytes materialised from decoded pictures: every conversion through
+/// [`Image16::try_to_rgba8_with`] is charged its final size before it allocates, so a caller that
+/// converts many pictures (a sprite cache, the menu assets) bounds the total, not only each one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RgbaBudget {
+    limit: usize,
+    used: usize,
+}
+
+impl RgbaBudget {
+    /// A budget that never refuses (single conversions whose size the decode limits already bound).
+    pub const UNBOUNDED: Self = Self::new(usize::MAX);
+
+    /// A budget of `limit` bytes.
     #[must_use]
-    pub fn to_rgba8_565(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.pixels.len() * 4);
-        for &p in &self.pixels {
-            let (r, g, b) = rgb565_to_rgb8(p);
-            out.extend_from_slice(&[r, g, b, 255]);
+    pub const fn new(limit: usize) -> Self {
+        Self { limit, used: 0 }
+    }
+
+    /// Bytes the budget allows in total.
+    #[must_use]
+    pub const fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Bytes charged so far.
+    #[must_use]
+    pub const fn used(&self) -> usize {
+        self.used
+    }
+
+    /// Bytes still available.
+    #[must_use]
+    pub const fn remaining(&self) -> usize {
+        self.limit.saturating_sub(self.used)
+    }
+
+    /// Charge `bytes`; refused (and unchanged) when they do not fit.
+    pub fn charge(&mut self, bytes: usize) -> Result<(), FormatError> {
+        if bytes > self.remaining() {
+            return Err(FormatError::Invalid {
+                offset: 0,
+                what: "rgba budget",
+                value: format!(
+                    "{bytes} bytes requested, {} of {} left",
+                    self.remaining(),
+                    self.limit
+                ),
+            });
         }
-        out
+        self.used += bytes;
+        Ok(())
+    }
+
+    /// Give `bytes` back (a cache dropped a picture); saturating.
+    pub fn release(&mut self, bytes: usize) {
+        self.used = self.used.saturating_sub(bytes);
+    }
+
+    /// Give everything back (a cache was cleared).
+    pub fn reset(&mut self) {
+        self.used = 0;
+    }
+}
+
+impl Image16 {
+    /// Bytes the RGBA8 form of this picture takes: `width * height * 4`, refused when the pixel
+    /// buffer does not hold exactly `width * height` entries or the product overflows.
+    pub fn rgba8_len(&self) -> Result<usize, FormatError> {
+        let pixels = usize::from(self.width) * usize::from(self.height);
+        if pixels != self.pixels.len() {
+            return Err(FormatError::Invalid {
+                offset: 0,
+                what: "image pixel count",
+                value: format!(
+                    "{}x{} needs {pixels} pixels, {} present",
+                    self.width,
+                    self.height,
+                    self.pixels.len()
+                ),
+            });
+        }
+        pixels.checked_mul(4).ok_or_else(|| FormatError::Invalid {
+            offset: 0,
+            what: "image rgba size",
+            value: format!("{}x{} overflows", self.width, self.height),
+        })
+    }
+
+    /// Convert to RGBA8 with `map` deciding every pixel's colour and alpha. The output size is
+    /// checked ([`Image16::rgba8_len`]) and charged to `budget` before a fallible allocation
+    /// (`try_reserve_exact`); an allocation failure is an error, not an abort.
+    pub fn try_to_rgba8_with(
+        &self,
+        budget: &mut RgbaBudget,
+        map: impl Fn(u16) -> [u8; 4],
+    ) -> Result<Vec<u8>, FormatError> {
+        let bytes = self.rgba8_len()?;
+        budget.charge(bytes)?;
+        let mut out = Vec::new();
+        if let Err(e) = out.try_reserve_exact(bytes) {
+            budget.release(bytes);
+            let _ = e;
+            return Err(FormatError::Invalid {
+                offset: 0,
+                what: "image rgba allocation",
+                value: format!("{}x{} ({bytes} bytes)", self.width, self.height),
+            });
+        }
+        for &p in &self.pixels {
+            out.extend_from_slice(&map(p));
+        }
+        Ok(out)
+    }
+
+    /// Opaque RGBA8 assuming RGB565 (channel order still `partial` in the spec), charged to
+    /// `budget`.
+    pub fn try_to_rgba8_565(&self, budget: &mut RgbaBudget) -> Result<Vec<u8>, FormatError> {
+        self.try_to_rgba8_with(budget, |p| {
+            let (r, g, b) = rgb565_to_rgb8(p);
+            [r, g, b, 255]
+        })
+    }
+
+    /// Opaque RGBA8 assuming RGB565, one picture on its own (size checks and fallible allocation,
+    /// no cumulative budget).
+    pub fn to_rgba8_565(&self) -> Result<Vec<u8>, FormatError> {
+        let mut budget = RgbaBudget::UNBOUNDED;
+        self.try_to_rgba8_565(&mut budget)
     }
 }
 
@@ -267,6 +386,51 @@ mod tests {
             let _ = parse_file(&data);
             let _ = looks_like_image_blob(&data);
         }
+    }
+
+    #[test]
+    fn rgba_conversion_checks_sizes_and_charges_the_budget() {
+        let img = Image16 {
+            width: 3,
+            height: 2,
+            pixels: vec![0, 0xffff, 0x07e0, 0, 0, 0],
+        };
+        assert_eq!(img.rgba8_len().unwrap(), 24);
+        let rgba = img.to_rgba8_565().unwrap();
+        assert_eq!(rgba.len(), 24);
+        assert_eq!(&rgba[4..8], &[255, 255, 255, 255]);
+        assert_eq!(&rgba[8..12], &[0, 255, 0, 255]);
+        // A pixel buffer that does not match the dimensions is refused, never indexed short.
+        let short = Image16 {
+            width: 3,
+            height: 2,
+            pixels: vec![0; 5],
+        };
+        assert!(short.rgba8_len().is_err());
+        assert!(short.to_rgba8_565().is_err());
+        let long = Image16 {
+            width: 1,
+            height: 1,
+            pixels: vec![0; 2],
+        };
+        assert!(long.to_rgba8_565().is_err());
+        // The budget is cumulative: two pictures fit, the third is refused and charges nothing.
+        let mut budget = RgbaBudget::new(50);
+        assert!(img.try_to_rgba8_565(&mut budget).is_ok());
+        assert!(img.try_to_rgba8_565(&mut budget).is_ok());
+        assert_eq!(budget.used(), 48);
+        assert!(img.try_to_rgba8_565(&mut budget).is_err());
+        assert_eq!(budget.used(), 48);
+        budget.release(24);
+        assert!(img.try_to_rgba8_with(&mut budget, |_| [1, 2, 3, 4]).is_ok());
+        assert_eq!(budget.remaining(), 2);
+        budget.reset();
+        assert_eq!(budget.remaining(), 50);
+        // A single picture larger than the budget is refused up front.
+        assert!(img.try_to_rgba8_565(&mut RgbaBudget::new(23)).is_err());
+        // The unbounded budget still validates the pixel count.
+        let mut unbounded = RgbaBudget::UNBOUNDED;
+        assert!(short.try_to_rgba8_565(&mut unbounded).is_err());
     }
 
     #[test]

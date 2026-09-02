@@ -19,8 +19,8 @@ use opensherwood_core::Geometry;
 use opensherwood_protocol::{
     CaptureParams, CaptureResult, HelloResult, ObserveParams, ObserveResult, PROTOCOL_VERSION,
     Replay, ReplayCheckpoint, ReplayEvent, ReplayHeader, ReplayPlayParams, ReplayPlayResult,
-    ReplayStartParams, ReplayStopResult, ResetParams, RestoreParams, RngStreamInit, RpcError,
-    SnapshotResult, StepParams, StepResult, replay_limits,
+    ReplayRecorder, ReplayStartParams, ReplayStopResult, ResetParams, RestoreParams, RngStreamInit,
+    RpcError, SnapshotResult, StepParams, StepResult, replay_limits,
 };
 use opensherwood_render::Occluder;
 use opensherwood_render::{Background, Framebuffer, NoSprites, SpriteFrame, SpriteSource, render};
@@ -115,10 +115,16 @@ pub struct Session {
     ui_assets: Option<UiAssets>,
     /// The window should close (Exit chosen in the menu).
     pub exit_requested: bool,
-    /// Current objective text (pause menu).
-    objective: String,
+    /// Texts of the current mission's level text list (`.red` entry 4), indexed as the script does.
+    mission_texts: Vec<String>,
+    /// Short briefings (objectives) of the current mission (`.red` last entry).
+    mission_objectives: Vec<String>,
+    /// Scenario and seed of the world that is installed (for Restart).
+    current: Option<(Scenario, u64)>,
     /// HUD values.
     hud: HudState,
+    /// Unknown-native policy for mission scripts (`--lenient-natives`).
+    lenient_natives: bool,
 }
 
 /// What the player is looking at.
@@ -143,7 +149,10 @@ pub const FIRST_MISSION: &str = "H01_Lin_VL";
 pub const TICK_RATE: (u32, u32) = (60, 1);
 
 struct Recording {
-    replay: Replay,
+    /// The replay so far; the recorder accounts the serialised bytes of every line it accepts
+    /// against `replay_limits::MAX_BYTES` (with the final checkpoint reserved) and refuses,
+    /// without mutating, anything the parser would reject.
+    recorder: ReplayRecorder,
     checkpoint_every: u64,
     /// Set when a recording quota (`replay_limits`) was hit outside an RPC `step` (window mode);
     /// nothing more is recorded and `replay.stop` reports the error instead of a replay.
@@ -166,6 +175,15 @@ pub mod limits {
     pub const MAX_SNAPSHOTS: usize = 32;
     /// Most queued window input events.
     pub const MAX_QUEUED_INPUT: usize = 10_000;
+}
+
+/// Whether a missing or malformed retail dependency (map geometry, profile table, a sprite
+/// profile the mission references, the sprite bank) degrades to a logged default instead of
+/// failing the scenario load: `OPENSHERWOOD_LENIENT_ASSETS=1` (`docs/build.md`). Off by default:
+/// a retail scenario either loads what the mission needs or reports what is missing.
+#[must_use]
+pub fn lenient_assets() -> bool {
+    std::env::var_os("OPENSHERWOOD_LENIENT_ASSETS").is_some_and(|v| v == "1")
 }
 
 impl std::fmt::Debug for Session {
@@ -216,9 +234,17 @@ impl Session {
             screen: Screen::World,
             ui_assets: None,
             exit_requested: false,
-            objective: String::new(),
+            mission_texts: Vec::new(),
+            mission_objectives: Vec::new(),
+            current: None,
             hud: HudState::default(),
+            lenient_natives: false,
         }
+    }
+
+    /// Select the unknown-native policy of mission scripts (see `opensherwood_core::natives`).
+    pub fn set_lenient_natives(&mut self, lenient: bool) {
+        self.lenient_natives = lenient;
     }
 
     fn ui_assets(&mut self) -> Option<&UiAssets> {
@@ -242,40 +268,109 @@ impl Session {
         self.start_scenario_music();
     }
 
-    /// `Play!`: load the first mission behind its briefing parchment.
+    /// `Play!`: load the first mission; its script then shows the briefing pages (`sync_text_screen`).
     fn start_campaign(&mut self) -> Result<(), String> {
-        self.reset(Scenario::Mission(FIRST_MISSION.into()), 0)?;
-        let pages = self
-            .game
-            .as_ref()
-            .map(|g| ui_assets::level_texts(g, ui_assets::texts::FIRST_MISSION_BRIEFING))
-            .unwrap_or_default();
-        // Strings 0..2 are the briefing pages; the rest are in-mission tutorial popups.
-        let pages: Vec<String> = pages
-            .into_iter()
-            .take(ui_assets::texts::FIRST_MISSION_BRIEFING_PAGES)
-            .collect();
-        self.screen = if pages.is_empty() {
-            Screen::World
-        } else {
-            Screen::Briefing(Briefing::new(pages))
+        self.reset(Scenario::Mission(FIRST_MISSION.into()), 0)
+    }
+
+    /// Texts and objectives of a mission: the profile table maps the mission file to its level code,
+    /// and `Text/RHLevel<code>.red` lists the text ids (`docs/formats/red.md`: entry 4 = the text list,
+    /// the last entry = the short briefings). Missing pieces leave the lists empty.
+    fn load_mission_texts(&mut self, name: &str) {
+        self.mission_texts.clear();
+        self.mission_objectives.clear();
+        let Some(game) = self.game.as_ref() else {
+            return;
         };
-        self.objective = self
-            .game
-            .as_ref()
-            .and_then(|g| {
-                ui_assets::level_texts(g, ui_assets::texts::FIRST_MISSION_OBJECTIVES)
-                    .into_iter()
-                    .next()
+        let Some(code) = game
+            .read("Data/Configuration/profile.cpf")
+            .ok()
+            .and_then(|d| opensherwood_formats::cpf::parse(&d).ok())
+            .and_then(|t| {
+                t.levels
+                    .iter()
+                    .find(|l| {
+                        let f = l.mission_file.trim_end_matches(".rhm");
+                        f.eq_ignore_ascii_case(name) || l.mission_file.eq_ignore_ascii_case(name)
+                    })
+                    .map(|l| l.code.clone())
             })
-            .unwrap_or_default();
-        self.hud = HudState {
-            money: 100,
-            clover: 0,
-            hero_name: self.hero_name_lines(),
+        else {
+            eprintln!("opensherwood: no level code for mission {name}; no texts");
+            return;
         };
+        let Ok(red) = game.read(&format!("Data/Text/RHLevel{code}.red")) else {
+            eprintln!("opensherwood: no text index for level {code}");
+            return;
+        };
+        let ids: Vec<u32> = red
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        if let Some(&texts) = ids.get(4) {
+            self.mission_texts = ui_assets::level_texts(game, texts);
+        }
+        if let Some(&short) = ids.last() {
+            self.mission_objectives = ui_assets::level_texts(game, short);
+        }
+    }
+
+    /// The current primary objective (first primary one not accomplished), for the pause menu.
+    fn current_objective(&self) -> String {
+        self.world
+            .as_ref()
+            .and_then(|w| w.vm.as_ref())
+            .and_then(|vm| {
+                vm.objectives
+                    .iter()
+                    .filter(|o| o.primary && !o.done)
+                    .chain(vm.objectives.iter().filter(|o| !o.done))
+                    .next()
+                    .map(|o| o.index)
+            })
+            .and_then(|i| usize::try_from(i).ok())
+            .and_then(|i| self.mission_objectives.get(i).cloned())
+            .unwrap_or_default()
+    }
+
+    /// While the world is played and the script has a text page pending (native 202 / 203), show it on
+    /// the parchment; dismissing it lets the script's sequence continue.
+    fn sync_text_screen(&mut self) {
+        if !matches!(self.screen, Screen::World) {
+            return;
+        }
+        let Some(k) = self
+            .world
+            .as_ref()
+            .and_then(|w| w.vm.as_ref())
+            .and_then(|vm| vm.pending_texts().first().copied())
+        else {
+            return;
+        };
+        let text = usize::try_from(k)
+            .ok()
+            .and_then(|i| self.mission_texts.get(i).cloned())
+            .unwrap_or_else(|| format!("[text {k}]"));
+        let _ = self.ui_assets();
+        self.screen = Screen::Briefing(Briefing::new(vec![text]));
         self.frame = None;
-        Ok(())
+    }
+
+    /// Dismiss the script's current text page: closes the parchment if it shows one, lets the VM's
+    /// sequence continue and shows the next page if there is one. Returns whether a page was pending.
+    fn dismiss_text(&mut self) -> bool {
+        if matches!(self.screen, Screen::Briefing(_)) {
+            self.screen = Screen::World;
+        }
+        let dismissed = self.world.as_mut().is_some_and(World::vm_dismiss_text);
+        self.frame = None;
+        self.sync_text_screen();
+        dismissed
+    }
+
+    /// Input queued by the window that the session has not consumed (controlled mode ended).
+    pub fn take_queued_input(&mut self) -> Vec<InputEvent> {
+        std::mem::take(&mut self.queued_input)
     }
 
     /// The selected hero's name, split in two lines like the original's portrait ("Robin" / "Hood").
@@ -316,7 +411,8 @@ impl Session {
             .ui_assets
             .as_ref()
             .map_or(&[][..], |a| a.strings.as_slice());
-        self.screen = Screen::Pause(PauseMenu::new(self.objective.clone(), strings));
+        let objective = self.current_objective();
+        self.screen = Screen::Pause(PauseMenu::new(objective, strings));
         self.frame = None;
     }
 
@@ -352,6 +448,7 @@ impl Session {
             }
             Screen::Briefing(b) => {
                 let mut done = false;
+                let pages = b.pages.len();
                 for e in events {
                     if b.handle(*e) {
                         done = true;
@@ -360,7 +457,10 @@ impl Session {
                 }
                 self.frame = None;
                 if done {
-                    self.screen = Screen::World;
+                    // The parchment presented the script's text page (native 202 / 203): dismiss it
+                    // in the VM; the next page, if any, is shown by `sync_text_screen`.
+                    let _ = pages;
+                    self.dismiss_text();
                 }
             }
             Screen::Credits(c) => {
@@ -383,7 +483,9 @@ impl Session {
                 match chosen {
                     Some(MenuAction::Continue) => self.screen = Screen::World,
                     Some(MenuAction::Restart) => {
-                        if let Err(e) = self.start_campaign() {
+                        if let Some((scenario, seed)) = self.current.clone()
+                            && let Err(e) = self.reset(scenario, seed)
+                        {
                             eprintln!("opensherwood: cannot restart: {e}");
                         }
                     }
@@ -406,11 +508,13 @@ impl Session {
                 let escape_at = events.iter().position(|e| {
                     in_mission && matches!(e, InputEvent::KeyDown { key: Key::Escape })
                 });
-                match escape_at {
-                    // Escape wins the tick: the world does not advance and the tick's other events
-                    // are dropped, so the pause always lands on the state the player saw.
-                    Some(_) => self.open_pause(),
-                    None => self.step_recorded(events),
+                // Escape wins the tick: the world does not advance and the tick's other events
+                // are dropped, so the pause always lands on the state the player saw.
+                if escape_at.is_some() {
+                    self.open_pause();
+                } else {
+                    self.step_recorded(events);
+                    self.sync_text_screen();
                 }
             }
         }
@@ -522,23 +626,34 @@ impl Session {
             tick_rate: TICK_RATE,
             hash_schema: opensherwood_core::hash::HASH_SCHEMA_VERSION,
             seed: world.seed,
-            rng_streams: [(
+            rng_streams: std::iter::once((
                 "gameplay".to_string(),
                 RngStreamInit {
                     algorithm: opensherwood_core::rng::Rng::ALGORITHM.to_string(),
                     seed: world.rng.seed,
                     stream: world.rng.stream,
                 },
-            )]
-            .into_iter()
+            ))
+            .chain(world.vm.as_ref().map(|vm| {
+                (
+                    "script".to_string(),
+                    RngStreamInit {
+                        algorithm: opensherwood_core::rng::Rng::ALGORITHM.to_string(),
+                        seed: vm.rng.seed,
+                        stream: vm.rng.stream,
+                    },
+                )
+            }))
             .collect(),
         })
     }
 
     /// Reject a `step` that would push the active recording over the `replay_limits` quotas
-    /// (event count, checkpoint count, highest tick). Checked before anything is mutated so a
-    /// refused step leaves both the world and the recording untouched.
-    fn check_recording_quota(&self, ticks: u32, new_events: usize) -> Result<(), RpcError> {
+    /// (event count, checkpoint count, highest tick, serialised bytes). Checked before anything
+    /// is mutated so a refused step leaves both the world and the recording untouched. The byte
+    /// check is conservative: every event is costed at its longest representation and every
+    /// checkpoint the step can add at the recorder's reserve size.
+    fn check_recording_quota(&self, ticks: u32, new_events: &[InputEvent]) -> Result<(), RpcError> {
         let (Some(rec), Some(world)) = (self.recording.as_ref(), self.world.as_ref()) else {
             return Ok(());
         };
@@ -551,19 +666,31 @@ impl Session {
         if world.tick + u64::from(ticks) > replay_limits::MAX_TICK {
             return Err(quota(&format!("tick {}", replay_limits::MAX_TICK)));
         }
-        if rec.replay.events.len() + new_events > replay_limits::MAX_EVENTS {
+        if rec.recorder.events().len() + new_events.len() > replay_limits::MAX_EVENTS {
             return Err(quota(&format!("{} events", replay_limits::MAX_EVENTS)));
         }
         let planned = u64::from(ticks)
             .checked_div(rec.checkpoint_every)
             .map_or(0, |n| n + 1);
         // `replay.stop` may append one final checkpoint: keep room for it.
-        if rec.replay.checkpoints.len() as u64 + planned + 1 > replay_limits::MAX_CHECKPOINTS as u64
+        if rec.recorder.checkpoints().len() as u64 + planned + 1
+            > replay_limits::MAX_CHECKPOINTS as u64
         {
             return Err(quota(&format!(
                 "{} checkpoints",
                 replay_limits::MAX_CHECKPOINTS
             )));
+        }
+        let mut bytes = usize::try_from(planned)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(rec.recorder.reserve());
+        for e in new_events {
+            let line = ReplayRecorder::worst_case_event_bytes(*e)
+                .map_err(|e| RpcError::new(RpcError::INTERNAL, e))?;
+            bytes = bytes.saturating_add(line);
+        }
+        if !rec.recorder.fits(bytes) {
+            return Err(quota(&format!("{} bytes", rec.recorder.max_bytes())));
         }
         Ok(())
     }
@@ -579,21 +706,17 @@ impl Session {
         if let Some(rec) = self.recording.as_mut()
             && rec.failed.is_none()
         {
-            if tick >= replay_limits::MAX_TICK {
-                rec.failed = Some(format!("tick quota {} reached", replay_limits::MAX_TICK));
-            } else if rec.replay.events.len() + events.len() > replay_limits::MAX_EVENTS {
-                rec.failed = Some(format!(
-                    "event quota {} exceeded at tick {tick}",
-                    replay_limits::MAX_EVENTS
-                ));
-            } else {
-                for (i, e) in events.iter().enumerate() {
-                    rec.replay.events.push(ReplayEvent {
-                        tick,
-                        sequence: i as u32,
-                        event: *e,
-                        intent: None,
-                    });
+            // The recorder checks every quota (tick, count, ordering, bytes) per event and
+            // refuses without mutating; the first refusal ends the recording.
+            for (i, e) in events.iter().enumerate() {
+                if let Err(why) = rec.recorder.push_event(ReplayEvent {
+                    tick,
+                    sequence: i as u32,
+                    event: *e,
+                    intent: None,
+                }) {
+                    rec.failed = Some(why);
+                    break;
                 }
             }
         }
@@ -602,20 +725,12 @@ impl Session {
             && rec.failed.is_none()
             && rec.checkpoint_every > 0
             && world.tick.is_multiple_of(rec.checkpoint_every)
+            && let Err(why) = rec.recorder.push_checkpoint(ReplayCheckpoint {
+                tick: world.tick,
+                hashes: world.hashes(),
+            })
         {
-            // Keep room for the final checkpoint `replay.stop` appends.
-            if rec.replay.checkpoints.len() + 1 >= replay_limits::MAX_CHECKPOINTS {
-                rec.failed = Some(format!(
-                    "checkpoint quota {} exceeded at tick {}",
-                    replay_limits::MAX_CHECKPOINTS,
-                    world.tick
-                ));
-            } else {
-                rec.replay.checkpoints.push(ReplayCheckpoint {
-                    tick: world.tick,
-                    hashes: world.hashes(),
-                });
-            }
+            rec.failed = Some(why);
         }
     }
 
@@ -650,97 +765,118 @@ impl Session {
     }
 
     /// Decode a retail background and the map's geometry (occluders for drawing, walkable area for
-    /// movement).
+    /// movement). With `lenient` (see [`lenient_assets`]) a missing or malformed `.rhp` degrades
+    /// to default geometry with a log line; otherwise it is an error.
     fn load_map(
         game: &GameDir,
         map: &str,
         ambiance: &str,
+        lenient: bool,
     ) -> Result<(Background, Geometry), String> {
         let logical = format!("Data/Levels/{ambiance}/{map}.map");
         let data = game.read(&logical).map_err(|e| e.to_string())?;
         let img = opensherwood_formats::image_blob::parse_file(&data)
             .map_err(|e| format!("{logical}: {e}"))?;
+        // Size-checked, fallible materialisation: a refused allocation is an error, not an abort.
+        let rgba = img.to_rgba8_565().map_err(|e| format!("{logical}: {e}"))?;
         let mut background = Background {
             width: u32::from(img.width),
             height: u32::from(img.height),
-            rgba: img.to_rgba8_565(),
+            rgba,
             occluders: Vec::new(),
         };
         let mut geometry = Geometry::default();
         let rhp_path = format!("Data/Levels/{map}.rhp");
-        match game.read(&rhp_path) {
-            Ok(bytes) => match opensherwood_formats::rhp::parse(&bytes) {
-                Ok(rhp) => {
-                    background.occluders = rhp
-                        .faces
-                        .iter()
-                        .map(|f| Occluder {
-                            x: i32::from(f.x),
-                            y: i32::from(f.y),
-                            width: u32::from(f.width),
-                            height: u32::from(f.height),
-                            bits: f.mask.clone(),
-                            line: f.lines.first().and_then(|l| {
-                                (l.points.len() >= 2).then(|| {
-                                    (
-                                        (i32::from(l.points[0].x), i32::from(l.points[0].y)),
-                                        (i32::from(l.points[1].x), i32::from(l.points[1].y)),
-                                    )
-                                })
-                            }),
+        // The map's geometry is required: without it every cell of the map would be walkable and
+        // nothing would occlude. Only `OPENSHERWOOD_LENIENT_ASSETS=1` accepts that, logged.
+        let rhp = game
+            .read(&rhp_path)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| opensherwood_formats::rhp::parse(&bytes).map_err(|e| e.to_string()));
+        let rhp = match rhp {
+            Ok(rhp) => Some(rhp),
+            Err(e) if lenient => {
+                eprintln!(
+                    "opensherwood: {rhp_path}: {e}; OPENSHERWOOD_LENIENT_ASSETS: default geometry (everything walkable, no occluders)"
+                );
+                None
+            }
+            Err(e) => return Err(format!("{rhp_path}: {e}")),
+        };
+        if let Some(rhp) = rhp {
+            background.occluders = rhp
+                .faces
+                .iter()
+                .map(|f| Occluder {
+                    x: i32::from(f.x),
+                    y: i32::from(f.y),
+                    width: u32::from(f.width),
+                    height: u32::from(f.height),
+                    bits: f.mask.clone(),
+                    line: f.lines.first().and_then(|l| {
+                        (l.points.len() >= 2).then(|| {
+                            (
+                                (i32::from(l.points[0].x), i32::from(l.points[0].y)),
+                                (i32::from(l.points[1].x), i32::from(l.points[1].y)),
+                            )
                         })
-                        .collect();
-                    geometry.boundary = rhp
-                        .stat
-                        .boundary
+                    }),
+                })
+                .collect();
+            geometry.boundary = rhp
+                .stat
+                .boundary
+                .iter()
+                .map(|p| (i32::from(p.x), i32::from(p.y)))
+                .collect();
+            geometry.areas = rhp
+                .woaw
+                .areas
+                .iter()
+                .map(|a| {
+                    a.points
+                        .iter()
+                        .map(|p| (p.x.round() as i32, p.y.round() as i32))
+                        .collect()
+                })
+                .collect();
+            geometry.obstacles = rhp
+                .stat
+                .obstacles
+                .iter()
+                .map(|o| {
+                    o.polygon
+                        .points
                         .iter()
                         .map(|p| (i32::from(p.x), i32::from(p.y)))
-                        .collect();
-                    geometry.areas = rhp
-                        .woaw
-                        .areas
-                        .iter()
-                        .map(|a| {
-                            a.points
-                                .iter()
-                                .map(|p| (p.x.round() as i32, p.y.round() as i32))
-                                .collect()
-                        })
-                        .collect();
-                    geometry.obstacles = rhp
-                        .stat
-                        .obstacles
-                        .iter()
-                        .map(|o| {
-                            o.polygon
-                                .points
-                                .iter()
-                                .map(|p| (i32::from(p.x), i32::from(p.y)))
-                                .collect()
-                        })
-                        .collect();
-                }
-                Err(e) => eprintln!("opensherwood: {rhp_path}: {e}"),
-            },
-            Err(e) => eprintln!("opensherwood: {rhp_path}: {e}"),
+                        .collect()
+                })
+                .collect();
         }
         Ok((background, geometry))
     }
 
-    /// Open the sprite bank once and build a catalog for the given profiles.
-    fn load_catalog(&mut self, profiles: &[String]) -> Catalog {
+    /// Open the sprite bank once and build a catalog for the given profiles. A sprite bank that
+    /// cannot be opened or a profile that cannot be loaded fails the load, unless
+    /// [`lenient_assets`] is on: then the failure is logged and the catalog is left without the
+    /// affected sets (entities without a set are drawn as discs).
+    fn load_catalog(&mut self, profiles: &[String]) -> Result<Catalog, String> {
         let mut catalog = Catalog::default();
         let Some(game) = self.game.as_ref() else {
-            return catalog;
+            return Ok(catalog);
         };
+        let lenient = lenient_assets();
         if self.sprites.is_none() {
             match SpriteBank::open(game) {
                 Ok(bank) => self.sprites = Some(Sprites { bank }),
-                Err(e) => eprintln!("opensherwood: sprite bank unavailable: {e}"),
+                Err(e) if lenient => eprintln!(
+                    "opensherwood: sprite bank unavailable: {e}; OPENSHERWOOD_LENIENT_ASSETS: no sprites"
+                ),
+                Err(e) => return Err(format!("sprite bank: {e}")),
             }
         }
         if self.sprites.is_none() {
-            return catalog;
+            return Ok(catalog);
         }
         for name in profiles {
             match SpriteBank::load_profile(game, name) {
@@ -749,10 +885,13 @@ impl Session {
                         .sets
                         .insert(name.clone(), anim_set_from_profile(&profile));
                 }
-                Err(e) => eprintln!("opensherwood: profile {name}: {e}"),
+                Err(e) if lenient => eprintln!(
+                    "opensherwood: profile {name}: {e}; OPENSHERWOOD_LENIENT_ASSETS: drawn without a sprite"
+                ),
+                Err(e) => return Err(format!("profile {name}: {e}")),
             }
         }
-        catalog
+        Ok(catalog)
     }
 
     /// Load a scenario (what `reset` does). Nothing of the session changes when the load fails.
@@ -788,7 +927,7 @@ impl Session {
                     .game
                     .as_ref()
                     .ok_or("map scenarios need a game directory")?;
-                let (bg, geometry) = Self::load_map(game, map, ambiance)?;
+                let (bg, geometry) = Self::load_map(game, map, ambiance, lenient_assets())?;
                 let info = MapInfo {
                     width: bg.width,
                     height: bg.height,
@@ -796,7 +935,7 @@ impl Session {
                 let mut world = World::new_map_view(scenario, seed, info)?;
                 world.set_geometry(geometry)?;
                 let catalog =
-                    self.load_catalog(&["RobinHood".to_string(), "Soldier A00".to_string()]);
+                    self.load_catalog(&["RobinHood".to_string(), "Soldier A00".to_string()])?;
                 if !catalog.sets.is_empty() {
                     world.attach_catalog(catalog, Some("RobinHood"), Some("Soldier A00"));
                 }
@@ -804,16 +943,17 @@ impl Session {
             }
             Scenario::Mission(name) => {
                 let game = self.game.as_ref().ok_or("missions need a game directory")?;
-                let (mission_file, map) = mission::load(game, name)?;
+                let (mission_file, map) = mission::load(game, name, lenient_assets())?;
                 let ambiance = "Day";
-                let (bg, geometry) = Self::load_map(game, &map, ambiance)?;
+                let (bg, geometry) = Self::load_map(game, &map, ambiance, lenient_assets())?;
                 let info = MapInfo {
                     width: bg.width,
                     height: bg.height,
                 };
-                let (spec, profiles) = mission::build_spec(&mission_file, info, geometry);
+                let (mut spec, profiles) = mission::build_spec(&mission_file, info, geometry);
+                spec.lenient_natives = self.lenient_natives;
                 let mut world = World::new_mission(scenario, seed, &spec)?;
-                let catalog = self.load_catalog(&profiles);
+                let catalog = self.load_catalog(&profiles)?;
                 if !catalog.sets.is_empty() {
                     world.attach_catalog(catalog, None, None);
                 }
@@ -828,13 +968,28 @@ impl Session {
     /// handles, queued input and any recording belonged to the previous world.
     fn install(&mut self, world: World, background: Option<Background>) {
         self.screen = Screen::World;
+        self.current = Some((world.scenario.clone(), world.seed));
+        if let Scenario::Mission(name) = &world.scenario {
+            let name = name.clone();
+            self.load_mission_texts(&name);
+        } else {
+            self.mission_texts.clear();
+            self.mission_objectives.clear();
+        }
         self.world = Some(world);
         self.background = background;
         self.frame = None;
         self.snapshots.clear();
         self.queued_input.clear();
         self.recording = None;
+        // Presentation state derived from the installed world, never from session history.
+        self.hud = HudState {
+            money: ProfileSummary::default().money,
+            clover: 0,
+            hero_name: self.hero_name_lines(),
+        };
         self.start_scenario_music();
+        self.sync_text_screen();
     }
 
     /// Advance one tick with the given events (window mode).
@@ -920,6 +1075,7 @@ impl Session {
                     "mission".into(),
                     "replay".into(),
                     "menu".into(),
+                    "script".into(),
                 ],
                 content_fingerprint: self.content_fingerprint()?,
             }),
@@ -965,7 +1121,13 @@ impl Session {
                 }
                 let mut events = p.events;
                 events.sort_by_key(|e| (e.tick_offset, e.sequence));
-                self.check_recording_quota(p.ticks, events.len() + self.queued_input.len())?;
+                let planned: Vec<InputEvent> = self
+                    .queued_input
+                    .iter()
+                    .copied()
+                    .chain(events.iter().map(|e| e.event))
+                    .collect();
+                self.check_recording_quota(p.ticks, &planned)?;
                 let queued = std::mem::take(&mut self.queued_input);
                 if self.world.is_none() && matches!(self.screen, Screen::World) {
                     return Err(engine_err("no world loaded; call reset first"));
@@ -1061,14 +1223,27 @@ impl Session {
                 let expected = self.scenario_content(&snap.world.scenario)?;
                 snap.check_content(expected.as_deref())
                     .map_err(engine_err)?;
+                // The navigation grid is derived state the core rebuilds on restore; its cost
+                // (cells, polygons, scan-conversion work) is bounded here, before any world is
+                // touched, so a hostile snapshot cannot make the rebuild exhaust time or memory.
+                opensherwood_core::NavGrid::check_budget(
+                    &snap.world.geometry,
+                    snap.world.map_size.0,
+                    snap.world.map_size.1,
+                )
+                .map_err(|e| engine_err(format!("navigation: {e}")))?;
                 let same_scenario = self
                     .world
                     .as_ref()
                     .is_some_and(|w| w.scenario == snap.world.scenario);
                 if same_scenario {
                     // `World::restore` validates against the attached catalog and only then
-                    // replaces the state.
-                    self.world()?.restore(&snap).map_err(engine_err)?;
+                    // replaces the state and rebuilds the navigation grid. It runs on a copy so
+                    // the session's world is replaced only once the derived state exists.
+                    let world = self.world()?;
+                    let mut candidate = world.clone();
+                    candidate.restore(&snap).map_err(engine_err)?;
+                    *world = candidate;
                 } else {
                     let (mut world, background) = self
                         .load_scenario(snap.world.scenario.clone(), snap.world.seed)
@@ -1126,17 +1301,13 @@ impl Session {
                     ));
                 }
                 let header = self.replay_header(world)?;
-                let mut replay = Replay {
-                    header,
-                    events: Vec::new(),
-                    checkpoints: Vec::new(),
-                };
-                replay.checkpoints.push(ReplayCheckpoint {
-                    tick: 0,
-                    hashes: world.hashes(),
-                });
+                let hashes = world.hashes();
+                let mut recorder = ReplayRecorder::new(header, &hashes).map_err(engine_err)?;
+                recorder
+                    .push_checkpoint(ReplayCheckpoint { tick: 0, hashes })
+                    .map_err(engine_err)?;
                 self.recording = Some(Recording {
-                    replay,
+                    recorder,
                     checkpoint_every: p.checkpoint_every,
                     failed: None,
                 });
@@ -1144,7 +1315,7 @@ impl Session {
             }
             "replay.stop" => {
                 let p: CaptureParams = params(p)?;
-                let mut rec = self
+                let rec = self
                     .recording
                     .take()
                     .ok_or_else(|| engine_err("no replay is being recorded"))?;
@@ -1152,22 +1323,20 @@ impl Session {
                     return Err(engine_err(format!("recording discarded: {why}")));
                 }
                 let world = self.world()?;
-                if rec
-                    .replay
-                    .checkpoints
-                    .last()
-                    .is_none_or(|c| c.tick != world.tick)
-                {
-                    rec.replay.checkpoints.push(ReplayCheckpoint {
+                // The final checkpoint goes into the bytes the recorder reserved for it (a
+                // checkpoint at tick 0 is dropped when others exist); the text is then built
+                // with fallible allocation and is within `replay_limits::MAX_BYTES` by
+                // construction, so the parser accepts it.
+                let replay = rec
+                    .recorder
+                    .finish(ReplayCheckpoint {
                         tick: world.tick,
                         hashes: world.hashes(),
-                    });
-                }
-                // Checkpoint at tick 0 duplicates the header's guarantees; keep it only if alone.
-                if rec.replay.checkpoints.len() > 1 && rec.replay.checkpoints[0].tick == 0 {
-                    rec.replay.checkpoints.remove(0);
-                }
-                let jsonl = rec.replay.to_jsonl();
+                    })
+                    .map_err(|e| engine_err(format!("recording discarded: {e}")))?;
+                let jsonl = replay
+                    .to_jsonl()
+                    .map_err(|e| engine_err(format!("recording discarded: {e}")))?;
                 let mut written = None;
                 if let Some(rel) = p.path {
                     let path = self.artifact_path(&rel)?;
@@ -1176,8 +1345,8 @@ impl Session {
                     written = Some(path.to_string_lossy().to_string());
                 }
                 ok(ReplayStopResult {
-                    events: rec.replay.events.len(),
-                    checkpoints: rec.replay.checkpoints.len(),
+                    events: replay.events.len(),
+                    checkpoints: replay.checkpoints.len(),
                     jsonl,
                     path: written,
                 })
@@ -1303,6 +1472,42 @@ impl Session {
                     "path_cells": path,
                 }))
             }
+            "debug.vm" => {
+                #[derive(serde::Deserialize, Default)]
+                struct P {
+                    /// Dismiss the text at the front of the queue before reporting.
+                    #[serde(default)]
+                    dismiss_text: bool,
+                }
+                let p: P = params(p)?;
+                self.world()?;
+                let dismissed = p.dismiss_text && self.dismiss_text();
+                let world = self.world()?;
+                let Some(vm) = world.vm.as_ref() else {
+                    return ok(json!({ "present": false, "dismissed": dismissed }));
+                };
+                ok(json!({
+                    "present": true,
+                    "dismissed": dismissed,
+                    "classes": vm.program.classes.len(),
+                    "elements": vm.program.elements.len(),
+                    "locations": vm.program.locations.len(),
+                    "objectives": vm.objectives,
+                    "texts": vm.pending_texts(),
+                    "mission_won": vm.mission_won,
+                    "sequence_active": !vm.sequences.is_empty(),
+                    "sequences": vm.sequences.len(),
+                    "faulted": vm.faulted,
+                    "lenient": vm.lenient,
+                    "unknown_calls": vm.unknown_calls,
+                    "pending_messages": vm.messages.len(),
+                    "camera_target": vm.camera_target,
+                    "debriefing": vm.debriefing,
+                    "mission_vars": vm.mission_vars,
+                    "counters": vm.counters,
+                    "rng_draws": vm.rng.draws,
+                }))
+            }
             "shutdown" => ok(json!({ "ok": true })),
             _ => Err(RpcError::new(
                 RpcError::METHOD_NOT_FOUND,
@@ -1347,38 +1552,145 @@ mod session_tests {
         assert_eq!(err.code, RpcError::INVALID_PARAMS);
         assert!(err.message.contains("checkpoints"), "{}", err.message);
         assert_eq!(s.world.as_ref().unwrap().tick, 0);
-        assert_eq!(s.recording.as_ref().unwrap().replay.checkpoints.len(), 1);
+        assert_eq!(
+            s.recording.as_ref().unwrap().recorder.checkpoints().len(),
+            1
+        );
         // A step within the quota records normally.
         s.dispatch("step", Some(json!({ "ticks": 10 }))).unwrap();
-        // Event quota: pretend the recording already holds the maximum.
+        // Byte quota: re-arm the recording under a tight byte cap that leaves room for a few
+        // events beyond the reserved final checkpoint, then ask for one event too many. The
+        // event count quota (2^20) is unreachable in practice: the byte cap binds first.
         let rec = s.recording.as_mut().unwrap();
+        let world = s.world.as_ref().unwrap();
         let filler = ReplayEvent {
             tick: 0,
             sequence: 0,
             event: InputEvent::PointerMove { x256: 0, y256: 0 },
             intent: None,
         };
-        rec.replay
-            .events
-            .resize(replay_limits::MAX_EVENTS, filler.clone());
+        let header = rec.recorder.header().clone();
+        let worst = ReplayRecorder::worst_case_event_bytes(filler.event).unwrap();
+        let probe = ReplayRecorder::new(header.clone(), &world.hashes()).unwrap();
+        let cap = probe.bytes() + probe.reserve() + 3 * worst;
+        rec.recorder = ReplayRecorder::with_max_bytes(header, &world.hashes(), cap).unwrap();
+        rec.checkpoint_every = 0;
+        let events: Vec<Value> = (0..4)
+            .map(|i| {
+                json!({ "tick_offset": 0, "sequence": i, "kind": "pointer_move", "x256": 0, "y256": 0 })
+            })
+            .collect();
         let err = s
-            .dispatch(
-                "step",
-                Some(json!({
-                    "ticks": 1,
-                    "events": [{ "tick_offset": 0, "sequence": 0, "kind": "pointer_move", "x256": 0, "y256": 0 }]
-                })),
-            )
+            .dispatch("step", Some(json!({ "ticks": 1, "events": events })))
             .unwrap_err();
-        assert!(err.message.contains("events"), "{}", err.message);
+        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert!(err.message.contains("bytes"), "{}", err.message);
         assert_eq!(s.world.as_ref().unwrap().tick, 10);
-        // The window-mode backstop: stepping directly past the quota marks the recording failed
-        // and `replay.stop` reports it instead of returning a replay the parser would reject.
-        s.step_recorded(&[filler.event]);
+        assert!(s.recording.as_ref().unwrap().recorder.events().is_empty());
+        // Three fit exactly (their real lines are shorter than the worst case).
+        let three: Vec<Value> = (0..3)
+            .map(|i| {
+                json!({ "tick_offset": 0, "sequence": i, "kind": "pointer_move", "x256": 0, "y256": 0 })
+            })
+            .collect();
+        s.dispatch("step", Some(json!({ "ticks": 1, "events": three })))
+            .unwrap();
+        assert_eq!(s.recording.as_ref().unwrap().recorder.events().len(), 3);
+        // The window-mode backstop: stepping directly past the byte quota marks the recording
+        // failed and `replay.stop` reports it instead of returning a replay the parser would
+        // reject.
+        let big = InputEvent::PointerMove {
+            x256: i32::MIN,
+            y256: i32::MIN,
+        };
+        s.step_recorded(&[big, big, big, big]);
         assert!(s.recording.as_ref().unwrap().failed.is_some());
         let err = s.dispatch("replay.stop", Some(json!({}))).unwrap_err();
         assert!(err.message.contains("discarded"), "{}", err.message);
         assert!(s.recording.is_none());
+    }
+
+    #[test]
+    fn stop_never_exceeds_the_byte_cap() {
+        // Record right up to a small cap, then stop: the final checkpoint fits in its reserve
+        // and the text is within the cap and parses.
+        let (mut s, _dir) = session("stop-cap");
+        corridor(&mut s);
+        s.dispatch("replay.start", Some(json!({ "checkpoint_every": 0 })))
+            .unwrap();
+        let (header, hashes) = {
+            let rec = s.recording.as_ref().unwrap();
+            let world = s.world.as_ref().unwrap();
+            (rec.recorder.header().clone(), world.hashes())
+        };
+        let cap = 4096;
+        let mut recorder = ReplayRecorder::with_max_bytes(header, &hashes, cap).unwrap();
+        recorder
+            .push_checkpoint(ReplayCheckpoint { tick: 0, hashes })
+            .unwrap();
+        s.recording.as_mut().unwrap().recorder = recorder;
+        let mut recorded = 0;
+        loop {
+            let before = s.recording.as_ref().unwrap().recorder.events().len();
+            if s
+                .dispatch(
+                    "step",
+                    Some(json!({
+                        "ticks": 1,
+                        "events": [{ "tick_offset": 0, "sequence": 0, "kind": "pointer_move", "x256": i32::MIN, "y256": i32::MIN }]
+                    })),
+                )
+                .is_err()
+            {
+                break;
+            }
+            recorded = s.recording.as_ref().unwrap().recorder.events().len();
+            assert_eq!(recorded, before + 1);
+        }
+        assert!(recorded > 0);
+        let stopped = s.dispatch("replay.stop", Some(json!({}))).unwrap();
+        let jsonl = stopped["jsonl"].as_str().unwrap();
+        assert!(jsonl.len() <= cap, "{} > {cap}", jsonl.len());
+        let replay = Replay::from_jsonl(jsonl).unwrap();
+        assert_eq!(replay.events.len(), recorded);
+        assert_eq!(replay.checkpoints.len(), 1);
+        assert_eq!(replay.checkpoints[0].tick, s.world.as_ref().unwrap().tick);
+    }
+
+    #[test]
+    fn restore_refuses_geometry_over_the_navigation_budget() {
+        let (mut s, _dir) = session("nav-budget");
+        corridor(&mut s);
+        s.dispatch("step", Some(json!({ "ticks": 2 }))).unwrap();
+        let taken = s.dispatch("snapshot", None).unwrap();
+        let before = s.world.as_ref().unwrap().hashes();
+        // Within the vertex budget, but the scan conversion would need far more edge tests than
+        // `MAX_EDGE_TESTS`: many tall polygons with many edges on a large map.
+        let mut v = taken["snapshot"].clone();
+        v["world"]["map_size"] = json!([8, 32768]);
+        v["world"]["viewport"] = json!([8, 8]);
+        let poly: Vec<[i32; 2]> = (0..20_000).map(|i| [i % 7, (i * 13) % 32768]).collect();
+        v["world"]["geometry"]["boundary"] = json!(poly);
+        v["world"]["geometry"]["obstacles"] = json!([poly, poly]);
+        let err = s
+            .dispatch("restore", Some(json!({ "snapshot": v })))
+            .unwrap_err();
+        assert_eq!(err.code, RpcError::ENGINE);
+        assert!(err.message.contains("navigation"), "{}", err.message);
+        assert!(err.message.contains("edge tests"), "{}", err.message);
+        let world = s.world.as_ref().unwrap();
+        assert_eq!(world.tick, 2);
+        assert_eq!(world.hashes(), before);
+        // Too many polygons is refused the same way.
+        let mut v = taken["snapshot"].clone();
+        let tri = json!([[0, 0], [1, 0], [0, 1]]);
+        v["world"]["geometry"]["obstacles"] =
+            json!(vec![tri; opensherwood_core::nav::MAX_POLYGONS + 1]);
+        let err = s
+            .dispatch("restore", Some(json!({ "snapshot": v })))
+            .unwrap_err();
+        assert!(err.message.contains("polygons"), "{}", err.message);
+        assert_eq!(s.world.as_ref().unwrap().hashes(), before);
     }
 
     #[test]

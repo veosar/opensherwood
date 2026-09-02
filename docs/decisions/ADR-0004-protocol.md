@@ -2,10 +2,12 @@
 
 Date: 2026-09-02. Status: accepted.
 
-Versions in force (2026-09-02 night): protocol 3 (`ui` observation, `menu` scenario, optional world fields),
-ruleset 4 (1024x768 viewport for retail scenarios, camera on the hero, NPC rail programs), hash schema 4 (walkable
-geometry under `pathfinding`, path waypoints under `orders`), snapshot schema 6 (`menu` scenario variant, NPC
-programs, `content` fingerprint in the envelope).
+Versions in force (2026-09-02, script VM): protocol 3 (`ui` observation, `menu` scenario, optional world
+fields; the `script` observation object and `debug.vm` are additive), ruleset 5 (script VM: `Initialize` /
+`PostInitialize` at load, `Hourglass` and `CheckVictoryCondition` every tick, sequences, messages, zone events;
+hidden player characters start inactive), hash schema 6 (`scripts` and `scheduler` parts carry the VM state,
+entity `active` / `ai_locked` flags under `actors`, the `script` RNG stream under `rng`), snapshot schema 7
+(`vm` state, entity flags).
 Any change to canonical bytes bumps the ruleset or hash schema and regenerates
 `harness/fixtures/synthetic_corridor.json` (see `docs/decisions/reviews/2026-09-02-codex-m0-review-disposition.md`).
 

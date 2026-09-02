@@ -200,6 +200,21 @@ class Engine:
     def observe(self, entities: bool = True) -> dict[str, Any]:
         return self.call("observe", {"entities": entities})
 
+    def skip_briefing(self, max_pages: int = 30) -> int:
+        """Dismiss the script's text pages shown after a mission load (Enter, like a player); returns
+        the number of pages dismissed."""
+        pages = 0
+        while pages < max_pages:
+            ui = self.observe(entities=False).get("ui")
+            if not ui or ui.get("screen") != "briefing":
+                break
+            self.step(1, [
+                {"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": "enter"},
+                {"tick_offset": 0, "sequence": 1, "kind": "key_up", "key": "enter"},
+            ])
+            pages += 1
+        return pages
+
     def snapshot(self) -> dict[str, Any]:
         return self.call("snapshot")
 

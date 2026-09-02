@@ -391,11 +391,11 @@ mod tests {
         f.extend_from_slice(&2u32.to_le_bytes());
         f.extend_from_slice(&8u32.to_le_bytes());
         f.extend_from_slice(&[2, 0]);
-        f.extend(p32("PlusSous"));
+        f.extend(p32("VarMoney"));
         f.extend_from_slice(&0u32.to_le_bytes());
         f.extend_from_slice(&[7, 5]);
         f.extend_from_slice(b"Actor");
-        f.extend(p32("MonActeur"));
+        f.extend(p32("ActorVar"));
         f.extend_from_slice(&4u32.to_le_bytes());
         f.extend_from_slice(&1u32.to_le_bytes());
         f.extend(p32("Initialize"));

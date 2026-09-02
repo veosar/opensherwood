@@ -66,8 +66,32 @@ snapshot handles (ADR-0004, "Envelope and validation"). Both are refused while a
 |---|---|---|
 | `{"synthetic": "corridor"}` | no | 640x480 room, a player, a patrolling guard, three obstacles, a goal |
 | `{"map_view": {"map": "sherwood", "ambiance": "Day"}}` | yes | the retail background of that map with the synthetic units on it and a scrollable camera |
-| `{"mission": "<name>"}` | yes | the retail mission's background, walkable geometry, occluders and actors (NPC, civilian and `TOTO` sprites from the profile table `Configuration/profile.cpf`, see `docs/formats/profile.md`; a default sprite with a logged warning when an entry is unavailable; heroes still in file order); NPCs follow their rail programs (walk the rail back and forth, face, wait, glance, loop; see `docs/formats/rhm.md` "Rail programs"), NPCs without a rail stand idle; no scripts or reactive AI yet; viewport 1024x768 |
+| `{"mission": "<name>"}` | yes | the retail mission's background, walkable geometry, occluders and actors (NPC, civilian and `TOTO` sprites from the profile table `Configuration/profile.cpf`, see `docs/formats/profile.md`; a default sprite with a logged warning when an entry is unavailable; heroes still in file order; hidden player characters start inactive); NPCs follow their rail programs (walk the rail back and forth, face, wait, glance, loop; see `docs/formats/rhm.md` "Rail programs"), NPCs without a rail stand idle; the mission script (`Data/Levels/<name>.scb`) runs in the core VM (objectives, texts, sequences, messages, zones, activation, patrols; see below); no reactive AI yet; viewport 1024x768 |
 | `{"menu": "main"}` | yes | the original main menu; `observe` returns a `ui` object (`screen` = `main_menu`, `briefing`, `pause_menu` or `dialog`; `items` with actions and rectangles; `hovered`; briefing `page`; `credits` reports the scroll offset in `page[0]`) while a screen is shown; clicking Play! loads the first mission behind its briefing; Escape in a mission opens the pause menu (Continue / Restart / Quit with confirmation); menus never tick the world |
+
+## Scripts
+
+While a mission with a script is loaded, `observe` carries a `script` object: `objectives` (`[{index, primary,
+done}]` in the order the script added them), `texts` (pending text indices of the level's text list, first is
+shown), `mission_won`, `sequence_active`, `camera_target` (map pixels set by the last camera native),
+`debriefing`, `unknown_natives` (`{id: count}` of natives without an implementation that were called),
+`faulted` (an unknown native stopped a callback), `lenient` and `unknown_calls` (see below). The app dismisses
+the text at the front of the queue through `World::vm_dismiss_text` when the briefing parchment closes (one
+dismissal per page); the harness does the same through `debug.vm {"dismiss_text": true}`, which is an inspection
+method, not a canonical input: a test that claims a player dismissed a page must do it through the screen.
+
+`debug.vm` returns `{present, dismissed, classes, elements, locations, objectives, texts, mission_won,
+sequence_active, sequences, faulted, lenient, unknown_calls, pending_messages, camera_target, debriefing,
+mission_vars, counters, rng_draws}`; `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
+`traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives` and
+`objective_done_before_added`.
+
+Unknown natives (no row of `docs/formats/scb.md` with an effect) are a deterministic trap by default: the
+callback stops there, `faulted` becomes true, and the id is counted. `opensherwood --lenient-natives` selects
+the permissive policy for the session: such a native is a recorded no-op returning 0 and every call is logged
+with its arguments in the VM state (`unknown_calls`, snapshotted and hashed). Stub natives (documented effect
+not modelled yet: animations, remarks, doors, blips, ...) are recorded no-ops in both modes. The loader logs one
+line per mission with the native call sites by class (implemented / stub / unknown ids).
 
 `harness/tools/drive.py` runs a short scripted session (select, order, scroll, capture) in headless or window
 mode and prints where the PNGs went; agents use it to look at the engine after a change.

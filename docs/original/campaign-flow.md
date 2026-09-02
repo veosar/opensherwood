@@ -49,12 +49,10 @@ into the same mission as well (a short "mission loaded" style message in white o
   cutting the drawbridge rope, combat (click / double click on the adversary, click on Robin to parry, hold the
   button and move to draw attacks, a horizontal figure of eight against strong enemies), and the bow (click the
   arrow above the portrait, aim, click when the cursor turns green).
-- `RHLevelHA.red` (u32 values): `1000017, 1000007, 0, 23, 1000105, 1000103, 1000106, 1000001, 1000107, 1000083,
-  1000108, 1000108, 1000109, 1000110, 1000110, 1000089, 1000111, 1000112, 1000113, 1000114, 1000115, 1000116,
-  1000117, 1000118, 1000117, 1000119, 1000120, 1000121, 1, 1000349, 1, 1000350, 6, 1000283`: title, unused goal,
-  0, then `23` and 23 ids (1000105 = the text list, the others are probably the `WAVE` voice entries of each
-  string), `1` + 1000349 (debriefing when won), `1` + 1000350 (debriefing when lost), `6` + 1000283 (six short
-  briefings). This refines the stub in `docs/formats/red.md` (*inferred* layout, consistent with all 57 files:
+- `RHLevelHA.red` (u32 values, layout only; the file is not reproduced): the title id (1000017), an unused
+  goal id, 0, then `23` and 23 ids (the first, 1000105, is the text list; the others are probably the `WAVE`
+  voice entries of each string), `1` + 1000349 (debriefing when won), `1` + 1000350 (debriefing when lost),
+  `6` + 1000283 (six short briefings). This refines the stub in `docs/formats/red.md` (*inferred* layout, consistent with all 57 files:
   every file ends with `n_won, id, n_lost, id, n_short, id`).
 - Debriefings: won = 1000349 (Robin leaves Lincoln with the servant's son but without finding his godfather),
   lost = 1000350 (Robin was slain; start another game).
@@ -95,7 +93,7 @@ into the same mission as well (a short "mission loaded" style message in white o
 
 - `HA` = `H01_Lin_VL` on Lincoln (confirms the file mapping inferred above from the `.red` order; still not
   confirmed by loading), no prerequisite, removed by itself.
-- `SA` = `S01_Not_VL` (Nottingham, "First Companions" in `Level.res`) needs `HA`; `HB` = `H02_Not_EC` needs
+- `SA` = `S01_Not_VL` (Nottingham) needs `HA`; `HB` = `H02_Not_EC` needs
   `SA`. So the mission that "launches automatically" after the first one is **SA**, not HB, if the lists are
   prerequisites; `S01_Not_VL` has a single `SCOT` slot (Robin alone), consistent with the manual. Unverified.
 - Story chain: `HC` needs `HB` + `SB`; `SC` needs `HC`; `HD` needs `SC`; `HE` needs `HD`; `SD` needs `HE` + `SC`;
@@ -124,11 +122,11 @@ from the `RHLevel??.red` names and the `H01_Lin_VL` naming scheme; it has not be
    by renaming the file in a private copy). The `profile.cpf` level table (section 3) maps `HA` to
    `H01_Lin_VL`, which makes this very likely but is still not a loading test.
 2. What triggers `EmbTut_FoC_EC` (tutorial ambush) and the intro video (`2047/data/Cinematics/Intro.vid`,
-   TEXT 1000056 "into"); is the video shown on the very first start of a fresh installation? Data: the
+   TEXT 1000056); is the video shown on the very first start of a fresh installation? Data: the
    tutorial ambush (`EZ`) lists `SA` as its prerequisite (section 3).
 3. The debriefing screen after a mission (layout, statistics, buttons) and the automatic transition to mission 2.
 4. The Sherwood camp screen and the campaign map: exact positions of the MAP / SEND icons, the team boxes, the
    red / blue seals; whether the availability graph is the `profile.cpf` code lists of section 3 (and what
    `Campaign.bck`, `RHCampaign` add to it).
-5. Meaning of the second and third `.red` values (`1000007` = "NOTUSED" text; `0/1/2/3/4` then a variable block
+5. Meaning of the second and third `.red` values (`1000007` = a placeholder text; `0/1/2/3/4` then a variable block
    before the `23` count in the H/S files).

@@ -15,7 +15,7 @@
 //! abort the process nor make it allocate more than the policy allows.
 
 use crate::dic::{Dictionary, FrameRecord, NO_PAGE};
-use crate::image_blob::{Image16, rgb565_to_rgb8};
+use crate::image_blob::{Image16, RgbaBudget, rgb565_to_rgb8};
 use crate::reader::{FormatError, Reader};
 
 /// RGB565 value that is transparent in every frame (bright green, `0x07C0`).
@@ -347,22 +347,34 @@ pub fn decode_span_frame_with(
     })
 }
 
-/// Convert a decoded frame to RGBA8 for previewing: [`COLOR_KEY`] becomes fully transparent and
-/// [`SHADOW_KEY`] a half-transparent black (a preview choice, not verified original behaviour).
+/// RGBA8 of one sprite pixel: [`COLOR_KEY`] fully transparent, [`SHADOW_KEY`] a half-transparent
+/// black (a preview choice, not verified original behaviour), anything else opaque RGB565.
 #[must_use]
-pub fn to_rgba8_keyed(img: &Image16) -> Vec<u8> {
-    let mut out = Vec::with_capacity(img.pixels.len() * 4);
-    for &p in &img.pixels {
-        match p {
-            COLOR_KEY => out.extend_from_slice(&[0, 0, 0, 0]),
-            SHADOW_KEY => out.extend_from_slice(&[0, 0, 0, 128]),
-            _ => {
-                let (r, g, b) = rgb565_to_rgb8(p);
-                out.extend_from_slice(&[r, g, b, 255]);
-            }
+pub fn keyed_rgba(p: u16) -> [u8; 4] {
+    match p {
+        COLOR_KEY => [0, 0, 0, 0],
+        SHADOW_KEY => [0, 0, 0, 128],
+        _ => {
+            let (r, g, b) = rgb565_to_rgb8(p);
+            [r, g, b, 255]
         }
     }
-    out
+}
+
+/// Convert a decoded frame to RGBA8 for previewing ([`keyed_rgba`] per pixel), charging the
+/// frame's final size to `budget` before allocating (`Image16::try_to_rgba8_with`: the pixel
+/// count is checked against the dimensions, the allocation is fallible).
+pub fn to_rgba8_keyed_budgeted(
+    img: &Image16,
+    budget: &mut RgbaBudget,
+) -> Result<Vec<u8>, FormatError> {
+    img.try_to_rgba8_with(budget, keyed_rgba)
+}
+
+/// [`to_rgba8_keyed_budgeted`] for one frame on its own (no cumulative budget).
+pub fn to_rgba8_keyed(img: &Image16) -> Result<Vec<u8>, FormatError> {
+    let mut budget = RgbaBudget::UNBOUNDED;
+    to_rgba8_keyed_budgeted(img, &mut budget)
 }
 
 #[cfg(test)]
@@ -443,8 +455,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(img.pixels, vec![COLOR_KEY]);
-        let rgba = to_rgba8_keyed(&img);
+        let rgba = to_rgba8_keyed(&img).unwrap();
         assert_eq!(rgba, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rgba_preview_is_checked_and_budgeted() {
+        let img = Image16 {
+            width: 2,
+            height: 1,
+            pixels: vec![COLOR_KEY, SHADOW_KEY],
+        };
+        assert_eq!(
+            to_rgba8_keyed(&img).unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 128]
+        );
+        // Dimensions and pixel count must agree.
+        let torn = Image16 {
+            width: 2,
+            height: 2,
+            pixels: vec![0; 3],
+        };
+        assert!(to_rgba8_keyed(&torn).is_err());
+        // The cumulative budget refuses the frame that does not fit and stays unchanged.
+        let mut budget = RgbaBudget::new(12);
+        assert!(to_rgba8_keyed_budgeted(&img, &mut budget).is_ok());
+        assert_eq!(budget.used(), 8);
+        assert!(to_rgba8_keyed_budgeted(&img, &mut budget).is_err());
+        assert_eq!(budget.used(), 8);
     }
 
     #[test]

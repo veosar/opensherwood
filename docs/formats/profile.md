@@ -5,6 +5,11 @@ Status: `profile.cpf` container **verified** (the grammar below consumes the ret
 **established** (see [rhm.md](rhm.md), "Actor profile mapping"); the numeric fields are `unknown_*` with
 observed values. `keyset*.cfg`, `Profiles` and `release.log` remain **stub**.
 
+This document describes the *layout* of the file and the *rules* for using it. It deliberately does not
+reproduce the table contents (sprite names, designer labels, voice codes): the engine reads them from the
+player's own `profile.cpf` at run time, and copying them here would put game data into the repository
+(`docs/legal.md`). Where a role is given for an index range it is a description in our own words.
+
 ## `profile.cpf`
 
 30,441 bytes, no magic. `cpf` is a table of *profiles*: the ten player characters, the 68 armed
@@ -13,7 +18,7 @@ files reference the actor tables by 0-based position (`BORG.profile`, `OILE.prof
 level table maps the two-letter level codes of `Text/RHLevel??.red` to `.rhm` files, maps and music.
 
 Conventions: little-endian; `pstring` = `u16 length` + Latin-1 bytes; `code` = `char[4]`, NUL padded (a
-voice-set code such as `SDHL` or a level code such as `HA`).
+four-character voice-set code or a two-letter level code).
 
 ```
 u32  n_a (27)          n_a x { u8[28] head; 10 x u8[32] record }      table A (unknown; see below)
@@ -32,12 +37,14 @@ All three actor record kinds start with the same three strings:
 |---|---|---|
 | sprite | pstring | base name of the sprite profile: `Characters/<sprite>.rhs` (83 distinct files over the 102 entries; all exist) |
 | sequence | pstring | the 32-char sequence name inside that `.rhs` (equal to it for all 102 entries; French) |
-| label | pstring | designer label, French: unit type + colour for soldiers, e.g. "Lancier Bleu"; empty for PCs |
+| label | pstring | designer label in French (unit kind plus a colour word for soldiers, a "do not use" marker for spare entries); empty for PCs. Not used by the engine as far as the data shows |
 
-then a kind-specific block that contains the `voice` code (`char[4]`): `PC..`, `SD..`, `VP..` or `CV..`,
-naming `Sounds/Exclamations/actor<code>.dat` and the `Text/actors.res` `WAVE` list whose paths are
-`Expressions\X_<CC>_<XX>_E<nn>_V<vv>.wav` (see [sound.md](sound.md)). Seven civilian entries have an empty
-code (no exclamations).
+then a kind-specific block that contains the `voice` code (`char[4]`). The code is two letters for the kind
+(`PC` player character, `SD` soldier, `VP` story antagonist, `CV` civilian) plus two letters for the
+individual voice set, and it names `Sounds/Exclamations/actor<code>.dat` and the `Text/actors.res` `WAVE`
+list whose paths are `Expressions\X_<CC>_<XX>_E<nn>_V<vv>.wav` (see [sound.md](sound.md)). Seven civilian
+entries have an empty code (no exclamations). The engine derives all of these file names from the code at
+run time; no list of codes is needed in code or docs.
 
 ```
 PC   = sprite, sequence, label, u8[8] unknown_pre, code voice, u8[82] unknown_post
@@ -45,88 +52,73 @@ SD   = sprite, sequence, label, u8[21] unknown_pre, code voice, u8[55] unknown_p
 CV   = sprite, sequence, label, u8[8] unknown_pre, code voice
 ```
 
+**Rule for sprites at run time.** A mission actor's sprite is `Characters/<sprite>.rhs` where `sprite` is
+the first string of the table entry its `profile` index selects (SD for `BORG`, CV for `OILE`, PC for
+`TOTO`). The `sequence` string is the name *inside* that file and is not what the sprite bank is keyed by.
+Player-character slots (`SCOT`) carry no profile; the campaign state decides which PC entry they use.
+
 #### PC table (10 entries; `TOTO.profile` indexes it; the player's team is drawn from it)
 
-| # | sprite | voice | # | sprite | voice |
-|---|---|---|---|---|---|
-| 0 | RobinHood | PCRH | 5 | WillScarlet | PCWS |
-| 1 | RobinTown | PCRH | 6 | LadyMarian | PCLM |
-| 2 | LittleJohn | PCLJ | 7 | MerryManA | PCMA |
-| 3 | Friar Tuck | PCFT | 8 | MerryManB | PCMB |
-| 4 | Stuteley | PCST | 9 | MerryManC | PCMC |
+Index roles (own words): 0 and 1 are the hero in his two outfits (forest / town), 2..=6 the five named
+companions (the big man, the friar, the archer, the swordsman, the lady), 7..=9 three generic merry men.
+Two entries share one voice set (the hero's two outfits); the other eight have their own.
 
-`unknown_pre` as `u16[4]`: `(256, 100, 20, 50)` for both Robins, `(256, 0, 30, 70)` Little John,
-`(256, 0, 1, 10)` Tuck, `(256, 0, 1, 20)` Stuteley, `(256, 0, 20, 100)` Will, `(256, 20, 20, 30)` Marian,
-`(0, 10, 1, 20)`, `(0, 1, 20, 20)`, `(0, 1, 1, 20)` for the merry men (ability values; which is which is
-unknown). `unknown_post` starts with a `u16` id that is *not* the table position (1, 2, 3, 5, 7, 4, 6, 8, 9,
-10 in table order), continues with small `u16` values, the same six `f32` as the SD records
-(`-6, -3, 6, 3`, then `150, 150`) and ends with two `u16` (`100, 80` Robins; `100, 100`; `50, 100` Tuck and
-Marian; `200, 200` Will).
+`unknown_pre` as `u16[4]`: the first word is 256 for the seven named entries and 0 for the three merry men;
+the other three words are small values (0..=100) that differ per character (ability values; which is which
+is unknown). `unknown_post` starts with a `u16` id that is *not* the table position (a permutation of
+1..=10), continues with small `u16` values, the same six `f32` as the SD records (`-6, -3, 6, 3`, then
+`150, 150`) and ends with two `u16` in 50..=200 (100/80 for the hero entries, 50..=200 for the others).
 
 #### SD table (68 entries; `BORG.profile` indexes it)
 
-Six families of six palette variants each, in the order of the entries; within a family the variant order
-is 00 blue, 01 yellow, 02 orange, 03 red, 04 black, 05 green (the designer labels say so, and the first
-`u16` of `unknown_pre` grows by 10 per step from blue to black; green repeats orange). Early missions use
-blue / yellow, the last story mission red / black: the colour is the enemy's strength tier.
+Seven soldier families of six palette variants each, in the order of the entries; within a family the
+variant order is 00 blue, 01 yellow, 02 orange, 03 red, 04 black, 05 green (the designer labels say so, and
+the first `u16` of `unknown_pre` grows by 10 per step from blue to black; green repeats orange). Early
+missions use blue / yellow, the last story mission red / black: the colour is the enemy's strength tier.
 
-| Index | sprite | label kind (French) | voice | English |
-|---|---|---|---|---|
-| 0-5 | Guard A00..A05 | Hallebardier | SDHL | halberdier |
-| 6-11 | Soldier A00..A05 | Epee | SDSW | swordsman |
-| 12-17 | Archer00..05 | Archer | SDBW | archer (bowman) |
-| 18-23 | Officier B00..B04, Officer05 | Officier | SDOF | officer |
-| 24-29 | Soldier B00..B05 | Chevalier | SDKN | knight (on foot) |
-| 30-35 | Guard B00..B05 | Lancier | SDLN | lancer |
-| 36-41 | Crossbowman00..05 | Arbaletrier | SDCB | crossbowman |
-| 42 | MerryManBow | | SDMD | merry man with bow (recruit / trainee) |
-| 43 | MerryManStaff | | SDMD | merry man with staff |
-| 44 | Trainer | | SDTM | the Sherwood trainer |
-| 45-51 | Guard A05, Soldier A05, Archer05, Officer05, Soldier B05, Guard B05, Crossbowman05 | "... Vert Mechant" | as above | hostile green variants (used only by `H04_Lei_VL`, Ranulph's Leicester) |
-| 52 | Knight02 | "Ne pas utiliser1" | SDRD | unused (0 references) |
-| 53-55 | Knight01, Knight02, Knight03 | Cavalier | SDRD | mounted knights (yellow, orange, red) |
-| 56-58 | Knight02 | "Ne pas utiliser2..4" | SDRD | unused (0 references) |
-| 59 | Guisbourne | | VPGG | Guy of Gisborne (armed) |
-| 60 | Longchamp | | VPGL | Longchamp (York) |
-| 61 | Scatlock | | VPSK | Scathlock (Derby) |
-| 62 | sherif | | VPSN | Sheriff of Nottingham (armed) |
-| 63-64 | Officer02 | "Ne pas utiliser5..6" | SDOF | unused (0 references) |
-| 65-67 | Officer02, Officer03, Officer04 | "Officier Special" | SDOF | special officers (orange, red, black) |
+| Index | Role (own words) |
+|---|---|
+| 0-5 | halberdier family, six colour tiers (a pole-arm unit) |
+| 6-11 | swordsman family |
+| 12-17 | archer family |
+| 18-23 | officer family |
+| 24-29 | knight-on-foot family |
+| 30-35 | lancer family (the second pole-arm unit) |
+| 36-41 | crossbowman family |
+| 42, 43 | merry-man recruits with bow / with staff (training targets in the camp) |
+| 44 | the camp trainer |
+| 45-51 | hostile green variants of the seven families, one each, in family order (referenced only by `H04_Lei_VL`) |
+| 52, 56-58, 63-64 | spare entries the designers marked as not to be used (0 references from any mission) |
+| 53-55 | mounted knights (yellow, orange, red) |
+| 59-62 | the four armed story antagonists (Gisborne, the York and Derby lords, the Sheriff) |
+| 65-67 | special officers (orange, red, black) |
+
+The sprite of each entry is read from the file; all 68 point at existing `Characters/*.rhs` files, and
+several entries share a sprite (the spare entries and the green variants reuse family sprites).
 
 `unknown_pre` reads as `u16[5], u8, u16[5]`: e.g. halberdiers `(80..120, 10..30, 40..60, 0, 0), 1, (0, 5..80,
-10..50, 0, 0)`; the `u8` is 1 for the two pole-arm families (`Guard A`, `Guard B`) and 0 otherwise. Officers,
-knights and VIPs have non-zero fourth / fifth values (`80, 35` ... `0, 100`); the VIPs are `(250, 100, 100,
+10..50, 0, 0)`; the `u8` is 1 for the two pole-arm families and 0 otherwise. Officers, knights and the
+antagonists have non-zero fourth / fifth values (`80, 35` ... `0, 100`); the antagonists are `(250, 100, 100,
 0, 100)`. Hit points and combat skills is the obvious reading; unverified. `unknown_post`: `u16` (3
-halberdier / lancer, 5 swordsman / archer / crossbowman / trainer, 7 officer, 10 knight / VIP, 15 mounted, 1
-merry man), a flag byte (`0xf1`, `0xe1`, `0xc1`, `0xc0`, `0xd0`, `0xc6`, `0xc7`, `0xc9`), five `u16` (ranges
-/ percentages, zero for the green variants), a `u16` *class id* unique per unit type (`0x0b` merry man
-staff, `0x0c` halberdier, `0x0d` archer / merry man bow / trainer, `0x0e` lancer, `0x0f` swordsman, `0x10`
-officer, `0x11` knight, `0x12` mounted knight, `0x13` VIP, `0x14` crossbowman, `0x15..0x1b` the hostile
-green variants), 8 zero bytes, `f32[4] = -6, -3, 6, 3`, `u8 1`, `f32[2] = 150, 150` (the 300x300 sprite
-canvas centre, see [sprites.md](sprites.md)), `u16` (`0x40`; 3 for mounted knights, 10 for VIPs) and two
-`u32` (0..3).
+halberdier / lancer, 5 swordsman / archer / crossbowman / trainer, 7 officer, 10 knight / antagonist, 15
+mounted, 1 merry man), a flag byte (eight distinct values in `0xc0..=0xf1`), five `u16` (ranges /
+percentages, zero for the green variants), a `u16` *class id* unique per unit type (`0x0b..=0x14` for the
+regular kinds, `0x15..=0x1b` for the hostile green variants), 8 zero bytes, `f32[4] = -6, -3, 6, 3`, `u8 1`,
+`f32[2] = 150, 150` (the 300x300 sprite canvas centre, see [sprites.md](sprites.md)), `u16` (`0x40`; 3 for
+mounted knights, 10 for the antagonists) and two `u32` (0..3).
 
 #### CV table (24 entries; `OILE.profile` indexes it)
 
-| # | sprite | voice | `unknown_pre` (u32, u32) | # | sprite | voice | `unknown_pre` |
-|---|---|---|---|---|---|---|---|
-| 0 | TaxeCollector | CVTC | 0, 0 | 12 | Friar Tuck | (none) | 0, 0 |
-| 1 | Mendicant | CVMT | 4, 1 | 13 | LadyMarian | (none) | 1, 1 |
-| 2 | Child | CVCH | 3, 1 | 14 | MarianneWedding | (none) | 1, 1 |
-| 3 | ManCivilianPoor | CVPM | 0, 1 | 15 | ManCivilianOld | CVOM | 0, 1 |
-| 4 | ManCivilianRich | CVRM | 0, 0 | 16 | Guisbourne | VPGG | 5, 1 |
-| 5 | ManCivilianFriend | CVPM | 0, 1 | 17 | Priest | (none) | 0, 1 |
-| 6 | WomanCivilianPoor | CVPW | 1, 1 | 18 | Allan | (none) | 0, 1 |
-| 7 | WomanCivilianRich | CVRW | 1, 0 | 19 | Sherif | VPSN | 5, 1 |
-| 8 | WomanCivilianFriend | CVPW | 1, 1 | 20 | Scatlock | VPSK | 5, 1 |
-| 9 | Ranulph | VPRA | 5, 1 | 21 | Longchamp | VPGL | 5, 1 |
-| 10 | Godwin | VPGD | 5, 1 | 22 | Longchamp Dead | (none) | 5, 1 |
-| 11 | PrinceJohn | VPPJ | 5, 1 | 23 | Soldier A03 | (none) | 0, 1 |
+Index roles (own words): 0 the tax collector, 1 the beggar, 2 a child, 3..=8 six generic townspeople (poor /
+rich / "friend" man and woman), 9..=11 three named story notables (the Leicester lord, his steward, the
+prince), 12..=14 the friar, the lady and the lady in wedding dress (unarmed versions of PC sprites), 15 an old
+man, 16 and 19..=21 the unarmed versions of the four antagonists, 22 a corpse, 17 a priest, 18 a minstrel,
+23 a soldier sprite reused as a civilian (`H12_Not_MP`; its label says so). Seven entries (the unarmed PC
+versions, the priest, the minstrel, the corpse, the reused soldier) have an empty voice code.
 
-The first word is a civilian *kind*: 0 man, 1 woman, 3 child, 4 beggar, 5 notable (the unarmed "civil"
-versions of the story characters; 12-14 are Tuck / Marian in civilian clothes). The second word is 0 for the
-tax collector, the two rich civilians and civilian Tuck, 1 otherwise (meaning unknown). Entry 23 reuses a
-soldier sprite as a civilian for `H12_Not_MP` (its label says so).
+`unknown_pre` as `(u32, u32)`: the first word is a civilian *kind*: 0 man, 1 woman, 3 child, 4 beggar, 5
+notable. The second word is 0 for the tax collector, the two rich civilians and the unarmed friar, 1
+otherwise (meaning unknown).
 
 ### LEVEL records (63 entries)
 
@@ -145,13 +137,14 @@ LEVEL = code level_code, pstring map, pstring mission_file, pstring title, u32 u
 lists.)
 
 - `level_code`: the two letters of `Text/RHLevel<code>.red`; all 57 `.red` files have an entry, plus `EJ..EO`,
-  `TG..TI`, `TT`, `TV` (placeholders) and `EY` (`SherwoodOutro`).
-- `map`: the proto-level name as in the `.rhp` / `FOOT` (`Lincoln`, `nottingham`, `Croisement01` ...);
-  `mission_file`: the `.rhm` base name, or `Impossible_mission` for the 22 placeholder entries; `title`: an
-  internal working title (not the `Level.res` title).
+  `TG..TI`, `TT`, `TV` (placeholders) and `EY` (the outro level).
+- `map`: the proto-level name as in the `.rhp` / `FOOT` (the nine map base names, in the file's own
+  capitalisation); `mission_file`: the `.rhm` base name, or one fixed placeholder name (no such `.rhm`
+  exists) for the entries that have no mission; `title`: an internal working title (not the `Level.res`
+  title; not reproduced).
 - `unknown_a`: 0 story (H, S), 1 assault (AA-AC), 3 ambush (E), 4 Sherwood, 5 defend (D), 6 tactical (T).
-- `location`: 1 Croisement01, 2 Croisement02, 3 Croisement03, 4 Derby, 5 Leicester, 6 Lincoln, 7 Nottingham,
-  8 Sherwood, 9 York (consistent with `map` in all 63 entries).
+- `location`: 1..=3 the three forest crossings, 4 Derby, 5 Leicester, 6 Lincoln, 7 Nottingham, 8 Sherwood,
+  9 York (consistent with `map` in 62 of 63 entries; see the parser observation below).
 - `unknown_c`: 0 (`HQ`, `HA`, `SA`, `EY`) or 1. `unknown_d`: 1..6 (1 for `HA`, `SA`, `HG`, `HI`, all ambushes
   and tactical missions; 6 for most H missions). Not the `SCOT` record count. `unknown_e`: 0 or 256;
   `unknown_f`: 200 (tactical), 300 (ambush), 600..800 (story), 0 (Sherwood); `unknown_g`: 0, 1 (placeholders),
@@ -177,8 +170,8 @@ lists.)
   `5 3 3`, `7 5 5` (`AA..AC`); `unknown_m`: two small values (0..3, 0..6), then `(0, 0, 10, 2, 3)` for most,
   `(5, 2, 10, 2, 3)` Sherwood, `(2, 2, ...)` tactical, `(3, 0, 1500..3000, 500..2000, 3)` defend and
   `(12, 5..7, 2500..3500, 500..1500, 3)` assault.
-- `music_*`: base names in `Musics/` (`Lincoln_D`, `Nottingham_NF`, `Cross_Amb`, `Cross_Tact`, `Cast_Alarm`,
-  `Cast_Fight`, ...): the ambient, alarm and fight tracks of the level (see [sound.md](sound.md)).
+- `music_*`: base names of files in `Musics/` (a `<place>_<state>` naming scheme): the ambient, alarm and
+  fight tracks of the level (see [sound.md](sound.md)).
 
 ### Tables A and B (unknown)
 
@@ -207,8 +200,9 @@ inspection of the section boundaries, then the grammar above implemented in
 `--rhs` verifies the `sequence` string against the `.rhs` header of every `sprite`). Cross-checks: the mission
 join in `harness/tools/re/rhm_profiles.py` (see [rhm.md](rhm.md)); voice codes against the file names in
 `Sounds/Exclamations/` and the `WAVE` paths in `Text/actors.res`; level codes against `Text/RHLevel??.red`;
-`map` against the `FOOT` chunk of every `.rhm`. Analyst session 2026-09-02. Tests depending on this: see
-"Parser".
+`map` against the `FOOT` chunk of every `.rhm`. Analyst session 2026-09-02. The index-role descriptions come
+from the designer labels and the sprite names of the file, rewritten in our own words (2026-09-02 text sweep
+after review 4). Tests depending on this: see "Parser".
 
 ## Parser
 
@@ -218,12 +212,11 @@ used by `detect` (`FileKind::ProfileTable`, since the file has no magic: the fir
 through the fixed-size tables A and B to a printable sprite string). Tables A and B and every numeric field
 are kept as raw `unknown_*` bytes / words named as in this document. `opensherwood-tools cpf <file> [--hex]`
 prints the tables; `inspect` reports the counts. The engine reads the file in
-`opensherwood-app/src/mission.rs` to pick the sprite of every `BORG` / `OILE` / `TOTO` actor (the `sprite`
-string, i.e. `Characters/<sprite>.rhs`; the `sequence` string is the French name inside that file and is
-not what the sprite bank is keyed by).
+`opensherwood-app/src/mission.rs` to pick the sprite of every `BORG` / `OILE` / `TOTO` actor by the rule
+above.
 
 Tests: `cpf::tests::{parses_synthetic_table, truncation_and_trailing_bytes_are_errors,
-oversized_counts_are_rejected_early}` (synthetic bytes); `profile_table_parses_and_its_sprites_exist` in
+oversized_counts_are_rejected_early}` (synthetic bytes with invented names); `profile_table_parses_and_its_sprites_exist` in
 `crates/opensherwood-formats/tests/gamedata.rs` (retail: counts 27 / 4 / 10 / 68 / 63 / 24, every actor
 sprite is an existing `Characters/<sprite>.rhs` containing the record's `sequence`, every non-placeholder
 level names an existing `.rhm` and its graph codes exist);
@@ -231,6 +224,6 @@ level names an existing `.rhm` and its graph codes exist);
 `harness/tests/data/test_mission.py::test_npc_sprites_come_from_the_profile_table` (H01: halberdiers,
 lancers and the beggar wear their table sprites).
 
-Observation from the parser run: `EY` (`SherwoodOutro`) has `map = Sherwood` but `location = 2`, so the
-"`location` consistent with `map` in all 63 entries" claim above holds for 62; and 24 records (not 22)
-name `Impossible_mission`, leaving 39 records for the 39 `.rhm` files.
+Observation from the parser run: `EY` (the outro level) has `map = Sherwood` but `location = 2`, so the
+"`location` consistent with `map`" claim above holds for 62 of 63; and 24 records (not 22) carry the
+placeholder mission name, leaving 39 records for the 39 `.rhm` files.

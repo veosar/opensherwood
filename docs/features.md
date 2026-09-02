@@ -30,6 +30,16 @@ fheroes2, VCMI) and by what the original executable already contains (developer 
   probabilistic choices draw from the gameplay RNG stream, so runs are reproducible from the seed. Not yet:
   reactions to the player (view cones, alarms), synchronisation between patrols (`CheckForSync`), scripted
   rails, carts.
+- **Mission scripts.** Every retail mission's compiled script (`.scb`) is translated to the core VM and runs
+  (ADR-0008, `docs/formats/scb.md` "Engine"): `Initialize` / `PostInitialize` at load, `Hourglass` and
+  `CheckVictoryCondition` every tick, messages between classes, sequences (text pages that wait for the player,
+  timed waits, camera moves, walk orders), `EnterZone` / `ExitZone` on the script polygons, objectives, mission
+  variables, element activation (hidden actors appear when the script says so), patrol assignment and AI
+  locks, attributes, states, patches, a `script` RNG stream. The first mission's briefing pages and its initial
+  objective come from the script. Natives without an implementation are visible: stubs are counted, unknown
+  ones trap (or are logged in lenient mode). Not yet: combat and item natives, `IsTaken` / `ActivatedBy*` /
+  `ReachPoint` / `ActionChange` triggers from the world, doors, animations, the text presentation of in-mission
+  popups.
 
 ## Target for "1.0" (the maintainer's definition of done)
 

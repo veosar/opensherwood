@@ -37,7 +37,7 @@ pub struct Animation {
 /// A named sequence: a character, object or map animation with a bounding box.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sequence {
-    /// Name as authored (French, e.g. "Robin des bois").
+    /// Name as authored (French).
     pub name: String,
     /// Bounding box width of all frames.
     pub width: u16,

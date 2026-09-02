@@ -43,7 +43,7 @@ def test_play_starts_the_first_mission_behind_the_briefing(binary, game_dir, tmp
         obs = e.observe()
         ui = obs["ui"]
         assert ui["screen"] == "briefing"
-        assert ui["page"] == [1, 3]
+        assert ui["page"] == [1, 1]  # the script shows one page per sequence element
         # The mission is loaded and paused behind the parchment: Lincoln, Robin alone as player.
         assert obs["map_size"][0] > 1024
         players = [x for x in obs["entities"] if x["kind"] == "player"]
@@ -51,7 +51,7 @@ def test_play_starts_the_first_mission_behind_the_briefing(binary, game_dir, tmp
         tick0 = obs["tick"]
         e.capture(path="briefing_page1.png")
         e.step(5, [key("enter")])
-        assert e.observe(entities=False)["ui"]["page"] == [2, 3]
+        assert e.observe(entities=False)["ui"]["screen"] == "briefing"  # page 2
         assert e.observe(entities=False)["tick"] == tick0, "the world must stay paused"
         e.step(1, [key("enter")])
         # Last page: clicking the V seal at (508,552) starts the game.
