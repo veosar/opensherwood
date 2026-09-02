@@ -1,6 +1,8 @@
 # Image blob (`.map`, `.min`, `.pak`, `.sxt`, `*_t` thumbnails, SRES pictures)
 
-Status: container **verified**; pixel format **partial** (16 bits per pixel established, channel order to confirm by rendering).
+Status: **verified** (container and pixel format). Pixels are RGB565: decoding `Levels/Day/sherwood.min` and the
+Spellbound logo slide of `Slideshow_in.pak` with `opensherwood-tools export-image` gives natural colours (forest
+greens and browns, blue and gold logo); a swapped channel order would not.
 
 ## Layout
 
@@ -12,10 +14,10 @@ Status: container **verified**; pixel format **partial** (16 bits per pixel esta
 | 8 | u32 | compressed size in bytes |
 | 12 | bytes | compressed stream |
 
-Decompressed size is always `width * height * 2` in every retail file inspected, i.e. 16 bits per pixel.
-The likely encoding is RGB565 (the original renders through DirectDraw in 16-bit modes; the `STATUS HARDWARE`
-console command prints "Current display bit depth"). RGB565 vs. ARGB1555 is to be confirmed by rendering
-a `.map` and comparing with an in-game screenshot.
+Decompressed size is always `width * height * 2` in every retail file inspected: 16 bits per pixel, RGB565,
+little-endian words (bits 15..11 red, 10..5 green, 4..0 blue). The original renders through DirectDraw in 16-bit
+modes, so backgrounds are stored in the display format. Whether any picture uses a colour key for transparency
+(the sprite dictionary suggests bright green `0x07C0`/`0x07E0`) is still to be determined for SRES pictures.
 
 A `.pak` file is several blobs concatenated without an index: read blobs until end of file.
 

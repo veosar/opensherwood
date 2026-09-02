@@ -90,12 +90,12 @@ fn every_sres_archive_parses_to_the_end() {
             f.display()
         );
         for e in &a.entries {
-            assert_eq!(
-                e.unknown_0x08,
-                0,
-                "{}: entry {} unknown_0x08",
+            assert!(
+                e.unknown_0x08 <= 1,
+                "{}: entry {} unknown_0x08 = {}",
                 f.display(),
-                e.id
+                e.id,
+                e.unknown_0x08
             );
         }
         total += a.entries.len();

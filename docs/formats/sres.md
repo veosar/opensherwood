@@ -15,8 +15,9 @@ Status: container **verified** for all three retail archives (`Interface/DEFAULT
 
 ## Entry
 
-Every entry starts with `tag: char[4]`, `id: u32`, `zero: u32` (always 0 in retail data; purpose unknown, possibly
-language or flags). The rest depends on the tag:
+Every entry starts with `tag: char[4]`, `id: u32`, `unknown_0x08: u32` (0 or 1; always 0 in `actors.res` and
+`Level.res`, 1 for about a third of the picture entries of `DEFAULT.RES` including the input field, the slider, one
+of the two text entries and a few cursors; a flag whose meaning is not established). The rest depends on the tag:
 
 | Tag | Body |
 |---|---|

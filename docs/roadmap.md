@@ -20,8 +20,8 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 ## M1: Feasibility gates
 
 - [x] Exact decode of `.map` / `.min` / `.pak` / `.sxt` containers to 16-bit pixels (all 48+ files)
-- [ ] Channel order of the 16-bit pixels verified against a screenshot of the original
-- [ ] SRES pictures decoded and viewable locally
+- [x] Channel order of the 16-bit pixels verified (RGB565; decoded minimap and slides look right)
+- [x] SRES pictures decoded and viewable locally (`opensherwood-tools export-sres`)
 - [ ] Sprite bank: one independently verified frame, then all frames of one profile, then Day/Night/Fog variants
 - [ ] SCB disassembler consumes the tutorial script with every unknown explicitly listed
 - [ ] RHP: motion geometry / path graph chunk decoded well enough to draw it and compare with the original's `EULER` / `MOTION` overlays
