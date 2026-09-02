@@ -2,8 +2,10 @@
 //!
 //! Every arm cites its row of the table with the spec's confidence. Three classes of natives:
 //! *implemented* (act on the world or the VM state), *stub* (documented effect not modelled yet:
-//! recorded per id in `counters.stub_natives`, arguments ignored, result 0) and *unknown* (no row
-//! with an effect). An unknown native is a deterministic trap by default: its id is counted, the
+//! recorded per id in `counters.stub_natives`, arguments ignored, result 0 unless the stub policy
+//! table of the spec, "Natives at load per mission", gives the value that keeps the scripts sane:
+//! [`STUB_POLICY_VALUES`]) and *unknown* (no row with an effect). An unknown native is a
+//! deterministic trap by default: its id is counted, the
 //! running callback stops at that instruction and the script is marked `faulted`. With
 //! `MissionSpec::lenient_natives` it is a recorded no-op instead (result 0) and every call is
 //! appended with its arguments to `VmState::unknown_calls`, which is hashed. Inside a sequence
@@ -33,21 +35,43 @@ use crate::world::{EntityKind, World};
 /// these ids are followed by the sync native 32 in the retail scripts; `docs/formats/scb.md`).
 pub const SEQUENCE_ELEMENTS: &[u32] = &[
     32, 33, 34, 35, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 59,
-    62, 64, 69, 70, 73, 203, 226, 243,
+    62, 64, 69, 70, 72, 73, 203, 212, 226, 243,
 ];
 
-/// Natives with a documented effect that the engine records without acting on (see the spec rows).
+/// Natives with a documented effect that the engine records without acting on (see the spec rows
+/// and the stub policy table: "0-stub safe" rows, the sequence stubs that sit before a barrier,
+/// and the ids whose recorded result is a policy value, [`STUB_POLICY_VALUES`]).
 pub const STUB_NATIVES: &[u32] = &[
-    35, 49, 50, 51, 52, 53, 54, 55, 59, 69, 80, 81, 87, 88, 89, 99, 102, 103, 130, 137, 140, 186,
-    187, 188, 189, 191, 195, 197, 198, 218, 224, 235, 243,
+    7, 18, 20, 24, 29, 35, 38, 39, 41, 42, 46, 47, 49, 50, 51, 52, 53, 54, 55, 59, 62, 69, 70, 72,
+    73, 80, 81, 87, 88, 89, 92, 99, 101, 102, 103, 112, 119, 125, 126, 128, 130, 137, 140, 143,
+    149, 150, 152, 156, 163, 164, 172, 173, 177, 178, 180, 182, 186, 187, 188, 189, 191, 195, 197,
+    198, 199, 200, 205, 210, 212, 213, 214, 215, 218, 219, 220, 221, 222, 223, 224, 226, 228, 229,
+    231, 232, 234, 235, 240, 243, 244, 246, 247, 248, 253, 254, 255, 256, 258, 261, 264,
 ];
+
+/// Stub natives whose recorded result is not 0: the value the stub policy table of the spec
+/// ("Natives at load per mission") requires so the scripts branch sanely, each pinned by
+/// `policy_values_of_the_stub_table_are_pinned`. 128 (actor able to act, medium-low) and 240
+/// (actor present, medium-low) return 1: with 0 no zone would react and every "all enemies out of
+/// action" helper would succeed at once. 253 / 255 (campaign character alive / present,
+/// medium-low) return 1: with 0 every `CheckVictoryCondition` that tests them loses at tick 1.
+/// 205 (i-th actor inside a zone, medium) returns -1 (no actor): 0 would be a map element handed
+/// to 80 / 81 / 99 / 243.
+pub const STUB_POLICY_VALUES: &[(u32, i32)] = &[(128, 1), (205, -1), (240, 1), (253, 1), (255, 1)];
 
 /// Natives the engine implements (acting on the world or the VM state).
 pub const IMPLEMENTED_NATIVES: &[u32] = &[
-    0, 1, 2, 3, 4, 5, 6, 9, 10, 26, 27, 28, 30, 31, 32, 33, 34, 43, 44, 45, 48, 56, 64, 74, 75, 79,
-    85, 90, 95, 96, 97, 109, 110, 111, 113, 114, 117, 118, 132, 134, 135, 144, 145, 159, 160, 161,
-    193, 194, 196, 202, 203, 204, 211, 216, 217, 233,
+    0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 13, 26, 27, 28, 30, 31, 32, 33, 34, 43, 44, 45, 48, 56, 64,
+    74, 75, 79, 85, 86, 90, 93, 94, 95, 96, 97, 98, 109, 110, 111, 113, 114, 117, 118, 132, 133,
+    134, 135, 144, 145, 159, 160, 161, 192, 193, 194, 196, 202, 203, 204, 211, 216, 217, 233, 236,
+    237, 245, 250,
 ];
+
+/// Facing units per sixteenth of a turn: the scripts' sixteen directions (natives 93 / 94 / 133,
+/// 0..=15) on the entities' 256-unit facing. Which direction is 0 is not in the spec; the engine
+/// takes direction 0 as facing 0 (the `+x` axis, `world::facing_of`) and counts the same way, a
+/// choice of **low** confidence pinned by `facing_natives_map_sixteen_directions_onto_facing256`.
+pub const FACING_UNITS_PER_DIRECTION: i32 = 16;
 
 /// Status of a native id in this engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,8 +180,11 @@ impl World {
             }
             // 3 (index) -> element (high), 10 (element) -> index (medium): handles are the
             // table indices, so both are the identity. 4 (index) -> door, 5 (index) -> patch,
-            // 6 (index) -> location (high), 9 (index) -> path (high): same.
-            3 | 4 | 5 | 6 | 9 | 10 => arg(args, 0),
+            // 6 (index) -> location (high), 9 (index) -> path (high): same. 8 (index) ->
+            // building (medium: the index itself, -1 = outdoors; the engine has no interiors,
+            // see 98). 12 (patch) -> index, 13 (location) -> index (high): the inverses of 5 / 6,
+            // the identity as well.
+            3 | 4 | 5 | 6 | 8 | 9 | 10 | 12 | 13 => arg(args, 0),
             // 26 (k, main): add objective k, main = 1 for a primary one (high).
             26 => {
                 let (k, main) = (arg(args, 0), arg(args, 1));
@@ -251,8 +278,10 @@ impl World {
                 }
                 0
             }
-            // 74 () -> actor: the element of this class (high).
-            74 => self
+            // 74 () -> actor: the element of this class (high). 192 () -> element: the same for
+            // the non-actor classes (scrolls, objects, zones; medium): the policy table requires
+            // the class's own element, since 0 would address element 0 with 193 / 194 / 113.
+            74 | 192 => self
                 .vm
                 .as_ref()
                 .and_then(|vm| {
@@ -270,6 +299,35 @@ impl World {
                 self.entity_of(arg(args, 0))
                     .is_some_and(|i| self.entities[i].kind == EntityKind::Player),
             ),
+            // 86 (actor, actor) -> bool: the two handles are the same actor (medium): handle
+            // equality.
+            86 => i32::from(arg(args, 0) == arg(args, 1)),
+            // 93 (element) -> dir: facing direction 0..=15 of an element (medium); a non-actor
+            // element has no facing (0). 94 (actor, dir): set it (medium). 133 (actor, location,
+            // dir): place the actor at the location (as 96) facing dir (medium). The direction
+            // encoding is [`FACING_UNITS_PER_DIRECTION`] (low).
+            93 => match self.entity_of(arg(args, 0)) {
+                Some(i) => self.entities[i].facing256.rem_euclid(256) / FACING_UNITS_PER_DIRECTION,
+                None => 0,
+            },
+            94 | 133 => {
+                if let Some(entity) = self.entity_of(arg(args, 0)) {
+                    let dir = if id == 133 {
+                        let to = self.location_position(arg(args, 1));
+                        self.vm_teleport(entity as u32, to);
+                        arg(args, 2)
+                    } else {
+                        arg(args, 1)
+                    };
+                    self.entities[entity].facing256 =
+                        dir.rem_euclid(16) * FACING_UNITS_PER_DIRECTION;
+                }
+                0
+            }
+            // 98 (actor, building) -> bool: actor is inside building (medium). The engine has no
+            // interiors: every actor is outdoors, so the policy table's value is 1 iff the
+            // building argument is the outdoors handle (-1).
+            98 => i32::from(arg(args, 1) == NONE_HANDLE),
             // 85 (actor) -> bool: unusable, dead or removed (medium): dead or deactivated.
             85 => match self.entity_of(arg(args, 0)) {
                 Some(i) => i32::from(!self.entities[i].alive || !self.entities[i].active),
@@ -314,8 +372,10 @@ impl World {
                 i32::from(poly.len() >= 3 && point_in_polygon(x, y, poly))
             }
             // 111 () -> actor: the player's character (medium); 211 () -> actor: the main
-            // player character (medium): both the first player entity.
-            111 | 211 => self.player_element(0),
+            // player character (medium): both the first player entity. 250 (0) -> actor: player
+            // character by campaign id, always 0 = the main character (medium): the policy table
+            // requires 211's value (0 would be element 0).
+            111 | 211 | 250 => self.player_element(0),
             // 113 / 114 (element): deactivate / activate an element (high).
             113 | 114 => {
                 self.set_element_active(arg(args, 0), id == 114);
@@ -474,6 +534,23 @@ impl World {
                 .filter(|e| e.kind == EntityKind::Player)
                 .count() as i32,
             217 => self.player_element(arg(args, 0)),
+            // 236 () -> int: get the player's money; 237 (v): set it (high): one VM integer
+            // (`VmState::money`, hashed and snapshotted; the HUD may read it).
+            236 => self.vm.as_ref().map_or(0, |vm| vm.money),
+            237 => {
+                if let Some(vm) = self.vm.as_mut() {
+                    vm.money = arg(args, 0);
+                }
+                0
+            }
+            // 245 () -> int: number of player characters (medium): the policy table implements
+            // it as the number of live player characters (S05 starts mission variable 3 at 0 and
+            // wins when it equals this value, so 0 would win at tick 1).
+            245 => self
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Player && e.alive)
+                .count() as i32,
             // 233 (actor, element): actor goes to element (medium): a walk order to its position.
             233 => {
                 if let (Some(entity), Some((x, y))) = (
@@ -484,12 +561,16 @@ impl World {
                 }
                 0
             }
-            // Stub natives: recorded per id (see `STUB_NATIVES`).
+            // Stub natives: recorded per id (see `STUB_NATIVES`), result 0 or the policy value
+            // of `STUB_POLICY_VALUES`.
             other => {
                 if let Some(vm) = self.vm.as_mut() {
                     count(&mut vm.counters.stub_natives, other);
                 }
-                0
+                STUB_POLICY_VALUES
+                    .iter()
+                    .find(|(id, _)| *id == other)
+                    .map_or(0, |(_, value)| *value)
             }
         }
     }

@@ -584,6 +584,29 @@ queued) and `counters.budget_aborts` counts it; the retail scripts use a small f
 exit (return, abort, fault, trap) clears the frames, both stacks and a sequence being collected, and a program
 whose parameter / argument stacks are not balanced in some function is refused at load.
 
+Natives after the stub policy (2026-09-03, hash schema 9 / snapshot schema 10): every id with a row of the
+native call table is now implemented or a recorded stub (`natives.rs`: 69 implemented, 99 stubs; an id without
+a row, e.g. 21, 40, 179, still traps in strict mode). Implemented from the policy table: 8 / 12 / 13 as the
+index itself (8: -1 = outdoors), 86 as handle equality, 98 = 1 iff the building argument is -1 (the engine has
+no interiors), 192 = the calling class's own element (74 for non-actor classes), 250 (0) = 211's value (the
+main player character), 236 / 237 as one integer `VmState::money` (hashed, snapshotted, `debug.vm.money`; the
+HUD does not read it yet), 245 = the number of live player characters (S05 starts mission variable 3 at 0 and
+wins when it equals 245, so a 0 stub would win at tick 1; H02 gates the same test behind variable 2), 133 as 96
+plus the facing, 93 / 94 as the facing of an actor. The sixteen script directions are mapped onto the entities'
+256-unit facing as `direction x 16` with direction 0 = facing 0 (the `+x` axis): which direction the original
+calls 0 is not established (confidence **low**), pinned by `facing_natives_map_sixteen_directions_onto_facing256`.
+Recorded stubs with a policy value (`STUB_POLICY_VALUES`, pinned by `policy_values_of_the_stub_table_are_pinned`):
+128 / 240 / 253 / 255 return 1, 205 returns -1; every other stub returns 0, including 119 / 231 / 246 (a 1
+would win H03 / H04 / S04 at tick 1) and the never-win group 178 / 223 / 234 / 222 / 182 / 213 / 70 / 232.
+The sequence stubs 38, 39, 41, 42, 46, 47, 62, 72, 73, 212 are collected as sequence elements (recorded when
+the sequence reaches them) and issue no completion token, so the barrier that follows them does not wait.
+`CheckVictoryCondition` = 2 sets `VmState::mission_lost` (sticky like `mission_won`, hashed, in the `script`
+observation and `debug.vm`); the app does not react to it yet. Strict run of 2026-09-03 (seed 1, no page
+dismissed): all 37 loadable missions run `Initialize` / `PostInitialize` and 1000 ticks without a trap, a
+run-time fault or a budget abort, none is won or lost; H10 holds 100000 of money after its `Initialize`.
+The harness pins the load-time state of every script (`EXPECTED_AT_LOAD`) and the first 300 strict ticks
+(`harness/tests/data/test_script.py`).
+
 ## Cross-references
 
 - Class names == mission element names of the paired `.rhm` (100 % both ways, see [rhm.md](rhm.md)).

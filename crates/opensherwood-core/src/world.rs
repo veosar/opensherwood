@@ -455,7 +455,7 @@ pub struct World {
 
 /// Snapshot schema version (9: sequence barrier tokens, VM counters and budget no longer
 /// serialised, snapshots must be quiescent).
-pub const SNAPSHOT_VERSION: u32 = 9;
+pub const SNAPSHOT_VERSION: u32 = 10;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -1682,7 +1682,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "2f4caa37a61130017c55f21c9d230a1b8d85b601030eab55d58e0da7c2ea52f9";
+        "193e26b330a5c5e7f54387365420209d6efd3b91db49db529610e05760d997d5";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {

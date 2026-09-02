@@ -1770,6 +1770,8 @@ impl Session {
                         })
                         .collect::<Vec<_>>(),
                     "mission_won": vm.mission_won,
+                    "mission_lost": vm.mission_lost,
+                    "money": vm.money,
                     "sequence_active": !vm.sequences.is_empty(),
                     "sequences": vm.sequences.len(),
                     "faulted": vm.faulted,
