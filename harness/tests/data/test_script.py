@@ -79,18 +79,18 @@ def _select_hero(e: Engine) -> tuple[int, int]:
     return sx, sy
 
 
-def _run_first_mission(binary, game_dir, seed: int, ticks: int = 600) -> tuple[list[dict], dict, dict]:
+def _run_first_mission(binary, game_dir, artifacts, seed: int, ticks: int = 600) -> tuple[list[dict], dict, dict]:
     """Dismiss the briefing pages with Enter, step `ticks` with per-tick hashes; return the per-tick
     hashes, the VM report and the observation."""
-    with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
+    with Engine(binary=binary, game_dir=game_dir, artifacts=artifacts, timeout=300) as e:
         e.reset({"mission": FIRST_MISSION}, seed=seed)
         assert e.skip_briefing() == 3
         r = e.step(ticks, hash_every_tick=True)
         return r["per_tick"], e.call("debug.vm"), e.observe(entities=False)
 
 
-def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_dir):
-    with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
+def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_dir, tmp_path):
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
         e.reset({"mission": FIRST_MISSION}, seed=1)
         obs = e.observe(entities=False)
         sc = obs["script"]
@@ -128,35 +128,36 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
         assert e.observe(entities=False)["script"]["objectives"][0]["done"] is False
 
 
-def test_first_mission_script_is_deterministic_across_processes(binary, game_dir):
+def test_first_mission_script_is_deterministic_across_processes(binary, game_dir, tmp_path):
     """Two processes, same seed: equal hashes after every one of 600 ticks, equal VM counters."""
-    a, va, _ = _run_first_mission(binary, game_dir, seed=4)
-    b, vb, _ = _run_first_mission(binary, game_dir, seed=4)
+    a, va, _ = _run_first_mission(binary, game_dir, tmp_path, seed=4)
+    b, vb, _ = _run_first_mission(binary, game_dir, tmp_path, seed=4)
     assert len(a) == 600
     first_diff = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), None)
     assert first_diff is None, f"first divergence at tick {first_diff + 1}: {a[first_diff]} vs {b[first_diff]}"
     assert va["counters"] == vb["counters"]
 
 
-def test_seed_changes_the_gameplay_rng_stream(binary, game_dir):
+def test_seed_changes_the_gameplay_rng_stream(binary, game_dir, tmp_path):
     """Two seeds, same input: the gameplay stream is drawn from during the first 600 ticks (rail
     guards), so the `rng` hashes differ and the draw counts are non-zero for both. The first mission's
     script draws nothing from the `script` stream in these 600 ticks (asserted, so a script that starts
     drawing shows up here); the `script` stream's seed dependence is covered by the core VM tests and the
     synthetic corridor's `rng` test (`harness/tests/synthetic/test_determinism.py`)."""
-    _, va, oa = _run_first_mission(binary, game_dir, seed=1)
-    _, vb, ob = _run_first_mission(binary, game_dir, seed=2)
+    _, va, oa = _run_first_mission(binary, game_dir, tmp_path, seed=1)
+    _, vb, ob = _run_first_mission(binary, game_dir, tmp_path, seed=2)
     assert oa["rng_draws"] > 0 and ob["rng_draws"] > 0, (oa["rng_draws"], ob["rng_draws"])
     assert oa["hashes"]["rng"] != ob["hashes"]["rng"]
     assert va["rng_draws"] == 0 and vb["rng_draws"] == 0, "H01 draws no script randomness in 600 ticks"
 
 
-def test_mission_replay_round_trip_from_the_first_page(binary, game_dir):
+def test_mission_replay_round_trip_from_the_first_page(binary, game_dir, tmp_path):
     """Recording starts right after `reset`, before the first page is dismissed: the three Enter
     presses, the selection, a walk order and a pause / continue through the pause menu are recorded as
-    the session ticks they were played at, and playback reproduces every checkpoint (world hashes and
-    world tick) from the tick-0 state on."""
-    with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
+    the session ticks they were played at, and playback reproduces every checkpoint (world hashes,
+    world tick, session digest of the screen and framebuffer hash) from the tick-0 state on. The replay
+    file goes under `tmp_path` (retail-derived, never under the repository)."""
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
         e.reset({"mission": FIRST_MISSION}, seed=7)
         assert e.observe(entities=False)["ui"]["screen"] == "briefing"
         e.replay_start(checkpoint_every=10)
@@ -170,11 +171,14 @@ def test_mission_replay_round_trip_from_the_first_page(binary, game_dir):
         e.step(1, key_press("escape"))
         assert e.observe(entities=False)["ui"]["screen"] == "pause_menu"
         e.step(3)
+        paused_frame = e.capture()["hash"]
         e.step(1, key_press("escape"))
         assert e.observe(entities=False).get("ui") is None
         e.step(40)
         rec = e.replay_stop(path="replays/h01_from_first_page.jsonl")
+        assert rec["path"].startswith(str(tmp_path))
         final = e.observe(entities=False)
+        final_frame = e.capture()["hash"]
         # 3 pages + 2 (selection) + 1 (order) + 60 + 1 (escape) + 3 + 1 (escape) + 40 session ticks;
         # the world ticked on all but the 3 page frames and the 5 pause frames.
         session_ticks = 3 + 2 + 1 + 60 + 1 + 3 + 1 + 40
@@ -193,6 +197,14 @@ def test_mission_replay_round_trip_from_the_first_page(binary, game_dir):
         assert checkpoints[-1]["tick"] == session_ticks and checkpoints[-1]["world_tick"] == final["tick"]
         assert checkpoints[1]["tick"] == 10 and checkpoints[1]["world_tick"] == 7, "the pages lag the world"
         assert rec["checkpoints"] == 1 + session_ticks // 10 + 1
+        # Screens are in the checkpoints: tick 0 (briefing page) and tick 70 (pause menu, 3 frames in)
+        # have session digests and frames of their own; the world-screen checkpoints share one digest.
+        by_tick = {c["tick"]: c for c in checkpoints}
+        assert by_tick[70]["frame"] == paused_frame and by_tick[70]["world_tick"] == 63
+        assert checkpoints[-1]["frame"] == final_frame
+        world_digests = {c["session"] for c in checkpoints if c["tick"] not in (0, 70)}
+        assert len(world_digests) == 1 and by_tick[0]["session"] not in world_digests
+        assert by_tick[70]["session"] not in world_digests and by_tick[70]["session"] != by_tick[0]["session"]
 
         played = e.replay_play(jsonl=rec["jsonl"])
         assert played["first_divergence"] is None, played
@@ -201,15 +213,17 @@ def test_mission_replay_round_trip_from_the_first_page(binary, game_dir):
         assert played["hashes"] == final["hashes"]
         after = e.observe(entities=False)
         assert after["tick"] == final["tick"] and after.get("ui") is None
+        assert e.capture()["hash"] == final_frame
         # The same replay from the file, with divergence reporting off, still matches everything.
         played = e.replay_play(path="replays/h01_from_first_page.jsonl", stop_on_divergence=False)
         assert played["first_divergence"] is None and played["checkpoints_ok"] == rec["checkpoints"]
 
 
-def test_mission_snapshot_restore_continuation(binary, game_dir):
+def test_mission_snapshot_restore_continuation(binary, game_dir, tmp_path):
     """Restore after the pages are dismissed and a walk is under way, then run the identical suffix
-    (a second order at the same point, the same ticks): equal hashes after every tick."""
-    with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
+    (a second order at the same point, the same ticks): equal hashes after every tick and equal
+    frames at two points of the suffix."""
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
         e.reset({"mission": FIRST_MISSION}, seed=5)
         assert e.skip_briefing() == 3
         sx, sy = _select_hero(e)
@@ -220,7 +234,9 @@ def test_mission_snapshot_restore_continuation(binary, game_dir):
 
         def suffix() -> list[dict]:
             hashes = e.step(30, pointer_click(sx - 60, sy + 40, "right"), hash_every_tick=True)["per_tick"]
+            hashes.append({"frame": e.capture()["hash"]})
             hashes += e.step(90, hash_every_tick=True)["per_tick"]
+            hashes.append({"frame": e.capture()["hash"]})
             return hashes
 
         straight = suffix()
@@ -234,14 +250,14 @@ def test_mission_snapshot_restore_continuation(binary, game_dir):
         assert suffix() == straight
 
 
-def test_every_mission_script_translates(binary, game_dir):
+def test_every_mission_script_translates(binary, game_dir, tmp_path):
     """Every retail script loads and its state after `PostInitialize` is the expected one
     (`EXPECTED_AT_LOAD`): faults, traps and stub calls are asserted, not printed."""
     names = sorted(p.stem for p in (game_dir / "DATA" / "Levels").glob("*.scb"))
     assert len(names) == 39
     assert set(names) == set(EXPECTED_AT_LOAD), "the expectation table lists every script"
     mismatches = []
-    with Engine(binary=binary, game_dir=game_dir, timeout=600) as e:
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=600) as e:
         for name in names:
             expected = EXPECTED_AT_LOAD[name]
             try:
@@ -285,10 +301,10 @@ def walk_to(e, tx, ty, max_steps=400):
     return e.observe()
 
 
-def test_walking_onto_a_scroll_shows_its_text(binary, game_dir):
+def test_walking_onto_a_scroll_shows_its_text(binary, game_dir, tmp_path):
     """Scroll pickup (`IsTaken`): Robin walks to the reachable scrolls of the first mission, nearest
     first; the tutorial scrolls show a text page (native 202 / 203), so one appears within a few."""
-    with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
         e.reset({"mission": "H01_Lin_VL"}, seed=0)
         e.skip_briefing()
         obs = e.observe()
@@ -317,10 +333,10 @@ def test_walking_onto_a_scroll_shows_its_text(binary, game_dir):
         raise AssertionError(f"no text page after visiting scrolls {taken}")
 
 
-def test_mission_won_shows_the_debriefing_then_the_menu(binary, game_dir):
+def test_mission_won_shows_the_debriefing_then_the_menu(binary, game_dir, tmp_path):
     """The end of a mission: the won debriefing parchment, then the main menu. `debug.vm {win}` is
     the documented harness shortcut for this flow only (no mission can be won through play yet)."""
-    with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
         e.reset({"mission": "H01_Lin_VL"}, seed=0)
         e.skip_briefing()
         e.step(5)

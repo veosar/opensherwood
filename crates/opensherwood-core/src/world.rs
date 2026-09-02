@@ -611,7 +611,8 @@ impl World {
 
     /// Build the navigation grid if it is missing (every constructor, `set_geometry` and
     /// `restore` build it, so this only acts on a world whose `nav` was cleared by hand). A
-    /// failed build leaves `nav` empty and is reported; there is no degraded grid.
+    /// failed build leaves `nav` empty and is reported; there is no degraded grid and no
+    /// infallible wrapper: every caller handles the error.
     pub fn try_ensure_nav(&mut self) -> Result<(), NavError> {
         if self.nav.is_none() {
             self.nav = Some(NavGrid::try_build(
@@ -623,12 +624,6 @@ impl World {
         Ok(())
     }
 
-    /// [`World::try_ensure_nav`] for callers that cannot report the error: a failed build leaves
-    /// `nav` empty (movement orders are then refused). Prefer `try_ensure_nav`.
-    pub fn ensure_nav(&mut self) {
-        let _ = self.try_ensure_nav();
-    }
-
     /// Plan a path for entity `index` to `target` (map pixels) within [`ORDER_SEARCH_WORK`]
     /// (the budget of a player or program order). Targets on unwalkable ground are moved to the
     /// nearest walkable cell; unreachable targets and an exhausted budget clear the order.
@@ -637,9 +632,10 @@ impl World {
         let _ = self.plan_path_with(index, target, &mut budget);
     }
 
-    /// [`World::plan_path`] charging the search and the smoothing to `budget`; an exhausted
-    /// budget (or a refused search allocation) clears the order and is returned. Without a
-    /// navigation grid the order is refused (`Ok`, no target).
+    /// [`World::plan_path`] charging the search (initialisation, expansions, unwinding), the
+    /// smoothing (line-clear cells, output points) and the conversion of the final path (one unit
+    /// per point) to `budget`; an exhausted budget (or a refused allocation) clears the order and
+    /// is returned. Without a navigation grid the order is refused (`Ok`, no target).
     pub(crate) fn plan_path_with(
         &mut self,
         index: usize,
@@ -670,13 +666,28 @@ impl World {
             self.entities[index].path.clear();
             return planned.map(|_| ());
         };
-        let mut path: Vec<(Fixed, Fixed)> = smooth
-            .iter()
-            .map(|&c| {
-                let (x, y) = nav.centre(c);
-                (Fixed::from_int(x), Fixed::from_int(y))
-            })
-            .collect();
+        // The conversion to map coordinates is charged like the unwinding (one unit per point,
+        // one more for the exact target) and the final path is allocated fallibly, both before
+        // any point is produced.
+        let points = smooth.len().saturating_add(1);
+        let mut path: Vec<(Fixed, Fixed)> = Vec::new();
+        let converted = if *budget < points as u64 {
+            *budget = 0;
+            Err(NavError::WorkExhausted)
+        } else {
+            *budget -= points as u64;
+            path.try_reserve_exact(points)
+                .map_err(|_| NavError::Allocation { cells: points })
+        };
+        if let Err(e) = converted {
+            self.entities[index].target = None;
+            self.entities[index].path.clear();
+            return Err(e);
+        }
+        path.extend(smooth.iter().map(|&c| {
+            let (x, y) = nav.centre(c);
+            (Fixed::from_int(x), Fixed::from_int(y))
+        }));
         // Walk to the exact target when it is itself walkable and was reached by the path.
         if self
             .geometry
@@ -2334,6 +2345,38 @@ mod tests {
         json["world"]["entities"][0]["x"] = serde_json::json!(i32::MAX);
         let snap: Snapshot = serde_json::from_value(json).unwrap();
         assert!(w.restore(&snap).unwrap_err().contains("position"));
+    }
+
+    #[test]
+    fn plan_path_charges_its_conversion_and_needs_exactly_its_work() {
+        let mut w = crate::vm::tests::mission_world(0, None);
+        let target = (Fixed::from_int(900), Fixed::from_int(700));
+        let mut full = ORDER_SEARCH_WORK;
+        w.plan_path_with(0, target, &mut full).unwrap();
+        let used = ORDER_SEARCH_WORK - full;
+        let path = w.entities[0].path.clone();
+        assert_eq!(w.entities[0].target, Some(target));
+        assert!(!path.is_empty());
+        // Every stage is charged; the conversion alone costs one unit per point of the path.
+        assert!(used > path.len() as u64);
+        // The exact amount plans the same path; one unit less plans nothing and clears the
+        // order; a zero budget allocates nothing at all.
+        let mut exact = used;
+        w.plan_path_with(0, target, &mut exact).unwrap();
+        assert_eq!((w.entities[0].path.clone(), exact), (path, 0));
+        let mut short = used - 1;
+        assert_eq!(
+            w.plan_path_with(0, target, &mut short),
+            Err(NavError::WorkExhausted)
+        );
+        assert!(w.entities[0].target.is_none() && w.entities[0].path.is_empty());
+        assert_eq!(short, 0);
+        let mut zero = 0;
+        assert_eq!(
+            w.plan_path_with(0, target, &mut zero),
+            Err(NavError::WorkExhausted)
+        );
+        w.validate().unwrap();
     }
 
     #[test]

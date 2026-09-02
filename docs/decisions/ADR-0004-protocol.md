@@ -2,14 +2,18 @@
 
 Date: 2026-09-02. Status: accepted.
 
-Versions in force (2026-09-02, script VM): protocol 4 (replay time is the session tick: header `time:
-"session"`, checkpoints carry `world_tick`, the tick-0 checkpoint is kept and compared; `ui` observation,
-`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 6 (script VM: `Initialize` /
+Versions in force (2026-09-02, script VM): protocol 5 (replay time is the session tick: header `time:
+"session"`, checkpoints carry `world_tick`, a `session` digest and the `frame` hash, the tick-0 and terminal
+checkpoints are required and compared; `ui` observation,
+`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 7 (script VM: `Initialize` /
 `PostInitialize` at load, `Hourglass` and `CheckVictoryCondition` every tick, sequences, messages, zone events;
-hidden player characters start inactive; native 32 is a barrier over walk / animation completion tokens, one
-per-tick work budget covers instructions, argument transfers, zone and scroll tests, sequence elements and the
-path searches the script issues, AI locking halts an NPC's walk, native 160 and camera centring are computed in
-`i64`), hash schema 8 (`scripts` and `scheduler` parts carry the VM state including sequence tokens and the
+hidden player characters start inactive; native 32 is a barrier over walk / animation completion tokens; one
+work budget per tick, granted only at the start of the tick (the load-time run has its own; event hooks and
+text dismissals draw from what the tick left) and charging instructions, argument transfers, every entity a
+zone / scroll scan or native 204 looks at, every polygon edge tested (zones, natives 97 / 204), sequence
+elements and every stage of the path searches the script issues (initialisation, expansions, unwinding,
+smoothing, conversion); programs must have balanced parameter / argument stacks; AI locking halts an NPC's
+walk, native 160 and camera centring are computed in `i64`), hash schema 8 (`scripts` and `scheduler` parts carry the VM state including sequence tokens and the
 barrier wait; frames and stacks are no longer encoded because a snapshot must be quiescent; entity `active` /
 `ai_locked` flags under `actors`, the `script` RNG stream under `rng`), snapshot schema 9 (`vm` state without
 its diagnostic `counters` and per-tick `budget`, sequence `tokens`, entity flags).
@@ -54,12 +58,15 @@ physical display coordinates.
 Replay time (`time: "session"`, the only model) counts the session's `advance` calls since the world was
 installed by `reset`: every tick of a `step` is one unit, whether a screen consumed the tick's events or the
 world stepped. Events carry the session tick they are applied at; a checkpoint at session tick `t` holds the
-world's hashes and its own tick (`world_tick`, which lags while a screen is shown) after `t` advances. Screens
+world's hashes and its own tick (`world_tick`, which lags while a screen is shown) after `t` advances, plus a
+`session` digest of the presentation state (screen kind, `ui` state, notice text and remaining ticks) and the
+`frame` hash of the rendered framebuffer, so playback proves what the player saw, not only the world. Screens
 are therefore part of the timeline: dismissing the mission's first text pages, opening the pause menu with
 Escape and continuing are ordinary recorded key and pointer events, and playback runs them through the same
 `advance` the recording did. The checkpoint at tick 0 is the state right after `reset`, before anything is
-applied; recording never drops it and playback compares it first, so a replay that reproduces nothing cannot
-report no divergence.
+applied; recording never drops it, the parser requires it together with a terminal checkpoint at the replay's
+last tick (a replay with either deleted is refused before any reset), and playback compares it first, so a
+replay that reproduces nothing cannot report no divergence.
 
 `replay.start` is allowed only at session tick 0 (right after `reset`, even while the first page is shown; the
 main menu has no world). `replay.play` resets to the replay's scenario and seed, then requires the header to
@@ -67,8 +74,10 @@ equal, field by field, the header the session would record now (protocol, rulese
 scenario, time model, viewport, tick rate, seed, RNG stream identities); a replay recorded under other
 parameters is refused with the differing fields named, never played against a session that would produce
 different checkpoints. `restore` is refused while a recording is active (a restore is not an input event, so
-the recording could not reproduce it); Restart and Quit from the pause menu install another world and discard
-the recording.
+the recording could not reproduce it), and `snapshot` / `restore` are refused while a notice (native 202) is
+visible: a snapshot describes the world only and a notice is session presentation it does not carry. Every
+reset path (`reset`, Play!, Restart, the next mission) installs a world with no notice of the previous one.
+Restart and Quit from the pause menu install another world and discard the recording.
 
 ## Canonical state hash
 

@@ -19,7 +19,7 @@ use crate::fixed::Fixed;
 use crate::geom::point_in_polygon;
 use crate::vm::{
     Element, LOCATION_POINT_BIT, Location, MAX_QUEUE, MISSION_VARIABLES, Message, NONE_HANDLE,
-    Objective, SeqElement, UnknownCall, location_of_point,
+    Objective, Program, SeqElement, UnknownCall, charge_budget, location_of_point,
 };
 
 /// Saturating increment of a per-id diagnostic counter.
@@ -84,6 +84,17 @@ pub fn unpack_point(v: i32) -> Option<(i32, i32)> {
 
 fn arg(args: &[i32], i: usize) -> i32 {
     args.get(i).copied().unwrap_or(0)
+}
+
+/// Polygon of a location value (zones) borrowed from the program, if it is one.
+fn polygon_in(program: &Program, value: i32) -> Option<&[(i32, i32)]> {
+    if value < 0 {
+        return None;
+    }
+    match program.locations.get(value as usize)? {
+        Location::Polygon(p) => Some(p.as_slice()),
+        Location::Point { .. } => None,
+    }
 }
 
 impl World {
@@ -283,16 +294,24 @@ impl World {
                 }
                 0
             }
-            // 97 (actor, zone) -> bool: actor is inside zone (medium).
+            // 97 (actor, zone) -> bool: actor is inside zone (medium). One work unit per polygon
+            // edge, charged before the test on the borrowed polygon; without the budget the
+            // result is 0 and the callback aborts at its next instruction.
             97 => {
-                let inside = match (
-                    self.element_position(arg(args, 0)),
-                    self.polygon_of(arg(args, 1)),
-                ) {
-                    (Some((x, y)), Some(poly)) => poly.len() >= 3 && point_in_polygon(x, y, &poly),
-                    _ => false,
+                let Some((x, y)) = self.element_position(arg(args, 0)) else {
+                    return 0;
                 };
-                i32::from(inside)
+                let Some(vm) = self.vm.as_mut() else {
+                    return 0;
+                };
+                let Some(poly) = polygon_in(&vm.program, arg(args, 1)) else {
+                    return 0;
+                };
+                if !charge_budget(&mut vm.budget, poly.len() as u64) {
+                    vm.counters.budget_aborts = vm.counters.budget_aborts.saturating_add(1);
+                    return 0;
+                }
+                i32::from(poly.len() >= 3 && point_in_polygon(x, y, poly))
             }
             // 111 () -> actor: the player's character (medium); 211 () -> actor: the main
             // player character (medium): both the first player entity.
@@ -419,15 +438,34 @@ impl World {
                 0
             }
             // 204 (zone) -> int: player actors in zone (low): count of PCs inside the polygon.
-            204 => match self.polygon_of(arg(args, 0)) {
-                Some(poly) if poly.len() >= 3 => self
-                    .entities
-                    .iter()
-                    .filter(|e| e.kind == EntityKind::Player && e.alive && e.active)
-                    .filter(|e| point_in_polygon(e.x.round(), e.y.round(), &poly))
-                    .count() as i32,
-                _ => 0,
-            },
+            // One work unit per entity looked at plus one per edge for every player character
+            // tested, charged as the scan goes on the borrowed polygon; when the budget runs out
+            // the result is 0 and the callback aborts at its next instruction.
+            204 => {
+                let Some(vm) = self.vm.as_mut() else {
+                    return 0;
+                };
+                let Some(poly) = polygon_in(&vm.program, arg(args, 0)) else {
+                    return 0;
+                };
+                if poly.len() < 3 {
+                    return 0;
+                }
+                let edges = poly.len() as u64;
+                let mut count = 0;
+                for e in &self.entities {
+                    let player = e.kind == EntityKind::Player && e.alive && e.active;
+                    let cost = if player { 1 + edges } else { 1 };
+                    if !charge_budget(&mut vm.budget, cost) {
+                        vm.counters.budget_aborts = vm.counters.budget_aborts.saturating_add(1);
+                        return 0;
+                    }
+                    if player && point_in_polygon(e.x.round(), e.y.round(), poly) {
+                        count += 1;
+                    }
+                }
+                count
+            }
             // 216 () -> int: number of player characters; 217 (i) -> actor: player character i
             // (high).
             216 => self
@@ -530,17 +568,6 @@ impl World {
                 .get(value as usize)?
                 .position(),
         )
-    }
-
-    /// Polygon of a location value (zones), if it is one.
-    fn polygon_of(&self, value: i32) -> Option<Vec<(i32, i32)>> {
-        if value < 0 {
-            return None;
-        }
-        match self.vm.as_ref()?.program.locations.get(value as usize)? {
-            Location::Polygon(p) => Some(p.clone()),
-            Location::Point { .. } => None,
-        }
     }
 
     /// Element handle of the `i`-th player character in entity order.

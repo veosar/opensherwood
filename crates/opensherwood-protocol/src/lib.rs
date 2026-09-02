@@ -7,7 +7,9 @@ pub use opensherwood_core::{Hashes, InputEvent, Observation, Scenario, Snapshot}
 
 /// Protocol version reported by `hello`. 4: replay time is the session tick (`ReplayHeader::time`
 /// = [`REPLAY_TIME_SESSION`]), checkpoints carry `world_tick`, the tick-0 checkpoint is kept.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// 5: checkpoints carry the `session` digest (screen, UI state, notice) and the `frame` hash; a
+/// replay needs a checkpoint at tick 0 and a terminal one at its last tick.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// The only replay time model: one unit per `advance` of the session (every `step` tick, whether
 /// a screen consumed the events or the world stepped). Screens are part of the timeline.
@@ -468,18 +470,29 @@ pub struct ReplayCheckpoint {
     pub tick: u64,
     /// World tick at that session tick (the world lags while a screen is shown).
     pub world_tick: u64,
-    /// Expected hashes.
+    /// Expected world hashes.
     pub hashes: Hashes,
+    /// Digest of the session's presentation state at that tick: screen kind, the `ui` state as
+    /// `observe` reports it, and the notice text with its remaining ticks (BLAKE3, hex).
+    pub session: String,
+    /// BLAKE3 of the RGBA framebuffer at that tick (`capture.hash`; empty without a frame).
+    pub frame: String,
 }
 
 impl ReplayCheckpoint {
-    /// Names of what differs from the observed `(world_tick, hashes)`: the differing hash parts,
-    /// plus `world_tick` when the world advanced a different number of ticks.
+    /// Names of what differs from `observed` (a checkpoint built from the session at the same
+    /// tick): the differing hash parts, `world_tick`, `session` and `frame`.
     #[must_use]
-    pub fn diff(&self, world_tick: u64, hashes: &Hashes) -> Vec<String> {
-        let mut parts = self.hashes.diff(hashes);
-        if self.world_tick != world_tick {
+    pub fn diff(&self, observed: &ReplayCheckpoint) -> Vec<String> {
+        let mut parts = self.hashes.diff(&observed.hashes);
+        if self.world_tick != observed.world_tick {
             parts.push("world_tick".to_string());
+        }
+        if self.session != observed.session {
+            parts.push("session".to_string());
+        }
+        if self.frame != observed.frame {
+            parts.push("frame".to_string());
         }
         parts
     }
@@ -573,11 +586,38 @@ impl Replay {
             }
         }
         let header = header.ok_or("missing header line")?;
-        Ok(Self {
+        let replay = Self {
             header,
             events,
             checkpoints,
-        })
+        };
+        replay.check_checkpoints()?;
+        Ok(replay)
+    }
+
+    /// A replay compares something: its first checkpoint is at tick 0 (the state right after
+    /// `reset`) and its last one is terminal, at [`Replay::last_tick`] (after the last event).
+    /// Enforced by the parser and by [`ReplayRecorder::finish`], so a replay with its initial or
+    /// final expectation deleted is refused before any session is reset.
+    pub fn check_checkpoints(&self) -> Result<(), String> {
+        let first = self
+            .checkpoints
+            .first()
+            .ok_or("replay has no checkpoint (one at tick 0 and a terminal one are required)")?;
+        if first.tick != 0 {
+            return Err(format!(
+                "replay's first checkpoint is at tick {}, not 0",
+                first.tick
+            ));
+        }
+        let last = self.checkpoints.last().map_or(0, |c| c.tick);
+        let end = self.last_tick();
+        if last != end {
+            return Err(format!(
+                "replay's last checkpoint is at tick {last}, its last tick is {end}: the terminal checkpoint is missing"
+            ));
+        }
+        Ok(())
     }
 
     /// Serialise to JSON Lines. The output is built line by line into a buffer reserved with
@@ -686,6 +726,8 @@ impl ReplayRecorder {
             tick: replay_limits::MAX_TICK,
             world_tick: replay_limits::MAX_TICK,
             hashes: sample_hashes.clone(),
+            session: "0".repeat(64),
+            frame: "0".repeat(64),
         }))?;
         if bytes.checked_add(reserve).is_none_or(|n| n > max_bytes) {
             return Err(format!(
@@ -877,11 +919,13 @@ impl ReplayRecorder {
         self.accept_checkpoint(last, budget)
             .map_err(|e| format!("final checkpoint: {e}"))?;
         debug_assert!(self.bytes <= self.max_bytes);
-        Ok(Replay {
+        let replay = Replay {
             header: self.header,
             events: self.events,
             checkpoints: self.checkpoints,
-        })
+        };
+        replay.check_checkpoints()?;
+        Ok(replay)
     }
 }
 
@@ -923,12 +967,44 @@ mod tests {
                 },
                 intent: Some("select".into()),
             }],
-            checkpoints: vec![],
+            checkpoints: vec![checkpoint(0), checkpoint(4)],
         };
         let text = r.to_jsonl().unwrap();
         assert!(text.contains("\"kind\":\"pointer_down\""));
         assert_eq!(Replay::from_jsonl(&text).unwrap(), r);
         assert!(Replay::from_jsonl("").is_err());
+    }
+
+    #[test]
+    fn parser_requires_the_initial_and_terminal_checkpoints() {
+        let base = Replay {
+            header: header(),
+            events: vec![worst_event(2, 0)],
+            checkpoints: vec![checkpoint(0), checkpoint(2), checkpoint(3)],
+        };
+        assert_eq!(Replay::from_jsonl(&base.to_jsonl().unwrap()).unwrap(), base);
+        let mut no_initial = base.clone();
+        no_initial.checkpoints.remove(0);
+        let err = Replay::from_jsonl(&no_initial.to_jsonl().unwrap()).unwrap_err();
+        assert!(err.contains("not 0"), "{err}");
+        let mut none = base.clone();
+        none.checkpoints.clear();
+        let err = Replay::from_jsonl(&none.to_jsonl().unwrap()).unwrap_err();
+        assert!(err.contains("no checkpoint"), "{err}");
+        let mut no_terminal = base.clone();
+        no_terminal.checkpoints.pop();
+        let err = Replay::from_jsonl(&no_terminal.to_jsonl().unwrap()).unwrap_err();
+        assert!(err.contains("terminal"), "{err}");
+        // A checkpoint-only replay is fine when its single checkpoint is at tick 0.
+        let only_initial = Replay {
+            header: header(),
+            events: vec![],
+            checkpoints: vec![checkpoint(0)],
+        };
+        assert!(Replay::from_jsonl(&only_initial.to_jsonl().unwrap()).is_ok());
+        // The recorder cannot finish without the initial checkpoint either.
+        let r = ReplayRecorder::with_max_bytes(header(), &hashes(), 4096).unwrap();
+        assert!(r.finish(checkpoint(5)).unwrap_err().contains("not 0"));
     }
 
     fn header() -> ReplayHeader {
@@ -969,6 +1045,8 @@ mod tests {
             tick,
             world_tick: tick,
             hashes: hashes(),
+            session: "cd".repeat(32),
+            frame: "ef".repeat(32),
         }
     }
 

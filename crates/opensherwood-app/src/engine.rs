@@ -634,6 +634,9 @@ impl Session {
                 } else {
                     if let Some(world) = self.world.as_mut() {
                         world.step(events);
+                        // The cached frame shows the previous tick: a checkpoint or `capture`
+                        // after this tick must render the world as it is now.
+                        self.frame = None;
                     }
                     if let Some((_, left)) = self.notice.as_mut() {
                         *left = left.saturating_sub(1);
@@ -869,25 +872,76 @@ impl Session {
         {
             return;
         }
-        let (world_tick, hashes) = self.checkpoint_state();
+        let checkpoint = self.observed_checkpoint(tick);
         if let Some(rec) = self.recording.as_mut()
-            && let Err(why) = rec.recorder.push_checkpoint(ReplayCheckpoint {
-                tick,
-                world_tick,
-                hashes,
-            })
+            && let Err(why) = rec.recorder.push_checkpoint(checkpoint)
         {
             rec.failed = Some(why);
         }
     }
 
-    /// What a checkpoint compares: the world's tick and hashes (defaults without a world).
-    fn checkpoint_state(&self) -> (u64, opensherwood_core::Hashes) {
-        self.world
+    /// What a checkpoint compares, observed now: the world's tick and hashes (defaults without a
+    /// world), the session digest and the framebuffer hash (rendering the frame if needed).
+    fn observed_checkpoint(&mut self, tick: u64) -> ReplayCheckpoint {
+        let (world_tick, hashes) = self
+            .world
             .as_ref()
             .map_or((0, opensherwood_core::Hashes::default()), |w| {
                 (w.tick, w.hashes())
-            })
+            });
+        let session = self.session_digest();
+        let frame = self.frame().map(Framebuffer::hash).unwrap_or_default();
+        ReplayCheckpoint {
+            tick,
+            world_tick,
+            hashes,
+            session,
+            frame,
+        }
+    }
+
+    /// Digest of the presentation state a replay must reproduce besides the world: the screen
+    /// kind, the `ui` state as `observe` reports it (items, hover, page, scroll) and the notice
+    /// text with its remaining ticks. BLAKE3 over an explicit encoding, hex.
+    fn session_digest(&self) -> String {
+        let mut h = blake3::Hasher::new();
+        h.update(b"opensherwood-session\0");
+        let kind: &str = match &self.screen {
+            Screen::World => "world",
+            Screen::Menu(_) => "menu",
+            Screen::Briefing(_) => "briefing",
+            Screen::Pause(_) => "pause",
+            Screen::Debriefing(_) => "debriefing",
+            Screen::Credits(_) => "credits",
+        };
+        h.update(kind.as_bytes());
+        h.update(b"\0");
+        let ui = serde_json::to_vec(&self.ui_state()).unwrap_or_default();
+        h.update(&(ui.len() as u64).to_le_bytes());
+        h.update(&ui);
+        match &self.notice {
+            Some((text, left)) => {
+                h.update(&[1]);
+                h.update(&(text.len() as u64).to_le_bytes());
+                h.update(text.as_bytes());
+                h.update(&left.to_le_bytes());
+            }
+            None => {
+                h.update(&[0]);
+            }
+        }
+        h.finalize().to_hex().to_string()
+    }
+
+    /// Snapshots describe the world only; a notice (native 202) is session presentation that a
+    /// snapshot does not carry, so `snapshot` and `restore` wait until it has expired.
+    fn require_no_notice(&self) -> Result<(), RpcError> {
+        if self.notice.is_some() {
+            return Err(engine_err(
+                "a notice is shown: step until it expires before snapshot / restore",
+            ));
+        }
+        Ok(())
     }
 
     /// Queue window input for the next `step` (controlled window mode).
@@ -1062,6 +1116,7 @@ impl Session {
             self.queued_input.clear();
             self.recording = None;
             self.elapsed = 0;
+            self.notice = None;
             self.open_menu();
             return Ok(());
         }
@@ -1141,6 +1196,9 @@ impl Session {
         self.queued_input.clear();
         self.recording = None;
         self.elapsed = 0;
+        // Presentation state derived from the installed world, never from session history: no
+        // notice of a previous world survives, the HUD is rebuilt.
+        self.notice = None;
         // Presentation state derived from the installed world, never from session history.
         self.hud = HudState {
             money: ProfileSummary::default().money,
@@ -1342,6 +1400,7 @@ impl Session {
             }
             "snapshot" => {
                 self.require_world_screen()?;
+                self.require_no_notice()?;
                 let scenario = self.world()?.scenario.clone();
                 let content = self.scenario_content(&scenario)?;
                 let world = self.world()?;
@@ -1365,6 +1424,7 @@ impl Session {
             }
             "restore" => {
                 self.require_world_screen()?;
+                self.require_no_notice()?;
                 if self.recording.is_some() {
                     return Err(engine_err(
                         "a replay is being recorded; call replay.stop before restore",
@@ -1474,14 +1534,10 @@ impl Session {
                 let header = self.replay_header(world)?;
                 let hashes = world.hashes();
                 let mut recorder = ReplayRecorder::new(header, &hashes).map_err(engine_err)?;
-                // The initial state: playback compares it before applying anything.
-                recorder
-                    .push_checkpoint(ReplayCheckpoint {
-                        tick: 0,
-                        world_tick: world.tick,
-                        hashes,
-                    })
-                    .map_err(engine_err)?;
+                // The initial state (world, screen, frame): playback compares it before applying
+                // anything.
+                let initial = self.observed_checkpoint(0);
+                recorder.push_checkpoint(initial).map_err(engine_err)?;
                 self.recording = Some(Recording {
                     recorder,
                     checkpoint_every: p.checkpoint_every,
@@ -1499,18 +1555,14 @@ impl Session {
                     return Err(engine_err(format!("recording discarded: {why}")));
                 }
                 let tick = self.session_tick();
-                let (world_tick, hashes) = self.checkpoint_state();
+                let last = self.observed_checkpoint(tick);
                 // The final checkpoint goes into the bytes the recorder reserved for it, through
                 // the recorder's validated path; the text is then built with fallible allocation
                 // and is within `replay_limits::MAX_BYTES` by construction, so the parser
                 // accepts it.
                 let replay = rec
                     .recorder
-                    .finish(ReplayCheckpoint {
-                        tick,
-                        world_tick,
-                        hashes,
-                    })
+                    .finish(last)
                     .map_err(|e| engine_err(format!("recording discarded: {e}")))?;
                 let jsonl = replay
                     .to_jsonl()
@@ -1616,12 +1668,12 @@ impl Session {
                         self.advance(&tick_events);
                         simulated = tick;
                     }
-                    let (world_tick, hashes) = self.checkpoint_state();
+                    let observed = self.observed_checkpoint(tick);
                     while let Some(c) = checkpoints.peek()
                         && c.tick <= tick
                     {
                         if c.tick == tick {
-                            let diff = c.diff(world_tick, &hashes);
+                            let diff = c.diff(&observed);
                             if diff.is_empty() {
                                 checkpoints_ok += 1;
                             } else if first_divergence.is_none() {
@@ -1635,7 +1687,7 @@ impl Session {
                     }
                 }
                 self.frame = None;
-                let (_, hashes) = self.checkpoint_state();
+                let hashes = self.observed_checkpoint(simulated).hashes;
                 ok(ReplayPlayResult {
                     ticks: simulated,
                     checkpoints_ok,
@@ -1848,13 +1900,9 @@ mod session_tests {
         };
         let cap = 4096;
         let mut recorder = ReplayRecorder::with_max_bytes(header, &hashes, cap).unwrap();
-        recorder
-            .push_checkpoint(ReplayCheckpoint {
-                tick: 0,
-                world_tick: 0,
-                hashes,
-            })
-            .unwrap();
+        let _ = hashes;
+        let initial = s.observed_checkpoint(0);
+        recorder.push_checkpoint(initial).unwrap();
         s.recording.as_mut().unwrap().recorder = recorder;
         let mut recorded = 0;
         loop {
@@ -2045,6 +2093,46 @@ mod session_tests {
             .dispatch("restore", Some(json!({ "snapshot": good })))
             .unwrap();
         assert_eq!(r["hashes"], taken["hashes"]);
+    }
+
+    #[test]
+    fn notice_blocks_snapshot_and_restore_and_never_survives_install() {
+        let (mut s, _dir) = session("notice");
+        corridor(&mut s);
+        s.dispatch("step", Some(json!({ "ticks": 2 }))).unwrap();
+        let taken = s.dispatch("snapshot", None).unwrap();
+        let handle = taken["id"].as_str().unwrap().to_string();
+        let digest_without = s.session_digest();
+        s.notice = Some(("hello".to_string(), 30));
+        assert_ne!(
+            s.session_digest(),
+            digest_without,
+            "the notice is in the session digest"
+        );
+        for method in ["snapshot", "restore"] {
+            let err = s
+                .dispatch(method, Some(json!({ "id": handle })))
+                .unwrap_err();
+            assert_eq!(err.code, RpcError::ENGINE, "{method}");
+            assert!(err.message.contains("notice"), "{method}: {}", err.message);
+        }
+        // Every reset path installs a world without the previous world's notice.
+        corridor(&mut s);
+        assert!(s.notice.is_none());
+        assert_eq!(s.session_digest(), digest_without);
+        s.notice = Some(("hello".to_string(), 30));
+        s.dispatch("reset", Some(json!({ "scenario": { "menu": "main" } })))
+            .unwrap();
+        assert!(s.notice.is_none(), "the menu path clears it too");
+        corridor(&mut s);
+        s.dispatch("step", Some(json!({ "ticks": 2 }))).unwrap();
+        s.notice = Some(("hello".to_string(), 30));
+        // The notice counts down with the world and is gone after its ticks; then both work again.
+        s.dispatch("step", Some(json!({ "ticks": 30 }))).unwrap();
+        assert!(s.notice.is_none());
+        let taken = s.dispatch("snapshot", None).unwrap();
+        s.dispatch("restore", Some(json!({ "id": taken["id"] })))
+            .unwrap();
     }
 
     #[test]
