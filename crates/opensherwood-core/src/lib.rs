@@ -9,6 +9,7 @@
 
 pub mod anim;
 pub mod fixed;
+pub mod geom;
 pub mod hash;
 pub mod input;
 pub mod rng;
@@ -16,6 +17,7 @@ pub mod world;
 
 pub use anim::{AnimSet, AnimState, Catalog, FrameSpec, direction_of};
 pub use fixed::Fixed;
+pub use geom::Geometry;
 pub use hash::Hashes;
 pub use input::{Button, InputEvent, Key};
 pub use world::{

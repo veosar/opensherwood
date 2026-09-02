@@ -54,3 +54,26 @@ def test_mission_is_deterministic_across_processes(binary, game_dir):
             r = e.step(200)
             totals.append(r["hashes"]["total"])
     assert totals[0] == totals[1]
+
+
+def test_walking_into_an_obstacle_stops_and_occluders_hide_the_sprite(binary, game_dir):
+    with Engine(binary=binary, game_dir=game_dir) as e:
+        e.reset({"mission": "EmbTut_FoC_EC"}, seed=1)
+        obs = e.observe()
+        robin = next(x for x in obs["entities"] if x["kind"] == "player")
+        rx, ry = robin["x"] // 256, robin["y"] // 256
+        cam_x, cam_y = max(0, rx - 320), max(0, ry - 240)
+        for key, n in (("right", cam_x // 8), ("down", cam_y // 8)):
+            if n:
+                e.step(n, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": key}])
+                e.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "key_up", "key": key}])
+        cam = e.observe(entities=False)["camera"]
+        sx, sy = rx - cam[0], ry - cam[1]
+        e.step(1, pointer_click(sx, sy, "left"))
+        # West along the bank: the big tree's obstacle polygon is in the way.
+        e.step(1, pointer_click(sx - 260, sy + 40, "right"))
+        e.step(400)
+        p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
+        assert p["target"] is None
+        assert p["x"] // 256 > rx - 260 + 20, "walked through the obstacle"
+        assert p["x"] // 256 < rx, "did not move at all"

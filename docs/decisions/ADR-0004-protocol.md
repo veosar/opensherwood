@@ -2,7 +2,8 @@
 
 Date: 2026-09-02. Status: accepted.
 
-Versions in force (2026-09-02, after the M0 review): protocol 2, ruleset 2, hash schema 2, snapshot schema 3.
+Versions in force (2026-09-02 evening): protocol 2, ruleset 2, hash schema 3 (walkable geometry is hashed under
+`pathfinding`), snapshot schema 3.
 Any change to canonical bytes bumps the ruleset or hash schema and regenerates
 `harness/fixtures/synthetic_corridor.json` (see `docs/decisions/reviews/2026-09-02-codex-m0-review-disposition.md`).
 

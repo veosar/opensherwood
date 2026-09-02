@@ -6,7 +6,7 @@
 //! hero profiles in file order; and patrol routes, which follow the rail points literally.
 
 use opensherwood_assets::GameDir;
-use opensherwood_core::{ActorSpec, MapInfo, MissionSpec, Team};
+use opensherwood_core::{ActorSpec, Geometry, MapInfo, MissionSpec, Team};
 use opensherwood_formats::rhm::{self, ActorGroup, Mission};
 
 /// Hero profiles in the order player characters appear in mission files (placeholder).
@@ -43,7 +43,11 @@ pub fn load(game: &GameDir, name: &str) -> Result<(Mission, String), String> {
 
 /// Build the spec from a decoded mission and the background size.
 #[must_use]
-pub fn build_spec(mission: &Mission, map: MapInfo) -> (MissionSpec, Vec<String>) {
+pub fn build_spec(
+    mission: &Mission,
+    map: MapInfo,
+    geometry: Geometry,
+) -> (MissionSpec, Vec<String>) {
     let mut actors = Vec::new();
     let mut profiles: Vec<String> = Vec::new();
     let mut use_profile = |p: &str| {
@@ -117,7 +121,14 @@ pub fn build_spec(mission: &Mission, map: MapInfo) -> (MissionSpec, Vec<String>)
             ActorGroup::Meow { .. } | ActorGroup::Objects { .. } | ActorGroup::Unknown { .. } => {}
         }
     }
-    (MissionSpec { map, actors }, profiles)
+    (
+        MissionSpec {
+            map,
+            geometry,
+            actors,
+        },
+        profiles,
+    )
 }
 
 #[cfg(test)]

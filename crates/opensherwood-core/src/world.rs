@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::anim::{AnimState, Catalog, direction_of};
 use crate::fixed::Fixed;
+use crate::geom::Geometry;
 use crate::hash::{Encoder, HASH_SCHEMA_VERSION, Hashes, total};
 use crate::input::{Button, InputEvent, Key, button_tag, encode_key};
 use crate::rng::Rng;
@@ -134,11 +135,14 @@ pub struct ActorSpec {
     pub patrol: Vec<(i32, i32)>,
 }
 
-/// A mission ready to be simulated: map size plus actors. Built by the app from the retail files.
+/// A mission ready to be simulated: map size, walkable geometry and actors. Built by the app from
+/// the retail files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MissionSpec {
     /// Map size in pixels.
     pub map: MapInfo,
+    /// Walkable ground and obstacles.
+    pub geometry: Geometry,
     /// Actors in file order (order is authoritative).
     pub actors: Vec<ActorSpec>,
 }
@@ -191,6 +195,8 @@ pub const MAX_MAP_SIZE: u32 = 1 << 15;
 pub const MAX_ENTITIES: usize = 1 << 16;
 /// Pointer coordinates (24.8) are clamped to this magnitude.
 pub const MAX_POINTER_RAW: i32 = 1 << 24;
+/// Largest total vertex count of the walkable geometry.
+pub const MAX_GEOMETRY_VERTICES: usize = 1 << 20;
 
 /// The world.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +231,8 @@ pub struct World {
     pub goal: (Fixed, Fixed),
     /// Whether the player reached the goal.
     pub objective_reached: bool,
+    /// Walkable geometry (authoritative: it decides movement).
+    pub geometry: Geometry,
     /// Static animation data attached by the app (not part of the snapshot; re-attached on load).
     #[serde(skip)]
     pub catalog: Catalog,
@@ -271,6 +279,7 @@ impl World {
             return Err(format!("{} actors exceed the limit", spec.actors.len()));
         }
         let mut world = Self::build(scenario, seed, Some(spec.map));
+        world.geometry = spec.geometry.clone();
         world.entities.clear();
         world.goal = (Fixed::from_int(-1000), Fixed::from_int(-1000));
         let f = Fixed::from_int;
@@ -304,6 +313,11 @@ impl World {
         }
         world.validate()?;
         Ok(world)
+    }
+
+    /// Attach walkable geometry (map view and missions).
+    pub fn set_geometry(&mut self, geometry: Geometry) {
+        self.geometry = geometry;
     }
 
     /// Create a map-view world; the app resolved and decoded the background already.
@@ -401,6 +415,7 @@ impl World {
             rng: Rng::new(seed, 1),
             goal: (f(600), f(240)),
             objective_reached: false,
+            geometry: Geometry::default(),
             catalog: Catalog::default(),
         }
     }
@@ -458,6 +473,9 @@ impl World {
         }
         if self.entities.len() > MAX_ENTITIES {
             return Err(format!("{} entities exceed the limit", self.entities.len()));
+        }
+        if self.geometry.vertex_count() > MAX_GEOMETRY_VERTICES {
+            return Err("geometry has too many vertices".into());
         }
         let mut ids = BTreeSet::new();
         for e in &self.entities {
@@ -640,7 +658,7 @@ impl World {
             };
             let blocked = obstacles.iter().any(|&(ox, oy, hw, hh)| {
                 (nx - ox).abs() <= hw + e.size && (ny - oy).abs() <= hh + e.size
-            });
+            }) || !self.geometry.is_walkable(nx.round(), ny.round());
             if dx.0 != 0 || dy.0 != 0 {
                 e.facing256 = facing_of(dx, dy);
             }
@@ -825,9 +843,23 @@ impl World {
             .u64(self.rng.draws);
         parts.insert("rng".into(), r.finish());
 
+        let mut g = Encoder::new("pathfinding");
+        g.u32(self.geometry.boundary.len() as u32);
+        for (x, y) in &self.geometry.boundary {
+            g.i32(*x).i32(*y);
+        }
+        g.u32(self.geometry.obstacles.len() as u32);
+        for o in &self.geometry.obstacles {
+            g.u32(o.len() as u32);
+            for (x, y) in o {
+                g.i32(*x).i32(*y);
+            }
+        }
+        parts.insert("pathfinding".into(), g.finish());
+
         // Subsystems that do not exist yet hash to a versioned constant so the set of parts is
         // stable across milestones and their appearance is a visible ruleset change.
-        for name in ["pathfinding", "scripts", "scheduler", "campaign"] {
+        for name in ["scripts", "scheduler", "campaign"] {
             let mut e = Encoder::new(name);
             e.u8(0);
             parts.insert(name.into(), e.finish());
@@ -944,7 +976,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "8d72dcd23934cd12be641be3778c4c00ac29b0283da160832e6b593af0a4d100";
+        "6bcd5808e2eb970ef912ef26ee231e503aceea4c9d8c06dce3a714709b92b958";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -1082,6 +1114,10 @@ mod tests {
                 width: 1000,
                 height: 800,
             },
+            geometry: Geometry {
+                boundary: vec![(0, 0), (1000, 0), (1000, 800), (0, 800)],
+                obstacles: vec![vec![(180, 150), (220, 150), (220, 250), (180, 250)]],
+            },
             actors: vec![
                 ActorSpec {
                     profile: "RobinHood".into(),
@@ -1108,6 +1144,16 @@ mod tests {
         assert_eq!(w.entities[1].patrol.len(), 2);
         assert_eq!(w.entities[0].anim.as_ref().unwrap().set, "RobinHood");
         assert!(World::new_mission(Scenario::Synthetic("x".into()), 1, &spec).is_err());
+        // Walking east from (100,200) into the obstacle at x=180 stops at its edge.
+        let mut w = w;
+        w.selected = Some(w.entities[0].id);
+        w.entities[0].target = Some((Fixed::from_int(400), Fixed::from_int(200)));
+        for _ in 0..400 {
+            w.step(&[]);
+        }
+        let x = w.entities[0].x.round();
+        assert!((160..=180).contains(&x), "stopped at {x}");
+        assert!(w.entities[0].target.is_none());
     }
 
     #[test]

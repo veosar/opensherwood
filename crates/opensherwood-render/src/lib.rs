@@ -21,7 +21,7 @@ pub struct Framebuffer {
 /// An RGBA colour.
 pub type Color = [u8; 4];
 
-/// A decoded background picture in map pixels (RGBA8).
+/// A decoded background picture in map pixels (RGBA8) plus its foreground occluder masks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Background {
     /// Width.
@@ -30,6 +30,61 @@ pub struct Background {
     pub height: u32,
     /// Pixels.
     pub rgba: Vec<u8>,
+    /// Parts of the background drawn in front of sprites standing behind them.
+    pub occluders: Vec<Occluder>,
+}
+
+/// A foreground mask (`docs/formats/rhp.md`, `FACE`): a 1-bit bitmap at a map position and a
+/// depth line; a sprite whose feet are above the line (smaller y) is behind the mask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Occluder {
+    /// Map position of the mask.
+    pub x: i32,
+    /// Map position.
+    pub y: i32,
+    /// Width.
+    pub width: u32,
+    /// Height.
+    pub height: u32,
+    /// Rows of `ceil(width / 8)` bytes, MSB first, 1 = mask pixel.
+    pub bits: Vec<u8>,
+    /// Depth line in map pixels (two points); `None` = the mask's bottom edge.
+    pub line: Option<((i32, i32), (i32, i32))>,
+}
+
+impl Occluder {
+    fn stride(&self) -> usize {
+        (self.width as usize).div_ceil(8)
+    }
+
+    /// Whether the mask covers map pixel `(mx, my)`.
+    #[must_use]
+    pub fn covers(&self, mx: i32, my: i32) -> bool {
+        let (lx, ly) = (mx - self.x, my - self.y);
+        if lx < 0 || ly < 0 || lx >= self.width as i32 || ly >= self.height as i32 {
+            return false;
+        }
+        let idx = ly as usize * self.stride() + (lx as usize >> 3);
+        self.bits
+            .get(idx)
+            .is_some_and(|b| b & (0x80 >> (lx & 7)) != 0)
+    }
+
+    /// y of the depth line at map x (clamped to the segment), or the mask bottom.
+    #[must_use]
+    pub fn depth_y(&self, mx: i32) -> i32 {
+        match self.line {
+            Some(((x1, y1), (x2, y2))) => {
+                if x1 == x2 {
+                    y1.max(y2)
+                } else {
+                    let t = ((mx - x1).clamp(0.min(x2 - x1), 0.max(x2 - x1))) as i64;
+                    (i64::from(y1) + t * i64::from(y2 - y1) / i64::from(x2 - x1)) as i32
+                }
+            }
+            None => self.y + self.height as i32,
+        }
+    }
 }
 
 impl Framebuffer {
@@ -375,6 +430,8 @@ pub fn render(
         16,
         palette::GOAL,
     );
+    // Sprites drawn this frame: (feet map x, feet map y, screen rect) for occlusion.
+    let mut drawn: Vec<DrawnSprite> = Vec::new();
     for e in &world.entities {
         if !e.alive {
             continue;
@@ -406,6 +463,11 @@ pub fn render(
                         let x = px(e.x, cx) + spec.offset_x;
                         let y = px(e.y, cy) + spec.offset_y;
                         fb.blit_rgba(x, y, frame.width, frame.height, &frame.rgba);
+                        drawn.push((
+                            e.x.round(),
+                            e.y.round(),
+                            (x, y, frame.width as i32, frame.height as i32),
+                        ));
                     }
                     None => fb.fill_circle(px(e.x, cx), px(e.y, cy), e.size.round(), c),
                 }
@@ -429,6 +491,12 @@ pub fn render(
             }
         }
     }
+    if let Some(bg) = background {
+        apply_occluders(&mut fb, bg, (cx, cy), &drawn);
+    }
+    if let Some(bg) = background {
+        apply_occluders(&mut fb, bg, (cx, cy), &drawn);
+    }
     let (mx, my) = (
         Fixed::from_raw(world.pointer.0).round(),
         Fixed::from_raw(world.pointer.1).round(),
@@ -436,6 +504,47 @@ pub fn render(
     fb.line(mx - 4, my, mx + 4, my, palette::POINTER);
     fb.line(mx, my - 4, mx, my + 4, palette::POINTER);
     fb
+}
+
+/// A sprite drawn this frame: feet position in map pixels and its screen rectangle.
+type DrawnSprite = (i32, i32, (i32, i32, i32, i32));
+
+/// Restore background pixels of every occluder over the sprites standing behind it.
+fn apply_occluders(
+    fb: &mut Framebuffer,
+    bg: &Background,
+    (cx, cy): (i32, i32),
+    drawn: &[DrawnSprite],
+) {
+    for occ in &bg.occluders {
+        let (ox0, oy0) = (occ.x - cx, occ.y - cy);
+        let (ox1, oy1) = (ox0 + occ.width as i32, oy0 + occ.height as i32);
+        for &(fx, fy, (sx, sy, sw, sh)) in drawn {
+            if fy >= occ.depth_y(fx) {
+                continue; // in front of the object
+            }
+            let (x0, y0) = (sx.max(ox0).max(0), sy.max(oy0).max(0));
+            let (x1, y1) = (
+                (sx + sw).min(ox1).min(fb.width as i32),
+                (sy + sh).min(oy1).min(fb.height as i32),
+            );
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let (mx, my) = (x + cx, y + cy);
+                    if occ.covers(mx, my)
+                        && mx >= 0
+                        && my >= 0
+                        && (mx as u32) < bg.width
+                        && (my as u32) < bg.height
+                    {
+                        let si = ((my as u32 * bg.width + mx as u32) * 4) as usize;
+                        let di = ((y as u32 * fb.width + x as u32) * 4) as usize;
+                        fb.rgba[di..di + 4].copy_from_slice(&bg.rgba[si..si + 4]);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

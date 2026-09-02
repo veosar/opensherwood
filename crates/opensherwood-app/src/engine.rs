@@ -11,12 +11,14 @@ use opensherwood_core::{
 };
 
 use crate::mission;
+use opensherwood_core::Geometry;
 use opensherwood_protocol::{
     CaptureParams, CaptureResult, HelloResult, ObserveParams, ObserveResult, PROTOCOL_VERSION,
     Replay, ReplayCheckpoint, ReplayEvent, ReplayHeader, ReplayPlayParams, ReplayPlayResult,
     ReplayStartParams, ReplayStopResult, ResetParams, RestoreParams, RngStreamInit, RpcError,
     SnapshotResult, StepParams, StepResult,
 };
+use opensherwood_render::Occluder;
 use opensherwood_render::{Background, Framebuffer, NoSprites, SpriteFrame, SpriteSource, render};
 use serde_json::{Value, json};
 
@@ -319,17 +321,71 @@ impl Session {
         }
     }
 
-    /// Decode a retail background.
-    fn load_background(game: &GameDir, map: &str, ambiance: &str) -> Result<Background, String> {
+    /// Decode a retail background and the map's geometry (occluders for drawing, walkable area for
+    /// movement).
+    fn load_map(
+        game: &GameDir,
+        map: &str,
+        ambiance: &str,
+    ) -> Result<(Background, Geometry), String> {
         let logical = format!("Data/Levels/{ambiance}/{map}.map");
         let data = game.read(&logical).map_err(|e| e.to_string())?;
         let img = opensherwood_formats::image_blob::parse_file(&data)
             .map_err(|e| format!("{logical}: {e}"))?;
-        Ok(Background {
+        let mut background = Background {
             width: u32::from(img.width),
             height: u32::from(img.height),
             rgba: img.to_rgba8_565(),
-        })
+            occluders: Vec::new(),
+        };
+        let mut geometry = Geometry::default();
+        let rhp_path = format!("Data/Levels/{map}.rhp");
+        match game.read(&rhp_path) {
+            Ok(bytes) => match opensherwood_formats::rhp::parse(&bytes) {
+                Ok(rhp) => {
+                    background.occluders = rhp
+                        .faces
+                        .iter()
+                        .map(|f| Occluder {
+                            x: i32::from(f.x),
+                            y: i32::from(f.y),
+                            width: u32::from(f.width),
+                            height: u32::from(f.height),
+                            bits: f.mask.clone(),
+                            line: f.lines.first().and_then(|l| {
+                                (l.points.len() >= 2).then(|| {
+                                    (
+                                        (i32::from(l.points[0].x), i32::from(l.points[0].y)),
+                                        (i32::from(l.points[1].x), i32::from(l.points[1].y)),
+                                    )
+                                })
+                            }),
+                        })
+                        .collect();
+                    geometry.boundary = rhp
+                        .stat
+                        .boundary
+                        .iter()
+                        .map(|p| (i32::from(p.x), i32::from(p.y)))
+                        .collect();
+                    geometry.obstacles = rhp
+                        .stat
+                        .obstacles
+                        .iter()
+                        .map(|o| {
+                            o.polygon
+                                .points
+                                .iter()
+                                .map(|p| (i32::from(p.x), i32::from(p.y)))
+                                .collect()
+                        })
+                        .collect();
+                }
+                Err(e) => eprintln!("opensherwood: {rhp_path}: {e}"),
+            },
+            Err(e) => eprintln!("opensherwood: {rhp_path}: {e}"),
+        }
+        Ok((background, geometry))
     }
 
     /// Open the sprite bank once and build a catalog for the given profiles.
@@ -368,12 +424,13 @@ impl Session {
                     .game
                     .as_ref()
                     .ok_or("map scenarios need a game directory")?;
-                let bg = Self::load_background(game, map, ambiance)?;
+                let (bg, geometry) = Self::load_map(game, map, ambiance)?;
                 let info = MapInfo {
                     width: bg.width,
                     height: bg.height,
                 };
                 let mut world = World::new_map_view(scenario, seed, info)?;
+                world.set_geometry(geometry);
                 let catalog =
                     self.load_catalog(&["RobinHood".to_string(), "Soldier A00".to_string()]);
                 if !catalog.sets.is_empty() {
@@ -385,12 +442,12 @@ impl Session {
                 let game = self.game.as_ref().ok_or("missions need a game directory")?;
                 let (mission_file, map) = mission::load(game, name)?;
                 let ambiance = "Day";
-                let bg = Self::load_background(game, &map, ambiance)?;
+                let (bg, geometry) = Self::load_map(game, &map, ambiance)?;
                 let info = MapInfo {
                     width: bg.width,
                     height: bg.height,
                 };
-                let (spec, profiles) = mission::build_spec(&mission_file, info);
+                let (spec, profiles) = mission::build_spec(&mission_file, info, geometry);
                 let mut world = World::new_mission(scenario, seed, &spec)?;
                 let catalog = self.load_catalog(&profiles);
                 if !catalog.sets.is_empty() {
