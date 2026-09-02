@@ -35,6 +35,9 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 
 - [x] Interactive window (winit + wgpu presenter of the CPU framebuffer), letterboxed, driven by the same canonical input events
 - [x] Map view scenario: retail background + camera (keys, edge scrolling) + picking in map coordinates; RPC works in window mode too
+- [x] Characters drawn from the sprite bank with the documented idle/walk animation blocks and canvas origins
+- [x] Audio: Ogg Vorbis music per map / menu theme, PCM effects channel (`opensherwood-audio`)
+- [x] Borderless fullscreen by default, F11 toggle, letterboxed logical viewport
 
 - [ ] VFS resolves base + language overlay (`2047/data`) + mod overlays; content fingerprint
 - [ ] Tutorial map renders with static entities, camera, picking, selection, one animated actor
