@@ -127,8 +127,11 @@ pub struct Session {
     /// Debriefing texts shown when the mission is won / lost (`.red` entries before the last).
     debriefings_won: Vec<String>,
     debriefings_lost: Vec<String>,
-    /// The mission's end has been shown (the debriefing parchment leads back to the menu).
+    /// The mission's end has been shown (the debriefing parchment leads to the next mission or the menu).
     ended: bool,
+    /// Mission file that follows the current one in the campaign graph (`profile.cpf` level table:
+    /// the level whose only prerequisite is the current level), if any.
+    next_mission: Option<String>,
     /// A non-blocking script text (native 202) shown over the world, with its remaining ticks.
     notice: Option<(String, u32)>,
     /// Scenario and seed of the world that is installed (for Restart).
@@ -257,6 +260,7 @@ impl Session {
             debriefings_won: Vec::new(),
             debriefings_lost: Vec::new(),
             ended: false,
+            next_mission: None,
             notice: None,
             current: None,
             hud: HudState::default(),
@@ -304,26 +308,35 @@ impl Session {
         self.debriefings_won.clear();
         self.debriefings_lost.clear();
         self.ended = false;
+        self.next_mission = None;
         let Some(game) = self.game.as_ref() else {
             return;
         };
-        let Some(code) = game
+        let table = game
             .read("Data/Configuration/profile.cpf")
             .ok()
-            .and_then(|d| opensherwood_formats::cpf::parse(&d).ok())
-            .and_then(|t| {
-                t.levels
-                    .iter()
-                    .find(|l| {
-                        let f = l.mission_file.trim_end_matches(".rhm");
-                        f.eq_ignore_ascii_case(name) || l.mission_file.eq_ignore_ascii_case(name)
-                    })
-                    .map(|l| l.code.clone())
-            })
-        else {
+            .and_then(|d| opensherwood_formats::cpf::parse(&d).ok());
+        let Some(code) = table.as_ref().and_then(|t| {
+            t.levels
+                .iter()
+                .find(|l| {
+                    let f = l.mission_file.trim_end_matches(".rhm");
+                    f.eq_ignore_ascii_case(name) || l.mission_file.eq_ignore_ascii_case(name)
+                })
+                .map(|l| l.code.clone())
+        }) else {
             eprintln!("opensherwood: no level code for mission {name}; no texts");
             return;
         };
+        // Campaign graph (`docs/formats/profile.md`, medium confidence): a level is available after
+        // the levels in its `after` list. The successor launched automatically is the level whose
+        // only prerequisite is this one, first in table order (mission 1 -> the first secondary).
+        self.next_mission = table.as_ref().and_then(|t| {
+            t.levels
+                .iter()
+                .find(|l| l.after.len() == 1 && l.after[0] == code && !l.mission_file.is_empty())
+                .map(|l| l.mission_file.trim_end_matches(".rhm").to_string())
+        });
         let Ok(red) = game.read(&format!("Data/Text/RHLevel{code}.red")) else {
             eprintln!("opensherwood: no text index for level {code}");
             return;
@@ -556,7 +569,17 @@ impl Session {
                 let done = events.iter().any(|e| b.handle(*e));
                 self.frame = None;
                 if done {
-                    self.open_menu();
+                    // The next level of the campaign graph launches automatically (manual, p.9);
+                    // without one (or when it cannot load) the main menu follows.
+                    match self.next_mission.clone() {
+                        Some(next) => {
+                            if let Err(e) = self.reset(Scenario::Mission(next.clone()), 0) {
+                                eprintln!("opensherwood: cannot start {next}: {e}");
+                                self.open_menu();
+                            }
+                        }
+                        None => self.open_menu(),
+                    }
                 }
             }
             Screen::Credits(c) => {
