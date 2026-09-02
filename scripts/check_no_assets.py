@@ -21,7 +21,9 @@ FORBIDDEN_EXT = {
     # derived images: screenshots and decoded sheets of game data stay local
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff",
 }
-FORBIDDEN_ROOTS = ("re/", "harness/goldens/", "harness/captures/", "goldens/")
+FORBIDDEN_ROOTS = ("re/", "harness/goldens/", "harness/captures/", "goldens/", "harness/out/", "harness/harness/")
+# Replays and snapshots produced from a retail run carry the content fingerprint of the player's data.
+RETAIL_MARKERS = (b'"content_fingerprint":"opensherwood', b'"content":"opensherwood')
 FORBIDDEN_NAMES = {"continue", "continue_t", "restart", "restart_t", "profiles", "campaign.bck"}
 MAGICS = [b"SRES", b"MEUH", b"DUTY", b"SBSCRIPT", b"SBFONT", b"SBTTFT", b"FXBK", b"SFPK", b"NEUF", b"GSHR",
           b"FORP", b"BIKi", bytes.fromhex("c9eb0300")]
@@ -42,9 +44,14 @@ def main() -> int:
     for path in tracked_files():
         rel = path.relative_to(ROOT).as_posix()
         name = path.name.lower()
-        if rel.lower().startswith(FORBIDDEN_ROOTS):
+        if rel.lower().startswith(FORBIDDEN_ROOTS) or "/harness/out/" in rel.lower() or "/out/replays/" in rel.lower():
             problems.append(f"file under a local-only root: {rel}")
             continue
+        if path.suffix.lower() in {".jsonl", ".json"} and path.exists():
+            head = path.read_bytes()[:4096]
+            if any(m in head for m in RETAIL_MARKERS) and not rel.startswith("harness/fixtures/"):
+                problems.append(f"replay or snapshot with a retail content fingerprint: {rel}")
+                continue
         if path.suffix.lower() in FORBIDDEN_EXT:
             problems.append(f"forbidden extension: {rel}")
             continue
