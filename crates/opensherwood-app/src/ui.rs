@@ -214,11 +214,13 @@ pub struct HudAssets {
     pub eyes: Option<SpriteFrame>,
     /// Map scroll (`BTTN` 61).
     pub map_scroll: Option<SpriteFrame>,
-    /// Towers, zoom (`BTTN` 4).
+    /// Towers, zoom (`BTTN` 4 above `BTTN` 5).
     pub towers: Option<SpriteFrame>,
-    /// Standing figure (`BTTN` 3).
+    pub towers_far: Option<SpriteFrame>,
+    /// Standing figure (`BTTN` 3) above the kneeling one (`BTTN` 2).
     pub stand: Option<SpriteFrame>,
-    /// Plan scroll (`BTTN` 251).
+    pub kneel: Option<SpriteFrame>,
+    /// Plan scroll (`BTTN` 1).
     pub plan: Option<SpriteFrame>,
     /// Hero portrait face (`PIC` 136).
     pub portrait: Option<SpriteFrame>,
@@ -891,34 +893,30 @@ pub struct HudState {
     pub hero_name: Vec<String>,
 }
 
-/// Draw the HUD over the scene (`ui-flow.md` 9.3). Positions matched by eye to the original's captures;
-/// the portrait frame picture is not identified yet, so a small scroll stands in for it.
+/// Draw the HUD over the scene (`ui-flow.md` 9.3). Widget positions were located by template matching the
+/// decoded pictures in the original's pause capture (2026-09-02, correlation 0.93-0.998): eyes (924,0),
+/// map scroll (941,38), towers (998,0) and (998,46), standing figure (1,661), kneeling figure (0,721),
+/// plan scroll (964,701), portrait face (83,657). The portrait frame picture is not identified yet, so a
+/// small scroll stands in for it.
 pub fn draw_hud(scene: &mut Framebuffer, assets: &UiAssets, hud: &HudState) {
     let h = &assets.hud;
     for (pic, x, y) in &h.foliage {
         scene.blit_rgba(*x, *y, pic.width, pic.height, &pic.rgba);
     }
-    if let Some(p) = &h.eyes {
-        scene.blit_rgba(950, 0, p.width, p.height, &p.rgba);
-    }
-    if let Some(p) = &h.towers {
-        scene.blit_rgba(998, 8, p.width, p.height, &p.rgba);
-    }
-    if let Some(p) = &h.map_scroll {
-        scene.blit_rgba(935, 40, p.width, p.height, &p.rgba);
-    }
-    if let Some(p) = &h.stand {
-        scene.blit_rgba(5, 690, p.width, p.height, &p.rgba);
-    }
-    if let Some(p) = &h.plan {
-        scene.blit_rgba(950, 700, p.width, p.height, &p.rgba);
-    }
-    if let Some(p) = &h.portrait_scroll {
-        scene.blit_rgba(70, 640, p.width, p.height, &p.rgba);
-    }
-    if let Some(p) = &h.portrait {
-        scene.blit_rgba(88, 660, p.width, p.height, &p.rgba);
-    }
+    let place = |scene: &mut Framebuffer, pic: &Option<SpriteFrame>, x: i32, y: i32| {
+        if let Some(p) = pic {
+            scene.blit_rgba(x, y, p.width, p.height, &p.rgba);
+        }
+    };
+    place(scene, &h.eyes, 924, 0);
+    place(scene, &h.towers, 998, 0);
+    place(scene, &h.towers_far, 998, 46);
+    place(scene, &h.map_scroll, 941, 38);
+    place(scene, &h.stand, 1, 661);
+    place(scene, &h.kneel, 0, 721);
+    place(scene, &h.plan, 964, 701);
+    place(scene, &h.portrait_scroll, 70, 640);
+    place(scene, &h.portrait, 83, 657);
     if let Some(font) = &assets.font_text {
         let s = &assets.strings;
         let money = text(s, t::MONEY_FORMAT, "money: %i").replace("%i", &hud.money.to_string());
