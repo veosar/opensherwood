@@ -29,6 +29,7 @@ cargo build --workspace --release  # release
 cargo run -p opensherwood-app -- --rpc stdio --headless
 
 # game window: synthetic scenario (no game data needed)
+cargo run -p opensherwood-app --release -- --game-dir "C:\GOG Games\Robin Hood - The Legend of Sherwood"   # the original main menu
 cargo run -p opensherwood-app --release -- --scenario corridor --scale 2
 
 # game window: scroll around a retail map background with synthetic units on it
