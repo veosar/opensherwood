@@ -44,7 +44,7 @@ pub fn run(
     session.reset(scenario, 0).map_err(anyhow::Error::msg)?;
     let (vw, vh) = session.frame().map_or((1024, 768), |f| (f.width, f.height));
     let event_loop = EventLoop::new().context("creating the event loop")?;
-    event_loop.set_control_flow(ControlFlow::Poll);
+    event_loop.set_control_flow(ControlFlow::Poll); // refined per iteration in `about_to_wait`
     let mut app = App {
         session,
         rpc: rpc.then(rpc::spawn_stdin_reader),
@@ -134,6 +134,23 @@ impl Gpu {
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .context("surface not supported")?;
+        // The framebuffer holds display-ready (sRGB-encoded) bytes and the blit shader copies them
+        // unchanged, so the surface must not apply a second encoding: prefer a non-sRGB 8-bit format
+        // on every backend rather than whatever the driver lists first.
+        let caps = surface.get_capabilities(&adapter);
+        if let Some(fmt) = caps.formats.iter().copied().find(|f| {
+            matches!(
+                f,
+                wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+            )
+        }) {
+            config.format = fmt;
+        } else {
+            eprintln!(
+                "opensherwood: no non-sRGB surface format offered ({:?}); colours may be re-encoded",
+                caps.formats
+            );
+        }
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
 
@@ -354,8 +371,9 @@ impl App {
         ((lx * 256.0).round() as i32, (ly * 256.0).round() as i32)
     }
 
-    fn drain_rpc(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(rx) = &self.rpc else { return };
+    /// Handle every pending RPC line; returns whether any was handled.
+    fn drain_rpc(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        let Some(rx) = &self.rpc else { return false };
         let mut lines: Vec<String> = Vec::new();
         loop {
             match rx.try_recv() {
@@ -371,6 +389,7 @@ impl App {
                 }
             }
         }
+        let any = !lines.is_empty();
         for line in lines {
             let handled = rpc::handle_line(&mut self.session, &line);
             if let Some(resp) = &handled.response
@@ -383,6 +402,7 @@ impl App {
                 event_loop.exit();
             }
         }
+        any
     }
 
     /// Controlled mode: hand the window input collected so far to the session, so the next `step`
@@ -393,12 +413,13 @@ impl App {
         }
     }
 
-    fn tick_if_due(&mut self) {
+    /// Run the ticks that are due; returns how many ran.
+    fn tick_if_due(&mut self) -> u32 {
         // Controlled mode: with an RPC client attached the simulation advances only through `step`,
         // so identical scripts give identical hashes. Window input is queued for the next step.
         if self.rpc.is_some() {
             self.flush_pending();
-            return;
+            return 0;
         }
         let now = Instant::now();
         self.accumulator += now - self.last_tick;
@@ -408,11 +429,14 @@ impl App {
         if self.accumulator > dt * 10 {
             self.accumulator = dt * 10;
         }
+        let mut ran = 0;
         while self.accumulator >= dt {
             self.accumulator -= dt;
             let events = std::mem::take(&mut self.pending);
             self.session.tick(&events);
+            ran += 1;
         }
+        ran
     }
 
     fn redraw(&mut self) {
@@ -632,14 +656,25 @@ impl ApplicationHandler for App {
             return;
         }
         self.flush_pending();
-        self.drain_rpc(event_loop);
-        self.tick_if_due();
+        let handled = self.drain_rpc(event_loop);
+        let ran = self.tick_if_due();
         if self.session.exit_requested {
             event_loop.exit();
             return;
         }
-        if let Some(g) = &self.gpu {
+        // Redraw only when something changed; otherwise sleep until the next tick is due (or poll the
+        // RPC channel every millisecond in controlled mode) instead of spinning at full speed.
+        if (ran > 0 || handled)
+            && let Some(g) = &self.gpu
+        {
             g.window.request_redraw();
         }
+        let dt = Duration::from_secs(1) / TICK_RATE;
+        let next = if self.rpc.is_some() {
+            Instant::now() + Duration::from_millis(1)
+        } else {
+            self.last_tick + dt.saturating_sub(self.accumulator)
+        };
+        event_loop.set_control_flow(ControlFlow::WaitUntil(next));
     }
 }
