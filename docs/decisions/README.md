@@ -12,3 +12,4 @@ One file per decision, numbered, never rewritten (write a new ADR that supersede
 | [0005](ADR-0005-name.md) | Project name: OpenSherwood |
 | [0006](ADR-0006-scripting.md) | SCB VM first; one Lua 5.1 interpreter everywhere for mods |
 | [0007](ADR-0007-roadmap.md) | Vertical-slice roadmap, tutorial mission first |
+| [0008](ADR-0008-script-vm-ownership.md) | Script VM, its state and natives live in core; `opensherwood-script` only translates SCB to the core IR |

@@ -80,6 +80,28 @@ framing and different inter-record fields, then a table of 28-byte records
 records holding a `Point` plus small `i16` offset pairs and lists of `u16` edge ids. It is almost certainly the
 pathfinder graph (console EULER); its framing is not established and the bytes are exposed as `Stat::rest`.
 
+### Remainder of `STAT` (observation, 2026-09-02, `harness/tools/re/probe_stat_layers.py`)
+
+After the obstacles the remainder starts with further polygon records framed like the obstacles
+(`u8 id, u16 n, n x Point, u8 id2`), each followed by `u16 nseg` (0 in every record seen), `u32 0`,
+`u16 nobst`, `u16 a`, `u16 b`, then `nobst x { polyline, u32 flags }` and, when `a >= 2`, one more `u16`;
+records are separated by a zero byte in the town maps. The sequential parse with this rule walks 26 records in
+Lincoln (header `unknown_0x00` = 14 = the map's `WOAW` layer count, so these are not one record per layer),
+40+ in Nottingham, and fails on the first record in the forest maps, Derby and Sherwood (three zero bytes
+precede the first polygon there). The first Lincoln record (107 points) outlines the castle yard where the
+first mission starts. Meaning and exact framing remain open; the engine does not use these records.
+
+### Walkable ground and the projection areas (observation, 2026-09-02)
+
+The `STAT` boundary alone does not describe where characters may walk in the town maps: the start position of
+the first mission (Lincoln yard, map point 1937,1384) is outside the boundary and inside no obstacle, but
+inside `WOAW` area 67 (20 vertices, linked to layer 27). Sampled coverage of the `WOAW` areas is 57 % of the
+Lincoln map. The engine therefore treats a point as walkable when it is inside the boundary **or** inside any
+projection area, and outside every obstacle (`opensherwood-core` `Geometry::areas`, `docs/features.md`).
+Layer transitions (stairs, doors, ladders) are still ignored: every area is flat and connected through the
+navigation grid wherever polygons touch or overlap, which is an approximation of the original's layer/sector
+model.
+
 ## `TEXT`
 
 `u16 n`, then `n x { u8 kind; Polyline polygon }`. Kinds 0..8 (3 most common). Polygons of 3..55 points inside

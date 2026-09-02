@@ -484,11 +484,17 @@ impl Session {
             .map_err(|e| RpcError::new(RpcError::INTERNAL, format!("content fingerprint: {e}")))
     }
 
+    /// Content identity a snapshot or replay of `scenario` carries: `None` for synthetic
+    /// scenarios (they need no game data), the game directory's fingerprint otherwise.
+    fn scenario_content(&self, scenario: &Scenario) -> Result<Option<String>, RpcError> {
+        match scenario {
+            Scenario::Synthetic(_) => Ok(None),
+            _ => self.content_fingerprint(),
+        }
+    }
+
     fn replay_header(&self, world: &World) -> Result<ReplayHeader, RpcError> {
-        let fingerprint = match world.scenario {
-            Scenario::Synthetic(_) => None,
-            _ => self.content_fingerprint()?,
-        };
+        let fingerprint = self.scenario_content(&world.scenario)?;
         Ok(ReplayHeader {
             replay_version: 1,
             protocol: PROTOCOL_VERSION,
@@ -673,6 +679,17 @@ impl Session {
                         .iter()
                         .map(|p| (i32::from(p.x), i32::from(p.y)))
                         .collect();
+                    geometry.areas = rhp
+                        .woaw
+                        .areas
+                        .iter()
+                        .map(|a| {
+                            a.points
+                                .iter()
+                                .map(|p| (p.x.round() as i32, p.y.round() as i32))
+                                .collect()
+                        })
+                        .collect();
                     geometry.obstacles = rhp
                         .stat
                         .obstacles
@@ -721,7 +738,7 @@ impl Session {
         catalog
     }
 
-    /// Load a scenario (what `reset` does).
+    /// Load a scenario (what `reset` does). Nothing of the session changes when the load fails.
     pub fn reset(&mut self, scenario: Scenario, seed: u64) -> Result<(), String> {
         if let Scenario::Menu(name) = &scenario {
             if name != "main" {
@@ -735,8 +752,20 @@ impl Session {
             self.open_menu();
             return Ok(());
         }
-        self.screen = Screen::World;
-        let (world, background) = match &scenario {
+        let (world, background) = self.load_scenario(scenario, seed)?;
+        self.install(world, background);
+        Ok(())
+    }
+
+    /// Build the world and background of a scenario without touching the session (only the
+    /// sprite bank cache may be filled). Shared by `reset` and a cross-scenario `restore`, so
+    /// both can fail before anything observable changes.
+    fn load_scenario(
+        &mut self,
+        scenario: Scenario,
+        seed: u64,
+    ) -> Result<(World, Option<Background>), String> {
+        let loaded = match &scenario {
             Scenario::MapView { map, ambiance } => {
                 let game = self
                     .game
@@ -748,7 +777,7 @@ impl Session {
                     height: bg.height,
                 };
                 let mut world = World::new_map_view(scenario, seed, info)?;
-                world.set_geometry(geometry);
+                world.set_geometry(geometry)?;
                 let catalog =
                     self.load_catalog(&["RobinHood".to_string(), "Soldier A00".to_string()]);
                 if !catalog.sets.is_empty() {
@@ -775,6 +804,13 @@ impl Session {
             }
             Scenario::Synthetic(_) | Scenario::Menu(_) => (World::new(scenario, seed)?, None),
         };
+        Ok(loaded)
+    }
+
+    /// Make a freshly built world the session's world: the screen is the world, and snapshot
+    /// handles, queued input and any recording belonged to the previous world.
+    fn install(&mut self, world: World, background: Option<Background>) {
+        self.screen = Screen::World;
         self.world = Some(world);
         self.background = background;
         self.frame = None;
@@ -782,7 +818,6 @@ impl Session {
         self.queued_input.clear();
         self.recording = None;
         self.start_scenario_music();
-        Ok(())
     }
 
     /// Advance one tick with the given events (window mode).
@@ -963,8 +998,10 @@ impl Session {
             }
             "snapshot" => {
                 self.require_world_screen()?;
+                let scenario = self.world()?.scenario.clone();
+                let content = self.scenario_content(&scenario)?;
                 let world = self.world()?;
-                let snapshot = world.snapshot();
+                let snapshot = world.snapshot(content);
                 let hashes = world.hashes();
                 self.next_snapshot += 1;
                 // Zero-padded so lexicographic order in the map is insertion (FIFO) order.
@@ -997,20 +1034,32 @@ impl Session {
                         ));
                     }
                 };
-                // Validate first (never install an invalid world), then make sure the session's
-                // assets (background, catalog) belong to the snapshot's scenario.
-                snap.world.validate().map_err(engine_err)?;
+                // Transactional: the envelope (versions, content identity) is checked, then the
+                // world is validated and restored into a temporary when the scenario changes (so
+                // the session's assets, background and catalog, belong to the snapshot's
+                // scenario). The session is touched only once everything succeeded; a failed
+                // restore leaves world, background, screen and snapshot handles as they were.
+                snap.check_versions().map_err(engine_err)?;
+                let expected = self.scenario_content(&snap.world.scenario)?;
+                snap.check_content(expected.as_deref())
+                    .map_err(engine_err)?;
                 let same_scenario = self
                     .world
                     .as_ref()
                     .is_some_and(|w| w.scenario == snap.world.scenario);
-                if !same_scenario {
-                    self.reset(snap.world.scenario.clone(), snap.world.seed)
+                if same_scenario {
+                    // `World::restore` validates against the attached catalog and only then
+                    // replaces the state.
+                    self.world()?.restore(&snap).map_err(engine_err)?;
+                } else {
+                    let (mut world, background) = self
+                        .load_scenario(snap.world.scenario.clone(), snap.world.seed)
                         .map_err(engine_err)?;
+                    world.restore(&snap).map_err(engine_err)?;
+                    self.install(world, background);
                 }
                 self.frame = None;
                 let world = self.world()?;
-                world.restore(&snap).map_err(engine_err)?;
                 ok(json!({ "tick": world.tick, "hashes": world.hashes() }))
             }
             "capture" => {
@@ -1231,6 +1280,7 @@ impl Session {
                     "nearest_walkable": nav.nearest_walkable(cell, 8),
                     "grid": [nav.width, nav.height],
                     "boundary_points": world.geometry.boundary.len(),
+                    "areas": world.geometry.areas.len(),
                     "obstacles": world.geometry.obstacles.len(),
                     "path_cells": path,
                 }))
@@ -1245,7 +1295,7 @@ impl Session {
 }
 
 #[cfg(test)]
-mod replay_limit_tests {
+mod session_tests {
     use super::*;
 
     fn session(name: &str) -> (Session, PathBuf) {
@@ -1354,5 +1404,108 @@ mod replay_limit_tests {
         assert!(err.message.contains("bytes"), "{}", err.message);
         assert_eq!(s.world.as_ref().unwrap().tick, 5);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_is_transactional() {
+        let (mut s, _dir) = session("restore");
+        corridor(&mut s);
+        s.dispatch("step", Some(json!({ "ticks": 5 }))).unwrap();
+        let taken = s.dispatch("snapshot", None).unwrap();
+        let handle = taken["id"].as_str().unwrap().to_string();
+        assert!(
+            taken["snapshot"]["content"].is_null(),
+            "synthetic snapshots carry no content identity"
+        );
+        assert_eq!(
+            taken["snapshot"]["version"],
+            json!(opensherwood_core::world::SNAPSHOT_VERSION)
+        );
+        s.dispatch("step", Some(json!({ "ticks": 3 }))).unwrap();
+        s.queue_input(vec![InputEvent::PointerMove { x256: 1, y256: 1 }]);
+        let before = s.world.as_ref().unwrap().hashes();
+        let handles: Vec<String> = s.snapshots.keys().cloned().collect();
+        let good = taken["snapshot"].clone();
+        let mut attempts: Vec<(&str, Value)> = Vec::new();
+        // A scenario the session cannot build (no game directory): nothing may change.
+        let mut v = good.clone();
+        v["world"]["scenario"] = json!({ "mission": "H01_Lin_VL" });
+        attempts.push(("mission", v));
+        let mut v = good.clone();
+        v["world"]["scenario"] = json!({ "map_view": { "map": "sherwood", "ambiance": "Day" } });
+        attempts.push(("map", v));
+        // Same scenario, invalid world.
+        let mut v = good.clone();
+        v["world"]["camera"] = json!([5, 0]);
+        attempts.push(("camera", v));
+        let mut v = good.clone();
+        v["world"]["geometry"]["boundary"] = json!([[0, 0], [i32::MAX, 0], [0, i32::MAX]]);
+        attempts.push(("geometry", v));
+        // Envelope: versions and content identity.
+        let mut v = good.clone();
+        v["hash_schema"] = json!(99);
+        attempts.push(("hash schema", v));
+        let mut v = good.clone();
+        v["version"] = json!(1);
+        attempts.push(("version", v));
+        let mut v = good.clone();
+        v["content"] = json!("0000");
+        attempts.push(("no game content", v));
+        for (needle, snapshot) in attempts {
+            let err = s
+                .dispatch("restore", Some(json!({ "snapshot": snapshot })))
+                .unwrap_err();
+            assert_eq!(err.code, RpcError::ENGINE, "{needle}: {}", err.message);
+            assert!(err.message.contains(needle), "{needle}: {}", err.message);
+            let world = s.world.as_ref().unwrap();
+            assert_eq!(world.tick, 8, "{needle} changed the world");
+            assert_eq!(world.hashes(), before, "{needle} changed the world");
+            assert!(matches!(world.scenario, Scenario::Synthetic(_)));
+            assert!(s.background.is_none() && matches!(s.screen, Screen::World));
+            let now: Vec<String> = s.snapshots.keys().cloned().collect();
+            assert_eq!(now, handles, "{needle} touched the snapshot handles");
+            assert_eq!(s.queued_input.len(), 1, "{needle} touched the queued input");
+        }
+        let err = s
+            .dispatch("restore", Some(json!({ "id": "snap-nope" })))
+            .unwrap_err();
+        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert_eq!(s.world.as_ref().unwrap().hashes(), before);
+        // The valid snapshot restores by handle and inline.
+        let r = s
+            .dispatch("restore", Some(json!({ "id": handle })))
+            .unwrap();
+        assert_eq!(r["tick"], json!(5));
+        assert_eq!(r["hashes"], taken["hashes"]);
+        s.dispatch("step", Some(json!({ "ticks": 3 }))).unwrap();
+        let r = s
+            .dispatch("restore", Some(json!({ "snapshot": good })))
+            .unwrap();
+        assert_eq!(r["hashes"], taken["hashes"]);
+    }
+
+    #[test]
+    fn failed_reset_leaves_the_session_untouched() {
+        let (mut s, _dir) = session("reset");
+        corridor(&mut s);
+        s.dispatch("step", Some(json!({ "ticks": 4 }))).unwrap();
+        s.dispatch("snapshot", None).unwrap();
+        let err = s
+            .dispatch(
+                "reset",
+                Some(json!({ "scenario": { "mission": "H01_Lin_VL" }, "seed": 1 })),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, RpcError::ENGINE);
+        assert_eq!(s.world.as_ref().unwrap().tick, 4);
+        assert_eq!(s.snapshots.len(), 1);
+        let err = s
+            .dispatch(
+                "reset",
+                Some(json!({ "scenario": { "synthetic": "nope" }, "seed": 1 })),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, RpcError::ENGINE);
+        assert_eq!(s.world.as_ref().unwrap().tick, 4);
     }
 }

@@ -2,7 +2,8 @@
 
 Status: **decoded** (container, every chunk consumed exactly by `crates/opensherwood-formats/src/rhm.rs` on all
 39 retail files). Field *semantics* are established where stated; everything else is `unknown_*` with its observed
-value set. Open questions are listed at the end.
+value set. The actor `profile` indices resolve through `Configuration/profile.cpf` (see "Actor profile
+mapping"). Open questions are listed at the end.
 
 39 files, one per mission (`H01_Lin_VL.rhm` = Hood mission 1 in Lincoln; `Emb01_FoA_EC` = ambush in forest area A;
 `S0x` = Sherwood/story; `Str0x` = street; `Tac0x` = tactical; `EmbTut` = tutorial; `Sherwood.rhm` and
@@ -89,10 +90,10 @@ an entry by repeating its two strings.
 | Tag | Version | Records | Meaning |
 |---|---|---|---|
 | `MEOW` | 2 | 0 in all files | unknown (animals?) |
-| `SCOT` | 4 | 1..=5 per mission (50 in `Sherwood.rhm`) | player characters |
-| `OILE` | 3 | 0..=77 | civilians |
-| `TOTO` | 2 | 0..=11 | named NPCs (wedding guests, prisoners, trainer) |
-| `BORG` | 4 | 3..=184 (2463 total) | non-player humans: soldiers, guards, and merry-men NPCs |
+| `SCOT` | 4 | 1..=5 per mission (50 in `Sherwood.rhm`) | player-character start slots (no profile: the team comes from the campaign state) |
+| `OILE` | 3 | 0..=77 | civilians (`profile.cpf` CV table) |
+| `TOTO` | 2 | 0..=11 | player-character sprites used as NPCs: prisoners, bride, guests (`profile.cpf` PC table) |
+| `BORG` | 4 | 3..=184 (2463 total) | armed humans: soldiers, guards, knights, officers, VIPs, merry men, the trainer (`profile.cpf` SD table) |
 | `BOOM` | 5 | 1..=35 (478 total) | objects: targets, traps, cart parts, mechanisms |
 
 ### `SCOT` record
@@ -101,7 +102,7 @@ an entry by repeating its two strings.
 |---|---|---|---|
 | 0x00 | Placement | placement | `unknown_0x08` = 3 (visible PC) or 136/134 (hidden PC to be activated by script), 14, 0 |
 | 0x12 | u32 | unknown_0x12 | 0..=4 |
-| 0x16 | u8[10] | unknown_0x16 | zero except single `01` bytes at offsets 2, 4, 5, 6, 8 or 9 in 30 records |
+| 0x16 | u8[10] | unknown_0x16 | zero except single `01` bytes at offsets 2, 4, 5, 6, 8 or 9 in 30 records. Ten bytes = the ten entries of the `profile.cpf` PC table, so "slot reserved for that character" (2 Little John, 4 Stuteley, 5 Will, 6 Marian, 8/9 merry men) is the hypothesis; e.g. `H05` and `H12` flag byte 2, `Tac21` flags 6, 4, 5 on three records. Unverified |
 | 0x20 | opt name | name | `hidden_pc01_80000048`, `BeamMeRobin_8000002f`, `Heros_8000001f`; ordinary PCs have none |
 | | u8 | unknown_trailer | 0; 4 in exactly one record of 12 story missions; 2 (H09); 5 (outro) |
 
@@ -111,7 +112,7 @@ an entry by repeating its two strings.
 |---|---|---|---|
 | 0x00 | Placement | placement | |
 | 0x12 | u32 | unknown_0x12 | 0 (1279), 2 (662), 3 (404), 1 (85), 4 (33) |
-| 0x16 | u32 | profile | character profile index, 62 distinct values 1..=~60. Tutorial: 30 = "Lancier" (lancer), 6 = "Epee" (swordsman), 18 = "Officier", 42 / 43 = merry men with bow / staff. The profile table (index -> `Characters/*.rhs` / stats) is not located yet |
+| 0x16 | u32 | profile | 0-based index into the **SD table of `Configuration/profile.cpf`** (68 entries: sprite, voice set, stats; see [profile.md](profile.md) and "Actor profile mapping" below). 62 distinct values 0..=67; the six unused indices are exactly the table's six "do not use" entries. Tutorial: 30 = lancer (`Guard B00`), 6 = swordsman (`Soldier A00`), 18 = officer (`Officier B00`), 42 / 43 = merry men with bow / staff |
 | 0x1a | u8 | unknown_0x1a | 0 or 1 (127 records); "patrol chief" is the hypothesis |
 | 0x1b | u32 | unknown_0x1b | 0 (2073), 1..=20, 50, 99, 100 |
 | 0x1f | u32 | unknown_0x1f | always 0 |
@@ -127,17 +128,21 @@ an entry by repeating its two strings.
 |---|---|---|---|
 | 0x00 | Placement | placement | `unknown_0x08` 3, 159, 270, 47, 45, or 0 |
 | 0x12 | u32 | unknown_0x12 | 0..=3 |
-| 0x16 | u32 | profile | 0..=21 |
+| 0x16 | u32 | profile | 0-based index into the **CV table of `profile.cpf`** (24 entries; all used): 0 tax collector, 1 beggar, 2 child, 3 poor man, 4 rich man, 5 "friend" man, 6 poor woman, 7 rich woman, 8 "friend" woman, 9 Ranulph, 10 Godwin, 11 Prince John, 12 Tuck (civil), 13 Marian (civil), 14 Marian (wedding), 15 old man, 16 Gisborne (civil), 17 priest, 18 Allan, 19 Sheriff (civil), 20 Scathlock (civil), 21 Longchamp (civil), 22 Longchamp's corpse, 23 a red swordsman sprite used as a civilian in `H12` |
 | 0x1a | i16 | unknown_i16_a | -1 (322 of 427) or 0..=63 |
 | 0x1c | i16 | unknown_i16_b | 0, 25, 1500, 2000, 3000, 4000, 4500 |
 | 0x1e | u16 | unknown_u16 | always 0 |
-| 0x20 | lists | lists | **only when `profile == 1`** (28 records, all with `unknown_0x08 == 0`): ten lists, each `u16 n` + `n x u16` (ids up to 0x2c; 0..=3 per list) |
+| 0x20 | lists | lists | **only when `profile == 1`** (the beggar; 28 records, all with `unknown_0x08 == 0`): ten lists, each `u16 n` + `n x u16` (ids up to 0x2c; 0..=3 per list). Beggars sell information for a purse (tutorial popup), so the lists are hypothesised to be the information / dialogue ids per topic |
 | | opt name | name | `PoorWeepingOne_80000344`, `JeuneCollecteur_80000109`, ... |
 
 ### `TOTO` record
 
 Placement, `u32 unknown_0x12` (0..=3), `u32 profile` (1..=9), `i16 unknown_i16_a` (0/1), `i16 unknown_i16_b` (0),
-optional name (`Scarlett_800001e1`, `LittleJohn_800001e2`, `Mariane_800001e3`).
+optional name (`Scarlett_800001e1`, `LittleJohn_800001e2`, `Mariane_800001e3`). `profile` is a 0-based index
+into the **PC table of `profile.cpf`** (0 RobinHood, 1 RobinTown, 2 LittleJohn, 3 Friar Tuck, 4 Stuteley,
+5 WillScarlet, 6 LadyMarian, 7-9 MerryManA-C): these are the player-character sprites placed as
+script-controlled NPCs (prisoners to free, the bride, wedding guests, the merry man in the camp). Index 0 is
+never used here.
 
 ### `BOOM` record (objects)
 
@@ -323,17 +328,64 @@ map). Ids up to 0x90; 24 of 596 entries are non-empty; flag 1 in 7 entries. Buil
   on the road, hidden PCs behind the river, archers next to their bow targets, patrol paths follow the road, beam-me
   points sit on the border, script polygons surround the net / hole positions.
 
+## Actor profile mapping
+
+**Claim** (status: established by data cross-check, not yet by running the original): the `profile` field of
+`BORG`, `OILE` and `TOTO` records is a 0-based index into the SD, CV and PC tables of
+`DATA/Configuration/profile.cpf` respectively ([profile.md](profile.md)). Each table entry names the
+`Characters/<sprite>.rhs` sprite profile, the voice set (`Sounds/Exclamations/actor<code>.dat`,
+`Text/actors.res`) and carries the unit's stats. `SCOT` records have no profile: which hero stands in a
+slot is decided by the campaign (forced team on the mission parchment, the player's selection in Sherwood);
+in `H01_Lin_VL` and `S01_Not_VL` there is a single slot and the manual says Robin is alone.
+
+Evidence (all 39 missions, `harness/tools/re/rhm_profiles.py`):
+
+| Check | Result |
+|---|---|
+| Range | `BORG.profile` 0..=67 vs 68 SD entries; `OILE.profile` 0..=23 vs 24 CV entries (all used); `TOTO.profile` 1..=9 vs 10 PC entries |
+| Gaps | the 6 unused `BORG` indices (52, 56, 57, 58, 63, 64) are exactly the 6 SD entries labelled "do not use" |
+| Designer names vs table kind (`BORG`) | `Lancier*` only on 30-34 (lancers), `Epee*` on 6-9 (swordsmen), `Archer*` / `SQD*_Archer*` on 12-16, `Officier*` on 18-21, `Chevalier*` / `SQD*_Knight` on 25-28, `Arbaletrier*` on 38 / 40, `A_VO_Hallebarde*` on 5 (halberdier), `Entraineur` on 44 (`Trainer`, only in `Sherwood.rhm`), `Cavalier` on 54 (mounted knight), `Sheriff` on 62 (armed Sheriff), `SQD*_Officier` on 67 (special officer). Counter-examples, 7 of ~130 named records: three knights (27) named `Epee*`, two lancers (30) named `Knight*`, one officer each on 19 and 21 named `Chevalier*` -- generic names on a unit of another kind, never a name that would fit a *different* table position better |
+| Designer names (`OILE`) | `JeuneCollecteur` on 0 (tax collector), `PrinceJohn` on 11, `Guisbourne` on 16, `Sheriff` on 19, `Scathlock` on 20, `LongChamps` on 21, `Femme_officier` on 7 (rich woman), `Epouse_eploree` on 8 (woman), `PoorWeepingOne` / `paysan*` on 3 (poor man) |
+| Designer names (`TOTO`) | `LittleJohn` on 2, `Scarlett` on 5, `Mariane` on 6 = the PC table positions of Little John, Will Scarlet, Lady Marian |
+| Tutorial (`EmbTut`) | 30 lancer x9, 6 swordsman x3, 18 officer x1 (matches the earlier note), 42 / 43 merry men with bow / staff next to the bow targets and staff targets (`TG_MerryManStaff` objects) |
+| `H01_Lin_VL` vs the observed first mission | civilians: 1 beggar (the mendicant right of the start), 1 poor man (named `PoorWeepingOne`), rich man, "friend" man, 2 poor women, old man; soldiers: 11 blue halberdiers (the wall guards), 8 blue swordsmen (three named `SoldatCibles*`), 4 blue archers named `Acher01..03` plus an officer named `SergentArchers` (the archery training), 1 blue knight (the bribed knight), 12 blue lancers, 1 crossbowman. No hero profile in the file (Robin alone) |
+| Colour tiers | early missions use variants 00 / 01 (blue / yellow), `H12_Not_MP` uses 03 / 04 (red / black) plus the armed Sheriff (62) and Prince John (`OILE` 11); the green "hostile" variants 45-51 appear only in `H04_Lei_VL` |
+| `OILE` beggar lists | the ten-list block exists only for `profile == 1`, which the table names the beggar (`Mendicant`, voice `CVMT`) |
+| Sprite existence | every `sprite` of the three tables exists in `Characters/` and its `.rhs` sequence name equals the table's `sequence` string |
+
+Confidence: high for the three index -> table mappings (every one of the ~130 designer-named records
+agrees, the unused-index set matches the "do not use" entries, and no alternative table has 68 / 24 / 10
+entries). Not established: what the engine draws for a `SCOT` slot (campaign state), the meaning of the
+stat fields, and whether the original honours `unknown_0x16` of `SCOT`.
+
+How to verify in the engine: load `H01_Lin_VL` with the mapping and compare against the observed start of
+the original (`docs/original/campaign-flow.md`): two halberdiers (`Guard A00`) on the wall above the gate,
+a beggar (`Mendicant`) to the right of Robin; then `EmbTut_FoC_EC`: nine lancers and three swordsmen with an
+officer on the road, merry men at the targets. A stronger check is the console `REPORT` of the original,
+if it lists actor kinds.
+
+Display names: `profile.cpf` carries only French designer labels (no text ids). The English hero names are
+the strings 144..150 of `Level.res` TEXT 1000507 (the UI string table), in the order Robin Hood, Robin Town,
+Will Scarlet, Little John, Friar Tuck, Maid Marian, Stuteley -- not the PC table order, so the hero-name
+lookup is code-side; merry men get generated names from strings 100..143 (first names, then surnames) of the
+same entry. Non-player characters have no display name in the data; their voice set is the only per-kind
+text-like resource.
+
 ## Open questions
 
-- The placement qualifier triple against `.rhp` geometry; the `profile` index table; the waypoint command
-  names; `POUF` entry body; `CAVE` target table; `ZORG` kind / count; `OILE` ten-list block; `SCOT` flag bytes and
-  trailer; `BOOM` unknown words; the `NLIP` point values.
+- The placement qualifier triple against `.rhp` geometry; the waypoint command names; `POUF` entry body;
+  `CAVE` target table; `ZORG` kind / count; the content of the `OILE` beggar lists; `SCOT` flag bytes and
+  trailer; which hero occupies which `SCOT` slot; `BOOM` unknown words; the `NLIP` point values; the stat
+  fields of `profile.cpf`.
 
 ## Provenance
 
 Observation only: chunk walker and record-grammar probes over all 39 files
 (`harness/tools/re/rhm_inventory.py`, `rhm_probe.py`, `rhm_chunks_probe.py`, `rhm_full.py`; every grammar is
 accepted only when it consumes every chunk of every file exactly), cross-file value histograms, the class-name join
-with the `.scb` files, and PNG overlays over the decoded map backgrounds (`rhm_overlay.py`, and the
-`rhm-overlay` tool). Executable knowledge is limited to printable strings (chunk names in version-check messages,
+with the `.scb` files, PNG overlays over the decoded map backgrounds (`rhm_overlay.py`, and the
+`rhm-overlay` tool), and the profile join with `Configuration/profile.cpf` (`rhm_profiles.py`, which prints
+every index with its record count, missions, designer-name prefixes and the resolved table entry;
+`--cast <mission>` lists a mission's cast; `--scot` dumps the hero slots). The profile mapping was
+established on 2026-09-02 (analyst session, data files only). Executable knowledge is limited to printable strings (chunk names in version-check messages,
 waypoint command names, loader assertions), see `docs/original/executable-notes.md`.

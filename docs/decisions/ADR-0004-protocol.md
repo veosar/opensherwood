@@ -3,8 +3,9 @@
 Date: 2026-09-02. Status: accepted.
 
 Versions in force (2026-09-02 night): protocol 3 (`ui` observation, `menu` scenario, optional world fields),
-ruleset 3 (1024x768 viewport for retail scenarios, camera on the hero), hash schema 4 (walkable geometry under
-`pathfinding`, path waypoints under `orders`), snapshot schema 4 (`menu` scenario variant).
+ruleset 4 (1024x768 viewport for retail scenarios, camera on the hero, NPC rail programs), hash schema 4 (walkable
+geometry under `pathfinding`, path waypoints under `orders`), snapshot schema 6 (`menu` scenario variant, NPC
+programs, `content` fingerprint in the envelope).
 Any change to canonical bytes bumps the ruleset or hash schema and regenerates
 `harness/fixtures/synthetic_corridor.json` (see `docs/decisions/reviews/2026-09-02-codex-m0-review-disposition.md`).
 
@@ -61,3 +62,18 @@ same events a player would use before taking snapshots.
 From M0: replay prefix, snapshot at tick T, run suffix and record hashes, restore, run the identical suffix,
 compare every per-tick subsystem hash and selected framebuffer hashes. Fuzz snapshot points, repeated cycles,
 corrupt input and unknown versions. Internal snapshots are independent from original-save compatibility.
+
+### Envelope and validation
+
+A snapshot is `{version, ruleset, hash_schema, content, world}`. `content` is the game directory fingerprint
+(`hello.content_fingerprint`) for retail scenarios and `null` for synthetic ones: the sprite catalog and the
+background are not part of the snapshot, so a restore must run on the content the snapshot was taken from.
+`restore` checks, in this order and before anything of the session changes: all three versions equal this
+build's; `content` equals the fingerprint the session would rebuild the scenario from (a mismatch, a missing
+fingerprint for a retail scenario or a fingerprint on a synthetic one are all refused); every world invariant
+(`World::validate`), including geometry vertices within `+-2^20` map pixels and, when a sprite catalog is
+attached, every animation state naming an existing profile with animation and frame indices in range and
+`elapsed` below the frame duration. Nothing falls back silently. The world is built in a temporary when the
+scenario changes; a failed `restore` (or `reset`) leaves the previous world, background, screen and snapshot
+handles untouched. Geometry arithmetic (point-in-polygon, scan conversion, line tests) is `i128`/`i64` so any
+`i32` input gives the same answer in debug and release builds.

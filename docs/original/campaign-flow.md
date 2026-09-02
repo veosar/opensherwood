@@ -87,6 +87,27 @@ into the same mission as well (a short "mission loaded" style message in white o
 5. After a mission the team returns to Sherwood; the campaign statistics (money, score, lives saved) appear on
    the map parchment ("Money: ... Score: ... Lives saved: ..." per the manual's screenshot on p.10).
 
+## 3. The level table in `Configuration/profile.cpf` (*data*, 2026-09-02)
+
+`profile.cpf` ([../formats/profile.md](../formats/profile.md)) has one record per level code with the
+`.rhm` file, the map, the location index, the three music tracks and two lists of level codes read here as
+"available after" and "removed after":
+
+- `HA` = `H01_Lin_VL` on Lincoln (confirms the file mapping inferred above from the `.red` order; still not
+  confirmed by loading), no prerequisite, removed by itself.
+- `SA` = `S01_Not_VL` (Nottingham, "First Companions" in `Level.res`) needs `HA`; `HB` = `H02_Not_EC` needs
+  `SA`. So the mission that "launches automatically" after the first one is **SA**, not HB, if the lists are
+  prerequisites; `S01_Not_VL` has a single `SCOT` slot (Robin alone), consistent with the manual. Unverified.
+- Story chain: `HC` needs `HB` + `SB`; `SC` needs `HC`; `HD` needs `SC`; `HE` needs `HD`; `SD` needs `HE` + `SC`;
+  `HF` needs `SD`; `SE` needs `HF`; `EI` needs `SE`; `HG` needs `EI`; `HH` needs `HG`; `AC` needs `HH`; `DD`
+  needs `AC`; `HI` needs `DD`. `SB` needs the tutorial ambush `EZ` = `EmbTut_FoC_EC`, which needs `SA`
+  (answers open question 2: the tutorial ambush is reachable after `SA`). Ambushes `EA`, `EB`, `EC`, `EE`,
+  `EF`, `EH` need `EZ` and are removed after `HH`; `ED` needs `HF`; `EG` needs `HE`. Tactical missions need
+  `SD`. Defend / assault: `DB` needs `SD`, `DA` needs `DB`, `AA` needs `DA`, `AB` needs `DB`, `DC` needs `AB`,
+  `DD` needs `AC`.
+- Location index 1..9 = Croisement01..03, Derby, Leicester, Lincoln, Nottingham, Sherwood, York (the campaign
+  map buttons, presumably).
+
 ## Provenance
 
 Same session as `ui-flow.md` (build SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`,
@@ -100,12 +121,14 @@ from the `RHLevel??.red` names and the `H01_Lin_VL` naming scheme; it has not be
 ## Open questions
 
 1. Confirm that `RHLevelHA.red` / `H01_Lin_VL.rhm` is what Play! loads (e.g. with the console `REPORT` command or
-   by renaming the file in a private copy).
+   by renaming the file in a private copy). The `profile.cpf` level table (section 3) maps `HA` to
+   `H01_Lin_VL`, which makes this very likely but is still not a loading test.
 2. What triggers `EmbTut_FoC_EC` (tutorial ambush) and the intro video (`2047/data/Cinematics/Intro.vid`,
-   TEXT 1000056 "into"); is the video shown on the very first start of a fresh installation?
+   TEXT 1000056 "into"); is the video shown on the very first start of a fresh installation? Data: the
+   tutorial ambush (`EZ`) lists `SA` as its prerequisite (section 3).
 3. The debriefing screen after a mission (layout, statistics, buttons) and the automatic transition to mission 2.
 4. The Sherwood camp screen and the campaign map: exact positions of the MAP / SEND icons, the team boxes, the
-   red / blue seals; which `.red` order corresponds to the mission availability graph (`Campaign.bck`,
-   `RHCampaign`).
+   red / blue seals; whether the availability graph is the `profile.cpf` code lists of section 3 (and what
+   `Campaign.bck`, `RHCampaign` add to it).
 5. Meaning of the second and third `.red` values (`1000007` = "NOTUSED" text; `0/1/2/3/4` then a variable block
    before the `23` count in the H/S files).

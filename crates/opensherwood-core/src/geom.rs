@@ -1,6 +1,17 @@
 //! Integer 2D geometry for the motion area: point-in-polygon tests on map-pixel polygons.
+//!
+//! Every function here accepts any `i32` input without overflowing: products of coordinate
+//! differences are formed in `i128`, so a hostile polygon cannot panic a debug build or wrap in a
+//! release build (the two must never differ, ADR-0004). Snapshots and `set_geometry` additionally
+//! bound vertices to [`MAX_COORD`], which keeps the navigation grid and every later consumer in a
+//! documented range.
 
 use serde::{Deserialize, Serialize};
+
+/// Largest magnitude of a geometry vertex coordinate (map pixels). Maps are at most 2^15 pixels a
+/// side (`world::MAX_MAP_SIZE`) and retail polygons are 16-bit, so 2^20 leaves room for polygons
+/// that extend past the map edge while keeping every coordinate far inside `i32`.
+pub const MAX_COORD: i32 = 1 << 20;
 
 /// Walkable-ground description of a map (`docs/formats/rhp.md`, `STAT`): a boundary polygon and
 /// obstacle polygons (tree trunks, rocks, walls). All coordinates are map pixels.
@@ -10,13 +21,24 @@ pub struct Geometry {
     pub boundary: Vec<(i32, i32)>,
     /// Polygons that cannot be entered.
     pub obstacles: Vec<Vec<(i32, i32)>>,
+    /// Further walkable polygons (the map's projection areas: yards, walls, floors of other layers).
+    /// A point inside any of them is walkable even outside the boundary.
+    #[serde(default)]
+    pub areas: Vec<Vec<(i32, i32)>>,
 }
 
 impl Geometry {
     /// Whether a map pixel is walkable.
     #[must_use]
     pub fn is_walkable(&self, x: i32, y: i32) -> bool {
-        if self.boundary.len() >= 3 && !point_in_polygon(x, y, &self.boundary) {
+        let bounded = self.boundary.len() >= 3 || !self.areas.is_empty();
+        let inside = !bounded
+            || (self.boundary.len() >= 3 && point_in_polygon(x, y, &self.boundary))
+            || self
+                .areas
+                .iter()
+                .any(|a| a.len() >= 3 && point_in_polygon(x, y, a));
+        if !inside {
             return false;
         }
         !self
@@ -28,21 +50,45 @@ impl Geometry {
     /// Number of vertices over all polygons (for hashing / limits).
     #[must_use]
     pub fn vertex_count(&self) -> usize {
-        self.boundary.len() + self.obstacles.iter().map(Vec::len).sum::<usize>()
+        self.boundary.len()
+            + self.obstacles.iter().map(Vec::len).sum::<usize>()
+            + self.areas.iter().map(Vec::len).sum::<usize>()
+    }
+
+    /// Reject any vertex outside `-MAX_COORD..=MAX_COORD` on either axis.
+    pub fn check_bounds(&self) -> Result<(), String> {
+        let in_range = |&(x, y): &(i32, i32)| {
+            x.unsigned_abs() <= MAX_COORD as u32 && y.unsigned_abs() <= MAX_COORD as u32
+        };
+        if let Some(v) = self.boundary.iter().find(|v| !in_range(v)) {
+            return Err(format!("boundary vertex {v:?} outside +-{MAX_COORD}"));
+        }
+        for (i, o) in self.obstacles.iter().enumerate() {
+            if let Some(v) = o.iter().find(|v| !in_range(v)) {
+                return Err(format!("obstacle {i} vertex {v:?} outside +-{MAX_COORD}"));
+            }
+        }
+        for (i, a) in self.areas.iter().enumerate() {
+            if let Some(v) = a.iter().find(|v| !in_range(v)) {
+                return Err(format!("area {i} vertex {v:?} outside +-{MAX_COORD}"));
+            }
+        }
+        Ok(())
     }
 }
 
-/// Even-odd rule point-in-polygon in `i64` arithmetic; points on an edge count as inside.
+/// Even-odd rule point-in-polygon; points on an edge count as inside. Differences of `i32`
+/// coordinates fit `i64`, their products need `i128`: the function never overflows.
 #[must_use]
 pub fn point_in_polygon(x: i32, y: i32, poly: &[(i32, i32)]) -> bool {
-    let (px, py) = (i64::from(x), i64::from(y));
+    let (px, py) = (i128::from(x), i128::from(y));
     let mut inside = false;
     let n = poly.len();
     for i in 0..n {
-        let (x1, y1) = (i64::from(poly[i].0), i64::from(poly[i].1));
+        let (x1, y1) = (i128::from(poly[i].0), i128::from(poly[i].1));
         let (x2, y2) = (
-            i64::from(poly[(i + 1) % n].0),
-            i64::from(poly[(i + 1) % n].1),
+            i128::from(poly[(i + 1) % n].0),
+            i128::from(poly[(i + 1) % n].1),
         );
         // On the segment?
         let cross = (px - x1) * (y2 - y1) - (py - y1) * (x2 - x1);
@@ -98,10 +144,55 @@ mod tests {
         let g = Geometry {
             boundary: vec![(0, 0), (100, 0), (100, 100), (0, 100)],
             obstacles: vec![vec![(40, 40), (60, 40), (60, 60), (40, 60)]],
+            areas: Vec::new(),
         };
         assert!(g.is_walkable(10, 10));
         assert!(!g.is_walkable(50, 50));
         assert!(!g.is_walkable(150, 50));
         assert!(Geometry::default().is_walkable(-5, 7));
+    }
+
+    #[test]
+    fn extreme_coordinates_never_overflow_and_bounds_are_enforced() {
+        let ext = [i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX];
+        let mut polys = vec![vec![
+            (i32::MIN, i32::MIN),
+            (i32::MAX, i32::MIN),
+            (0, i32::MAX),
+        ]];
+        polys.push(vec![
+            (i32::MAX, i32::MAX),
+            (i32::MIN, i32::MAX),
+            (i32::MIN, i32::MIN),
+            (i32::MAX, i32::MIN),
+        ]);
+        polys.push(vec![(5, 5), (i32::MAX, 6), (i32::MIN, i32::MAX)]);
+        for poly in &polys {
+            for &x in &ext {
+                for &y in &ext {
+                    // Any answer is fine; the point is that neither build mode can misbehave.
+                    let _ = point_in_polygon(x, y, poly);
+                }
+            }
+        }
+        // The full-range rectangle contains the origin and its own corners (edges count).
+        assert!(point_in_polygon(0, 0, &polys[1]));
+        assert!(point_in_polygon(i32::MIN, i32::MIN, &polys[1]));
+        let g = Geometry {
+            boundary: vec![
+                (-MAX_COORD, -MAX_COORD),
+                (MAX_COORD, -MAX_COORD),
+                (MAX_COORD, MAX_COORD),
+            ],
+            obstacles: vec![vec![(0, 0), (1, 0), (0, 1)]],
+            areas: Vec::new(),
+        };
+        g.check_bounds().unwrap();
+        let mut bad = g.clone();
+        bad.obstacles[0][1].0 = MAX_COORD + 1;
+        assert!(bad.check_bounds().unwrap_err().contains("obstacle 0"));
+        let mut bad = g;
+        bad.boundary[0].1 = i32::MIN;
+        assert!(bad.check_bounds().unwrap_err().contains("boundary"));
     }
 }

@@ -10,7 +10,7 @@ opensherwood-app  (binary `opensherwood`: headless RPC server, or the winit + wg
    +-- opensherwood-audio      music (Ogg Vorbis) and effect (PCM WAVE) playback; presentation only, never authoritative
    +-- opensherwood-core       authoritative simulation: fixed tick, RNG streams, entities (arenas + generational ids),
    |                       orders, pathfinding, AI, stimuli, campaign state, snapshot/restore, canonical hashing
-   +-- opensherwood-script     SCB parser + VM; native function boundary to core (later: Lua for mods)
+   +-- opensherwood-script     SCB -> core IR translator (the VM, its state and the natives live in core, ADR-0008; later: Lua for mods)
    +-- opensherwood-assets     game directory discovery (GOG/Steam/explicit), VFS with base + language + mod overlays,
    |                       case-insensitive lookup, content fingerprint, decoded-asset caches
    +-- opensherwood-formats    bounded readers for every file format (no I/O policy, no game logic)

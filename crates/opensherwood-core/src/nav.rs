@@ -4,6 +4,10 @@
 //! that is not decoded yet; until it is, paths are computed on a cell grid rasterised from the
 //! boundary and obstacle polygons. Everything is integer and deterministic: ties in the open set are
 //! broken by cell index.
+//!
+//! Every public function accepts any `i32` (cell or pixel) input without overflowing: cell
+//! arithmetic widens to `i64`, the scan conversion to `i128`, so debug and release builds behave
+//! identically on hostile input (ADR-0004). Coordinates far outside the grid are simply not walkable.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -45,19 +49,24 @@ impl NavGrid {
     /// boundary (if any) and outside every obstacle are walkable.
     #[must_use]
     pub fn build(geometry: &Geometry, map_w: u32, map_h: u32) -> Self {
-        let width = ((map_w as i32 + CELL - 1) / CELL).max(1);
-        let height = ((map_h as i32 + CELL - 1) / CELL).max(1);
-        let n = (width as usize) * (height as usize);
-        let mut walkable = vec![geometry.boundary.len() < 3; n.min(MAX_CELLS)];
-        if n > MAX_CELLS {
+        // `u32 / 8` always fits `i32`.
+        let width = map_w.div_ceil(CELL as u32).max(1) as i32;
+        let height = map_h.div_ceil(CELL as u32).max(1) as i32;
+        let n = u64::from(width as u32) * u64::from(height as u32);
+        if n > MAX_CELLS as u64 {
             return Self {
                 width,
                 height,
                 walkable: vec![false; 1],
             };
         }
+        let bounded = geometry.boundary.len() >= 3 || !geometry.areas.is_empty();
+        let mut walkable = vec![!bounded; n as usize];
         if geometry.boundary.len() >= 3 {
             fill_polygon(&geometry.boundary, width, height, &mut walkable, true);
+        }
+        for a in geometry.areas.iter().filter(|a| a.len() >= 3) {
+            fill_polygon(a, width, height, &mut walkable, true);
         }
         for o in &geometry.obstacles {
             if o.len() >= 3 {
@@ -97,10 +106,13 @@ impl NavGrid {
         )
     }
 
-    /// Centre of a cell in map pixels.
+    /// Centre of a cell in map pixels (saturating for cells beyond any real grid).
     #[must_use]
     pub fn centre(&self, (cx, cy): (i32, i32)) -> (i32, i32) {
-        (cx * CELL + CELL / 2, cy * CELL + CELL / 2)
+        (
+            cx.saturating_mul(CELL).saturating_add(CELL / 2),
+            cy.saturating_mul(CELL).saturating_add(CELL / 2),
+        )
     }
 
     /// Whether a cell is walkable.
@@ -128,7 +140,7 @@ impl NavGrid {
                     if dx.abs() != r && dy.abs() != r {
                         continue;
                     }
-                    let p = (c.0 + dx, c.1 + dy);
+                    let p = (c.0.saturating_add(dx), c.1.saturating_add(dy));
                     if self.walkable(p) {
                         let d = (
                             i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy),
@@ -178,11 +190,13 @@ impl NavGrid {
         let mut g = vec![u32::MAX; n];
         let mut parent = vec![u32::MAX; n];
         let mut closed = vec![false; n];
+        // Octile distance; `to` may be any cell, so the differences are formed in `i64` and the
+        // result saturates (a target that far away is unreachable anyway).
         let h = |c: (i32, i32)| -> u32 {
-            let dx = (c.0 - to.0).unsigned_abs();
-            let dy = (c.1 - to.1).unsigned_abs();
+            let dx = (i64::from(c.0) - i64::from(to.0)).unsigned_abs();
+            let dy = (i64::from(c.1) - i64::from(to.1)).unsigned_abs();
             let (lo, hi) = (dx.min(dy), dx.max(dy));
-            14 * lo + 10 * (hi - lo)
+            u32::try_from(14 * lo + 10 * (hi - lo)).unwrap_or(u32::MAX)
         };
         let mut open: BinaryHeap<Reverse<(u32, u32, u32)>> = BinaryHeap::new();
         g[idx(from)] = 0;
@@ -225,11 +239,11 @@ impl NavGrid {
                     continue;
                 }
                 let ni = idx(nb);
-                let ng = gc + cost;
+                let ng = gc.saturating_add(cost);
                 if ng < g[ni] {
                     g[ni] = ng;
                     parent[ni] = ci as u32;
-                    open.push(Reverse((ng + h(nb), ng, ni as u32)));
+                    open.push(Reverse((ng.saturating_add(h(nb)), ng, ni as u32)));
                 }
             }
         }
@@ -239,33 +253,40 @@ impl NavGrid {
         None
     }
 
-    /// Whether every cell on the segment between two cells is walkable (supercover line).
+    /// Whether every cell on the segment between two cells is walkable (supercover line). The
+    /// walk is done in `i64` so any pair of `i32` cells is accepted; the first cell outside the
+    /// grid ends it with `false`.
     #[must_use]
     pub fn line_clear(&self, a: (i32, i32), b: (i32, i32)) -> bool {
-        let (mut x, mut y) = a;
-        let dx = (b.0 - a.0).abs();
-        let dy = -(b.1 - a.1).abs();
-        let sx = if a.0 < b.0 { 1 } else { -1 };
-        let sy = if a.1 < b.1 { 1 } else { -1 };
+        let walkable = |x: i64, y: i64| match (i32::try_from(x), i32::try_from(y)) {
+            (Ok(x), Ok(y)) => self.walkable((x, y)),
+            _ => false,
+        };
+        let (bx, by) = (i64::from(b.0), i64::from(b.1));
+        let (mut x, mut y) = (i64::from(a.0), i64::from(a.1));
+        let dx = (bx - x).abs();
+        let dy = -(by - y).abs();
+        let sx = if x < bx { 1 } else { -1 };
+        let sy = if y < by { 1 } else { -1 };
         let mut err = dx + dy;
         loop {
-            if !self.walkable((x, y)) {
+            if !walkable(x, y) {
                 return false;
             }
-            if (x, y) == b {
+            if (x, y) == (bx, by) {
                 return true;
             }
             let e2 = 2 * err;
             if e2 >= dy {
                 // Moving horizontally: also require the vertical neighbour to avoid corner clipping.
-                if e2 <= dx && !self.walkable((x + sx, y)) {
+                if e2 <= dx && !walkable(x + sx, y) {
                     return false;
                 }
                 err += dy;
                 x += sx;
             }
             if e2 <= dx {
-                if e2 >= dy && !self.walkable((x, y + sy)) {
+                if e2 >= dy && !walkable(x, y + sy) {
                     return false;
                 }
                 err += dx;
@@ -293,31 +314,34 @@ impl NavGrid {
     }
 }
 
-/// Scanline fill of a polygon at cell resolution (cell centres), even-odd rule.
+/// Scanline fill of a polygon at cell resolution (cell centres), even-odd rule. Intersections are
+/// computed in `i128` (a product of two `i32` differences times 256 needs 73 bits), so the
+/// rasteriser is total over `i32` polygons whether or not they passed `Geometry::check_bounds`.
 fn fill_polygon(poly: &[(i32, i32)], width: i32, height: i32, cells: &mut [bool], value: bool) {
     let n = poly.len();
+    let sub = 256i128;
+    let cell = i128::from(CELL);
     for cy in 0..height {
-        let y = i64::from(cy * CELL + CELL / 2);
-        let mut xs: Vec<i64> = Vec::new();
+        let y = i128::from(cy) * cell + cell / 2;
+        let mut xs: Vec<i128> = Vec::new();
         for i in 0..n {
-            let (x1, y1) = (i64::from(poly[i].0), i64::from(poly[i].1));
+            let (x1, y1) = (i128::from(poly[i].0), i128::from(poly[i].1));
             let (x2, y2) = (
-                i64::from(poly[(i + 1) % n].0),
-                i64::from(poly[(i + 1) % n].1),
+                i128::from(poly[(i + 1) % n].0),
+                i128::from(poly[(i + 1) % n].1),
             );
             if (y1 > y) != (y2 > y) {
                 // Intersection x in 1/256 units to keep integer math exact enough.
-                let x = x1 * 256 + (y - y1) * (x2 - x1) * 256 / (y2 - y1);
+                let x = x1 * sub + (y - y1) * (x2 - x1) * sub / (y2 - y1);
                 xs.push(x);
             }
         }
         xs.sort_unstable();
         for pair in xs.chunks_exact(2) {
             let (xa, xb) = (pair[0], pair[1]);
-            // Cells whose centre lies within [xa, xb].
-            let c0 = ((xa - 256 * (CELL as i64) / 2) / (256 * CELL as i64) + 1).max(0);
-            let c1 =
-                ((xb - 256 * (CELL as i64) / 2) / (256 * CELL as i64)).min(i64::from(width) - 1);
+            // Cells whose centre lies within [xa, xb], clamped to the row.
+            let c0 = ((xa - sub * cell / 2) / (sub * cell) + 1).clamp(0, i128::from(width));
+            let c1 = ((xb - sub * cell / 2) / (sub * cell)).clamp(-1, i128::from(width) - 1);
             for cx in c0..=c1 {
                 cells[(cy as usize) * (width as usize) + cx as usize] = value;
             }
@@ -333,6 +357,7 @@ mod tests {
         let g = Geometry {
             boundary: vec![(0, 0), (200, 0), (200, 200), (0, 200)],
             obstacles: vec![vec![(90, 0), (110, 0), (110, 150), (90, 150)]],
+            areas: Vec::new(),
         };
         NavGrid::build(&g, 200, 200)
     }
@@ -385,5 +410,44 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(g.find_path((2, 2), (2, 2)), Some(Vec::new()));
         assert!(g.find_path((-1, 0), (2, 2)).is_none());
+    }
+
+    #[test]
+    fn extreme_inputs_never_overflow() {
+        let ext = [i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX];
+        // Hostile polygons through the scan conversion (bounds are enforced one level up, in the
+        // world; the rasteriser itself must still be total).
+        let g = Geometry {
+            boundary: vec![
+                (i32::MIN, i32::MIN),
+                (i32::MAX, i32::MIN),
+                (i32::MAX, i32::MAX),
+                (i32::MIN, i32::MAX),
+            ],
+            obstacles: vec![vec![(i32::MAX, i32::MIN), (i32::MIN, i32::MAX), (7, 7)]],
+            areas: Vec::new(),
+        };
+        let hostile = NavGrid::build(&g, 200, 200);
+        assert_eq!((hostile.width, hostile.height), (25, 25));
+        // Oversized maps degrade to a single blocked cell instead of allocating.
+        let huge = NavGrid::build(&Geometry::default(), u32::MAX, u32::MAX);
+        assert!(!huge.walkable((0, 0)));
+        let grid = grid();
+        for &x in &ext {
+            for &y in &ext {
+                let c = (x, y);
+                assert!(!grid.walkable(c) || (x < 25 && y < 25));
+                let _ = grid.cell_of(x, y);
+                let _ = grid.centre(c);
+                let _ = grid.nearest_walkable(c, 3);
+                assert!(!grid.line_clear(c, (2, 2)) || c == (2, 2));
+                assert!(!grid.line_clear((2, 2), c) || c == (2, 2));
+                assert!(grid.find_path((2, 2), c).is_none() || c == (2, 2));
+                // Nearest-cell search towards an absurd target still terminates.
+                let _ = grid.find_path_near((2, 2), c);
+                let _ = grid.smooth((2, 2), &[c, (3, 3)]);
+            }
+        }
+        assert!(grid.line_clear((2, 2), (2, 2)));
     }
 }

@@ -90,8 +90,8 @@ pub struct Npc {
     pub placement: Placement,
     /// 0..=4.
     pub unknown_0x12: u32,
-    /// Character profile index (1..=62; 42/43 = merry men with bow/staff, 30 = lancer, 18 = officer in
-    /// the tutorial; the table itself is not yet located).
+    /// 0-based index into the SD table of `Configuration/profile.cpf` (`cpf::ProfileTable::soldiers`;
+    /// 0..=67: 42/43 = merry men with bow/staff, 30 = lancer, 18 = officer in the tutorial).
     pub profile: u32,
     /// 0 or 1 (1 for 127 of 2463 records; "patrol chief" is the hypothesis).
     pub unknown_0x1a: u8,
@@ -118,7 +118,8 @@ pub struct Civilian {
     pub placement: Placement,
     /// 0..=3.
     pub unknown_0x12: u32,
-    /// Character profile index (0..=21).
+    /// 0-based index into the CV table of `Configuration/profile.cpf` (`cpf::ProfileTable::civilians`;
+    /// 0..=23, 1 = the beggar).
     pub profile: u32,
     /// -1 or a small index.
     pub unknown_i16_a: i16,
@@ -139,7 +140,8 @@ pub struct Vip {
     pub placement: Placement,
     /// 0..=3.
     pub unknown_0x12: u32,
-    /// Character profile index (1..=9).
+    /// 0-based index into the PC table of `Configuration/profile.cpf`
+    /// (`cpf::ProfileTable::player_characters`; 1..=9 in retail data).
     pub profile: u32,
     /// 0 or 1.
     pub unknown_i16_a: i16,

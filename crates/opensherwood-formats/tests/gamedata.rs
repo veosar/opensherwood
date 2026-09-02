@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use opensherwood_formats::{
-    FileKind, chunk, detect, dic, image_blob, rhs, scb, sprite_decode, sres,
+    FileKind, chunk, cpf, detect, dic, image_blob, rhs, scb, sprite_decode, sres,
 };
 
 fn game_dir() -> Option<PathBuf> {
@@ -739,4 +739,107 @@ fn every_rhp_decodes_and_its_geometry_lies_inside_the_background() {
             assert!(m.dark.is_empty());
         }
     }
+}
+
+#[test]
+fn profile_table_parses_and_its_sprites_exist() {
+    let dir = need_data!();
+    let data = std::fs::read(dir.join("DATA/Configuration/profile.cpf")).unwrap();
+    assert_eq!(detect(&data), FileKind::ProfileTable);
+    let t = cpf::parse(&data).unwrap();
+    assert_eq!(t.table_a.len(), 27);
+    assert_eq!(t.table_b.len(), 4);
+    assert_eq!(t.player_characters.len(), 10);
+    assert_eq!(t.soldiers.len(), 68);
+    assert_eq!(t.levels.len(), 63);
+    assert_eq!(t.civilians.len(), 24);
+    // Every sprite of the three actor tables is a `Characters/<sprite>.rhs` whose sequence name
+    // is the record's `sequence`.
+    let characters = dir.join("DATA/Characters");
+    let files: Vec<(String, PathBuf)> = std::fs::read_dir(&characters)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("rhs"))
+        })
+        .map(|p| {
+            (
+                p.file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_ascii_lowercase(),
+                p,
+            )
+        })
+        .collect();
+    let check = |sprite: &str, sequence: &str, voice: &str| {
+        let (_, path) = files
+            .iter()
+            .find(|(stem, _)| *stem == sprite.to_ascii_lowercase())
+            .unwrap_or_else(|| panic!("Characters/{sprite}.rhs missing"));
+        let p = rhs::parse(&std::fs::read(path).unwrap()).unwrap();
+        assert!(
+            p.sequences.iter().any(|s| s.name == sequence),
+            "{sprite}: sequence {sequence:?} not in {:?}",
+            p.sequences.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert!(voice.is_empty() || voice.len() == 4, "{sprite}: {voice:?}");
+    };
+    for pc in &t.player_characters {
+        check(&pc.sprite, &pc.sequence, &pc.voice);
+        assert!(pc.voice.starts_with("PC"), "{:?}", pc.voice);
+    }
+    for sd in &t.soldiers {
+        check(&sd.sprite, &sd.sequence, &sd.voice);
+        assert!(
+            sd.voice.starts_with("SD") || sd.voice.starts_with("VP"),
+            "{:?}",
+            sd.voice
+        );
+    }
+    for cv in &t.civilians {
+        check(&cv.sprite, &cv.sequence, &cv.voice);
+    }
+    assert_eq!(t.player_characters[0].sprite, "RobinHood");
+    assert_eq!(t.soldiers[0].sprite, "Guard A00");
+    assert_eq!(t.soldiers[6].sprite, "Soldier A00");
+    assert_eq!(t.civilians[1].sprite, "Mendicant");
+    // Level table: every retail mission file is named by exactly one record; the placeholders
+    // point at `Impossible_mission`; the campaign graph codes reference existing codes.
+    let missions: Vec<String> = files_with_ext(&dir.join("DATA/Levels"), "rhm")
+        .iter()
+        .map(|p| p.file_stem().unwrap().to_str().unwrap().to_string())
+        .collect();
+    let mut named = 0;
+    for l in &t.levels {
+        assert_eq!(l.code.len(), 2, "{:?}", l.code);
+        assert_eq!(l.unknown_fixed, [0, 10000], "{}", l.code);
+        assert!((1..=9).contains(&l.location), "{}", l.code);
+        if l.mission_file == "Impossible_mission" {
+            continue;
+        }
+        assert!(
+            missions
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(&l.mission_file)),
+            "{}: {} has no .rhm",
+            l.code,
+            l.mission_file
+        );
+        named += 1;
+        for c in l.after.iter().chain(&l.until) {
+            assert!(t.level(c).is_some(), "{}: unknown code {c}", l.code);
+        }
+    }
+    assert_eq!(named, missions.len());
+    let ha = t.level("HA").unwrap();
+    assert_eq!(ha.mission_file, "H01_Lin_VL");
+    assert_eq!(ha.map, "Lincoln");
+    assert!(ha.after.is_empty());
+    assert_eq!(ha.until, vec!["HA".to_string()]);
+    assert_eq!(t.level("SA").unwrap().after, vec!["HA".to_string()]);
 }
