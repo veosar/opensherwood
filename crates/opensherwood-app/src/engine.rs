@@ -119,6 +119,11 @@ pub struct Session {
     mission_texts: Vec<String>,
     /// Short briefings (objectives) of the current mission (`.red` last entry).
     mission_objectives: Vec<String>,
+    /// Debriefing texts shown when the mission is won / lost (`.red` entries before the last).
+    debriefings_won: Vec<String>,
+    debriefings_lost: Vec<String>,
+    /// The mission's end has been shown (the debriefing parchment leads back to the menu).
+    ended: bool,
     /// Scenario and seed of the world that is installed (for Restart).
     current: Option<(Scenario, u64)>,
     /// HUD values.
@@ -138,6 +143,8 @@ enum Screen {
     Briefing(Briefing),
     /// Pause menu over the paused mission.
     Pause(PauseMenu),
+    /// Debriefing parchment at the end of a mission; dismissing it returns to the menu.
+    Debriefing(Briefing),
     /// Credits.
     Credits(Credits),
 }
@@ -236,6 +243,9 @@ impl Session {
             exit_requested: false,
             mission_texts: Vec::new(),
             mission_objectives: Vec::new(),
+            debriefings_won: Vec::new(),
+            debriefings_lost: Vec::new(),
+            ended: false,
             current: None,
             hud: HudState::default(),
             lenient_natives: false,
@@ -279,6 +289,9 @@ impl Session {
     fn load_mission_texts(&mut self, name: &str) {
         self.mission_texts.clear();
         self.mission_objectives.clear();
+        self.debriefings_won.clear();
+        self.debriefings_lost.clear();
+        self.ended = false;
         let Some(game) = self.game.as_ref() else {
             return;
         };
@@ -313,6 +326,39 @@ impl Session {
         if let Some(&short) = ids.last() {
             self.mission_objectives = ui_assets::level_texts(game, short);
         }
+        // Tail of the list: `n_won, won id, n_lost, lost id, n_short, short id`.
+        if ids.len() >= 6 {
+            self.debriefings_won = ui_assets::level_texts(game, ids[ids.len() - 5]);
+            self.debriefings_lost = ui_assets::level_texts(game, ids[ids.len() - 3]);
+        }
+    }
+
+    /// When the script reports the mission won, show the debriefing parchment once; dismissing it
+    /// returns to the main menu (campaign progression comes later).
+    fn sync_mission_end(&mut self) {
+        if self.ended || !matches!(self.screen, Screen::World) {
+            return;
+        }
+        let Some(vm) = self.world.as_ref().and_then(|w| w.vm.as_ref()) else {
+            return;
+        };
+        if !vm.mission_won {
+            return;
+        }
+        let variant = vm
+            .debriefing
+            .and_then(|d| usize::try_from(d).ok())
+            .unwrap_or(0);
+        let text = self
+            .debriefings_won
+            .get(variant)
+            .or_else(|| self.debriefings_won.first())
+            .cloned()
+            .unwrap_or_else(|| "[mission won]".to_string());
+        self.ended = true;
+        let _ = self.ui_assets();
+        self.screen = Screen::Debriefing(Briefing::new(vec![text]));
+        self.frame = None;
     }
 
     /// The current primary objective (first primary one not accomplished), for the pause menu.
@@ -463,6 +509,13 @@ impl Session {
                     self.dismiss_text();
                 }
             }
+            Screen::Debriefing(b) => {
+                let done = events.iter().any(|e| b.handle(*e));
+                self.frame = None;
+                if done {
+                    self.open_menu();
+                }
+            }
             Screen::Credits(c) => {
                 let leave = events.iter().any(|e| Credits::leaves(*e));
                 c.tick();
@@ -515,6 +568,7 @@ impl Session {
                 } else {
                     self.step_recorded(events);
                     self.sync_text_screen();
+                    self.sync_mission_end();
                 }
             }
         }
@@ -527,6 +581,11 @@ impl Session {
             Screen::Menu(m) => Some(m.state()),
             Screen::Briefing(b) => Some(b.state()),
             Screen::Pause(p) => Some(p.state()),
+            Screen::Debriefing(b) => {
+                let mut st = b.state();
+                st.screen = "debriefing".into();
+                Some(st)
+            }
             Screen::Credits(c) => Some(c.state()),
         }
     }
@@ -1025,7 +1084,7 @@ impl Session {
                     menu.render(self.ui_assets.as_ref())
                 }
                 Screen::Credits(c) => c.render(self.ui_assets.as_ref()),
-                Screen::Briefing(_) | Screen::Pause(_) | Screen::World => {
+                Screen::Briefing(_) | Screen::Debriefing(_) | Screen::Pause(_) | Screen::World => {
                     let in_mission = matches!(
                         self.world.as_ref().map(|w| &w.scenario),
                         Some(Scenario::Mission(_))
@@ -1042,7 +1101,9 @@ impl Session {
                         crate::ui::draw_hud(&mut frame, a, &self.hud);
                     }
                     match &self.screen {
-                        Screen::Briefing(b) => b.render(&mut frame, self.ui_assets.as_ref()),
+                        Screen::Briefing(b) | Screen::Debriefing(b) => {
+                            b.render(&mut frame, self.ui_assets.as_ref());
+                        }
                         Screen::Pause(p) => p.render(&mut frame, self.ui_assets.as_ref()),
                         _ => {}
                     }
@@ -1478,9 +1539,17 @@ impl Session {
                     /// Dismiss the text at the front of the queue before reporting.
                     #[serde(default)]
                     dismiss_text: bool,
+                    /// Mark the mission won (harness shortcut for the end-of-mission flow).
+                    #[serde(default)]
+                    win: bool,
                 }
                 let p: P = params(p)?;
                 self.world()?;
+                if p.win
+                    && let Some(vm) = self.world.as_mut().and_then(|w| w.vm.as_mut())
+                {
+                    vm.mission_won = true;
+                }
                 let dismissed = p.dismiss_text && self.dismiss_text();
                 let world = self.world()?;
                 let Some(vm) = world.vm.as_ref() else {

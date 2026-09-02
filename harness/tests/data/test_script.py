@@ -144,3 +144,19 @@ def test_walking_onto_a_scroll_shows_its_text(binary, game_dir):
                 print("scroll", s["element"], "showed a text page; visited:", taken)
                 return
         raise AssertionError(f"no text page after visiting scrolls {taken}")
+
+
+def test_mission_won_shows_the_debriefing_then_the_menu(binary, game_dir):
+    """The end of a mission: the won debriefing parchment, then the main menu."""
+    with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
+        e.reset({"mission": "H01_Lin_VL"}, seed=0)
+        e.skip_briefing()
+        e.step(5)
+        assert not e.call("debug.vm", {})["mission_won"]
+        e.call("debug.vm", {"win": True})
+        e.step(1)
+        ui = e.observe(entities=False)["ui"]
+        assert ui["screen"] == "debriefing", ui
+        e.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": "enter"}])
+        assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
+
