@@ -30,6 +30,12 @@ pub struct ImageHeader {
 /// Header size in bytes.
 pub const HEADER_SIZE: usize = 12;
 
+/// Largest width or height accepted (the biggest retail background is 2304x3520).
+pub const MAX_DIMENSION: u16 = 8192;
+
+/// Largest decoded picture accepted, in bytes (8192 x 8192 x 2).
+pub const MAX_DECODED_BYTES: usize = 8192 * 8192 * 2;
+
 /// A decoded picture: 16 bits per pixel, row-major, `width * height` entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Image16 {
@@ -84,6 +90,13 @@ pub fn parse_header(r: &mut Reader<'_>) -> Result<ImageHeader, FormatError> {
             });
         }
     };
+    if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
+        return Err(FormatError::Invalid {
+            offset: start,
+            what: "image dimensions",
+            value: format!("{width}x{height}"),
+        });
+    }
     Ok(ImageHeader {
         width,
         height,
@@ -99,9 +112,6 @@ pub fn looks_like_image_blob(data: &[u8]) -> bool {
     let Ok(h) = parse_header(&mut r) else {
         return false;
     };
-    if h.width == 0 || h.height == 0 || h.width > 16384 || h.height > 16384 {
-        return false;
-    }
     if data.len() < HEADER_SIZE + h.compressed_size as usize {
         return false;
     }
@@ -119,6 +129,13 @@ pub fn parse(r: &mut Reader<'_>) -> Result<Image16, FormatError> {
     let payload_offset = r.pos();
     let payload = r.bytes(header.compressed_size as usize, "image payload")?;
     let expected = usize::from(header.width) * usize::from(header.height) * 2;
+    if expected > MAX_DECODED_BYTES {
+        return Err(FormatError::Invalid {
+            offset: start,
+            what: "decoded image size",
+            value: expected.to_string(),
+        });
+    }
     let raw = decompress(header.compression, payload, expected, payload_offset)?;
     if raw.len() != expected {
         return Err(FormatError::Invalid {

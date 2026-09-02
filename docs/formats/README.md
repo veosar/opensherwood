@@ -13,12 +13,13 @@ All integers are little-endian unless stated otherwise. Offsets are in bytes fro
 
 | Format | Extension / magic | Purpose | Status | Spec |
 |---|---|---|---|---|
-| Image blob | header `w,h,flag,size` | Generic compressed picture (used by `.map`, `.min`, `.pak`, `.sxt`, `_t` thumbnails and inside SRES) | verified (container) / partial (pixel format) | [image-blob.md](image-blob.md) |
-| SRES | `SRES` (`.res`, `.RES`) | Resource archive: UI pictures, texts, sound lists | verified (container) | [sres.md](sres.md) |
+| Image blob | header `w,h,flag,size` | Generic compressed picture (used by `.map`, `.min`, `.pak`, `.sxt`, `_t` thumbnails and inside SRES) | verified (RGB565) | [image-blob.md](image-blob.md) |
+| SRES | `SRES` (`.res`, `.RES`) | Resource archive: UI pictures, texts, sound lists | verified | [sres.md](sres.md) |
 | RHP | `MEUH` (`.rhp`) | Map / level geometry, sectors, motion, lights | partial | [rhp.md](rhp.md) |
 | RHM | `DUTY` (`.rhm`) | Mission: actors, waypoints, zones, scripts binding | partial | [rhm.md](rhm.md) |
 | SCB | `SBSCRIPT` (`.scb`) | Compiled mission script bytecode | partial | [scb.md](scb.md) |
-| Sprite bank | `C9 EB 03 00` (`.rhs`, `.dic`, `.bks`) | Character/animation sprites and the 565 MB pixel bank | stub | [sprites.md](sprites.md) |
+| Sprite bank | `C9 EB 03 00` (`.rhs`, `.dic`, `.bks`) | Character/animation sprites and the 565 MB pixel bank | verified (all frames decode) | [sprites.md](sprites.md) |
+| Sprite animations | (layout of `.rhs` animation lists) | 16-direction action blocks, action ids, timing | verified (idle/walk/run...), partial (ids > 75) | [sprite-animations.md](sprite-animations.md) |
 | Fonts | `SBFONT` (`.bfn`, `.fnt`), `SBTTFT` (`.tfn`) | Bitmap fonts and TrueType descriptors | stub | [fonts.md](fonts.md) |
 | Sound tables | `FXBK` (`.fxg`), `SFPK` (`.sfk`), `NEUF` (`actor*.dat`) | Sound effect name tables, sound packs, remark tables | stub | [sound.md](sound.md) |
 | Text index | `.red` | Per-level text id tables | stub | [red.md](red.md) |

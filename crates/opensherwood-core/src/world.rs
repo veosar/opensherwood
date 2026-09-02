@@ -1,15 +1,18 @@
 //! The authoritative world. M0: a synthetic scenario with a player unit, a patrolling guard and
 //! rectangular obstacles, driven only by canonical input events. M2 groundwork: a scrollable camera
-//! over a map of arbitrary size (the retail backgrounds are larger than the viewport).
+//! over a map of arbitrary size and sprite animation state.
+//!
+//! Every field of [`World`] except `catalog` is authoritative: it is serialised in snapshots,
+//! encoded in the canonical hash (ADR-0004) and validated on restore.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::anim::{AnimState, Catalog, direction_of};
 use crate::fixed::Fixed;
-use crate::hash::{Encoder, Hashes, total};
-use crate::input::{Button, InputEvent, Key};
+use crate::hash::{Encoder, HASH_SCHEMA_VERSION, Hashes, total};
+use crate::input::{Button, InputEvent, Key, button_tag, encode_key};
 use crate::rng::Rng;
 
 /// Stable entity identifier (index + generation).
@@ -33,6 +36,18 @@ pub enum EntityKind {
     Obstacle,
 }
 
+impl EntityKind {
+    /// Stable tag for canonical encodings (never derived from declaration order).
+    #[must_use]
+    pub fn tag(self) -> u8 {
+        match self {
+            EntityKind::Player => 1,
+            EntityKind::Guard => 2,
+            EntityKind::Obstacle => 3,
+        }
+    }
+}
+
 /// An entity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entity {
@@ -50,13 +65,13 @@ pub struct Entity {
     pub speed: Fixed,
     /// Current movement target.
     pub target: Option<(Fixed, Fixed)>,
-    /// Patrol waypoints (guards); half extents for obstacles.
+    /// Patrol waypoints (guards); half extents for obstacles (exactly one entry).
     pub patrol: Vec<(Fixed, Fixed)>,
     /// Index of the next patrol waypoint.
     pub patrol_index: u32,
     /// Ticks to wait before moving on.
     pub wait_ticks: u32,
-    /// Facing in 1/256 turns (0 = +x, increasing clockwise on screen).
+    /// Facing in 1/256 turns (0 = +x, increasing clockwise on screen), always in `0..256`.
     pub facing256: i32,
     /// Alive.
     pub alive: bool,
@@ -90,11 +105,15 @@ pub struct MapInfo {
     pub height: u32,
 }
 
-/// Serialisable snapshot of the whole authoritative state.
+/// Serialisable snapshot of the whole authoritative state, with the versions it was made under.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// Snapshot schema version.
     pub version: u32,
+    /// Ruleset the state was produced by.
+    pub ruleset: u32,
+    /// Hash schema in force.
+    pub hash_schema: u32,
     /// World state.
     pub world: World,
 }
@@ -116,7 +135,7 @@ pub struct Observation {
     pub pointer: (i32, i32),
     /// Selected entity.
     pub selected: Option<EntityId>,
-    /// Entities.
+    /// Entities (empty when the caller asked to omit them).
     pub entities: Vec<Entity>,
     /// RNG draws so far.
     pub rng_draws: u64,
@@ -128,6 +147,12 @@ pub struct Observation {
 pub const SCROLL_SPEED: i32 = 8;
 /// Edge-scroll margin in logical pixels.
 pub const EDGE_MARGIN: i32 = 6;
+/// Largest map dimension accepted.
+pub const MAX_MAP_SIZE: u32 = 1 << 15;
+/// Largest number of entities accepted in a snapshot.
+pub const MAX_ENTITIES: usize = 1 << 16;
+/// Pointer coordinates (24.8) are clamped to this magnitude.
+pub const MAX_POINTER_RAW: i32 = 1 << 24;
 
 /// The world.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,13 +173,13 @@ pub struct World {
     pub pointer: (i32, i32),
     /// Whether a pointer position has been received since reset (edge scrolling needs a real pointer).
     pub pointer_seen: bool,
-    /// Buttons currently held.
-    pub buttons_down: Vec<Button>,
-    /// Keys currently held.
-    pub keys_down: Vec<Key>,
+    /// Buttons currently held (a set; order carries no meaning).
+    pub buttons_down: BTreeSet<Button>,
+    /// Keys currently held (a set).
+    pub keys_down: BTreeSet<Key>,
     /// Selected entity.
     pub selected: Option<EntityId>,
-    /// Entities by slot.
+    /// Entities by slot (order is authoritative: it is the simulation and draw order).
     pub entities: Vec<Entity>,
     /// Gameplay RNG stream.
     pub rng: Rng,
@@ -168,7 +193,7 @@ pub struct World {
 }
 
 /// Snapshot schema version.
-pub const SNAPSHOT_VERSION: u32 = 2;
+pub const SNAPSHOT_VERSION: u32 = 3;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -189,6 +214,16 @@ impl World {
 
     /// Create a map-view world; the app resolved and decoded the background already.
     pub fn new_map_view(scenario: Scenario, seed: u64, info: MapInfo) -> Result<Self, String> {
+        if info.width == 0
+            || info.height == 0
+            || info.width > MAX_MAP_SIZE
+            || info.height > MAX_MAP_SIZE
+        {
+            return Err(format!(
+                "map size {}x{} out of range",
+                info.width, info.height
+            ));
+        }
         match scenario {
             Scenario::MapView { .. } => Ok(Self::build(scenario, seed, Some(info))),
             _ => Err("not a map view scenario".into()),
@@ -265,8 +300,8 @@ impl World {
             camera: (0, 0),
             pointer: (0, 0),
             pointer_seen: false,
-            buttons_down: Vec::new(),
-            keys_down: Vec::new(),
+            buttons_down: BTreeSet::new(),
+            keys_down: BTreeSet::new(),
             selected: None,
             entities,
             rng: Rng::new(seed, 1),
@@ -297,6 +332,74 @@ impl World {
         }
     }
 
+    /// Check every invariant a snapshot must satisfy before it may become the world.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.viewport.0 == 0
+            || self.viewport.1 == 0
+            || self.viewport.0 > MAX_MAP_SIZE
+            || self.viewport.1 > MAX_MAP_SIZE
+        {
+            return Err(format!("viewport {:?} out of range", self.viewport));
+        }
+        if self.map_size.0 == 0
+            || self.map_size.1 == 0
+            || self.map_size.0 > MAX_MAP_SIZE
+            || self.map_size.1 > MAX_MAP_SIZE
+        {
+            return Err(format!("map size {:?} out of range", self.map_size));
+        }
+        let max_x = (self.map_size.0 as i32 - self.viewport.0 as i32).max(0);
+        let max_y = (self.map_size.1 as i32 - self.viewport.1 as i32).max(0);
+        if !(0..=max_x).contains(&self.camera.0) || !(0..=max_y).contains(&self.camera.1) {
+            return Err(format!("camera {:?} outside the map", self.camera));
+        }
+        if self.pointer.0.abs() > MAX_POINTER_RAW || self.pointer.1.abs() > MAX_POINTER_RAW {
+            return Err(format!("pointer {:?} out of range", self.pointer));
+        }
+        if self.entities.len() > MAX_ENTITIES {
+            return Err(format!("{} entities exceed the limit", self.entities.len()));
+        }
+        let mut ids = BTreeSet::new();
+        for e in &self.entities {
+            if !ids.insert(e.id) {
+                return Err(format!("duplicate entity id {:?}", e.id));
+            }
+            if !(0..256).contains(&e.facing256) {
+                return Err(format!(
+                    "entity {:?} facing {} out of range",
+                    e.id, e.facing256
+                ));
+            }
+            match e.kind {
+                EntityKind::Obstacle => {
+                    if e.patrol.len() != 1 {
+                        return Err(format!(
+                            "obstacle {:?} needs exactly one extent entry",
+                            e.id
+                        ));
+                    }
+                }
+                EntityKind::Player | EntityKind::Guard => {
+                    if e.patrol.len() > MAX_ENTITIES {
+                        return Err(format!("entity {:?} has too many waypoints", e.id));
+                    }
+                    if !e.patrol.is_empty() && e.patrol_index as usize >= e.patrol.len() {
+                        return Err(format!("entity {:?} patrol index out of range", e.id));
+                    }
+                }
+            }
+            if e.speed < Fixed::ZERO || e.size < Fixed::ZERO {
+                return Err(format!("entity {:?} has a negative speed or size", e.id));
+            }
+        }
+        if let Some(sel) = self.selected
+            && !ids.contains(&sel)
+        {
+            return Err(format!("selected entity {sel:?} does not exist"));
+        }
+        self.rng.validate()
+    }
+
     /// Apply the events of one tick (in order) and advance the simulation by one tick.
     pub fn step(&mut self, events: &[InputEvent]) {
         for e in events {
@@ -304,7 +407,7 @@ impl World {
         }
         self.scroll();
         self.simulate();
-        self.tick += 1;
+        self.tick = self.tick.saturating_add(1);
     }
 
     /// Pointer position in map pixels (24.8).
@@ -319,32 +422,35 @@ impl World {
     fn apply(&mut self, event: InputEvent) {
         match event {
             InputEvent::PointerMove { x256, y256 } => {
-                self.pointer = (x256, y256);
+                self.pointer = (
+                    x256.clamp(-MAX_POINTER_RAW, MAX_POINTER_RAW),
+                    y256.clamp(-MAX_POINTER_RAW, MAX_POINTER_RAW),
+                );
                 self.pointer_seen = true;
             }
             InputEvent::PointerDown { button } => {
-                if !self.buttons_down.contains(&button) {
-                    self.buttons_down.push(button);
-                }
+                self.buttons_down.insert(button);
                 match button {
                     Button::Left => self.select_at_pointer(),
                     Button::Right => self.order_move_to_pointer(),
                     Button::Middle => {}
                 }
             }
-            InputEvent::PointerUp { button } => self.buttons_down.retain(|b| *b != button),
-            InputEvent::KeyDown { key } => {
-                if !self.keys_down.contains(&key) {
-                    self.keys_down.push(key);
-                }
+            InputEvent::PointerUp { button } => {
+                self.buttons_down.remove(&button);
             }
-            InputEvent::KeyUp { key } => self.keys_down.retain(|k| *k != key),
+            InputEvent::KeyDown { key } => {
+                self.keys_down.insert(key);
+            }
+            InputEvent::KeyUp { key } => {
+                self.keys_down.remove(&key);
+            }
             InputEvent::Wheel { .. } => {}
         }
     }
 
     fn scroll(&mut self) {
-        let (mut dx, mut dy) = (0, 0);
+        let (mut dx, mut dy) = (0i32, 0i32);
         for k in &self.keys_down {
             match k {
                 Key::Left => dx -= SCROLL_SPEED,
@@ -373,12 +479,13 @@ impl World {
         }
         let max_x = (self.map_size.0 as i32 - vw).max(0);
         let max_y = (self.map_size.1 as i32 - vh).max(0);
-        self.camera.0 = (self.camera.0 + dx).clamp(0, max_x);
-        self.camera.1 = (self.camera.1 + dy).clamp(0, max_y);
+        self.camera.0 = self.camera.0.saturating_add(dx).clamp(0, max_x);
+        self.camera.1 = self.camera.1.saturating_add(dy).clamp(0, max_y);
     }
 
     fn select_at_pointer(&mut self) {
         let (px, py) = self.pointer_in_map();
+        // First match in slot order: order is authoritative (and hashed).
         let hit = self
             .entities
             .iter()
@@ -405,7 +512,7 @@ impl World {
             .entities
             .iter()
             .filter(|e| e.kind == EntityKind::Obstacle)
-            .map(|e| (e.x, e.y, e.patrol[0].0, e.patrol[0].1))
+            .filter_map(|e| e.patrol.first().map(|&(hw, hh)| (e.x, e.y, hw, hh)))
             .collect();
         let (w, h) = (
             Fixed::from_int(self.map_size.0 as i32),
@@ -444,8 +551,8 @@ impl World {
                 }
                 continue;
             }
-            e.x = clamp(nx, Fixed::ZERO, w);
-            e.y = clamp(ny, Fixed::ZERO, h);
+            e.x = nx.clamp(Fixed::ZERO, w);
+            e.y = ny.clamp(Fixed::ZERO, h);
             if (e.x, e.y) == (tx, ty) {
                 e.target = None;
                 if e.kind == EntityKind::Guard {
@@ -481,11 +588,14 @@ impl World {
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             version: SNAPSHOT_VERSION,
+            ruleset: crate::RULESET_VERSION,
+            hash_schema: HASH_SCHEMA_VERSION,
             world: self.clone(),
         }
     }
 
-    /// Restore from a snapshot.
+    /// Validate a snapshot and, only if it is acceptable, make it the current state. The catalog
+    /// is kept (it is static data). On error the world is unchanged.
     pub fn restore(&mut self, snap: &Snapshot) -> Result<(), String> {
         if snap.version != SNAPSHOT_VERSION {
             return Err(format!(
@@ -493,6 +603,14 @@ impl World {
                 snap.version
             ));
         }
+        if snap.ruleset != crate::RULESET_VERSION {
+            return Err(format!(
+                "snapshot ruleset {} does not match {}",
+                snap.ruleset,
+                crate::RULESET_VERSION
+            ));
+        }
+        snap.world.validate()?;
         let catalog = std::mem::take(&mut self.catalog);
         *self = snap.world.clone();
         self.catalog = catalog;
@@ -501,7 +619,7 @@ impl World {
 
     /// Observation for the harness.
     #[must_use]
-    pub fn observe(&self) -> Observation {
+    pub fn observe(&self, with_entities: bool) -> Observation {
         Observation {
             tick: self.tick,
             scenario: self.scenario.clone(),
@@ -510,13 +628,18 @@ impl World {
             camera: self.camera,
             pointer: self.pointer,
             selected: self.selected,
-            entities: self.entities.clone(),
+            entities: if with_entities {
+                self.entities.clone()
+            } else {
+                Vec::new()
+            },
             rng_draws: self.rng.draws,
             objective_reached: self.objective_reached,
         }
     }
 
-    /// Canonical hashes (ADR-0004).
+    /// Canonical hashes (ADR-0004). Every authoritative field is encoded, in a fixed order, with
+    /// explicit tags and lengths.
     #[must_use]
     pub fn hashes(&self) -> Hashes {
         let mut parts = BTreeMap::new();
@@ -526,39 +649,48 @@ impl World {
             .u32(self.viewport.0)
             .u32(self.viewport.1)
             .u32(self.map_size.0)
-            .u32(self.map_size.1);
-        w.i32(self.camera.0)
+            .u32(self.map_size.1)
+            .i32(self.camera.0)
             .i32(self.camera.1)
             .i32(self.pointer.0)
-            .i32(self.pointer.1);
-        w.u64(self.seed)
+            .i32(self.pointer.1)
+            .u8(u8::from(self.pointer_seen))
+            .u64(self.seed)
             .u8(u8::from(self.objective_reached))
-            .u8(u8::from(self.pointer_seen));
+            .i32(self.goal.0.raw())
+            .i32(self.goal.1.raw());
         match &self.scenario {
             Scenario::Synthetic(n) => w.u8(1).str(n),
-            Scenario::MapView { map, ambiance } => w.u8(3).str(map).str(ambiance),
             Scenario::Mission(n) => w.u8(2).str(n),
+            Scenario::MapView { map, ambiance } => w.u8(3).str(map).str(ambiance),
         };
+        w.u32(self.buttons_down.len() as u32);
+        for b in &self.buttons_down {
+            w.u8(button_tag(*b));
+        }
         let mut keys = Vec::new();
         for k in &self.keys_down {
-            InputEvent::KeyDown { key: *k }.encode(&mut keys);
+            encode_key(*k, &mut keys);
         }
-        w.bytes(&keys);
+        w.u32(self.keys_down.len() as u32).bytes(&keys);
         parts.insert("world".into(), w.finish());
 
         let mut a = Encoder::new("actors");
-        let mut sorted: Vec<&Entity> = self.entities.iter().collect();
-        sorted.sort_by_key(|e| e.id);
-        for e in &sorted {
-            a.u32(e.id.index).u32(e.id.generation).u8(e.kind as u8);
+        a.u32(self.entities.len() as u32);
+        for e in &self.entities {
+            a.u32(e.id.index).u32(e.id.generation).u8(e.kind.tag());
             a.i32(e.x.raw())
                 .i32(e.y.raw())
                 .i32(e.size.raw())
-                .i32(e.speed.raw());
-            a.i32(e.facing256)
+                .i32(e.speed.raw())
+                .i32(e.facing256)
                 .u8(u8::from(e.alive))
                 .u32(e.wait_ticks)
-                .u32(e.patrol_index);
+                .u32(e.patrol_index)
+                .u32(e.patrol.len() as u32);
+            for (x, y) in &e.patrol {
+                a.i32(x.raw()).i32(y.raw());
+            }
             match &e.anim {
                 Some(st) => a
                     .u8(1)
@@ -576,7 +708,8 @@ impl World {
             Some(id) => o.u8(1).u32(id.index).u32(id.generation),
             None => o.u8(0),
         };
-        for e in &sorted {
+        o.u32(self.entities.len() as u32);
+        for e in &self.entities {
             match e.target {
                 Some((x, y)) => o.u8(1).i32(x.raw()).i32(y.raw()),
                 None => o.u8(0),
@@ -585,9 +718,20 @@ impl World {
         parts.insert("orders".into(), o.finish());
 
         let mut r = Encoder::new("rng");
-        let (s, i) = self.rng.state();
-        r.str("pcg32").u64(s).u64(i).u64(self.rng.draws);
+        r.str(Rng::ALGORITHM)
+            .u64(self.rng.seed)
+            .u64(self.rng.stream)
+            .u64(self.rng.state())
+            .u64(self.rng.draws);
         parts.insert("rng".into(), r.finish());
+
+        // Subsystems that do not exist yet hash to a versioned constant so the set of parts is
+        // stable across milestones and their appearance is a visible ruleset change.
+        for name in ["pathfinding", "scripts", "scheduler", "campaign"] {
+            let mut e = Encoder::new(name);
+            e.u8(0);
+            parts.insert(name.into(), e.finish());
+        }
 
         let t = total(&parts);
         parts.insert("total".into(), t);
@@ -595,20 +739,10 @@ impl World {
     }
 }
 
-fn clamp(v: Fixed, lo: Fixed, hi: Fixed) -> Fixed {
-    if v < lo {
-        lo
-    } else if v > hi {
-        hi
-    } else {
-        v
-    }
-}
-
 /// Facing from a direction vector: 8-way quantised to 1/256 turns, exact and deterministic.
 fn facing_of(dx: Fixed, dy: Fixed) -> i32 {
-    let (ax, ay) = (dx.abs(), dy.abs());
-    let diagonal = ax.raw() * 2 > ay.raw() && ay.raw() * 2 > ax.raw();
+    let (ax, ay) = (i64::from(dx.abs().raw()), i64::from(dy.abs().raw()));
+    let diagonal = ax * 2 > ay && ay * 2 > ax;
     let octant = match (dx.raw() >= 0, dy.raw() >= 0, diagonal, ax >= ay) {
         (true, true, true, _) => 1,
         (false, true, true, _) => 3,
@@ -637,9 +771,13 @@ mod tests {
         ]);
     }
 
+    fn corridor(seed: u64) -> World {
+        World::new(Scenario::Synthetic("corridor".into()), seed).unwrap()
+    }
+
     #[test]
     fn player_moves_when_selected_and_ordered() {
-        let mut w = World::new(Scenario::Synthetic("corridor".into()), 7).unwrap();
+        let mut w = corridor(7);
         click(&mut w, 80, 240, Button::Left);
         assert!(w.selected.is_some());
         click(&mut w, 200, 240, Button::Right);
@@ -649,12 +787,13 @@ mod tests {
         let p = &w.entities[0];
         assert_eq!((p.x.round(), p.y.round()), (200, 240));
         assert!(p.target.is_none());
+        w.validate().unwrap();
     }
 
     #[test]
     fn same_inputs_same_hashes_and_restore_is_transparent() {
         let run = |snap_at: Option<u64>| {
-            let mut w = World::new(Scenario::Synthetic("corridor".into()), 3).unwrap();
+            let mut w = corridor(3);
             click(&mut w, 80, 240, Button::Left);
             click(&mut w, 300, 200, Button::Right);
             let mut saved = None;
@@ -684,6 +823,65 @@ mod tests {
         );
     }
 
+    /// Golden hash of a fixed script. Changing the encoding, the ruleset or the scenario changes
+    /// this value: bump `RULESET_VERSION` / `HASH_SCHEMA_VERSION` and update the constant on purpose.
+    #[test]
+    fn golden_hash_of_the_corridor_script() {
+        let mut w = corridor(11);
+        click(&mut w, 80, 240, Button::Left);
+        click(&mut w, 600, 240, Button::Right);
+        w.step(&[InputEvent::KeyDown { key: Key::Right }]);
+        for _ in 0..398 {
+            w.step(&[]);
+        }
+        assert!(w.objective_reached);
+        assert_eq!(
+            w.hashes().total(),
+            GOLDEN_CORRIDOR_TOTAL,
+            "{:?}",
+            w.hashes()
+        );
+    }
+
+    const GOLDEN_CORRIDOR_TOTAL: &str =
+        "8d72dcd23934cd12be641be3778c4c00ac29b0283da160832e6b593af0a4d100";
+
+    #[test]
+    fn every_authoritative_field_changes_some_hash() {
+        let base = corridor(5);
+        let h0 = base.hashes();
+        let mut variants: Vec<(&str, World)> = Vec::new();
+        let mut w = base.clone();
+        w.goal.0 += Fixed::ONE;
+        variants.push(("goal", w));
+        let mut w = base.clone();
+        w.buttons_down.insert(Button::Middle);
+        variants.push(("buttons", w));
+        let mut w = base.clone();
+        w.keys_down.insert(Key::Space);
+        variants.push(("keys", w));
+        let mut w = base.clone();
+        w.entities[1].patrol[0].0 += Fixed::ONE;
+        variants.push(("patrol", w));
+        let mut w = base.clone();
+        w.entities.swap(0, 1);
+        variants.push(("order", w));
+        let mut w = base.clone();
+        w.camera.0 = 1;
+        w.map_size.0 = 641;
+        variants.push(("camera", w));
+        let mut w = base.clone();
+        w.entities[0].anim = Some(AnimState::new("x", 0));
+        variants.push(("anim", w));
+        for (name, v) in variants {
+            assert_ne!(
+                v.hashes().total(),
+                h0.total(),
+                "{name} not covered by the hash"
+            );
+        }
+    }
+
     #[test]
     fn camera_scrolls_with_keys_and_edges_and_affects_picking() {
         let scenario = Scenario::MapView {
@@ -703,21 +901,18 @@ mod tests {
         w.step(&[]);
         w.step(&[InputEvent::KeyUp { key: Key::Right }]);
         assert_eq!(w.camera, (SCROLL_SPEED * 2, 0));
-        // edge scroll down
         w.step(&[InputEvent::PointerMove {
             x256: 320 * 256,
             y256: 479 * 256,
         }]);
         assert_eq!(w.camera.1, SCROLL_SPEED);
-        // picking uses map coordinates: the player at (80,240) is now at viewport (80-16, 240-8)
         click(
             &mut w,
-            80 - SCROLL_SPEED * 3,
+            80 - SCROLL_SPEED * 2,
             240 - SCROLL_SPEED,
             Button::Left,
         );
         assert!(w.selected.is_some());
-        // camera never leaves the map
         for _ in 0..1000 {
             w.step(&[
                 InputEvent::KeyDown { key: Key::Right },
@@ -725,6 +920,59 @@ mod tests {
             ]);
         }
         assert_eq!(w.camera, (2000 - 640, 1000 - 480));
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn hostile_input_never_panics() {
+        let mut w = corridor(1);
+        let extremes = [i32::MIN, i32::MAX, 0, -1, 1];
+        for &x in &extremes {
+            for &y in &extremes {
+                w.step(&[
+                    InputEvent::PointerMove { x256: x, y256: y },
+                    InputEvent::PointerDown {
+                        button: Button::Left,
+                    },
+                    InputEvent::PointerDown {
+                        button: Button::Right,
+                    },
+                    InputEvent::Wheel { delta: x },
+                ]);
+                for _ in 0..3 {
+                    w.step(&[]);
+                }
+            }
+        }
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn invalid_snapshots_are_rejected_and_leave_the_world_untouched() {
+        let mut w = corridor(2);
+        let before = w.hashes();
+        let mut snap = w.snapshot();
+        snap.world.entities[1].id = snap.world.entities[0].id;
+        assert!(w.restore(&snap).unwrap_err().contains("duplicate"));
+        let mut snap = w.snapshot();
+        snap.world.entities[2].patrol.clear();
+        assert!(w.restore(&snap).is_err());
+        let mut snap = w.snapshot();
+        snap.world.selected = Some(EntityId {
+            index: 99,
+            generation: 1,
+        });
+        assert!(w.restore(&snap).is_err());
+        let mut snap = w.snapshot();
+        snap.world.camera = (5, 0);
+        assert!(w.restore(&snap).is_err());
+        let mut snap = w.snapshot();
+        snap.ruleset += 1;
+        assert!(w.restore(&snap).is_err());
+        let mut snap = w.snapshot();
+        snap.version += 1;
+        assert!(w.restore(&snap).is_err());
+        assert_eq!(w.hashes(), before);
     }
 
     #[test]

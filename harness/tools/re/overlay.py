@@ -29,7 +29,7 @@ def pppp(b):
         tail = b[pos:pos + 6]; pos += 6; out.append((id_, pts, tail))
     return out, pos
 
-if __name__ == "__main__":
+def _main():
     m, out, layers = sys.argv[1], sys.argv[2], sys.argv[3].split(",")
     ch = load_chunks(rhp_path(m)); img = load_map(map_path(m)).convert("RGBA")
     d = ImageDraw.Draw(img, "RGBA")
@@ -56,6 +56,63 @@ if __name__ == "__main__":
         polys, _ = pppp(ch["PPPP"][1])
         for id_, pts, tail in polys:
             d.line(pts + [pts[0]], fill=(255, 0, 255, 255), width=2); d.text(pts[0], f"P{id_}", fill=(255, 0, 255, 255))
+    from map_png import load_map as _lm
+    draw_extra(d, ch, layers, img.width, img.height)
     if len(sys.argv) > 4:
         img = img.crop(tuple(map(int, sys.argv[4:8])))
     img.save(out); print("wrote", out, img.size)
+
+def stat_polys_scan(b, W, H):
+    """Heuristic polygon extraction from STAT (u16 npts + in-range points, followed by another within 40 bytes)."""
+    def body_at(p):
+        if p + 2 > len(b): return None
+        n = struct.unpack_from("<H", b, p)[0]
+        if n < 3 or n > 3000 or p + 2 + 4 * n > len(b): return None
+        for k in range(n):
+            x, y = struct.unpack_from("<HH", b, p + 2 + 4 * k)
+            if x > W + 2 or y > H + 2: return None
+        return n
+    def nxt(p, lim):
+        for q in range(p, min(p + lim, len(b))):
+            if body_at(q): return q
+        return None
+    pos = 2; out = []
+    while pos < len(b):
+        n = body_at(pos)
+        if n and nxt(pos + 2 + 4 * n, 40) is not None:
+            out.append([struct.unpack_from("<HH", b, pos + 2 + 4 * k) for k in range(n)]); pos += 2 + 4 * n
+        else:
+            pos += 1
+    return out
+
+def pppp2(b):
+    polys, pos = pppp(b)
+    n2 = struct.unpack_from("<H", b, pos)[0]; pos += 2; out = []
+    for i in range(n2):
+        r = struct.unpack_from("<HHHHHHHHHHHHHHB", b, pos); pos += 29; out.append(r)
+    return out
+
+def dark(b):
+    n = struct.unpack_from("<H", b, 0)[0]; pos = 2; out = []
+    for i in range(n):
+        a = struct.unpack_from("<I", b, pos)[0]; npts = struct.unpack_from("<H", b, pos + 4)[0]; pos += 6
+        pts = [struct.unpack_from("<HH", b, pos + 4 * k) for k in range(npts)]; pos += 4 * npts
+        tail = struct.unpack_from("<I", b, pos)[0]; pos += 4; out.append((a, pts, tail))
+    return out, pos
+
+def draw_extra(d, ch, layers, W, H):
+    if "statscan" in layers:
+        for i, pts in enumerate(stat_polys_scan(ch["STAT"][1], W, H)):
+            d.line(pts + [pts[0]], fill=(255, 255, 0, 255) if i else (255, 0, 0, 255), width=2)
+    if "jump" in layers:
+        for r in pppp2(ch["PPPP"][1]):
+            d.line([(r[0], r[1]), (r[3], r[4])], fill=(255, 128, 0, 255), width=4)
+            d.line([(r[7], r[8]), (r[10], r[11])], fill=(0, 200, 255, 255), width=4)
+            d.line([((r[0] + r[3]) / 2, (r[1] + r[4]) / 2), ((r[7] + r[10]) / 2, (r[8] + r[11]) / 2)], fill=(255, 255, 255, 200), width=1)
+    if "dark" in layers:
+        polys, _ = dark(ch["DARK"][1])
+        for a, pts, tail in polys:
+            d.polygon(pts, fill=(0, 0, 0, 90), outline=(0, 0, 0, 255))
+
+if __name__ == "__main__":
+    _main()

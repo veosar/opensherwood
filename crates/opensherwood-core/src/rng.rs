@@ -1,24 +1,35 @@
-//! Seeded, serialisable random number streams (PCG32, O'Neill 2014, a public-domain algorithm).
-//! Every draw is counted so hashes and traces can pin down where two runs diverge.
+//! Seeded, serialisable, named random number streams (PCG32, O'Neill 2014, a public-domain
+//! algorithm). Every draw is counted so hashes and traces can pin down where two runs diverge.
 
 use serde::{Deserialize, Serialize};
+
+/// Largest stream id (the PCG increment is `stream * 2 + 1`, which must fit in 64 bits).
+pub const MAX_STREAM_ID: u64 = (1 << 63) - 1;
 
 /// A PCG32 stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rng {
+    /// Seed the stream was created with.
+    pub seed: u64,
+    /// Stream id (`0..=MAX_STREAM_ID`), part of the identity of the stream.
+    pub stream: u64,
     state: u64,
-    inc: u64,
-    /// Number of `u32` values drawn so far.
+    /// Number of `u32` values drawn so far (saturating).
     pub draws: u64,
 }
 
 impl Rng {
-    /// Create a stream from a seed and a stream id.
+    /// Algorithm name recorded in hashes and replays.
+    pub const ALGORITHM: &'static str = "pcg32";
+
+    /// Create a stream from a seed and a stream id (ids above [`MAX_STREAM_ID`] are masked).
     #[must_use]
     pub fn new(seed: u64, stream: u64) -> Self {
+        let stream = stream & MAX_STREAM_ID;
         let mut r = Rng {
+            seed,
+            stream,
             state: 0,
-            inc: (stream << 1) | 1,
             draws: 0,
         };
         r.next_u32();
@@ -28,15 +39,19 @@ impl Rng {
         r
     }
 
+    fn inc(&self) -> u64 {
+        (self.stream << 1) | 1
+    }
+
     /// Next 32 random bits.
     pub fn next_u32(&mut self) -> u32 {
         let old = self.state;
         self.state = old
             .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(self.inc);
+            .wrapping_add(self.inc());
         let xorshifted = (((old >> 18) ^ old) >> 27) as u32;
         let rot = (old >> 59) as u32;
-        self.draws += 1;
+        self.draws = self.draws.saturating_add(1);
         xorshifted.rotate_right(rot)
     }
 
@@ -54,10 +69,18 @@ impl Rng {
         }
     }
 
-    /// Raw state for hashing.
+    /// Internal state word (for hashing).
     #[must_use]
-    pub fn state(&self) -> (u64, u64) {
-        (self.state, self.inc)
+    pub fn state(&self) -> u64 {
+        self.state
+    }
+
+    /// Validate a deserialised stream.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.stream > MAX_STREAM_ID {
+            return Err(format!("rng stream id {} out of range", self.stream));
+        }
+        Ok(())
     }
 }
 
@@ -79,5 +102,16 @@ mod tests {
             assert!(c.below(7) < 7);
         }
         assert_eq!(c.below(0), 0);
+    }
+
+    #[test]
+    fn stream_ids_are_kept_and_bounded() {
+        let r = Rng::new(1, u64::MAX);
+        assert_eq!(r.stream, MAX_STREAM_ID);
+        assert!(r.validate().is_ok());
+        let mut d = Rng::new(1, 1);
+        d.draws = u64::MAX;
+        d.next_u32();
+        assert_eq!(d.draws, u64::MAX);
     }
 }

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Mouse buttons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Button {
     /// Left.
@@ -15,7 +15,7 @@ pub enum Button {
 }
 
 /// Physical keys (a small, stable subset; extended as gameplay needs them).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Key {
     /// Escape.
@@ -97,11 +97,11 @@ impl InputEvent {
             }
             InputEvent::PointerDown { button } => {
                 out.push(2);
-                out.push(button as u8);
+                out.push(button_tag(button));
             }
             InputEvent::PointerUp { button } => {
                 out.push(3);
-                out.push(button as u8);
+                out.push(button_tag(button));
             }
             InputEvent::Wheel { delta } => {
                 out.push(4);
@@ -119,7 +119,18 @@ impl InputEvent {
     }
 }
 
-fn encode_key(key: Key, out: &mut Vec<u8>) {
+/// Stable tag of a button for canonical encodings.
+#[must_use]
+pub fn button_tag(button: Button) -> u8 {
+    match button {
+        Button::Left => 1,
+        Button::Right => 2,
+        Button::Middle => 3,
+    }
+}
+
+/// Canonical encoding of a key (explicit tags, never enum discriminants).
+pub fn encode_key(key: Key, out: &mut Vec<u8>) {
     match key {
         Key::Escape => out.push(1),
         Key::Space => out.push(2),

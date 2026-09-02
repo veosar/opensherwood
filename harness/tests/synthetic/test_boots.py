@@ -9,7 +9,7 @@ from opensherwood_harness import EngineError
 
 def test_hello_reports_protocol(engine):
     h = engine.hello()
-    assert h["protocol"] == 1
+    assert h["protocol"] == 2
     assert "synthetic" in h["capabilities"]
     assert h["ruleset"] >= 1
 

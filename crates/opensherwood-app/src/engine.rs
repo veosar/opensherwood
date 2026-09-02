@@ -10,8 +10,8 @@ use opensherwood_core::{
     AnimSet, Catalog, FrameSpec, InputEvent, MapInfo, Scenario, Snapshot, World,
 };
 use opensherwood_protocol::{
-    CaptureParams, CaptureResult, HelloResult, ObserveResult, PROTOCOL_VERSION, ResetParams,
-    RestoreParams, RpcError, SnapshotResult, StepParams, StepResult,
+    CaptureParams, CaptureResult, HelloResult, ObserveParams, ObserveResult, PROTOCOL_VERSION,
+    ResetParams, RestoreParams, RpcError, SnapshotResult, StepParams, StepResult,
 };
 use opensherwood_render::{Background, Framebuffer, NoSprites, SpriteFrame, SpriteSource, render};
 use serde_json::{Value, json};
@@ -35,9 +35,11 @@ impl SpriteSource for Sprites {
     }
 }
 
-/// Build the core's animation set from a parsed profile. Until `docs/formats/sprite-animations.md`
-/// establishes the real layout, the first 8 animations are used as idle and the next 8 as walk.
+/// Build the core's animation set from a parsed profile using the documented block layout
+/// (`docs/formats/sprite-animations.md`): 16-direction blocks per action; idle = action 0,
+/// walk = action 6. Falls back to the first animations when the profile has no table.
 fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSet {
+    use opensherwood_formats::anim_table::{AnimationTable, Direction};
     // Frame anchors are relative to a canvas whose origin (the entity position) is the sequence's
     // `origin_x/origin_y` (150,150 for characters); see docs/formats/sprites.md.
     let animations: Vec<Vec<FrameSpec>> = profile
@@ -50,7 +52,7 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
                     .iter()
                     .map(|f| FrameSpec {
                         frame: f.frame,
-                        duration: f.duration.max(1),
+                        duration: (f.duration & 0xFFFF).max(1),
                         offset_x: i32::from(f.anchor_x) - ox,
                         offset_y: i32::from(f.anchor_y) - oy,
                     })
@@ -61,9 +63,17 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
     let n = animations.len().max(1) as u32;
     let mut idle = [0u32; 8];
     let mut walk = [0u32; 8];
-    for d in 0..8u32 {
-        idle[d as usize] = d % n;
-        walk[d as usize] = (8 + d) % n;
+    let table = AnimationTable::from_profile(profile);
+    for (o, (i, w)) in idle.iter_mut().zip(walk.iter_mut()).enumerate() {
+        let dir = Direction::from_octant(o);
+        *i = table
+            .as_ref()
+            .and_then(|t| t.idle(dir))
+            .map_or(o as u32 % n, |a| a as u32);
+        *w = table
+            .as_ref()
+            .and_then(|t| t.walk(dir))
+            .map_or((8 + o as u32) % n, |a| a as u32);
     }
     AnimSet {
         animations,
@@ -83,6 +93,22 @@ pub struct Session {
     snapshots: BTreeMap<String, Snapshot>,
     next_snapshot: u64,
     frame: Option<Framebuffer>,
+    /// Window input waiting to be applied by the next `step` (controlled window mode).
+    queued_input: Vec<InputEvent>,
+}
+
+/// Limits that keep a hostile client from exhausting memory or time.
+pub mod limits {
+    /// Most ticks in one `step`.
+    pub const MAX_TICKS: u32 = 100_000;
+    /// Most ticks per `step` when per-tick hashes are requested.
+    pub const MAX_HASHED_TICKS: u32 = 10_000;
+    /// Most events in one `step`.
+    pub const MAX_EVENTS: usize = 100_000;
+    /// Snapshot handles kept (oldest are dropped).
+    pub const MAX_SNAPSHOTS: usize = 32;
+    /// Most queued window input events.
+    pub const MAX_QUEUED_INPUT: usize = 10_000;
 }
 
 impl std::fmt::Debug for Session {
@@ -127,6 +153,16 @@ impl Session {
             snapshots: BTreeMap::new(),
             next_snapshot: 0,
             frame: None,
+            queued_input: Vec::new(),
+        }
+    }
+
+    /// Queue window input for the next `step` (controlled window mode).
+    pub fn queue_input(&mut self, events: Vec<InputEvent>) {
+        self.queued_input.extend(events);
+        if self.queued_input.len() > limits::MAX_QUEUED_INPUT {
+            let excess = self.queued_input.len() - limits::MAX_QUEUED_INPUT;
+            self.queued_input.drain(..excess);
         }
     }
 
@@ -199,6 +235,8 @@ impl Session {
         self.world = Some(world);
         self.background = background;
         self.frame = None;
+        self.snapshots.clear();
+        self.queued_input.clear();
         Ok(())
     }
 
@@ -252,10 +290,25 @@ impl Session {
             }
             "step" => {
                 let p: StepParams = params_required(p)?;
-                if p.ticks == 0 || p.ticks > 1_000_000 {
+                if p.ticks == 0 || p.ticks > limits::MAX_TICKS {
                     return Err(RpcError::new(
                         RpcError::INVALID_PARAMS,
-                        "ticks must be in 1..=1000000",
+                        format!("ticks must be in 1..={}", limits::MAX_TICKS),
+                    ));
+                }
+                if p.hash_every_tick && p.ticks > limits::MAX_HASHED_TICKS {
+                    return Err(RpcError::new(
+                        RpcError::INVALID_PARAMS,
+                        format!(
+                            "hash_every_tick allows at most {} ticks",
+                            limits::MAX_HASHED_TICKS
+                        ),
+                    ));
+                }
+                if p.events.len() > limits::MAX_EVENTS {
+                    return Err(RpcError::new(
+                        RpcError::INVALID_PARAMS,
+                        format!("at most {} events per step", limits::MAX_EVENTS),
                     ));
                 }
                 if p.events.iter().any(|e| e.tick_offset >= p.ticks) {
@@ -266,12 +319,16 @@ impl Session {
                 }
                 let mut events = p.events;
                 events.sort_by_key(|e| (e.tick_offset, e.sequence));
+                let queued = std::mem::take(&mut self.queued_input);
                 let world = self.world()?;
                 let mut per_tick = Vec::new();
                 let mut cursor = 0usize;
                 let mut tick_events: Vec<InputEvent> = Vec::new();
                 for offset in 0..p.ticks {
                     tick_events.clear();
+                    if offset == 0 {
+                        tick_events.extend(queued.iter().copied());
+                    }
                     while cursor < events.len() && events[cursor].tick_offset == offset {
                         tick_events.push(events[cursor].event);
                         cursor += 1;
@@ -290,9 +347,10 @@ impl Session {
                 })
             }
             "observe" => {
+                let p: ObserveParams = params(p)?;
                 let world = self.world()?;
                 ok(ObserveResult {
-                    observation: world.observe(),
+                    observation: world.observe(p.entities),
                     hashes: world.hashes(),
                 })
             }
@@ -302,6 +360,12 @@ impl Session {
                 let hashes = world.hashes();
                 self.next_snapshot += 1;
                 let id = format!("snap-{}", self.next_snapshot);
+                while self.snapshots.len() >= limits::MAX_SNAPSHOTS {
+                    let oldest = self.snapshots.keys().next().cloned();
+                    if let Some(k) = oldest {
+                        self.snapshots.remove(&k);
+                    }
+                }
                 self.snapshots.insert(id.clone(), snapshot.clone());
                 ok(SnapshotResult {
                     id,
@@ -323,9 +387,20 @@ impl Session {
                         ));
                     }
                 };
-                let world = self.world.get_or_insert_with(|| snap.world.clone());
-                world.restore(&snap).map_err(engine_err)?;
+                // Validate first (never install an invalid world), then make sure the session's
+                // assets (background, catalog) belong to the snapshot's scenario.
+                snap.world.validate().map_err(engine_err)?;
+                let same_scenario = self
+                    .world
+                    .as_ref()
+                    .is_some_and(|w| w.scenario == snap.world.scenario);
+                if !same_scenario {
+                    self.reset(snap.world.scenario.clone(), snap.world.seed)
+                        .map_err(engine_err)?;
+                }
                 self.frame = None;
+                let world = self.world()?;
+                world.restore(&snap).map_err(engine_err)?;
                 ok(json!({ "tick": world.tick, "hashes": world.hashes() }))
             }
             "capture" => {

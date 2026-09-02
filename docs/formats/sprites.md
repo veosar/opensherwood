@@ -16,6 +16,9 @@ fields. Parsers: `crates/opensherwood-formats/src/{rhs.rs,dic.rs,sprite_decode.r
 All three start with the same `u32 0x0003EBC9`: a bank generation id (the executable reports an RHS that "was not
 generated with the current bank"), not a file-type magic.
 
+The organisation of the animation list (16-direction blocks per action, action ids, timing) is in
+[sprite-animations.md](sprite-animations.md).
+
 ## `.rhs` profile
 
 ```

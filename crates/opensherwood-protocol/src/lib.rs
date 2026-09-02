@@ -6,7 +6,7 @@ use serde_json::Value;
 pub use opensherwood_core::{Hashes, InputEvent, Observation, Scenario, Snapshot};
 
 /// Protocol version reported by `hello`.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// JSON-RPC 2.0 request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,11 +162,17 @@ pub struct StepResult {
 }
 
 /// `observe` params.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObserveParams {
     /// Include entities (default true).
     #[serde(default = "default_true")]
     pub entities: bool,
+}
+
+impl Default for ObserveParams {
+    fn default() -> Self {
+        Self { entities: true }
+    }
 }
 
 fn default_true() -> bool {
@@ -243,8 +249,67 @@ pub struct ReplayHeader {
     pub viewport: (u32, u32),
     /// Tick rate as a rational (numerator, denominator) in Hz.
     pub tick_rate: (u32, u32),
+    /// Hash schema the checkpoints were produced with.
+    pub hash_schema: u32,
     /// Seed.
     pub seed: u64,
+    /// Named RNG streams and their initial (seed, stream id).
+    pub rng_streams: std::collections::BTreeMap<String, RngStreamInit>,
+}
+
+/// Initial state of one named RNG stream.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RngStreamInit {
+    /// Algorithm name (`pcg32`).
+    pub algorithm: String,
+    /// Seed.
+    pub seed: u64,
+    /// Stream id.
+    pub stream: u64,
+}
+
+impl ReplayHeader {
+    /// Check the header's versions and values.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.replay_version != 1 {
+            return Err(format!(
+                "unsupported replay version {}",
+                self.replay_version
+            ));
+        }
+        if self.protocol != PROTOCOL_VERSION {
+            return Err(format!(
+                "replay protocol {} != {PROTOCOL_VERSION}",
+                self.protocol
+            ));
+        }
+        if self.ruleset != opensherwood_core::RULESET_VERSION {
+            return Err(format!(
+                "replay ruleset {} != {}",
+                self.ruleset,
+                opensherwood_core::RULESET_VERSION
+            ));
+        }
+        if self.hash_schema != opensherwood_core::hash::HASH_SCHEMA_VERSION {
+            return Err(format!(
+                "replay hash schema {} is not current",
+                self.hash_schema
+            ));
+        }
+        if self.tick_rate.0 == 0 || self.tick_rate.1 == 0 {
+            return Err("tick rate must be a positive rational".into());
+        }
+        if self.viewport.0 == 0 || self.viewport.1 == 0 {
+            return Err("viewport must be non-zero".into());
+        }
+        if !matches!(self.scenario, Scenario::Synthetic(_)) && self.content_fingerprint.is_none() {
+            return Err("replays of game-data scenarios need a content fingerprint".into());
+        }
+        if self.rng_streams.is_empty() {
+            return Err("at least one named RNG stream is required".into());
+        }
+        Ok(())
+    }
 }
 
 /// `ReplayV1` event line.
@@ -295,11 +360,12 @@ pub struct Replay {
 }
 
 impl Replay {
-    /// Parse JSON Lines.
+    /// Parse JSON Lines: the header must come first, events must be strictly ordered by
+    /// `(tick, sequence)`, checkpoints strictly by tick, and all versions must be current.
     pub fn from_jsonl(text: &str) -> Result<Self, String> {
-        let mut header = None;
-        let mut events = Vec::new();
-        let mut checkpoints = Vec::new();
+        let mut header: Option<ReplayHeader> = None;
+        let mut events: Vec<ReplayEvent> = Vec::new();
+        let mut checkpoints: Vec<ReplayCheckpoint> = Vec::new();
         for (n, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
@@ -308,21 +374,43 @@ impl Replay {
                 serde_json::from_str(line).map_err(|e| format!("line {}: {e}", n + 1))?;
             match parsed {
                 ReplayLine::Header(h) => {
-                    if header.is_some() {
-                        return Err(format!("line {}: duplicate header", n + 1));
+                    if header.is_some() || !events.is_empty() || !checkpoints.is_empty() {
+                        return Err(format!("line {}: header must be the first line", n + 1));
                     }
-                    if h.replay_version != 1 {
-                        return Err(format!("unsupported replay version {}", h.replay_version));
-                    }
+                    h.validate().map_err(|e| format!("line {}: {e}", n + 1))?;
                     header = Some(h);
                 }
-                ReplayLine::Event(e) => events.push(e),
-                ReplayLine::Checkpoint(c) => checkpoints.push(c),
+                ReplayLine::Event(e) => {
+                    if header.is_none() {
+                        return Err(format!("line {}: event before header", n + 1));
+                    }
+                    if let Some(prev) = events.last()
+                        && (e.tick, e.sequence) <= (prev.tick, prev.sequence)
+                    {
+                        return Err(format!(
+                            "line {}: events must be strictly ordered by (tick, sequence)",
+                            n + 1
+                        ));
+                    }
+                    events.push(e);
+                }
+                ReplayLine::Checkpoint(c) => {
+                    if header.is_none() {
+                        return Err(format!("line {}: checkpoint before header", n + 1));
+                    }
+                    if let Some(prev) = checkpoints.last()
+                        && c.tick <= prev.tick
+                    {
+                        return Err(format!(
+                            "line {}: checkpoints must be strictly ordered",
+                            n + 1
+                        ));
+                    }
+                    checkpoints.push(c);
+                }
             }
         }
         let header = header.ok_or("missing header line")?;
-        events.sort_by_key(|e| (e.tick, e.sequence));
-        checkpoints.sort_by_key(|c| c.tick);
         Ok(Self {
             header,
             events,
@@ -371,12 +459,23 @@ mod tests {
             header: ReplayHeader {
                 replay_version: 1,
                 protocol: PROTOCOL_VERSION,
-                ruleset: 1,
+                ruleset: opensherwood_core::RULESET_VERSION,
                 content_fingerprint: None,
                 scenario: Scenario::Synthetic("corridor".into()),
                 viewport: (640, 480),
                 tick_rate: (30, 1),
+                hash_schema: opensherwood_core::hash::HASH_SCHEMA_VERSION,
                 seed: 5,
+                rng_streams: [(
+                    "gameplay".to_string(),
+                    RngStreamInit {
+                        algorithm: "pcg32".into(),
+                        seed: 5,
+                        stream: 1,
+                    },
+                )]
+                .into_iter()
+                .collect(),
             },
             events: vec![ReplayEvent {
                 tick: 3,

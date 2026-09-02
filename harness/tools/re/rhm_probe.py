@@ -93,10 +93,32 @@ def rec_oile(r):
     d["i16a"] = r.i16()
     d["i16b"] = r.i16()
     d["name"] = opt_name(r)
+    if d["u32b"] == 1:
+        d["extra32"] = r.raw(32).hex()
     return d
 
 
-RECS = {"SCOT": rec_scot, "BORG": rec_borg, "OILE": rec_oile}
+def polygon(r):
+    a = r.u8()
+    n = r.u16()
+    pts = [(r.u16(), r.u16()) for _ in range(n)]
+    b = r.u8()
+    return (a, pts, b)
+
+
+def rec_boom(r):
+    d = dict(x=r.u16(), y=r.u16(), i16a=r.i16(), u16b=r.u16(), u32c=r.u32(), u16d=r.u16(), P=r.i16(), Q=r.u16(), R=r.u16())
+    d["sprite"] = r.pstr()
+    d["label"] = r.pstr()
+    d["X"] = r.u32()
+    d["x2"], d["y2"], d["Q2"], d["R2"] = r.u16(), r.u16(), r.u16(), r.u16()
+    d["poly"] = polygon(r)
+    d["u8e"] = r.u8()
+    d["name"] = opt_name(r)
+    return d
+
+
+RECS = {"SCOT": rec_scot, "BORG": rec_borg, "OILE": rec_oile, "TOTO": rec_oile, "BOOM": rec_boom}
 
 
 def parse_group(tag, body, verbose):
@@ -142,7 +164,7 @@ def main():
                 print(os.path.basename(f), ct, status)
             for d in recs or []:
                 for k, v in d.items():
-                    if k in ("x", "y", "_off", "name", "list"):
+                    if k in ("x", "y", "_off", "name", "list", "extra32", "sprite", "label", "x2", "y2", "poly"):
                         continue
                     stats[(ct, k)][v] += 1
     for k in sorted(stats):

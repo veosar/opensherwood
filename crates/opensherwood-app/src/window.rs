@@ -330,11 +330,13 @@ impl App {
         let Some(rx) = &self.rpc else { return };
         let lines: Vec<String> = rx.try_iter().collect();
         for line in lines {
-            let (resp, shutdown) = rpc::handle_line(&mut self.session, &line);
-            if let Err(e) = rpc::write_response(&resp) {
+            let handled = rpc::handle_line(&mut self.session, &line);
+            if let Some(resp) = &handled.response
+                && let Err(e) = rpc::write_response(resp)
+            {
                 eprintln!("opensherwood: rpc write failed: {e}");
             }
-            if shutdown {
+            if handled.shutdown {
                 self.exit = true;
                 event_loop.exit();
             }
@@ -342,6 +344,14 @@ impl App {
     }
 
     fn tick_if_due(&mut self) {
+        // Controlled mode: with an RPC client attached the simulation advances only through `step`,
+        // so identical scripts give identical hashes. Window input is queued for the next step.
+        if self.rpc.is_some() {
+            if !self.pending.is_empty() {
+                self.session.queue_input(std::mem::take(&mut self.pending));
+            }
+            return;
+        }
         let now = Instant::now();
         self.accumulator += now - self.last_tick;
         self.last_tick = now;

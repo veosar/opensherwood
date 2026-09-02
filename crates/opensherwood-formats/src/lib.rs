@@ -6,6 +6,7 @@
 //!
 //! All parsers must be safe on arbitrary input: they return [`FormatError`] instead of panicking.
 
+pub mod anim_table;
 pub mod chunk;
 pub mod dic;
 pub mod image_blob;

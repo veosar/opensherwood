@@ -24,6 +24,12 @@ pub enum AssetError {
     /// A logical path did not resolve.
     #[error("asset not found: {0}")]
     Missing(String),
+    /// Two files differ only by case (or Unicode form): the lookup would be ambiguous.
+    #[error("case-insensitive name collision: {0}")]
+    Collision(String),
+    /// A file name is not valid UTF-8.
+    #[error("file name is not valid UTF-8: {0}")]
+    BadName(PathBuf),
     /// A file was found but could not be parsed.
     #[error("{path}: {message}")]
     Format {
@@ -91,13 +97,19 @@ fn walk(
         path: dir.to_path_buf(),
         source,
     })?;
-    for entry in rd {
-        let entry = entry.map_err(|source| AssetError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
+    // Sort by the raw file name so the index never depends on filesystem enumeration order.
+    let mut entries: Vec<std::fs::DirEntry> =
+        rd.collect::<Result<_, _>>()
+            .map_err(|source| AssetError::Io {
+                path: dir.to_path_buf(),
+                source,
+            })?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
         let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_lowercase();
+        let Some(name) = entry.file_name().to_str().map(str::to_lowercase) else {
+            return Err(AssetError::BadName(path));
+        };
         let logical = format!("{logical_prefix}/{name}");
         let meta = entry.metadata().map_err(|source| AssetError::Io {
             path: path.clone(),
@@ -106,6 +118,9 @@ fn walk(
         if meta.is_dir() {
             walk(&path, &logical, index, sizes)?;
         } else {
+            if index.contains_key(&logical) {
+                return Err(AssetError::Collision(logical));
+            }
             sizes.insert(logical.clone(), meta.len());
             index.insert(logical, path);
         }
@@ -150,6 +165,9 @@ impl GameDir {
         let data_name =
             find_child_ci(&root, "data").ok_or_else(|| AssetError::NotAGameDir(root.clone()))?;
         let base = Layer::build("base".into(), root.clone(), &data_name)?;
+        if base.resolve("Data/robinhood.bks").is_none() {
+            return Err(AssetError::NotAGameDir(root));
+        }
         let mut layers = Vec::new();
         // Language overlays: numeric directories containing a `data` child.
         let mut langs: Vec<(String, PathBuf)> = std::fs::read_dir(&root)
@@ -221,12 +239,16 @@ impl GameDir {
         })
     }
 
-    /// Content fingerprint: BLAKE3 over layer names, logical paths and sizes (no file contents, so it is
-    /// fast; it distinguishes editions, languages and mods, which is what replays need).
+    /// Content fingerprint: BLAKE3 over layer names (in precedence order), logical paths, sizes and
+    /// a content digest of every file: the whole file for files up to 1 MiB, otherwise the first and
+    /// last 64 KiB. Large retail files are immutable in practice; this stays fast (< 1 s) while any
+    /// edited, added or replaced file changes the fingerprint.
     #[must_use]
     pub fn fingerprint(&self) -> String {
+        const FULL_LIMIT: u64 = 1 << 20;
+        const EDGE: usize = 64 * 1024;
         let mut h = blake3::Hasher::new();
-        h.update(b"opensherwood-content-fingerprint-v1\0");
+        h.update(b"opensherwood-content-fingerprint-v2\0");
         for layer in &self.layers {
             h.update(layer.name.as_bytes());
             h.update(b"\0");
@@ -234,6 +256,27 @@ impl GameDir {
                 h.update(p.as_bytes());
                 h.update(b"\0");
                 h.update(&size.to_le_bytes());
+                let Some(real) = layer.resolve(p) else {
+                    continue;
+                };
+                let mut fh = blake3::Hasher::new();
+                if size <= FULL_LIMIT {
+                    if let Ok(bytes) = std::fs::read(real) {
+                        fh.update(&bytes);
+                    }
+                } else if let Ok(mut f) = std::fs::File::open(real) {
+                    use std::io::{Read, Seek, SeekFrom};
+                    let mut buf = vec![0u8; EDGE];
+                    if let Ok(n) = f.read(&mut buf) {
+                        fh.update(&buf[..n]);
+                    }
+                    if f.seek(SeekFrom::End(-(EDGE as i64))).is_ok()
+                        && let Ok(n) = f.read(&mut buf)
+                    {
+                        fh.update(&buf[..n]);
+                    }
+                }
+                h.update(fh.finalize().as_bytes());
             }
         }
         h.finalize().to_hex().to_string()

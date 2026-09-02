@@ -43,6 +43,12 @@ Coordinates are logical pixels in 24.8 fixed point (`x256 = x * 256`).
 `harness/tools/drive.py` runs a short scripted session (select, order, scroll, capture) in headless or window
 mode and prints where the PNGs went; agents use it to look at the engine after a change.
 
+## Determinism fixture
+
+`harness/fixtures/synthetic_corridor.json` (asset-free) records per-tick hashes and the framebuffer hash of a fixed
+corridor script. CI checks it on Linux, Windows and macOS; regenerate it deliberately with
+`python harness/tools/golden_digest.py --write harness/fixtures/synthetic_corridor.json` when the ruleset changes.
+
 ## Artifacts
 
 Local runs write under `harness/out/` (git-ignored). CI uploads only synthetic artifacts. Anything derived from

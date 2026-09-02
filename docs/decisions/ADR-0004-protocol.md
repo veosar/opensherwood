@@ -2,6 +2,10 @@
 
 Date: 2026-09-02. Status: accepted.
 
+Versions in force (2026-09-02, after the M0 review): protocol 2, ruleset 2, hash schema 2, snapshot schema 3.
+Any change to canonical bytes bumps the ruleset or hash schema and regenerates
+`harness/fixtures/synthetic_corridor.json` (see `docs/decisions/reviews/2026-09-02-codex-m0-review-disposition.md`).
+
 ## Transport
 
 JSON-RPC 2.0, newline-delimited, over the engine process's stdin / stdout when started with `--rpc stdio`.
@@ -18,6 +22,10 @@ Logs go to stderr only. No fixed TCP port in tests (an optional loopback socket 
 | `snapshot` / `restore` | authoritative internal checkpoint |
 | `capture` | framebuffer hash; optionally write a PNG under the artifact directory |
 | `shutdown` | clean termination |
+
+Limits: 16 MiB per request line, 100k ticks or events per `step`, 10k ticks with per-tick hashes, 32 snapshot
+handles. Notifications (requests without `id`) get no response. In window mode with `--rpc stdio` the simulation
+advances only through `step` (controlled mode); window input is queued into the next step.
 
 Player actions are expressed only as canonical input events (`pointer_move`, `pointer_down`, `pointer_up`,
 `wheel`, `key_down`, `key_up`) with fixed-point logical coordinates and an explicit `(tick_offset, sequence)`.

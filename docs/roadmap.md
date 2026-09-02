@@ -17,6 +17,9 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 - [ ] CI on Linux/Windows/macOS: fmt, clippy, nextest, pytest synthetic, skill sync check, no-assets check
 - [x] `opensherwood-tools inspect` for SRES / image blobs / RHS / chunk containers (already specified)
 
+- [x] Codex M0 review incorporated (versions, full canonical hashing, snapshot validation, protocol limits, controlled window mode, content fingerprint)
+- [ ] Deferred from the review: cargo-fuzz targets for parsers, a 32-bit CI job, SRES decode budget, physical-key code set, rename `harness/tools/re` to `probe`
+
 ## M1: Feasibility gates
 
 - [x] Exact decode of `.map` / `.min` / `.pak` / `.sxt` containers to 16-bit pixels (all 48+ files)

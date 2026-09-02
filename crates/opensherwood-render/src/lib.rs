@@ -31,10 +31,15 @@ pub struct Background {
 }
 
 impl Framebuffer {
-    /// Allocate a black, opaque buffer.
+    /// Largest framebuffer dimension.
+    pub const MAX_DIMENSION: u32 = 16384;
+
+    /// Allocate a black, opaque buffer (dimensions are clamped to `1..=MAX_DIMENSION`).
     #[must_use]
     pub fn new(width: u32, height: u32) -> Self {
-        let mut rgba = vec![0; (width * height * 4) as usize];
+        let width = width.clamp(1, Self::MAX_DIMENSION);
+        let height = height.clamp(1, Self::MAX_DIMENSION);
+        let mut rgba = vec![0; width as usize * height as usize * 4];
         for px in rgba.chunks_exact_mut(4) {
             px[3] = 255;
         }
@@ -78,12 +83,15 @@ impl Framebuffer {
         }
     }
 
-    /// Filled disc.
+    /// Filled disc (radius clamped to the buffer size; off-screen parts are skipped).
     pub fn fill_circle(&mut self, cx: i32, cy: i32, r: i32, c: Color) {
-        for y in -r..=r {
-            for x in -r..=r {
-                if x * x + y * y <= r * r {
-                    self.put(cx + x, cy + y, c);
+        let r = r.clamp(0, Self::MAX_DIMENSION as i32);
+        let rr = i64::from(r) * i64::from(r);
+        for y in Self::clip_range(cy, r, self.height) {
+            for x in Self::clip_range(cx, r, self.width) {
+                let (dx, dy) = (i64::from(x - cx), i64::from(y - cy));
+                if dx * dx + dy * dy <= rr {
+                    self.put(x, y, c);
                 }
             }
         }
@@ -91,18 +99,32 @@ impl Framebuffer {
 
     /// One-pixel circle outline.
     pub fn circle(&mut self, cx: i32, cy: i32, r: i32, c: Color) {
-        for y in -r..=r {
-            for x in -r..=r {
-                let d = x * x + y * y;
-                if d <= r * r && d > (r - 1) * (r - 1) {
-                    self.put(cx + x, cy + y, c);
+        let r = r.clamp(0, Self::MAX_DIMENSION as i32);
+        let rr = i64::from(r) * i64::from(r);
+        let inner = i64::from(r - 1) * i64::from(r - 1);
+        for y in Self::clip_range(cy, r, self.height) {
+            for x in Self::clip_range(cx, r, self.width) {
+                let (dx, dy) = (i64::from(x - cx), i64::from(y - cy));
+                let d = dx * dx + dy * dy;
+                if d <= rr && d > inner {
+                    self.put(x, y, c);
                 }
             }
         }
     }
 
-    /// Bresenham line.
+    /// Pixel range `centre - r ..= centre + r` clipped to `0..extent`.
+    fn clip_range(centre: i32, r: i32, extent: u32) -> std::ops::RangeInclusive<i32> {
+        let lo = centre.saturating_sub(r).max(0);
+        let hi = centre.saturating_add(r).min(extent as i32 - 1);
+        lo..=hi
+    }
+
+    /// Bresenham line, clipped to the buffer first (Liang-Barsky) so huge coordinates cost nothing.
     pub fn line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, c: Color) {
+        let Some((x0, y0, x1, y1)) = self.clip_line(x0, y0, x1, y1) else {
+            return;
+        };
         let (mut x, mut y) = (x0, y0);
         let dx = (x1 - x0).abs();
         let dy = -(y1 - y0).abs();
@@ -126,6 +148,50 @@ impl Framebuffer {
         }
     }
 
+    /// Clip a segment to the buffer rectangle; `None` when nothing is visible.
+    fn clip_line(&self, x0: i32, y0: i32, x1: i32, y1: i32) -> Option<(i32, i32, i32, i32)> {
+        let (xmin, ymin) = (0i64, 0i64);
+        let (xmax, ymax) = (i64::from(self.width) - 1, i64::from(self.height) - 1);
+        let (x0, y0, x1, y1) = (i64::from(x0), i64::from(y0), i64::from(x1), i64::from(y1));
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let (mut t0, mut t1) = (0.0f64, 1.0f64);
+        for (p, q) in [
+            (-dx, x0 - xmin),
+            (dx, xmax - x0),
+            (-dy, y0 - ymin),
+            (dy, ymax - y0),
+        ] {
+            if p == 0 {
+                if q < 0 {
+                    return None;
+                }
+                continue;
+            }
+            let r = q as f64 / p as f64;
+            if p < 0 {
+                if r > t1 {
+                    return None;
+                }
+                t0 = t0.max(r);
+            } else {
+                if r < t0 {
+                    return None;
+                }
+                t1 = t1.min(r);
+            }
+        }
+        if t0 > t1 {
+            return None;
+        }
+        let px = |t: f64, a: i64, d: i64| (a as f64 + t * d as f64).round() as i32;
+        Some((
+            px(t0, x0, dx),
+            px(t0, y0, dy),
+            px(t1, x0, dx),
+            px(t1, y0, dy),
+        ))
+    }
+
     /// Copy an opaque RGBA region of `src` (source rectangle at `sx,sy`) to `dx,dy`, clipped.
     #[allow(clippy::too_many_arguments)]
     pub fn blit_region(
@@ -140,6 +206,9 @@ impl Framebuffer {
         w: u32,
         h: u32,
     ) {
+        if src.len() < src_w as usize * src_h as usize * 4 {
+            return;
+        }
         for row in 0..h as i32 {
             let syy = sy + row;
             let dyy = dy + row;
@@ -161,7 +230,11 @@ impl Framebuffer {
     }
 
     /// Blit an RGBA image: alpha 0 skipped, alpha 255 copied, other alphas blended (integer math).
+    /// Ignored when `rgba` is shorter than `w * h * 4`.
     pub fn blit_rgba(&mut self, x: i32, y: i32, w: u32, h: u32, rgba: &[u8]) {
+        if rgba.len() < w as usize * h as usize * 4 {
+            return;
+        }
         for sy in 0..h {
             let dy = y + sy as i32;
             if dy < 0 || dy >= self.height as i32 {
