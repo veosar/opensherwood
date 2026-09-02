@@ -24,7 +24,7 @@ Example session:
 
 ```
 -> {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"pytest"}}
-<- {"jsonrpc":"2.0","id":1,"result":{"protocol":1,"build":"0.1.0","ruleset":1,"capabilities":["synthetic","capture"],"content_fingerprint":null}}
+<- {"jsonrpc":"2.0","id":1,"result":{"protocol":3,"build":"0.1.0","ruleset":3,"capabilities":["synthetic","capture","mission","replay"],"content_fingerprint":null}}
 -> {"jsonrpc":"2.0","id":2,"method":"reset","params":{"scenario":{"synthetic":"corridor"},"seed":42}}
 -> {"jsonrpc":"2.0","id":3,"method":"step","params":{"ticks":10,"events":[{"tick_offset":0,"sequence":0,"kind":"pointer_move","x256":25600,"y256":19200},{"tick_offset":0,"sequence":1,"kind":"pointer_down","button":"right"},{"tick_offset":0,"sequence":2,"kind":"pointer_up","button":"right"}]}}
 <- {"jsonrpc":"2.0","id":3,"result":{"tick":10,"hashes":{"total":"...","actors":"..."}}}
@@ -47,7 +47,8 @@ or game content are rejected.
 |---|---|---|
 | `{"synthetic": "corridor"}` | no | 640x480 room, a player, a patrolling guard, three obstacles, a goal |
 | `{"map_view": {"map": "sherwood", "ambiance": "Day"}}` | yes | the retail background of that map with the synthetic units on it and a scrollable camera |
-| `{"mission": "<name>"}` | yes | the retail mission's background and actors (placeholder sprites for NPCs until the profile table is decoded); no scripts, AI or geometry yet |
+| `{"mission": "<name>"}` | yes | the retail mission's background, walkable geometry, occluders and actors (default soldier sprite for NPCs until the profile table is decoded); no scripts or AI yet; viewport 1024x768 |
+| `{"menu": "main"}` | yes | the original main menu; `observe` returns a `ui` object (screen, items with rectangles, hovered index) while a menu or briefing is shown; clicking Play! loads the first mission behind its briefing |
 
 `harness/tools/drive.py` runs a short scripted session (select, order, scroll, capture) in headless or window
 mode and prints where the PNGs went; agents use it to look at the engine after a change.
@@ -63,8 +64,9 @@ corridor script. CI checks it on Linux, Windows and macOS; regenerate it deliber
 Local runs write under `harness/out/` (git-ignored). CI uploads only synthetic artifacts. Anything derived from
 game data stays on the machine that produced it.
 
-## Golden images
+## Golden images (planned)
 
-`harness/goldens/` (git-ignored) holds reference PNGs generated from the player's copy plus a manifest with the
-content fingerprint. `harness/tools/make_goldens.py` regenerates them. Comparisons: exact hash for decoded assets,
-masked perceptual metric (SSIM over the play area, UI masked) for composed scenes, thresholds in the test file.
+Not implemented yet. The plan: `harness/goldens/` (git-ignored) holds reference PNGs generated from the player's
+copy plus a manifest with the content fingerprint; comparisons are exact hashes for decoded assets and a masked
+perceptual metric for composed scenes. Until then, data-backed tests check invariants and the maintainers inspect
+captures by eye (`harness/captures/original/` holds the analyst's screenshots of the original, git-ignored).

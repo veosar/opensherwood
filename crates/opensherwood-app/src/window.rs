@@ -42,7 +42,7 @@ pub fn run(
     let scenario = Session::parse_scenario(scenario).map_err(anyhow::Error::msg)?;
     session.set_audio(presentation.mute);
     session.reset(scenario, 0).map_err(anyhow::Error::msg)?;
-    let (vw, vh) = session.world.as_ref().map_or((640, 480), |w| w.viewport);
+    let (vw, vh) = session.frame().map_or((1024, 768), |f| (f.width, f.height));
     let event_loop = EventLoop::new().context("creating the event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
@@ -389,6 +389,10 @@ impl App {
     fn redraw(&mut self) {
         let Some(gpu) = self.gpu.as_mut() else { return };
         if let Some(frame) = self.session.frame()
+            && {
+                self.viewport = (frame.width, frame.height);
+                true
+            }
             && let Err(e) = gpu.present(frame)
         {
             eprintln!("opensherwood: present failed: {e}");
@@ -574,6 +578,10 @@ impl ApplicationHandler for App {
         }
         self.drain_rpc(event_loop);
         self.tick_if_due();
+        if self.session.exit_requested {
+            event_loop.exit();
+            return;
+        }
         if let Some(g) = &self.gpu {
             g.window.request_redraw();
         }

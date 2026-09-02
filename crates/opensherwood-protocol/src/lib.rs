@@ -6,7 +6,7 @@ use serde_json::Value;
 pub use opensherwood_core::{Hashes, InputEvent, Observation, Scenario, Snapshot};
 
 /// Protocol version reported by `hello`.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Limits of a replay file (format-wide; checked while parsing and recording).
 pub mod replay_limits {
@@ -199,6 +199,9 @@ pub struct ObserveResult {
     pub observation: Observation,
     /// Hashes.
     pub hashes: Hashes,
+    /// Active app screen (`main_menu`, `briefing`), `None` while the world is played directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<Value>,
 }
 
 /// `snapshot` result.

@@ -30,7 +30,7 @@ def test_map_view_renders_background_and_sprites_deterministically(binary, game_
             hashes.append(cap["hash"])
     assert hashes[0] == hashes[1]
     img = Image.open(OUT / "map_view_0.png").convert("RGB")
-    assert img.size == (640, 480)
+    assert img.size == (1024, 768)
     # A retail background is never a flat colour: expect many distinct colours in the frame.
     assert len(set(img.getdata())) > 2000
 

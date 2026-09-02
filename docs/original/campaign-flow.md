@@ -33,37 +33,22 @@ There is **no intro video, no cutscene, no campaign map and no Sherwood camp** b
   the first `.red` value; the mission file was not verified by loading it).
 - Player characters: Robin Hood only. Start position: in front of the castle gate on a muddy yard with a pig
   sty and a barn to the left, two guards on the wall above the gate, a mendicant to the right.
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
+- Objective shown in the pause menu: `Level.res` 1000283 string 0 (Robin has to get into the castle and find
+  his godfather). Strings 1..5 are the updated objectives that follow (leaving the town with the servant's son,
+  the steward's money, the bribed knight, the archery training). Text is loaded from the player's files at run
+  time; it is not reproduced here (`docs/legal.md`).
+- Briefing pages: TEXT 1000105 strings 0..2 (three paragraphs of back story: Robin's return from the Crusades,
+  the loss of his estate, his arrival at his godfather's castle in Lincoln). Pages 1..3 show a different 120x160
+  character picture each (Robin in green, a man in a purple tunic, ...). String lengths 0..2: see
+  `sres_text.py --lengths` on a local copy.
 - The remaining strings of 1000105 (3..22) are the in-mission dialogue and tutorial popups: the clover charm
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
+  (string 3), the steward's purses (4), the archery trainer (5, 6), the knight (7), the servant (8..10), the
+  servant's son (11, ends with the instruction to leave the map through the top right icon), and the tutorial
+  hints 12..22: ivy climbing, the jump arrow, knocking out (icon + click, stars over the victim's head show the
+  remaining time), throwing a purse, paying beggars for information, picking up a purse, the forgotten purse,
+  cutting the drawbridge rope, combat (click / double click on the adversary, click on Robin to parry, hold the
+  button and move to draw attacks, a horizontal figure of eight against strong enemies), and the bow (click the
+  arrow above the portrait, aim, click when the cursor turns green).
 - `RHLevelHA.red` (u32 values): `1000017, 1000007, 0, 23, 1000105, 1000103, 1000106, 1000001, 1000107, 1000083,
   1000108, 1000108, 1000109, 1000110, 1000110, 1000089, 1000111, 1000112, 1000113, 1000114, 1000115, 1000116,
   1000117, 1000118, 1000117, 1000119, 1000120, 1000121, 1, 1000349, 1, 1000350, 6, 1000283`: title, unused goal,
@@ -71,10 +56,8 @@ There is **no intro video, no cutscene, no campaign map and no Sherwood camp** b
   string), `1` + 1000349 (debriefing when won), `1` + 1000350 (debriefing when lost), `6` + 1000283 (six short
   briefings). This refines the stub in `docs/formats/red.md` (*inferred* layout, consistent with all 57 files:
   every file ends with `n_won, id, n_lost, id, n_short, id`).
-[original game text removed]
-[original game text removed]
-[original game text removed]
-[original game text removed]
+- Debriefings: won = 1000349 (Robin leaves Lincoln with the servant's son but without finding his godfather),
+  lost = 1000350 (Robin was slain; start another game).
 - **Tutorial**: there is no separate training mission in the flow; the first mission *is* the tutorial (popup
   hints above). `Levels/EmbTut_FoC_EC.rhm` ("Emb" = ambush, "Tut" = tutorial) exists in the data but is not
   reached from Play! with a fresh profile; when it is used is *unknown* (possibly the first ambush, see below).

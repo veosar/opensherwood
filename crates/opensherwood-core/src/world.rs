@@ -97,8 +97,10 @@ pub enum Scenario {
         /// Ambiance directory name.
         ambiance: String,
     },
-    /// Retail mission by base name (not available until milestone M2).
+    /// Retail mission by base name.
     Mission(String),
+    /// A menu screen handled by the app (`main`); the core has no world for it.
+    Menu(String),
 }
 
 /// Data the app must supply for map-backed scenarios (core does no I/O).
@@ -248,7 +250,7 @@ pub struct World {
 }
 
 /// Snapshot schema version.
-pub const SNAPSHOT_VERSION: u32 = 3;
+pub const SNAPSHOT_VERSION: u32 = 4;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -261,9 +263,10 @@ impl World {
             Scenario::MapView { .. } => {
                 Err("map view scenarios need MapInfo (World::new_map_view)".into())
             }
-            Scenario::Mission(name) => Err(format!(
-                "mission '{name}' cannot be loaded yet (milestone M2)"
-            )),
+            Scenario::Mission(name) => {
+                Err(format!("mission '{name}' needs the app's mission loader"))
+            }
+            Scenario::Menu(name) => Err(format!("menu '{name}' has no world")),
         }
     }
 
@@ -322,8 +325,23 @@ impl World {
                 anim: Some(AnimState::new(a.profile.clone(), 0)),
             });
         }
+        // The original opens a mission with the camera on the hero.
+        if let Some(hero) = world.entities.iter().find(|e| e.kind == EntityKind::Player) {
+            let (cx, cy) = (hero.x.round(), hero.y.round());
+            world.center_camera_on(cx, cy);
+        }
         world.validate()?;
         Ok(world)
+    }
+
+    /// Centre the camera on a map point, clamped to the map.
+    pub fn center_camera_on(&mut self, x: i32, y: i32) {
+        let max_x = (self.map_size.0 as i32 - self.viewport.0 as i32).max(0);
+        let max_y = (self.map_size.1 as i32 - self.viewport.1 as i32).max(0);
+        self.camera = (
+            (x - self.viewport.0 as i32 / 2).clamp(0, max_x),
+            (y - self.viewport.1 as i32 / 2).clamp(0, max_y),
+        );
     }
 
     /// Attach walkable geometry (map view and missions) and rebuild the navigation grid.
@@ -406,7 +424,13 @@ impl World {
 
     fn build(scenario: Scenario, seed: u64, map: Option<MapInfo>) -> Self {
         let f = Fixed::from_int;
-        let viewport = (640u32, 480u32);
+        // Synthetic scenarios keep the small viewport of the determinism fixtures; retail maps and
+        // missions use the original's 1024x768 frame (`docs/original/ui-flow.md`).
+        let viewport = if map.is_some() {
+            (1024u32, 768u32)
+        } else {
+            (640u32, 480u32)
+        };
         let map_size = map.map_or(viewport, |m| (m.width, m.height));
         let mut entities = Vec::new();
         let id = |index: u32| EntityId {
@@ -890,6 +914,7 @@ impl World {
             Scenario::Synthetic(n) => w.u8(1).str(n),
             Scenario::Mission(n) => w.u8(2).str(n),
             Scenario::MapView { map, ambiance } => w.u8(3).str(map).str(ambiance),
+            Scenario::Menu(n) => w.u8(4).str(n),
         };
         w.u32(self.buttons_down.len() as u32);
         for b in &self.buttons_down {
@@ -1148,7 +1173,7 @@ mod tests {
         assert_eq!(w.camera, (SCROLL_SPEED * 2, 0));
         w.step(&[InputEvent::PointerMove {
             x256: 320 * 256,
-            y256: 479 * 256,
+            y256: 767 * 256,
         }]);
         assert_eq!(w.camera.1, SCROLL_SPEED);
         click(
@@ -1164,7 +1189,7 @@ mod tests {
                 InputEvent::KeyDown { key: Key::Down },
             ]);
         }
-        assert_eq!(w.camera, (2000 - 640, 1000 - 480));
+        assert_eq!(w.camera, (2000 - 1024, 1000 - 768));
         w.validate().unwrap();
     }
 
