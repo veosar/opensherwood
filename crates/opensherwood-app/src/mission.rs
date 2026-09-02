@@ -352,6 +352,16 @@ pub fn build_spec_checked(
     {
         return Err(format!("mission script: {err}"));
     }
+    if let Some(sc) = &stats.script
+        && !sc.unbound_classes.is_empty()
+        && !lenient
+    {
+        return Err(format!(
+            "mission script: {} classes bind to no mission element ({})",
+            sc.unbound_classes.len(),
+            sc.unbound_classes.join(", ")
+        ));
+    }
     Ok((spec, profiles))
 }
 
