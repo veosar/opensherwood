@@ -58,6 +58,11 @@ python scripts/check_no_assets.py
 
 `scripts/ci_local.sh` (or `.ps1`) runs the same sequence CI runs.
 
+## Window flags
+
+`--scenario corridor | map:<name>[:<ambiance>] | mission:<name>`, `--scale N` (integer window scale), `--mute` (no audio
+device), `--rpc stdio` (accept harness commands; the simulation then advances only through `step`).
+
 ## Window controls (current)
 
 Left click selects a unit, right click orders the selected unit to walk there, arrow keys or the pointer at the

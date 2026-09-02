@@ -1,7 +1,9 @@
 # Sound tables (`.fxg`, `.sfk`, `actor*.dat`) and audio files
 
-Status: **stub**. Audio itself is plain RIFF WAVE (`Sounds/*.wav`, `Musics/*.wav`, `<lang>/data/Text/Dialogues/*.wav`)
-played through FMOD 3.x in the original.
+Status: **stub** for the tables; audio containers **verified**. Sound effects and dialogues (`Sounds/*.wav`,
+`<lang>/data/Text/Dialogues/*.wav`) are RIFF WAVE, PCM 16-bit mono 22050 Hz. The music files in `Musics/*.wav`
+are **Ogg Vorbis** streams (stereo, 44100 Hz) despite the `.wav` extension (FMOD 3 played them by content);
+only `The_Last_Dance.wav` is a real 8-bit PCM WAVE. The engine sniffs the container (`OggS` / `RIFF`).
 
 ## `.fxg` (magic `FXBK`, "effects bank")
 

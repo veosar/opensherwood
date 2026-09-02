@@ -99,6 +99,8 @@ pub struct Session {
     queued_input: Vec<InputEvent>,
     /// Replay being recorded, if any.
     recording: Option<Recording>,
+    /// Audio output (window mode only; `None` when muted, headless or unavailable).
+    audio: Option<opensherwood_audio::Audio>,
 }
 
 /// Tick rate used by replays and the window (ticks per second).
@@ -167,6 +169,66 @@ impl Session {
             frame: None,
             queued_input: Vec::new(),
             recording: None,
+            audio: None,
+        }
+    }
+
+    /// Open (or skip) the audio device. Called once by window mode.
+    pub fn set_audio(&mut self, mute: bool) {
+        self.audio = if mute {
+            None
+        } else {
+            match opensherwood_audio::Audio::open() {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    eprintln!("opensherwood: audio disabled: {e}");
+                    None
+                }
+            }
+        };
+    }
+
+    /// Start the music that belongs to the current scenario (retail track names by map).
+    fn start_scenario_music(&mut self) {
+        let Some(audio) = self.audio.as_mut() else {
+            return;
+        };
+        let Some(game) = self.game.as_ref() else {
+            return;
+        };
+        let track = match self.world.as_ref().map(|w| &w.scenario) {
+            Some(Scenario::MapView { map, ambiance }) => {
+                let base = match map.to_lowercase().as_str() {
+                    "sherwood" => "Sherwood".to_string(),
+                    m if m.starts_with("croisement") => "Cross_Amb".to_string(),
+                    m => {
+                        let city = match m {
+                            "nottingham" => "Nottingham",
+                            "lincoln" => "Lincoln",
+                            "york" => "York",
+                            "derby" => "Derby",
+                            "leicester" => "Leicester",
+                            _ => return,
+                        };
+                        let suffix = if ambiance.eq_ignore_ascii_case("day") {
+                            "D"
+                        } else {
+                            "NF"
+                        };
+                        format!("{city}_{suffix}")
+                    }
+                };
+                format!("Data/Musics/{base}.wav")
+            }
+            _ => "Data/Musics/Menu.wav".to_string(),
+        };
+        match game.read(&track) {
+            Ok(bytes) => {
+                if let Err(e) = audio.play_music(bytes, true) {
+                    eprintln!("opensherwood: music {track}: {e}");
+                }
+            }
+            Err(e) => eprintln!("opensherwood: music {track}: {e}"),
         }
     }
 
@@ -307,6 +369,7 @@ impl Session {
         self.snapshots.clear();
         self.queued_input.clear();
         self.recording = None;
+        self.start_scenario_music();
         Ok(())
     }
 

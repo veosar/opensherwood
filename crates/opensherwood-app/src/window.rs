@@ -22,8 +22,15 @@ use crate::rpc;
 pub const TICK_RATE: u32 = 60;
 
 /// Run the window until it is closed.
-pub fn run(mut session: Session, rpc: bool, scenario: &str, scale: u32) -> anyhow::Result<()> {
+pub fn run(
+    mut session: Session,
+    rpc: bool,
+    scenario: &str,
+    scale: u32,
+    mute: bool,
+) -> anyhow::Result<()> {
     let scenario = Session::parse_scenario(scenario).map_err(anyhow::Error::msg)?;
+    session.set_audio(mute);
     session.reset(scenario, 0).map_err(anyhow::Error::msg)?;
     let (vw, vh) = session.world.as_ref().map_or((640, 480), |w| w.viewport);
     let event_loop = EventLoop::new().context("creating the event loop")?;

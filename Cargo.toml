@@ -6,6 +6,7 @@ members = [
     "crates/opensherwood-core",
     "crates/opensherwood-script",
     "crates/opensherwood-render",
+    "crates/opensherwood-audio",
     "crates/opensherwood-protocol",
     "crates/opensherwood-app",
     "crates/opensherwood-tools",
@@ -24,6 +25,7 @@ opensherwood-assets = { path = "crates/opensherwood-assets" }
 opensherwood-core = { path = "crates/opensherwood-core" }
 opensherwood-script = { path = "crates/opensherwood-script" }
 opensherwood-render = { path = "crates/opensherwood-render" }
+opensherwood-audio = { path = "crates/opensherwood-audio" }
 opensherwood-protocol = { path = "crates/opensherwood-protocol" }
 
 serde = { version = "1", features = ["derive"] }

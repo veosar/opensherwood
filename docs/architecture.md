@@ -7,6 +7,7 @@ opensherwood-app  (binary `opensherwood`: headless RPC server, or the winit + wg
    |
    +-- opensherwood-protocol   JSON-RPC types, canonical input events, ReplayV1, state hash schema, observation DTOs
    +-- opensherwood-render     deterministic CPU compositor -> framebuffer; PNG capture; Presenter trait (winit + wgpu impl lives in app)
+   +-- opensherwood-audio      music (Ogg Vorbis) and effect (PCM WAVE) playback; presentation only, never authoritative
    +-- opensherwood-core       authoritative simulation: fixed tick, RNG streams, entities (arenas + generational ids),
    |                       orders, pathfinding, AI, stimuli, campaign state, snapshot/restore, canonical hashing
    +-- opensherwood-script     SCB parser + VM; native function boundary to core (later: Lua for mods)

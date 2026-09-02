@@ -32,6 +32,9 @@ struct Args {
     /// Integer window scale factor.
     #[arg(long, default_value_t = 2)]
     scale: u32,
+    /// Do not open an audio device.
+    #[arg(long)]
+    mute: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -62,5 +65,5 @@ fn main() -> anyhow::Result<()> {
         }
         return rpc::serve_stdio(session);
     }
-    window::run(session, rpc, &args.scenario, args.scale)
+    window::run(session, rpc, &args.scenario, args.scale, args.mute)
 }

@@ -17,6 +17,17 @@ fheroes2, VCMI) and by what the original executable already contains (developer 
 - Command-line switches (`-NOSCRIPT`, `-SIMULATE`, `-GAMEPAD`, `-SOUNDDEVICE`) hinting at a scriptless test mode,
   a simulation-only mode and gamepad support that were never surfaced.
 
+## Target for "1.0" (the maintainer's definition of done)
+
+The complete retail game runs unchanged: every mission and cutscene, all menus, settings, profiles and saves,
+with the original look and behaviour, plus: graphics through a modern cross-platform renderer (wgpu: DX12 /
+Vulkan / Metal), sound through a modern mixer, **borderless fullscreen at the desktop resolution by default**,
+Windows / Linux / macOS builds, and QoL that does not touch the original assets. Because the original menus are
+data we only read, extra options live in two places that are ours: a **launcher / options window** (resolution
+mode, scaling, audio device, QoL toggles, mods, replays) and an **in-game overlay** opened with a hotkey, drawn
+with the engine's own UI drawn from the player's assets at runtime (the retail button and font resources may be
+reused for a consistent look because they are read from the player's copy, never shipped).
+
 ## Platform and QoL (M2-M7)
 
 | Feature | Notes |
