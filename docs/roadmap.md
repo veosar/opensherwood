@@ -32,7 +32,7 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 - [x] RHM: all chunks decoded for all 39 missions (actors, rails/patrol programs, waypoints, beam points, zones, scrolls, carts)
 - [x] Fonts decoded (SBFONT glyph strips) and text rendering in the engine
 - [x] `mission:<name>` scenario: every retail mission loads its actors at their positions on the right background
-- [ ] First controlled oracle trace of the original (see `docs/oracle.md`)
+- [x] First controlled oracle traces of the original (menu / briefing / HUD captures, movement speeds and detection distances; `docs/original/`, `docs/oracle.md`)
 
 ## M2: Scene vertical slice
 
@@ -43,27 +43,32 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 - [x] Borderless fullscreen by default, F11 toggle, letterboxed logical viewport
 - [x] Main menu from the player's files (background, plate buttons, fonts, strings; geometry from `docs/original/ui-flow.md`), Play! loads the first mission (`H01_Lin_VL`, Lincoln) behind its briefing pages, camera on the hero; menus and briefings are driven by canonical input and observable over RPC (`ui`)
 - [x] Pause menu (Escape: continue, restart, quit with confirmation), quit confirmation in the main menu, HUD frame (foliage, portrait scroll, money / clover) from the player's files
-- [ ] HUD interactions: action icons, minimap, crouch, counters; briefing character picture; verified pause tint
+- [x] HUD interactions: crouch / stand figures, the mini-map scroll (engine presentation until captured), the money counter
+- [ ] HUD interactions still missing: action icons, the clover counter, the `;` key; briefing character picture; verified pause tint
 - [x] Credits (background, scrolling strip at the observed 20 px/s, Escape returns)
-- [ ] Options, profiles (select/new/rename/delete), load/save screens, movies
+- [x] Options (graphics / sounds / shortcuts, `settings.json`), profiles (select / new / rename / delete, `profiles.json`), load / save screens, quick save and rolling auto saves
+- [ ] Movies (Bink)
 
 - [ ] VFS resolves base + language overlay (`2047/data`) + mod overlays; content fingerprint
 - [ ] Tutorial map renders with static entities, camera, picking, selection, one animated actor
-- [ ] Pixel comparison against a local screenshot of the original (masked, perceptual threshold)
+- [x] Pixel comparison against local captures of the original (SSIM over masked regions: menu, briefing, HUD; `harness/tests/data/test_oracle_menu.py`)
 
 ## M3: Movement slice
 
 - [x] Walkable geometry from RHP (boundary + obstacle polygons) blocks movement; occluder masks (FACE) draw the background in front of sprites behind trees, rocks and walls
 - [x] Pathfinding around obstacles: 8-px navigation grid rasterised from the walkable geometry (eroded by one cell), A* with deterministic tie-breaking, string-pulled paths, orders on unreachable ground walk to the closest reachable cell (the original's EULER graph is still undecoded)
 - [x] Projection areas (`WOAW`) count as walkable ground, so the town maps (Lincoln yard of mission 1) can be walked; `debug.nav` reports them
-- [ ] Path graph, layers, sectors, doors; pointer-driven movement with the original's rules (walk/run, crouch)
-- [ ] Replay and restore remain deterministic through movement
+- [x] Pointer-driven movement with the manual's rules (left click walk, double click run, right click cancel, crouch / stand)
+- [ ] Path graph, layers, sectors, doors, climbing
+- [x] Replay and restore remain deterministic through movement (replay on the session timeline, checkpoints with world hashes)
 
 ## M4: Tutorial slice
 
 - [x] Script VM in core (ADR-0008): all 39 retail scripts translate; the first mission (`H01_Lin_VL`, the tutorial in the retail flow; `EmbTut_FoC_EC` is not reached from Play!) runs its load-time callbacks, briefing sequence, objective 0, `Hourglass` and `CheckVictoryCondition` deterministically (`harness/tests/data/test_script.py`)
-- [ ] Natives the first mission needs beyond stubs: scroll pick-up (`IsTaken`), object activation (`ActivatedBy*`), rail point events (`ReachPoint`), action changes, doors, animations, remarks; in-mission text popups presented by the app
-- [ ] Stimuli (sight cones, noise), alarm, combat basics, items, win/lose
+- [x] Natives the first mission needs beyond stubs: scroll pick-up, action changes, perception and knock-out state, in-mission text popups and pages presented by the app; the rest are recorded stubs whose use taints the outcome (ADR-0008)
+- [ ] Object activation, rail point events, doors, animations, remarks as real natives
+- [x] Stimuli (sight cone, run noise), alarm states, knock-out; win / lose presentation (debriefing parchments, campaign successor)
+- [ ] Sight blocking by walls, combat (melee, bow), damage and death, items
 - [ ] An input-only replay completes the tutorial (needs a canonical input for text dismissal)
 
 ## M5: Representative campaign
