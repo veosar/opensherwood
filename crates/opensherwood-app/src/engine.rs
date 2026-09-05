@@ -195,6 +195,8 @@ pub struct Session {
     next_mission: Option<String>,
     /// A non-blocking script text (native 202) shown over the world, with its remaining ticks.
     notice: Option<(String, u32)>,
+    /// A HUD press whose release has not arrived yet (swallowed when it does).
+    hud_press_pending: bool,
     /// Scenario and seed of the world that is installed (for Restart).
     current: Option<(Scenario, u64)>,
     /// HUD values.
@@ -323,6 +325,7 @@ impl Session {
             ended: false,
             next_mission: None,
             notice: None,
+            hud_press_pending: false,
             current: None,
             hud: HudState::default(),
             lenient_natives: false,
@@ -724,7 +727,7 @@ impl Session {
     }
 
     /// Replace left clicks on HUD widgets by their interface action (see `ui::hud_hit`).
-    fn route_hud_clicks(&self, events: &[InputEvent]) -> Vec<InputEvent> {
+    fn route_hud_clicks(&mut self, events: &[InputEvent]) -> Vec<InputEvent> {
         let mut pointer = self.world.as_ref().map_or((0, 0), |w| {
             (
                 Fixed::from_raw(w.pointer.0).round(),
@@ -732,7 +735,8 @@ impl Session {
             )
         });
         let mut out = Vec::with_capacity(events.len());
-        let mut swallow_up = false;
+        // A swallowed press whose release arrives in a later tick is swallowed too.
+        let mut swallow_up = self.hud_press_pending;
         for e in events {
             match *e {
                 InputEvent::PointerMove { x256, y256 } => {
@@ -742,15 +746,23 @@ impl Session {
                 InputEvent::PointerDown {
                     button: opensherwood_core::Button::Left,
                 } => match crate::ui::hud_hit(pointer.0, pointer.1) {
+                    // Balanced press and release in the same tick: the world's held-key set (part
+                    // of the canonical hash) must not keep a key the player never pressed.
                     Some(crate::ui::HudAction::Crouch) => {
                         swallow_up = true;
                         out.push(InputEvent::KeyDown {
+                            key: Key::Letter('c'),
+                        });
+                        out.push(InputEvent::KeyUp {
                             key: Key::Letter('c'),
                         });
                     }
                     Some(crate::ui::HudAction::Stand) => {
                         swallow_up = true;
                         out.push(InputEvent::KeyDown {
+                            key: Key::Letter('s'),
+                        });
+                        out.push(InputEvent::KeyUp {
                             key: Key::Letter('s'),
                         });
                     }
@@ -763,6 +775,7 @@ impl Session {
                 _ => out.push(*e),
             }
         }
+        self.hud_press_pending = swallow_up;
         out
     }
 
