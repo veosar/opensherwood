@@ -275,7 +275,7 @@ def test_minimap_toggles_from_the_map_scroll_and_ignores_right_clicks(binary, ga
             far = next(
                 x
                 for x in full["entities"]
-                if x["kind"] == "guard" and x["alive"]
+                if x["kind"] == "guard" and x["alive"] and x["active"]
                 and abs(x["x"] // 256 - robin["x"] // 256) + abs(x["y"] // 256 - robin["y"] // 256) > 1200
             )
             fx, fy = to_map(far["x"] // 256, far["y"] // 256)
