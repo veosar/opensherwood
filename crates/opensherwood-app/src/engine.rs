@@ -2050,6 +2050,8 @@ impl Session {
             money: self.profile().money,
             clover: 0,
             hero_name: self.hero_name_lines(),
+            arrows: 0,
+            purses: 0,
         };
         self.start_scenario_music();
         self.sync_text_screen();
@@ -2115,6 +2117,19 @@ impl Session {
                         let mut hud = self.hud.clone();
                         if let Some(vm) = world.vm.as_ref() {
                             hud.money = vm.money;
+                        }
+                        // The portrait's counters follow the selected player character (the
+                        // first one while nobody is selected).
+                        let hero = world
+                            .entities
+                            .iter()
+                            .find(|e| world.selected == Some(e.id) && e.kind == EntityKind::Player)
+                            .or_else(|| {
+                                world.entities.iter().find(|e| e.kind == EntityKind::Player)
+                            });
+                        if let Some(h) = hero {
+                            hud.arrows = h.arrows;
+                            hud.purses = h.purses;
                         }
                         crate::ui::draw_hud(&mut frame, a, &hud);
                         if let Some((text, _)) = &self.notice {
@@ -2608,6 +2623,9 @@ impl Session {
                         Some(Element::Scroll { x, y }) => {
                             json!({ "kind": "scroll", "x": x, "y": y })
                         }
+                        Some(Element::Item { x, y, kind, stack }) => {
+                            json!({ "kind": "item", "x": x, "y": y, "item_kind": kind, "stack": stack })
+                        }
                         Some(Element::Polygon(l)) => json!({ "kind": "polygon", "location": l }),
                         None => json!(null),
                     }
@@ -2635,6 +2653,7 @@ impl Session {
                             _ => None,
                         })
                         .collect::<Vec<_>>(),
+                    "items": vm.items(),
                     "mission_won": vm.mission_won,
                     "mission_lost": vm.mission_lost,
                     "tainted": vm.tainted(),

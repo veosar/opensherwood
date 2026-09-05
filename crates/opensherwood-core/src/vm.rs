@@ -469,8 +469,65 @@ pub enum Element {
         /// Map y.
         y: i32,
     },
+    /// A pick-up item (`ZORG`, the executable's "Bonus" chunk; `docs/formats/rhm.md`) at a map
+    /// position: a purse, a bundle of arrows or another kind, with its stack size. Taken by a
+    /// player character ordered onto it (`World::resolve_pickups`); native 235 reads whether it
+    /// was taken, 113 / 114 hide and show it like any other non-actor element.
+    Item {
+        /// Map x.
+        x: i32,
+        /// Map y.
+        y: i32,
+        /// What the item is (the record's `unknown_a`).
+        kind: ItemKind,
+        /// Stack size (the record's `unknown_b`, 1..=5: the bonus animation block `189 + b`
+        /// of the item's sprite, read as the number of pieces in the pile: hypothesis).
+        stack: u16,
+    },
     /// A script polygon: location index.
     Polygon(u32),
+}
+
+/// The kind of a pick-up item, read from the `ZORG` record's `unknown_a` (`docs/formats/rhm.md`,
+/// "`ZORG`": the value pairs the first mission's items with the tutorial scrolls that hand them
+/// out; medium confidence for the two named kinds, everything else stays unknown and is kept by
+/// its raw value).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    /// Arrows (`unknown_a` 0): taking the pile adds its stack to the character's arrows.
+    Arrows,
+    /// A purse with money (`unknown_a` 9): taking it adds [`PURSE_MONEY_PER_STACK`] times the
+    /// stack to the mission's money and one purse to the character's purses.
+    Purse,
+    /// A kind the engine does not read yet (`unknown_a` value): taking it only removes it.
+    #[serde(rename = "unknown_a")]
+    Unknown(u16),
+}
+
+/// Money a purse item holds per stack unit (`Element::Item` of kind [`ItemKind::Purse`]): a
+/// policy, not a measurement (the corpus never states a purse's worth; its only money increment
+/// is the +25 of one ambush handler). Every pickup records [`Assumption::ItemPickup`].
+pub const PURSE_MONEY_PER_STACK: i32 = 25;
+
+impl ItemKind {
+    /// The kind of a `ZORG` record with this `unknown_a`.
+    #[must_use]
+    pub fn from_field(unknown_a: u16) -> Self {
+        match unknown_a {
+            0 => ItemKind::Arrows,
+            9 => ItemKind::Purse,
+            other => ItemKind::Unknown(other),
+        }
+    }
+
+    fn encode(self, e: &mut Encoder) {
+        match self {
+            ItemKind::Arrows => e.u8(1),
+            ItemKind::Purse => e.u8(2),
+            ItemKind::Unknown(a) => e.u8(3).u32(u32::from(a)),
+        };
+    }
 }
 
 impl Element {
@@ -482,6 +539,11 @@ impl Element {
             Element::Object { x, y } => e.u8(4).i32(x).i32(y),
             Element::Scroll { x, y } => e.u8(5).i32(x).i32(y),
             Element::Polygon(i) => e.u8(6).u32(i),
+            Element::Item { x, y, kind, stack } => {
+                e.u8(7).i32(x).i32(y).u32(u32::from(stack));
+                kind.encode(e);
+                e
+            }
         };
     }
 }
@@ -716,7 +778,9 @@ impl Program {
         let coord_ok = |v: i32| v.unsigned_abs() <= MAX_LOCATION_COORD as u32;
         for (i, el) in self.elements.iter().enumerate() {
             match *el {
-                Element::Object { x, y } | Element::Scroll { x, y } => {
+                Element::Object { x, y }
+                | Element::Scroll { x, y }
+                | Element::Item { x, y, .. } => {
                     if !(coord_ok(x) && coord_ok(y)) {
                         return Err(format!("element {i} position out of range"));
                     }
@@ -1213,6 +1277,12 @@ pub enum Assumption {
     /// raised `hero_dead` (the loss): measured for a lone hero only (`combat-measurements.md`
     /// 4).
     HeroDeathLoss,
+    /// A pick-up item was taken (`World::resolve_pickups`): the gesture (a left click on the
+    /// item orders the walk, the item is taken within [`SCROLL_PICKUP_RADIUS`] like a scroll),
+    /// the reading of the record (`ItemKind::from_field`, the stack as a count) and the
+    /// effects (arrows per stack, [`PURSE_MONEY_PER_STACK`], one purse per purse item) are
+    /// hypotheses; native 235 reading the taken flag records `Policy(235)` itself.
+    ItemPickup,
 }
 
 /// Which part of the attack policy [`Assumption::AttackPolicy`] names (`crate::ai`).
@@ -1276,6 +1346,7 @@ impl Assumption {
             Assumption::AlertPolicy => e.u8(18),
             Assumption::CombatActions => e.u8(19),
             Assumption::HeroDeathLoss => e.u8(20),
+            Assumption::ItemPickup => e.u8(21),
         };
     }
 
@@ -1471,6 +1542,11 @@ pub struct VmState {
     /// fires once per approach when the handler declines the pickup).
     #[serde(default)]
     pub scroll_presence: BTreeSet<(u32, u32)>,
+    /// Handles of the pick-up items ([`Element::Item`]) a player character took (sticky: native
+    /// 235 reads it; the item is also deactivated, so a later 114 shows a taken item again
+    /// without un-taking it).
+    #[serde(default)]
+    pub taken_items: BTreeSet<i32>,
     /// Program index (into `World::programs`) per `RAIL` index (native 9 / 132).
     pub paths: Vec<Option<u32>>,
     /// Lenient natives (`MissionSpec::lenient_natives`): an unknown native is a recorded no-op
@@ -1543,6 +1619,7 @@ impl VmState {
             inactive_elements: BTreeSet::new(),
             zone_presence: BTreeSet::new(),
             scroll_presence: BTreeSet::new(),
+            taken_items: BTreeSet::new(),
             paths,
             lenient,
             fault: None,
@@ -1705,6 +1782,7 @@ impl VmState {
             || self.actions.len() > MAX_QUEUE
             || self.zone_presence.len() > MAX_QUEUE * 16
             || self.scroll_presence.len() > MAX_QUEUE * 16
+            || self.taken_items.len() > MAX_QUEUE * 16
             || self.arg_stack.len() > MAX_QUEUE
             || self.param_stack.len() > MAX_QUEUE
         {
@@ -1780,6 +1858,13 @@ impl VmState {
             if c as usize >= self.program.classes.len() || e as usize >= entity_count {
                 return Err("vm scroll presence out of range".into());
             }
+        }
+        if self
+            .taken_items
+            .iter()
+            .any(|&h| !matches!(self.element(h), Some(Element::Item { .. })))
+        {
+            return Err("vm taken item is not a pick-up item of the table".into());
         }
         if self.paths.len() > MAX_TABLE
             || self
@@ -1870,6 +1955,10 @@ impl VmState {
         }
         e.u32(self.inactive_elements.len() as u32);
         for k in &self.inactive_elements {
+            e.i32(*k);
+        }
+        e.u32(self.taken_items.len() as u32);
+        for k in &self.taken_items {
             e.i32(*k);
         }
         e.u32(self.paths.len() as u32);
@@ -2033,6 +2122,48 @@ impl VmState {
         )
     }
 
+    /// Whether the element `handle` is active: not deactivated by native 113 (entities keep
+    /// their own flag; this answers for the non-actor elements).
+    #[must_use]
+    pub fn element_active(&self, handle: i32) -> bool {
+        !self.inactive_elements.contains(&handle)
+    }
+
+    /// The pick-up item `handle`, if the table holds one: `(x, y, kind, stack)`.
+    #[must_use]
+    pub fn item(&self, handle: i32) -> Option<(i32, i32, ItemKind, u16)> {
+        match self.element(handle)? {
+            Element::Item { x, y, kind, stack } => Some((x, y, kind, stack)),
+            _ => None,
+        }
+    }
+
+    /// Every pick-up item of the table with its state (`observe`, `debug.vm`, the renderer).
+    #[must_use]
+    pub fn items(&self) -> Vec<ItemObservation> {
+        self.program
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match *e {
+                Element::Item { x, y, kind, stack } => {
+                    let handle = i as i32;
+                    let taken = self.taken_items.contains(&handle);
+                    Some(ItemObservation {
+                        element: handle,
+                        kind,
+                        stack,
+                        x,
+                        y,
+                        active: self.element_active(handle) && !taken,
+                        taken,
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Pending text indices in order (see [`VmState::pending_text_requests`] for the blocking
     /// flag of each: a native 202 text is shown without pausing anything, a native 203 page holds
     /// its sequence until it is dismissed).
@@ -2158,6 +2289,28 @@ pub struct ScriptObservation {
     /// The assumptions recorded so far, in canonical order.
     #[serde(default)]
     pub assumptions: Vec<Assumption>,
+    /// The pick-up items of the element table ([`Element::Item`]) with their state.
+    #[serde(default)]
+    pub items: Vec<ItemObservation>,
+}
+
+/// One pick-up item as `observe` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemObservation {
+    /// Element handle (what native 3 returns for it).
+    pub element: i32,
+    /// Kind.
+    pub kind: ItemKind,
+    /// Stack size.
+    pub stack: u16,
+    /// Map x.
+    pub x: i32,
+    /// Map y.
+    pub y: i32,
+    /// Shown on the map and pickable (not deactivated by native 113, not taken).
+    pub active: bool,
+    /// A player character took it (native 235 reads 1).
+    pub taken: bool,
 }
 
 /// Outcome of one callback invocation.
@@ -2269,6 +2422,7 @@ impl World {
                 .collect(),
             tainted: vm.tainted(),
             assumptions: vm.assumptions.iter().copied().collect(),
+            items: vm.items(),
         })
     }
 
@@ -3220,6 +3374,7 @@ fn write(vm: &mut VmState, s: Slot, v: i32) {
 pub(crate) mod tests {
     use super::*;
     use crate::geom::Geometry;
+    use crate::input::{Button, InputEvent};
     use crate::world::{ActorSpec, Instruction, MapInfo, MissionSpec, Scenario, Team};
 
     /// Slot helpers for hand-assembled programs.
@@ -3735,6 +3890,160 @@ pub(crate) mod tests {
         w.step(&[]);
         assert_eq!(w.vm.as_ref().unwrap().class_vars[1][0], 2);
         w.validate().unwrap();
+    }
+
+    /// Pick-up items: a left click on an active item walks the selected hero to it, the item
+    /// is taken within the scroll radius (arrows add their stack, a purse its money and one
+    /// purse, an unknown kind only disappears), native 235 reads the taken flag and records
+    /// its policy, the pickup records its hypothesis, a ground order cancels a pickup under
+    /// way, a deactivated item is not clickable, and the state round-trips.
+    #[test]
+    fn items_are_taken_on_a_click_and_native_235_reads_it() {
+        // Hourglass: cv0 = n235(1); cv1 = n235(2)
+        let mut hourglass = native(235, &[1], Some(cv(0)), 0);
+        hourglass.extend(native(235, &[2], Some(cv(1)), 0));
+        let level = class(
+            "StartUp",
+            2,
+            &[
+                ("Initialize", 0, false, 0, 0, vec![]),
+                ("Hourglass", 1, false, 0, 4, hourglass),
+            ],
+        );
+        let program = Program {
+            classes: vec![level],
+            elements: vec![
+                Element::Actor(0),
+                Element::Item {
+                    x: 300,
+                    y: 300,
+                    kind: ItemKind::Purse,
+                    stack: 3,
+                },
+                Element::Item {
+                    x: 100,
+                    y: 130,
+                    kind: ItemKind::Arrows,
+                    stack: 2,
+                },
+                Element::Item {
+                    x: 100,
+                    y: 200,
+                    kind: ItemKind::Unknown(8),
+                    stack: 1,
+                },
+            ],
+            locations: vec![Location::Point { x: 200, y: 200 }],
+            wait_scale: (2, 1),
+        };
+        let mut w = mission_world(0, Some(program));
+        let click = |w: &mut World, x: i32, y: i32| {
+            w.step(&[
+                InputEvent::PointerMove {
+                    x256: x * 256,
+                    y256: y * 256,
+                },
+                InputEvent::PointerDown {
+                    button: Button::Left,
+                },
+                InputEvent::PointerUp {
+                    button: Button::Left,
+                },
+            ]);
+        };
+        let items = w.script_observation().unwrap().items;
+        assert_eq!(items.len(), 3);
+        assert!(items.iter().all(|it| it.active && !it.taken));
+        assert_eq!(items[1].kind, ItemKind::Arrows);
+        assert_eq!((items[1].x, items[1].y, items[1].stack), (100, 130, 2));
+        // Select the hero, then click the arrows 30 px below him: a walk with the pickup
+        // intent, taken on the way in.
+        click(&mut w, 100, 100);
+        assert_eq!(w.selected, Some(w.entities[0].id));
+        click(&mut w, 104, 134);
+        assert_eq!(w.entities[0].pickup, Some(2));
+        assert!(w.entities[0].target.is_some());
+        let mut ticks = 0;
+        while w.entities[0].pickup.is_some() {
+            w.step(&[]);
+            ticks += 1;
+            assert!(ticks < 200, "the arrows were never taken");
+        }
+        assert_eq!(w.entities[0].arrows, 2);
+        assert_eq!(w.entities[0].purses, 0);
+        assert!(w.entities[0].target.is_none(), "the walk ends at the item");
+        let vm = w.vm.as_ref().unwrap();
+        assert!(vm.taken_items.contains(&2) && vm.inactive_elements.contains(&2));
+        assert_eq!(vm.money, 0);
+        // Hourglass of the next tick reads 235 = 1 for the arrows, 0 for the purse.
+        w.step(&[]);
+        assert_eq!(w.vm.as_ref().unwrap().class_vars[0], vec![0, 1]);
+        let items = w.script_observation().unwrap().items;
+        assert!(!items[1].active && items[1].taken);
+        assert!(items[0].active && !items[0].taken);
+        assert_taint_round_trips(&w, &[Assumption::Policy(235), Assumption::ItemPickup]);
+        // The purse: a walk of 280 px; a ground click on the way cancels the pickup, a second
+        // click on the purse renews it; the purse adds its money and one purse.
+        click(&mut w, 300, 300);
+        assert_eq!(w.entities[0].pickup, Some(1));
+        for _ in 0..20 {
+            w.step(&[]);
+        }
+        click(&mut w, 200, 100);
+        assert_eq!(w.entities[0].pickup, None);
+        assert!(w.entities[0].target.is_some());
+        click(&mut w, 300, 300);
+        assert_eq!(w.entities[0].pickup, Some(1));
+        let mut ticks = 0;
+        while w.entities[0].pickup.is_some() {
+            w.step(&[]);
+            ticks += 1;
+            assert!(ticks < 600, "the purse was never taken");
+        }
+        assert_eq!(w.vm.as_ref().unwrap().money, 3 * PURSE_MONEY_PER_STACK);
+        assert_eq!(w.entities[0].purses, 1);
+        assert_eq!(w.entities[0].arrows, 2);
+        w.step(&[]);
+        assert_eq!(w.vm.as_ref().unwrap().class_vars[0], vec![1, 1]);
+        // A deactivated item is neither drawn nor clickable; an unknown kind is taken with
+        // no effect.
+        w.vm.as_mut().unwrap().inactive_elements.insert(3);
+        w.step(&[InputEvent::PointerMove {
+            x256: 100 * 256,
+            y256: 200 * 256,
+        }]);
+        assert_eq!(w.item_at_pointer(), None);
+        w.vm.as_mut().unwrap().inactive_elements.remove(&3);
+        assert_eq!(w.item_at_pointer(), Some(3));
+        click(&mut w, 100, 200);
+        assert_eq!(w.entities[0].pickup, Some(3));
+        let mut ticks = 0;
+        while w.entities[0].pickup.is_some() {
+            w.step(&[]);
+            ticks += 1;
+            assert!(ticks < 600, "the unknown item was never taken");
+        }
+        assert_eq!((w.entities[0].arrows, w.entities[0].purses), (2, 1));
+        assert_eq!(w.vm.as_ref().unwrap().money, 3 * PURSE_MONEY_PER_STACK);
+        assert!(
+            w.script_observation()
+                .unwrap()
+                .items
+                .iter()
+                .all(|it| it.taken)
+        );
+        w.validate().unwrap();
+        // Invariants: a pickup order must name an item, the counters stay in range, a taken
+        // handle must be an item.
+        let mut bad = w.clone();
+        bad.entities[0].pickup = Some(0);
+        assert!(bad.validate().unwrap_err().contains("pick-up order"));
+        let mut bad = w.clone();
+        bad.entities[0].arrows = -1;
+        assert!(bad.validate().unwrap_err().contains("arrows"));
+        let mut bad = w.clone();
+        bad.vm.as_mut().unwrap().taken_items.insert(0);
+        assert!(bad.validate().unwrap_err().contains("taken item"));
     }
 
     #[test]
@@ -5399,10 +5708,10 @@ pub(crate) mod tests {
     /// validated, and a won mission stays recorded but tainted.
     #[test]
     fn stub_results_and_hypotheses_taint_the_outcome() {
-        // Initialize: n235(3) (result ignored); cv0 = n221(1); n178(3); cv1 = n253(27);
+        // Initialize: n222(3) (result ignored); cv0 = n221(1); n178(3); cv1 = n253(27);
         // n20(0) (a stub without a result). Hourglass(t): cv2 = t. CheckVictoryCondition: 1.
         // PostInitialize: n30; n56(2); n31.
-        let mut init = native(235, &[3], None, 0);
+        let mut init = native(222, &[3], None, 0);
         init.extend(native(221, &[1], Some(cv(0)), 0));
         init.extend(native(178, &[3], None, 0));
         init.extend(native(253, &[27], Some(cv(1)), 0));
@@ -5435,7 +5744,7 @@ pub(crate) mod tests {
         let vm = w.vm.as_ref().unwrap();
         assert!(!vm.faulted() && vm.counters.traps == 0);
         assert_eq!(vm.class_vars[0], vec![0, 1, 0]);
-        // After load: every stub called is recorded, read or not (20, 178 and 235 are effect
+        // After load: every stub called is recorded, read or not (20, 178 and 222 are effect
         // stubs whose result, if any, was not consumed; 221 and 253 were consumed); the wait
         // of PostInitialize ran at load under the tick-rate reading.
         assert_eq!(
@@ -5444,7 +5753,7 @@ pub(crate) mod tests {
                 Assumption::StubResult(20),
                 Assumption::StubResult(178),
                 Assumption::StubResult(221),
-                Assumption::StubResult(235),
+                Assumption::StubResult(222),
                 Assumption::StubResult(253),
                 Assumption::TickRate
             ]

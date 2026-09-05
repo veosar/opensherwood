@@ -61,7 +61,10 @@ settled before any interpreter is written: a VM living above core cannot be snap
   recorded where the rule first mutates state (`SightCone`, `NoiseRadius`, `AlertPolicy`,
   `AttackPolicy(rule)` replacing `Perception` / `MeleeReach` / `PowerfulBlowChance` / `PostBound`, `KnockOut`
   widened), the script call fused with its result read, per-phase quotas of the simulation budget with
-  cursors for the movement, the animation advance and the action-change scan, the obstacle index).
+  cursors for the movement, the animation advance and the action-change scan, the obstacle index);
+  ruleset 15, snapshot schema 18 and hash schema 17 (2026-09-05, pick-up items: `Element::Item` for the
+  `ZORG` records, `VmState::taken_items` read by native 235 (a policy row now), `Entity::arrows` / `purses`
+  / `pickup`, the pickup order and its resolution, the assumption source `ItemPickup`).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
 - **What is authoritative and what is not.** `VmState::counters` (instructions, callbacks, budget aborts,
   faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
@@ -153,7 +156,7 @@ settled before any interpreter is written: a VM living above core cannot be snap
   to `0xffff` leaves its function (`Instr::LeaveUnresolved`); `Policy(id)` on every call of an
   implemented native whose reading is a policy rather than an observation (`natives::NATIVE_TAINT`,
   `Taint::Policy`: 8, 44, 45, 64, 93, 94, 98, 110, 128, 133, 134, 135, 140, 159, 161, 193, 194, 196, 204,
-  245, each with its choice named in the table; the `Taint::Branch` rows 111 / 211 / 250 record it only
+  235, 245, each with its choice named in the table; the `Taint::Branch` rows 111 / 211 / 250 record it only
   with more than one player character and 240 only for a non-actor element); `StubResult(id)` on every
   call of a recorded stub with an effect the engine does not model (`Taint::Effect`, the never-win stubs
   included) and whenever a stub's fabricated result is consumed (the result slot of the fused native);
@@ -185,7 +188,10 @@ settled before any interpreter is written: a VM living above core cannot be snap
   damage, cadence, the fighting distance, the blow's timing, the attack order, death and the lost page)
   record nothing; `TickRate` when a native-56 wait ran (in a sequence or outside one) or
   `Hourglass` read its time; `ScrollPickup` when `IsTaken` fired (the pickup radius and the
-  take-on-non-zero rule); `ZoneAtLoad` when a zone callback fired on the first scan for a character
+  take-on-non-zero rule); `ItemPickup` when a player character took a pick-up item
+  (`World::resolve_pickups`: the click gesture, the scroll radius reused, the kind / stack reading of the
+  `ZORG` record and the purse amount `PURSE_MONEY_PER_STACK` are hypotheses; native 235 reading the taken
+  flag records `Policy(235)` on the call); `ZoneAtLoad` when a zone callback fired on the first scan for a character
   standing inside at load; `WalkCompletion` when a barrier was released by a walk that did not arrive;
   `ActionChangeOrder` on every `ActionChange` delivery (the parameter order); `CampaignGraph` when the
   app's successor rule picked the next mission (`World::record_assumption`); `LenientAssets` when the app

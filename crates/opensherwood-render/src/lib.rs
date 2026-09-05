@@ -14,6 +14,7 @@ pub mod text;
 
 use std::sync::Arc;
 
+use opensherwood_core::vm::ItemKind;
 use opensherwood_core::{EntityKind, Fixed, World};
 
 /// RGBA8 framebuffer, row-major, no padding. The fields are public for the presenters and the
@@ -528,7 +529,19 @@ pub mod palette {
     pub const BAR_BACKGROUND: Color = [0, 0, 0, 255];
     /// The damage numbers (cream).
     pub const DAMAGE_NUMBER: Color = [238, 210, 140, 255];
+    /// A purse item lying on the map (placeholder disc: the `BONUS_*` sprite banks of the
+    /// original are not loaded yet).
+    pub const ITEM_PURSE: Color = [240, 190, 40, 255];
+    /// An arrow item (placeholder disc).
+    pub const ITEM_ARROWS: Color = [150, 110, 60, 255];
+    /// An item of a kind the engine does not read yet (placeholder disc).
+    pub const ITEM_UNKNOWN: Color = [200, 200, 200, 255];
+    /// The rim of every item disc.
+    pub const ITEM_RIM: Color = [30, 20, 10, 255];
 }
+
+/// Radius of the placeholder disc an active pick-up item is drawn as.
+pub const ITEM_DISC_RADIUS: i32 = 5;
 
 /// The bars under a fighter's feet (`combat-measurements.md` 1.2, measured): a red health row
 /// and, 4 px lower, a blue energy row, each 20 px wide and 3 px tall on a black background,
@@ -656,6 +669,24 @@ pub fn render(
         16,
         palette::GOAL,
     );
+    // Pick-up items lie on the ground: a placeholder disc per active item, coloured by kind
+    // (the original's `BONUS_*` sprite banks are not loaded yet), before the markers and the
+    // sprites.
+    if let Some(vm) = world.vm.as_ref() {
+        for item in vm.items().into_iter().filter(|it| it.active) {
+            let (x, y) = (
+                px(Fixed::from_int(item.x), cx),
+                px(Fixed::from_int(item.y), cy),
+            );
+            let fill = match item.kind {
+                ItemKind::Purse => palette::ITEM_PURSE,
+                ItemKind::Arrows => palette::ITEM_ARROWS,
+                ItemKind::Unknown(_) => palette::ITEM_UNKNOWN,
+            };
+            fb.fill_circle(x, y, ITEM_DISC_RADIUS, fill);
+            fb.circle(x, y, ITEM_DISC_RADIUS, palette::ITEM_RIM);
+        }
+    }
     // Ground markers first (target lines, selection circles), then sprites in depth order
     // (dead bodies stay on the map).
     for e in world.entities.iter().filter(|e| e.active) {

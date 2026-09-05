@@ -40,7 +40,14 @@ The documented rules of `docs/original/ui-flow.md` 9.4, all through canonical in
 character selects him, a left click on the ground orders the selected player character to **walk** there, a
 second left click within 20 ticks and 8 map pixels of the first (`DOUBLE_CLICK_TICKS`, `DOUBLE_CLICK_DISTANCE`)
 makes that order a **run**; a **right click** on the selected character cancels his order, a right click anywhere
-else deselects. `c` crouches the selected player character, `s` stands him up. `observe` entities carry `gait`
+else deselects. A left click within 12 map px of an active **pick-up item** (`docs/formats/rhm.md` "`ZORG`": the
+placeholder disc the engine draws for it, gold for a purse, brown for arrows, grey for an unknown kind) orders the
+selected player character to walk to it (`observe` entities carry `pickup` = the item's element handle while the
+order stands); within 24 map px of it (the scroll pickup radius) the item is taken: arrows add their stack to the
+entity's `arrows`, a purse adds 25 per stack unit to the script's money and one to the entity's `purses`, an
+unknown kind only disappears; the item deactivates and native 235 reads it as taken. The gesture, the radius and
+the amounts are hypotheses (`item_pickup` in `observe.script.assumptions`). The HUD's portrait draws the selected
+character's `arrows` and `purses` under the bow and purse icon positions (`ui-flow.md` 9.3 element 4). `c` crouches the selected player character, `s` stands him up. `observe` entities carry `gait`
 (`walk` / `run`: the mode of the current order, `walk` again once it ends) and `posture` (`standing` /
 `crouched`). Speeds: every entity moves at the speed of the animation cycle it plays, read from its profile's
 table on the measured animation clock (`docs/original/stealth-and-combat.md` 8, `docs/formats/sprite-animations.md`
@@ -192,7 +199,10 @@ shown), `mission_won`, `mission_lost` (`CheckVictoryCondition` returned 1 / 2; b
 `debriefing`, `unknown_natives` (`{id: count}` of natives without an implementation that were called),
 `faulted` (an unknown native stopped a callback), `lenient` and `unknown_calls` (see below),
 `actor_elements` (the script element handle of every entity by entity index, -1 for entities the script
-cannot address: the handle native 3 returns, so a test can aim at the actor a script polls), and the taint of
+cannot address: the handle native 3 returns, so a test can aim at the actor a script polls), `items` (the
+pick-up items of the element table: `[{element, kind, stack, x, y, active, taken}]` with `kind` = `"arrows"`,
+`"purse"` or `{"unknown_a": n}`; `active` = shown and pickable, `taken` = picked up by a player character,
+what native 235 reads), and the taint of
 ADR-0008 ("Hypotheses and taint"): `tainted` (the script executed over a hypothesis source, so `mission_won`
 / `mission_lost` are not authoritative) with `assumptions`, the recorded entries in canonical order
 (snapshotted and hashed). The set is dependency-closed by construction (Codex review 8): every source is a
@@ -211,7 +221,8 @@ the post), `{"attack_policy": "reach" | "block" | "hit_chance" | "post_bound"}` 
 resolved from behind; the hero's strikes never landing; a chance rolled or a soldier's swing timed with
 the engine's jitter; a soldier standing his ground), `"knock_out"` (the blow felled or failed to fell a
 victim, native 90 / 128 reported it, or its action id reached a handler), `"profile_stats"`,
-`"tick_rate"`, `"scroll_pickup"`, `"zone_at_load"`, `"walk_completion"`, `"action_change_order"`,
+`"tick_rate"`, `"scroll_pickup"`, `"item_pickup"` (a pick-up item was taken: the click gesture, the radius,
+the kind / stack reading and the purse amount), `"zone_at_load"`, `"walk_completion"`, `"action_change_order"`,
 `"campaign_graph"`, `"lenient_assets"`. Every fight is therefore tainted from its first swing and every
 sighting from the tick it changed a state; a win reached over measured rules only (a run heard within the
 bound, the immediate charge) keeps `tainted: false`
@@ -224,10 +235,10 @@ dismissal per page, on Enter, Escape or a click on the page). Tests dismiss page
 input: `Engine.skip_briefing()` sends Enter once per page (one session tick each, recorded by an active
 replay). `debug.vm` is inspection only and cannot dismiss a page.
 
-`debug.vm` (counters, objectives, pending texts, scrolls with positions and activity); in a mission `F1` writes `saves/quick.json` under the artifact directory and `F5` loads it (the snapshot envelope with the content identity; refused while a screen or notice is shown or a replay is recorded), and every 3600 world ticks a rolling auto save `saves/auto-<0..4>.json` is written returns `{present, classes, elements, locations, objectives, texts, mission_won,
+`debug.vm` (counters, objectives, pending texts, scrolls with positions and activity, `items` as in `observe`); in a mission `F1` writes `saves/quick.json` under the artifact directory and `F5` loads it (the snapshot envelope with the content identity; refused while a screen or notice is shown or a replay is recorded), and every 3600 world ticks a rolling auto save `saves/auto-<0..4>.json` is written returns `{present, classes, elements, locations, objectives, texts, mission_won,
 mission_lost, tainted, assumptions, money, sequence_active, sequences, faulted, fault, lenient, unknown_calls, pending_messages, camera_target, debriefing,
 mission_vars, counters, rng_draws, element}` (`element` answers `{"element": i}`: the entry `i` of the script's element
-table as `{kind: map | unmodelled | actor | object | scroll | polygon, ...}`, `null` beyond the table; `money` is the
+table as `{kind: map | unmodelled | actor | object | scroll | item | polygon, ...}` (an item carries `item_kind` and `stack`), `null` beyond the table; `money` is the
 script's integer of natives 236 / 237; `fault` is the
 sticky reason behind `faulted`: `{"unknown_native": id}`, `{"arity_mismatch": id}` or
 `"action_queue_overflow"`, `null` while the script runs as written); `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,

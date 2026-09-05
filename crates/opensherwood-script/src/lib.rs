@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use opensherwood_core::natives::native_signature;
 use opensherwood_core::vm::{
-    BinOp, Class, Element, Function, Instr, Location, Program, Slot, Space,
+    BinOp, Class, Element, Function, Instr, ItemKind, Location, Program, Slot, Space,
 };
 use opensherwood_formats::rhm::{ActorGroup, Mission};
 use opensherwood_formats::rhp::Rhp;
@@ -131,8 +131,9 @@ impl MissionBinding {
     /// the `ZORG` and `SKRO` blocks fixed by `docs/original/h01-win-path.md` section 2 (the
     /// file's chunk order; every scroll-state call of the corpus lands in the scroll range only
     /// with `ZORG` first): `map_elements` map entries, then `POUF`, `OILE`, `TOTO`, `BORG`
-    /// (actors), `BOOM` (objects), `ZORG` (pick-up items, inert: [`Element::Unmodelled`]),
-    /// `SKRO` (scrolls), `TING` (inert), the `SCOT` player-character slots at the tail, and the
+    /// (actors), `BOOM` (objects), `ZORG` (pick-up items: [`Element::Item`] with the kind and
+    /// stack of the record), `SKRO` (scrolls), `TING` (inert), the `SCOT` player-character
+    /// slots at the tail, and the
     /// script polygons after them (their position is not observable; no retail script addresses
     /// one through native 3). The entity numbering stays the app's
     /// actor list (actor groups in file order: `SCOT` first, then `OILE`, `TOTO`, `BORG`; objects
@@ -195,9 +196,19 @@ impl MissionBinding {
         elements.extend(vips);
         elements.extend(npcs);
         elements.extend(objects);
-        for _ in &mission.zorg {
-            unmodelled(&mut elements);
-        }
+        // Pick-up items: the record's `unknown_a` is the kind and `unknown_b` the stack
+        // (`docs/formats/rhm.md`, "`ZORG`"); no class addresses them by name.
+        elements.extend(mission.zorg.iter().map(|z| {
+            (
+                None,
+                Element::Item {
+                    x: i32::from(z.placement.x),
+                    y: i32::from(z.placement.y),
+                    kind: ItemKind::from_field(z.unknown_a),
+                    stack: z.unknown_b,
+                },
+            )
+        }));
         elements.extend(mission.scrolls.iter().map(|s| {
             (
                 s.name.clone(),
@@ -1483,7 +1494,14 @@ mod tests {
                 Element::Actor(4),      // BORG
                 Element::Actor(5),
                 Element::Object { x: 5, y: 6 },
-                Element::Unmodelled(8), // ZORG (before the scrolls: the file's chunk order)
+                // ZORG (before the scrolls: the file's chunk order): kind 12 is not read
+                // yet, the stack is the record's `unknown_b`.
+                Element::Item {
+                    x: 10,
+                    y: 20,
+                    kind: ItemKind::Unknown(12),
+                    stack: 1
+                },
                 Element::Scroll { x: 10, y: 20 },
                 Element::Unmodelled(10), // TING
                 Element::Actor(0),       // SCOT

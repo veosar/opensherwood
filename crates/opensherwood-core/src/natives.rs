@@ -73,7 +73,7 @@ pub const STUB_NATIVES: &[u32] = &[
     73, 80, 81, 88, 89, 92, 99, 101, 102, 103, 112, 119, 125, 126, 130, 137, 143, 149, 150, 152,
     156, 163, 164, 165, 166, 170, 172, 173, 174, 177, 178, 180, 182, 186, 187, 188, 189, 191, 195,
     197, 198, 199, 200, 205, 210, 212, 213, 214, 215, 218, 219, 220, 221, 222, 223, 224, 226, 228,
-    229, 231, 232, 234, 235, 239, 243, 244, 246, 247, 248, 249, 253, 254, 255, 256, 258, 261, 264,
+    229, 231, 232, 234, 239, 243, 244, 246, 247, 248, 249, 253, 254, 255, 256, 258, 261, 264,
 ];
 
 /// Stub natives whose recorded result is not 0: the value the stub policy table of the spec
@@ -91,7 +91,7 @@ pub const IMPLEMENTED_NATIVES: &[u32] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 13, 26, 27, 28, 30, 31, 32, 33, 34, 43, 44, 45, 48, 56, 64,
     74, 75, 79, 85, 86, 87, 90, 93, 94, 95, 96, 97, 98, 109, 110, 111, 113, 114, 117, 118, 128,
     132, 133, 134, 135, 140, 144, 145, 159, 160, 161, 192, 193, 194, 196, 202, 203, 204, 211, 216,
-    217, 233, 236, 237, 240, 245, 250,
+    217, 233, 235, 236, 237, 240, 245, 250,
 ];
 
 /// What calling a known native records in the taint model (module documentation, "Hypotheses
@@ -124,7 +124,9 @@ pub enum Taint {
 /// reading, medium-low; non-actors always can act), 134 / 135 (locking halts the walk: low),
 /// 140 (0 walk / else run: low), 159 (the off-map location: low), 161 (the engine's generator,
 /// not the original's), 193 / 194 / 196 (stored values whose meaning is low), 204 (the count
-/// of player characters in the polygon: low), 245 (the number of live player characters).
+/// of player characters in the polygon: low), 235 (an item is "taken" once a player character
+/// picked it up, `VmState::taken_items`; the row is low and the pickup itself a hypothesis),
+/// 245 (the number of live player characters).
 /// Branch rows: 111 / 211 / 250 record when more than one player character exists (which one
 /// is "main" is observed only with a single one), 240 for a non-actor element (present unless
 /// deactivated: the policy table's 1). Presentation rows, each proven by its row of
@@ -294,7 +296,7 @@ pub const NATIVE_TAINT: &[(u32, Taint)] = &[
     (232, Taint::Effect),
     (233, Taint::Observed),
     (234, Taint::Effect),
-    (235, Taint::Effect),
+    (235, Taint::Policy),
     (236, Taint::Observed),
     (237, Taint::Observed),
     (239, Taint::Effect),
@@ -1148,6 +1150,17 @@ impl World {
                 }
                 0
             }
+            // 235 (element) -> bool: element taken (low; the corpus compares every result with
+            // 1 from `Hourglass`, `CheckVictoryCondition` and one `IsTaken`, always on a pick-up
+            // item): 1 once a player character picked the item up (`World::resolve_pickups`,
+            // `VmState::taken_items`), 0 for an item still lying there and for every other
+            // element. The reading is a policy (`Assumption::Policy(235)`, recorded by
+            // `native_call`).
+            235 => i32::from(
+                self.vm
+                    .as_ref()
+                    .is_some_and(|vm| vm.taken_items.contains(&arg(args, 0))),
+            ),
             // Stub natives: recorded per id (see `STUB_NATIVES`), result 0 or the policy value
             // of `STUB_POLICY_VALUES`. The call's taint was recorded by `native_call`
             // (`NATIVE_TAINT`); a result read taints in `vm.rs`.
@@ -1207,7 +1220,7 @@ impl World {
         }
     }
 
-    /// Map position of an element (actors, objects, scrolls, polygons).
+    /// Map position of an element (actors, objects, scrolls, items, polygons).
     fn element_position(&self, handle: i32) -> Option<(i32, i32)> {
         let vm = self.vm.as_ref()?;
         match vm.element(handle)? {
@@ -1215,7 +1228,9 @@ impl World {
                 let e = self.entities.get(i as usize)?;
                 Some((e.x.round(), e.y.round()))
             }
-            Element::Object { x, y } | Element::Scroll { x, y } => Some((x, y)),
+            Element::Object { x, y } | Element::Scroll { x, y } | Element::Item { x, y, .. } => {
+                Some((x, y))
+            }
             Element::Polygon(l) => Some(vm.program.locations.get(l as usize)?.position()),
             Element::Map(_) | Element::Unmodelled(_) => None,
         }
@@ -1274,6 +1289,7 @@ impl World {
                 if !active {
                     e.target = None;
                     e.path.clear();
+                    e.pickup = None;
                     if self.selected == Some(e.id) {
                         self.selected = None;
                     }
