@@ -2004,6 +2004,168 @@ impl Briefing {
     }
 }
 
+/// Seals of the lost page (`combat-measurements.md` 4): restart centred (333,556), load (388,556),
+/// OK (517,547); rectangles of the 41x44 seal pictures around those centres.
+const SEAL_LOST_RESTART: (i32, i32, i32, i32) = (313, 534, 41, 44);
+const SEAL_LOST_LOAD: (i32, i32, i32, i32) = (368, 534, 41, 44);
+const SEAL_LOST_OK: (i32, i32, i32, i32) = (497, 525, 41, 44);
+
+/// What the player chose on the lost page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LostOutcome {
+    /// Restart the mission (the original goes to the briefing).
+    Restart,
+    /// Open the load screen.
+    Load,
+    /// Leave to the main menu.
+    Ok,
+}
+
+/// The lost page (`combat-measurements.md` 4): the paused, green-tinted world with the HUD, the
+/// vertical parchment at (264,148) with the level's lost text from y 244, and three seals at the
+/// bottom edge. The restart and load seal pictures (gold, a double chevron and a folder) are not
+/// identified in the UI archive yet: plain gold discs with the first letter stand in.
+#[derive(Debug)]
+pub struct LostPage {
+    /// The lost debriefing text.
+    pub text: String,
+    pointer: (i32, i32),
+}
+
+impl LostPage {
+    /// New page over `text`.
+    #[must_use]
+    pub fn new(text: String) -> Self {
+        Self {
+            text,
+            pointer: (0, 0),
+        }
+    }
+
+    /// Apply input.
+    pub fn handle(&mut self, event: InputEvent) -> Option<LostOutcome> {
+        match event {
+            InputEvent::PointerMove { x256, y256 } => {
+                self.pointer = (Fixed::from_raw(x256).round(), Fixed::from_raw(y256).round());
+                None
+            }
+            InputEvent::PointerDown {
+                button: Button::Left,
+            } => {
+                let (px, py) = self.pointer;
+                if hit(SEAL_LOST_RESTART, px, py) {
+                    Some(LostOutcome::Restart)
+                } else if hit(SEAL_LOST_LOAD, px, py) {
+                    Some(LostOutcome::Load)
+                } else if hit(SEAL_LOST_OK, px, py) {
+                    Some(LostOutcome::Ok)
+                } else {
+                    None
+                }
+            }
+            // Keys: not observed on the original's lost page; Enter confirms like the other pages.
+            InputEvent::KeyDown {
+                key: Key::Enter | Key::Space,
+            } => Some(LostOutcome::Ok),
+            _ => None,
+        }
+    }
+
+    /// State for `observe` (the page has no variable state beyond its text).
+    #[must_use]
+    #[allow(clippy::unused_self)]
+    pub fn state(&self) -> MenuState {
+        MenuState {
+            screen: "lost".into(),
+            items: vec![
+                UiItem {
+                    action: "restart".into(),
+                    label: "restart".into(),
+                    rect: [
+                        SEAL_LOST_RESTART.0,
+                        SEAL_LOST_RESTART.1,
+                        SEAL_LOST_RESTART.2,
+                        SEAL_LOST_RESTART.3,
+                    ],
+                    enabled: true,
+                    selected: false,
+                },
+                UiItem {
+                    action: "load".into(),
+                    label: "load".into(),
+                    rect: [
+                        SEAL_LOST_LOAD.0,
+                        SEAL_LOST_LOAD.1,
+                        SEAL_LOST_LOAD.2,
+                        SEAL_LOST_LOAD.3,
+                    ],
+                    enabled: true,
+                    selected: false,
+                },
+                UiItem {
+                    action: "ok".into(),
+                    label: "ok".into(),
+                    rect: [
+                        SEAL_LOST_OK.0,
+                        SEAL_LOST_OK.1,
+                        SEAL_LOST_OK.2,
+                        SEAL_LOST_OK.3,
+                    ],
+                    enabled: true,
+                    selected: false,
+                },
+            ],
+            hovered: None,
+            page: None,
+        }
+    }
+
+    /// Draw the page over the (paused) scene.
+    pub fn render(&self, scene: &mut Framebuffer, assets: Option<&UiAssets>) {
+        tint_green(scene);
+        let Some(a) = assets else {
+            scene.fill_rect(264, 148, 264 + 496, 148 + 463, [220, 200, 150, 255]);
+            return;
+        };
+        if let Some(p) = &a.parchment {
+            scene.blit_rgba(264, 148, p.width, p.height, &p.rgba);
+        }
+        if let Some(seal) = a.seal_ok.get(1).or(a.seal_ok.first()) {
+            scene.blit_rgba(
+                SEAL_LOST_OK.0,
+                SEAL_LOST_OK.1,
+                seal.width,
+                seal.height,
+                &seal.rgba,
+            );
+        }
+        for (r, letter) in [(SEAL_LOST_RESTART, "R"), (SEAL_LOST_LOAD, "L")] {
+            let (cx, cy) = (r.0 + r.2 / 2, r.1 + r.3 / 2);
+            disc(scene, cx, cy, 18, [172, 132, 40, 255]);
+            disc(scene, cx, cy, 15, [214, 170, 62, 255]);
+            if let Some(f) = a.font_text.as_ref() {
+                f.draw_centered(scene, letter, cx, cy - f.height() as i32 / 2);
+            }
+        }
+        if let Some(font) = a.font_debrief.as_ref() {
+            let mut y = 244;
+            for line in wrap(font, &self.text, 400) {
+                font.draw(scene, &line, 318, y);
+                y += font.height() as i32 + 2;
+            }
+        }
+        draw_pointer(scene, self.pointer, a.cursor.as_ref());
+    }
+}
+
+/// A filled disc.
+fn disc(fb: &mut Framebuffer, cx: i32, cy: i32, r: i32, c: [u8; 4]) {
+    for dy in -r..=r {
+        let half = ((r * r - dy * dy) as f64).sqrt() as i32;
+        fb.fill_rect(cx - half, cy + dy, cx + half + 1, cy + dy + 1, c);
+    }
+}
+
 /// In-mission HUD values.
 #[derive(Debug, Clone, Default)]
 pub struct HudState {
@@ -2133,11 +2295,18 @@ pub struct Minimap {
     pub rgba: Vec<u8>,
 }
 
-/// The mini-map overlay (`ui-flow.md` 9.3 element 2: the map scroll opens it, a right click closes
-/// it; the `;` key of the shortcut list is not mapped yet). The picture is a parchment scroll with
-/// the map painted inside (its corners hold the UI colour key). The presentation is the engine's
-/// until the original's is captured: the scroll centred on the screen, with the camera's view drawn
-/// as a yellow rectangle in map proportion; the world keeps running underneath.
+/// Where the mini-map scroll sits and where its map picture is (`combat-measurements.md` 5:
+/// the scroll spans x 718..940, y 92..283; the map picture 204x155 at (728,112)).
+pub const MINIMAP_SCROLL_POS: (i32, i32) = (718, 92);
+/// The map picture inside the scroll (x, y, w, h).
+pub const MINIMAP_AREA: (i32, i32, i32, i32) = (728, 112, 204, 155);
+
+/// The mini-map overlay (`ui-flow.md` 9.3 element 2 and `combat-measurements.md` 5): the map scroll
+/// widget or the `;` key toggles it, a right click does not close it; the world keeps running
+/// underneath. The picture is a parchment scroll with the map painted inside (its corners hold the
+/// UI colour key), drawn at the observed position; the camera's view is a yellow rectangle in map
+/// proportion over the map area (the original's markers for characters and pickups are not drawn
+/// yet).
 pub fn draw_minimap(
     scene: &mut Framebuffer,
     m: &Minimap,
@@ -2145,19 +2314,18 @@ pub fn draw_minimap(
     view: (u32, u32),
     map: (u32, u32),
 ) {
-    let (w, h) = (m.width as i32, m.height as i32);
-    let x = (MENU_FRAME.0 as i32 - w) / 2;
-    let y = (MENU_FRAME.1 as i32 - h) / 2;
+    let (x, y) = MINIMAP_SCROLL_POS;
     scene.blit_rgba(x, y, m.width, m.height, &m.rgba);
     if map.0 == 0 || map.1 == 0 {
         return;
     }
-    let sx = |v: i32| x + (i64::from(v) * i64::from(w) / i64::from(map.0)) as i32;
-    let sy = |v: i32| y + (i64::from(v) * i64::from(h) / i64::from(map.1)) as i32;
-    let (x0, y0) = (sx(camera.0).max(x), sy(camera.1).max(y));
+    let (ax, ay, aw, ah) = MINIMAP_AREA;
+    let sx = |v: i32| ax + (i64::from(v) * i64::from(aw) / i64::from(map.0)) as i32;
+    let sy = |v: i32| ay + (i64::from(v) * i64::from(ah) / i64::from(map.1)) as i32;
+    let (x0, y0) = (sx(camera.0).max(ax), sy(camera.1).max(ay));
     let (x1, y1) = (
-        sx(camera.0.saturating_add(view.0 as i32)).min(x + w),
-        sy(camera.1.saturating_add(view.1 as i32)).min(y + h),
+        sx(camera.0.saturating_add(view.0 as i32)).min(ax + aw),
+        sy(camera.1.saturating_add(view.1 as i32)).min(ay + ah),
     );
     if x1 <= x0 || y1 <= y0 {
         return;

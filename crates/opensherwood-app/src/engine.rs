@@ -220,8 +220,6 @@ pub struct Session {
     notice: Option<(String, u32)>,
     /// A HUD press whose release has not arrived yet (swallowed when it does).
     hud_press_pending: bool,
-    /// A right click closed the mini-map and its release is still to come.
-    minimap_right_pending: bool,
     /// Next rolling auto-save slot.
     autosave_slot: u32,
     /// Player settings (loaded from `settings.json` under the artifact directory).
@@ -264,6 +262,8 @@ enum Screen {
     SelectPlayer(SelectPlayerScreen),
     /// Credits.
     Credits(Credits),
+    /// The lost page over the paused world (restart / load / OK seals).
+    Lost(crate::ui::LostPage),
 }
 
 /// The mission `Play!` starts with a fresh profile (`docs/original/campaign-flow.md`).
@@ -391,7 +391,6 @@ impl Session {
             next_mission: None,
             notice: None,
             hud_press_pending: false,
-            minimap_right_pending: false,
             autosave_slot: 0,
             settings: Settings::default(),
             profiles: vec![ProfileSummary::default()],
@@ -525,6 +524,14 @@ impl Session {
             .unwrap_or_else(|| fallback.to_string());
         self.ended = true;
         self.ended_lost = lost;
+        if lost {
+            // The lost page follows the death within a third of a second in the original
+            // (`combat-measurements.md` 4): here on the same tick.
+            let _ = self.ui_assets();
+            self.screen = Screen::Lost(crate::ui::LostPage::new(text));
+            self.frame = None;
+            return;
+        }
         // Campaign money: a won mission's money becomes the profile's (the loss keeps the
         // profile's). Whether the original also keeps money from a lost mission is not observed.
         if !lost {
@@ -1221,6 +1228,23 @@ impl Session {
                     self.open_menu();
                 }
             }
+            Screen::Lost(page) => {
+                let outcome = events.iter().find_map(|e| page.handle(*e));
+                self.frame = None;
+                match outcome {
+                    Some(crate::ui::LostOutcome::Restart) => {
+                        if let Some((scenario, seed)) = self.current.clone()
+                            && let Err(e) = self.reset(scenario, seed)
+                        {
+                            eprintln!("opensherwood: cannot restart: {e}");
+                            self.open_menu();
+                        }
+                    }
+                    Some(crate::ui::LostOutcome::Load) => self.open_saves(false, false),
+                    Some(crate::ui::LostOutcome::Ok) => self.open_menu(),
+                    None => {}
+                }
+            }
             Screen::Pause(p) => {
                 let mut chosen = None;
                 for e in events {
@@ -1310,23 +1334,12 @@ impl Session {
         let mut out = Vec::with_capacity(events.len());
         // A swallowed press whose release arrives in a later tick is swallowed too.
         let mut swallow_up = self.hud_press_pending;
-        let mut swallow_right_up = self.minimap_right_pending;
         for e in events {
             match *e {
                 InputEvent::PointerMove { x256, y256 } => {
                     pointer = (Fixed::from_raw(x256).round(), Fixed::from_raw(y256).round());
                     out.push(*e);
                 }
-                // A right click closes the mini-map and goes no further (ui-flow.md 9.3).
-                InputEvent::PointerDown {
-                    button: opensherwood_core::Button::Right,
-                } if self.minimap_open => {
-                    self.minimap_open = false;
-                    swallow_right_up = true;
-                }
-                InputEvent::PointerUp {
-                    button: opensherwood_core::Button::Right,
-                } if swallow_right_up => swallow_right_up = false,
                 InputEvent::PointerDown {
                     button: opensherwood_core::Button::Left,
                 } => match crate::ui::hud_hit(pointer.0, pointer.1) {
@@ -1363,7 +1376,6 @@ impl Session {
                 _ => out.push(*e),
             }
         }
-        self.minimap_right_pending = swallow_right_up;
         self.hud_press_pending = swallow_up;
         out
     }
@@ -1384,6 +1396,7 @@ impl Session {
             Screen::Options { screen, .. } => Some(screen.state()),
             Screen::SelectPlayer(screen) => Some(screen.state()),
             Screen::Credits(c) => Some(c.state()),
+            Screen::Lost(page) => Some(page.state()),
         }
     }
 
@@ -1634,6 +1647,7 @@ impl Session {
             Screen::Pause(_) => "pause",
             Screen::Debriefing(_) => "debriefing",
             Screen::Credits(_) => "credits",
+            Screen::Lost(_) => "lost",
             Screen::Saves { .. } => "saves",
             Screen::Options { .. } => "options",
             Screen::SelectPlayer(_) => "select_player",
@@ -2005,7 +2019,11 @@ impl Session {
                 Screen::Saves { screen, .. } => screen.render(self.ui_assets.as_ref()),
                 Screen::Options { screen, .. } => screen.render(self.ui_assets.as_ref()),
                 Screen::SelectPlayer(screen) => screen.render(self.ui_assets.as_ref()),
-                Screen::Briefing(_) | Screen::Debriefing(_) | Screen::Pause(_) | Screen::World => {
+                Screen::Briefing(_)
+                | Screen::Debriefing(_)
+                | Screen::Pause(_)
+                | Screen::Lost(_)
+                | Screen::World => {
                     let in_mission = matches!(
                         self.world.as_ref().map(|w| &w.scenario),
                         Some(Scenario::Mission(_))
@@ -2047,6 +2065,7 @@ impl Session {
                         Screen::Briefing(b) | Screen::Debriefing(b) => {
                             b.render(&mut frame, self.ui_assets.as_ref());
                         }
+                        Screen::Lost(page) => page.render(&mut frame, self.ui_assets.as_ref()),
                         Screen::Pause(p) => p.render(&mut frame, self.ui_assets.as_ref()),
                         _ => {}
                     }
