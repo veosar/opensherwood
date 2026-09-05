@@ -49,6 +49,55 @@ impl SpriteSource for Sprites {
     }
 }
 
+/// The pictures of the pick-up items: the first frame of each of the five bonus blocks
+/// (action ids 190..=194, one per stack size) of the arrow and purse banks, with the anchor
+/// relative to the sequence origin like the characters' frames. A bank or block that is missing
+/// leaves the placeholder disc for that item.
+fn load_item_art(game: &GameDir) -> opensherwood_render::ItemArt {
+    use opensherwood_formats::anim_table::{ActionId, AnimationTable};
+    let pictures = |name: &str| -> Vec<Option<opensherwood_render::ItemFrame>> {
+        let Ok(profile) = SpriteBank::load_profile(game, name) else {
+            eprintln!("opensherwood: item pictures {name}: not loaded; placeholder discs");
+            return Vec::new();
+        };
+        let Some(table) = AnimationTable::from_profile(&profile) else {
+            return Vec::new();
+        };
+        let frames: Vec<opensherwood_render::ItemFrame> = profile
+            .sequences
+            .iter()
+            .flat_map(|s| {
+                let (ox, oy) = (s.origin_x as i32, s.origin_y as i32);
+                s.animations.iter().map(move |a| {
+                    a.frames.first().map_or(
+                        opensherwood_render::ItemFrame {
+                            frame: 0,
+                            offset_x: 0,
+                            offset_y: 0,
+                        },
+                        |f| opensherwood_render::ItemFrame {
+                            frame: f.frame,
+                            offset_x: i32::from(f.anchor_x) - ox,
+                            offset_y: i32::from(f.anchor_y) - oy,
+                        },
+                    )
+                })
+            })
+            .collect();
+        (0..5u16)
+            .map(|stack| {
+                table
+                    .block_start(ActionId(190 + stack))
+                    .and_then(|a| frames.get(a).copied())
+            })
+            .collect()
+    };
+    opensherwood_render::ItemArt {
+        arrows: pictures("BONUS_Arrows"),
+        purse: pictures("BONUS_MoneyBag"),
+    }
+}
+
 /// Build the core's animation set from a parsed profile using the documented block layout
 /// (`docs/formats/sprite-animations.md`): 16-direction blocks per action; idle = action 0,
 /// walk = action 6, run = action 7, crouched idle = 14, crouched walk (sneak) = 16, the alert
@@ -187,6 +236,8 @@ pub struct Session {
     pub world: Option<World>,
     background: Option<Background>,
     sprites: Option<Sprites>,
+    /// Pictures of the pick-up items (`BONUS_*` banks), loaded with the sprite bank.
+    item_art: Option<opensherwood_render::ItemArt>,
     snapshots: BTreeMap<String, Snapshot>,
     next_snapshot: u64,
     frame: Option<Framebuffer>,
@@ -383,6 +434,7 @@ impl Session {
             world: None,
             background: None,
             sprites: None,
+            item_art: None,
             snapshots: BTreeMap::new(),
             next_snapshot: 0,
             frame: None,
@@ -1878,6 +1930,9 @@ impl Session {
         if self.sprites.is_none() {
             return Ok(catalog);
         }
+        if self.sprites.is_some() && self.item_art.is_none() {
+            self.item_art = Some(load_item_art(game));
+        }
         for name in profiles {
             match SpriteBank::load_profile(game, name) {
                 Ok(profile) => {
@@ -2107,7 +2162,12 @@ impl Session {
                     }
                     let world = self.world.as_ref()?;
                     let mut frame = match self.sprites.as_mut() {
-                        Some(s) => render(world, self.background.as_ref(), s),
+                        Some(s) => opensherwood_render::render_with_items(
+                            world,
+                            self.background.as_ref(),
+                            s,
+                            self.item_art.as_ref(),
+                        ),
                         None => render(world, self.background.as_ref(), &mut NoSprites),
                     };
                     if in_mission && let Some(a) = self.ui_assets.as_ref() {
