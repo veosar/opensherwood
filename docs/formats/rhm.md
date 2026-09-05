@@ -94,7 +94,7 @@ an entry by repeating its two strings.
 | Tag | Version | Records | Meaning |
 |---|---|---|---|
 | `MEOW` | 2 | 0 in all files | unknown (animals?) |
-| `SCOT` | 4 | 1..=5 per mission (50 in `Sherwood.rhm`) | player-character start slots (no profile: the team comes from the campaign state); in the script element table they sit at the tail, after `ZORG` and `TING` (`scb.md`, Index spaces) |
+| `SCOT` | 4 | 1..=5 per mission (50 in `Sherwood.rhm`) | player-character start slots (no profile: the team comes from the campaign state); in the script element table they sit at the tail, after `ZORG`, `SKRO` and `TING` (`scb.md`, Index spaces) |
 | `OILE` | 3 | 0..=77 | civilians (`profile.cpf` CV table) |
 | `TOTO` | 2 | 0..=11 | player-character sprites used as NPCs: prisoners, bride, guests (`profile.cpf` PC table) |
 | `BORG` | 4 | 3..=184 (2463 total) | armed humans: soldiers, guards, knights, officers, VIPs, merry men, the trainer (`profile.cpf` SD table) |

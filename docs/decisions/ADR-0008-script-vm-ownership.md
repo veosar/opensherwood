@@ -56,7 +56,12 @@ settled before any interpreter is written: a VM living above core cannot be snap
   phase, the native call fused with its result read); ruleset 13, snapshot schema 16 and hash schema 15
   (2026-09-05, the melee of `docs/original/combat-measurements.md`: hit points, energy, the fight state
   and poses, death, `hero_dead`, the press for the drawn figures, the assumption sources `MeleeReach`,
-  `PowerfulBlowChance`, `PostBound`, `CombatActions`, `HeroDeathLoss`).
+  `PowerfulBlowChance`, `PostBound`, `CombatActions`, `HeroDeathLoss`); ruleset 14, snapshot schema 17 and
+  hash schema 16 (2026-09-05, Codex review 9, findings 1 / 3 / 4 / 5: the engine's own hypothesis sources
+  recorded where the rule first mutates state (`SightCone`, `NoiseRadius`, `AlertPolicy`,
+  `AttackPolicy(rule)` replacing `Perception` / `MeleeReach` / `PowerfulBlowChance` / `PostBound`, `KnockOut`
+  widened), the script call fused with its result read, per-phase quotas of the simulation budget with
+  cursors for the movement, the animation advance and the action-change scan, the obstacle index).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
 - **What is authoritative and what is not.** `VmState::counters` (instructions, callbacks, budget aborts,
   faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
@@ -81,18 +86,36 @@ settled before any interpreter is written: a VM living above core cannot be snap
   smoothed output points; `world.rs`: the conversion of the final path, allocated fallibly). An exhausted
   budget stops the tick deterministically (the running callback is aborted, later phases wait for the next
   tick, undelivered messages stay queued ahead of new ones) and is counted; it is part of the ruleset because
-  it changes what a tick does. The rest of the simulation (the stealth layer's perception, state
-  transitions and attack orders, and the walks the guards' waypoint programs and legacy patrols issue)
-  draws from **one simulation budget per tick** (`world::SIM_WORK_PER_TICK`, 2^24): a pre-index pass
-  charged one unit per entity, then each phase walks its own entity list from a persisted cursor
-  (`World::cursors`: perception, states, attacks, programs; snapshotted, hashed under `world`,
-  validated) charging one unit per entity plus the path searches it issues, each capped at
-  `world::ORDER_SEARCH_WORK`; exhaustion leaves the cursor on the entity not served so the next tick
-  starts there (a search the budget could not pay changes nothing: the guard keeps his instruction, the
-  attacker his order, a soldier whose alert ended keeps one more tick of it). Only the player's own click
-  orders keep a per-order budget of `ORDER_SEARCH_WORK`, one per click. Navigation has no fail-open
-  entry point: `World::try_ensure_nav` is the only way to rebuild a missing grid and every caller
-  handles its error.
+  it changes what a tick does. The rest of the simulation draws from **one simulation budget per tick**
+  (`world::SIM_WORK_PER_TICK`, 2^24) handed out **phase by phase on deterministic quotas** (Codex review 9,
+  finding 4; `world::SimBudget`): a pre-index pass charged one unit per entity (at most `MAX_ENTITIES`),
+  then perception (`SIM_QUOTA_PERCEPTION`, the remainder: about 2^22 + 2^21), the state transitions, the
+  attack orders and the waypoint programs (2^21 each), the movement against the obstacle index and the
+  walkable geometry (2^20: one unit per mover, per index cell looked at, per obstacle candidate tested and
+  per polygon edge tested), the animation advance and the action-change scan (2^20 each, above
+  `MAX_ENTITIES`, so they always complete). A phase is granted its quota plus what the phases before it
+  left unused, never more than the budget has left, so no phase can starve another whatever the
+  snapshot holds (a `MAX_ENTITIES` world of half player characters and half soldiers, 2^30 perception
+  pairs a round, still runs every timer, plans a bounded, growing number of attack and program walks and
+  moves every mover on every tick: `every_phase_keeps_its_quota_in_the_largest_hostile_snapshot`).
+  Each phase walks its own entity list from a persisted cursor (`World::cursors`: perception, states,
+  attacks, programs, movement, animation, actions; snapshotted, hashed under `world`, validated); when
+  its grant runs out the cursor stays on the entity not served so the next tick starts there, and when
+  it ran out on the first entity of a walk that had the whole quota the cursor moves past it (one entity
+  too expensive for a quota blocks nobody). The quotas rather than a persisted global phase cursor
+  because the stimuli perception hands the transitions are not state: resuming a tick mid-sequence would
+  have to persist them. Path searches the simulation issues (an alert run, a return, an attack
+  approach, a program's walk) are capped per search at `world::SIM_SEARCH_WORK` (2^20, below every
+  search-issuing quota): a search that fails with the full cap is unreachable under this budget (a
+  definite answer: the order is dropped, the instruction skipped, the soldier patrols where he stands),
+  one that fails with less is retried first next tick. Only the player's own click orders keep a
+  per-order budget of `ORDER_SEARCH_WORK`, one per click. The obstacle entities are queried through a
+  spatial index (`world::ObstacleIndex`: grid buckets of `OBSTACLE_CELL` = 64 px keyed by cell, a CSR
+  layout, positions outside the map folded into the edge cells), derived from the entities, never
+  serialised, rebuilt by the tick whose pre-index finds the obstacle boxes changed; its size is bounded
+  by `MAX_OBSTACLE_INDEX_ENTRIES` (2^22), which `validate` enforces so the rebuild stays a bounded,
+  uncharged refresh like the navigation grid's. Navigation has no fail-open entry point:
+  `World::try_ensure_nav` is the only way to rebuild a missing grid and every caller handles its error.
 - **Trust boundary.** `Program::validate` in core is self-sufficient (functions in table order from address 0
   with their prologue, jumps inside their function, parameter reads and call arities against the table,
   arities within the stack limit, every native call site of a known id with the argument count of the one
@@ -103,7 +126,14 @@ settled before any interpreter is written: a VM living above core cannot be snap
   result read are **one IR instruction** (`Instr::Native { id, argc, dst }`): the translator fuses a `0x0c`
   with the `0x0d` after it (the `0x0d` quad becomes a `Nop` so quad indices stay instruction indices) and
   refuses a jump whose target is a `0x0d` quad, so no control flow can reach a result read without the
-  call that produces it (Codex review 8, finding 6); frames hold no native result.
+  call that produces it (Codex review 8, finding 6); frames hold no native result. The script call and
+  its result read are fused the same way (Codex review 9, finding 3): `Instr::Call { function, argc,
+  dst }` carries the destination of the `0x0a` after it (the `0x0a` quad becomes a `Nop`), the translator
+  refuses a `0x0a` without a `0x05` before it, after a call of a function without a result, and any jump
+  whose target is a `0x0a` quad (direct, from a divergent predecessor, as a loop's entry);
+  `Program::validate` refuses a destination on a callee without `has_result` (and a call of a function
+  outside the table), and the callee's value is written to the destination when its frame returns, so a
+  frame holds no call result either and no fabricated value can feed a branch.
   The dispatcher checks the signature again: a call whose argument count differs traps like an unknown native
   (`counters.arity_mismatches`), so a required argument never defaults to 0. `World::validate` also requires
   the gameplay and `script` RNG streams to derive from the world seed with their assigned ids (1 and 2), and
@@ -129,18 +159,31 @@ settled before any interpreter is written: a VM living above core cannot be snap
   included) and whenever a stub's fabricated result is consumed (the result slot of the fused native);
   only the stubs proven presentation-only record nothing on the call (`Taint::Presentation`: 62 an
   expression, 69 a remark before a dialogue line, 149 / 150 a level sound, 243 the cutscene highlight,
-  each justified in the table); `UnknownNative(id)` on every lenient unknown call; `Perception` /
-  `KnockOut` when the stealth layer changed script-visible state (an alert action id of an actor alerted
-  by sight, never of one alerted by a run heard (`Entity::heard`), or a knock-out action id delivered to
-  `ActionChange`, native 90 reporting a knock-out, 128 refusing one); `ProfileStats` when a blow consulted
-  the knock-out resistance; `MeleeReach` when a player character's automatic strike was resolved against
-  a soldier (it never lands: inferred from one fighter pair), `PowerfulBlowChance` when a powerful blow
-  was resolved (one in three from 2 of 6 strokes), `PostBound` when a soldier's foe left him alive and he
-  stood his ground (measured for the halberdier only), `CombatActions` when a melee action id or a dead
-  actor's fall reached an `ActionChange` handler (the ids are read by eye), `HeroDeathLoss` when a player
-  character's death raised the loss while another one was alive (measured for a lone hero); the measured
-  melee constants (hit points, energy, damage, cadence, the fighting distance, the blow's timing, the
-  attack order, death and the lost page) record nothing; `TickRate` when a native-56 wait ran (in a sequence or outside one) or
+  each justified in the table); `UnknownNative(id)` on every lenient unknown call; the engine's own rules record their source **where
+  the rule first mutates authoritative state, independent of any callback or later consumer** (Codex
+  review 9, finding 1: a hypothesis-driven position can win a mission through an observed native such as
+  97 with no `ActionChange` handler in sight): `SightCone` when the view cone's geometry decided a
+  sighting and a soldier's state changed on it (he noticed, or his alert was refreshed), `NoiseRadius`
+  when a run was heard from beyond the measured 330 px bound (`ai::NOISE_MEASURED_RADIUS`) and within the
+  engine's 350 px (`RUN_NOISE_RADIUS`: an engine choice above the bound; a run heard within the bound is
+  measured and records nothing), `AlertPolicy` when the noticed -> alarm -> search sequence, the alert
+  timeout, the re-plan while searching or the return to the post (after an alert or a knock-out) mutated
+  a soldier's state, `AttackPolicy(rule)` for the attack policy: `Reach` when an attack order resolved
+  with the victim's back to the attacker (the reach bands and the arc deciding the knock-out blow or the
+  fight; the frontal fight at the measured distance records nothing), `Block` when a player character's
+  automatic strike started or resolved against a soldier (it never lands: inferred from one fighter
+  pair), `HitChance` when a soldier's swing was timed with the engine's jitter or a blow was resolved by
+  a roll (the soldier's two in three, the powerful blow's one in three from 2 of 6 strokes), `PostBound`
+  when a soldier's foe left him alive and he stood his ground (measured for the halberdier only);
+  `KnockOut` when the blow's effect (the fall, the timer and its scaling, the immunity threshold)
+  changed the victim's state, and when native 90 reported a knock-out, 128 refused one or a knock-out
+  action id was delivered to `ActionChange`; `ProfileStats` when a blow consulted the knock-out
+  resistance; `CombatActions` when a melee action id or a dead actor's fall reached an `ActionChange`
+  handler (the ids are read by eye), `HeroDeathLoss` when a player character's death raised the loss
+  while another one was alive (measured for a lone hero); the measured constants (the speeds, the
+  animation clock, the noise channel within its bound and the immediate charge, hit points, energy,
+  damage, cadence, the fighting distance, the blow's timing, the attack order, death and the lost page)
+  record nothing; `TickRate` when a native-56 wait ran (in a sequence or outside one) or
   `Hourglass` read its time; `ScrollPickup` when `IsTaken` fired (the pickup radius and the
   take-on-non-zero rule); `ZoneAtLoad` when a zone callback fired on the first scan for a character
   standing inside at load; `WalkCompletion` when a barrier was released by a walk that did not arrive;
@@ -151,8 +194,10 @@ settled before any interpreter is written: a VM living above core cannot be snap
   `ScriptObservation::tainted` (the set is non-empty) marks the outcome as **not authoritative**: it
   proves consistency with the hypotheses, not the original's behaviour, until the oracle captures of
   `stealth-and-combat.md` section 7 settle them; an outcome with an empty set took no hypothesis the
-  engine knows of. Strict mode keeps trapping unknown ids; the taint is what strict mode says about the
-  known ones. Under this model the retail missions are tainted from their load-time callbacks on (the
+  engine knows of (`a_charge_from_the_unmeasured_noise_band_taints_a_win_read_from_native_97`: the
+  same charge from 320 px wins untainted, from 340 px tainted by `NoiseRadius` alone, through a JSON
+  snapshot and checkpoints every 50 ticks). Strict mode keeps trapping unknown ids; the taint is what
+  strict mode says about the known ones. Under this model the retail missions are tainted from their load-time callbacks on (the
   first mission's `Initialize` locks doors and hides actors through effect stubs and sets action
   availability and AI locks through policy natives), which is the honest reading until those rows are
   implemented or observed.

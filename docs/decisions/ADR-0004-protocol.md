@@ -5,7 +5,13 @@ Date: 2026-09-02. Status: accepted.
 Versions in force (2026-09-05, Codex review 7): protocol 6 (`reset.starting_money` and `ReplayHeader.starting_money`: the mission's starting money is a canonical input recorded in the header, playback resets with it; `UiItem.selected`; `observe.persistence_error`; replay time is the session tick: header `time:
 "session"`, checkpoints carry `world_tick`, a `session` digest and the `frame` hash, the tick-0 and terminal
 checkpoints are required and compared; `ui` observation,
-`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 13
+`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 14
+(2026-09-05, Codex review 9: the engine's hypotheses record their assumption where they first mutate state
+(`sight_cone`, `noise_radius`, `alert_policy`, `{attack_policy: reach | block | hit_chance | post_bound}`
+replace `perception`, `melee_reach`, `powerful_blow_chance`, `post_bound`; `knock_out` is recorded at the blow),
+the script call carries its result slot like the native call, the simulation budget is handed out on
+per-phase quotas with cursors for the movement, the animation advance and the action-change scan, and the
+movement queries an obstacle index; snapshot schema 17, hash schema 16), ruleset 13
 (2026-09-05, the melee of `docs/original/combat-measurements.md`: hit points (the hero's 100, a soldier's
 `pre[0]`), energy, the soldier's 5-hp hits at the measured cadence, the hero's forward-stroke powerful blow (50
 hp, drawn with the pointer: the left button now acts on its release, a stroke being a figure), death at 0 hp

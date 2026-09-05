@@ -12,9 +12,9 @@
 //! tables on the measured animation clock (`anim.rs`); the melee's hit points, energy, damage,
 //! cadence, fighting distance and the powerful blow's timing are **measured**; the view cone
 //! (angle, range, the crouch divisor), the alert timeout, the knock-out timer, the punch's
-//! arc, the hero's click attacks never landing ([`Assumption::MeleeReach`]), the powerful
-//! blow's chance ([`Assumption::PowerfulBlowChance`]) and the soldier standing his ground when
-//! his foe leaves ([`Assumption::PostBound`]) remain **hypotheses** (section 7 and
+//! arc, the hero's click attacks never landing ([`AttackRule::Block`]), the powerful blow's
+//! chance and the soldier's cadence jitter ([`AttackRule::HitChance`]) and the soldier standing
+//! his ground when his foe leaves ([`AttackRule::PostBound`]) remain **hypotheses** (section 7 and
 //! `combat-measurements.md` 7 list the captures that would settle them). Every value is pinned
 //! by tests so that a correction is a deliberate ruleset bump.
 //!
@@ -29,25 +29,42 @@
 //!
 //! Work. One simulation budget per tick (`world::SIM_WORK_PER_TICK`) pays for everything the
 //! simulation does besides the script: the pre-index pass ([`SimIndex`], one unit per entity,
-//! once), then each phase in turn: perception (one unit per soldier inspected and one per
-//! (soldier, player character) pair tested), the state transitions (one per human), the attack
-//! orders (one per attacker, the victim found by binary search in the index) and, in
-//! `world.rs`, the waypoint programs (one per idle guard); every path search any phase issues
-//! (the alert run, the return, the attack approach, a program's walk) draws from the same
-//! budget, capped per search at the per-order budget `world::ORDER_SEARCH_WORK`. Each phase
-//! walks its list from its own cursor (`World::cursors`, round robin: when the budget runs out
-//! the cursor stays on the entity not finished and the next tick resumes there; a completed
-//! walk resets it to 0), so exhaustion is fair across ticks. The cursors are authoritative
-//! (snapshot, `validate`, the `world` hash); the budget itself is granted afresh every tick and
-//! never stored.
+//! once), then each phase in turn on its own **quota** (`world::SIM_QUOTA_*`, deterministic
+//! shares of the tick's budget; Codex review 9, finding 4): perception (one unit per soldier
+//! inspected and one per (soldier, player character) pair tested), the state transitions (one
+//! per human), the attack orders (one per attacker, the victim found by binary search in the
+//! index) and, in `world.rs`, the waypoint programs (one per idle guard), the movement against
+//! the obstacles and the geometry, the animation advance and the action-change scan; every
+//! path search any phase issues (the alert run, the return, the attack approach, a program's
+//! walk) draws from the phase's grant, capped per search at `world::SIM_SEARCH_WORK`, which
+//! every quota exceeds: a search that fails with the full cap is unreachable under this
+//! budget (a definite answer), one that fails with less is retried first next tick. A phase
+//! never spends more than its quota plus what the phases before it left unused
+//! ([`crate::world::SimBudget`]), so no phase can starve another whatever the snapshot holds.
+//! Each phase walks its list from its own cursor (`World::cursors`, round robin: when its grant
+//! runs out the cursor stays on the entity not finished and the next tick resumes there; when
+//! it ran out on the first entity of the walk, the cursor moves past it so that one entity too
+//! expensive for a whole quota cannot block the others; a completed walk resets it to 0), so
+//! exhaustion is fair across ticks. The cursors are authoritative (snapshot, `validate`, the
+//! `world` hash); the budget itself is granted afresh every tick and never stored.
+//!
+//! Taint. Every hypothesis of this layer records its [`Assumption`] where it first mutates
+//! authoritative state, whether or not a script handler exists (Codex review 9, finding 1):
+//! [`Assumption::SightCone`] when a sighting changed a soldier's state, [`Assumption::NoiseRadius`]
+//! when a run was heard from beyond the measured bound ([`NOISE_MEASURED_RADIUS`]),
+//! [`Assumption::AlertPolicy`] for the alert sequence, its timeout, the re-plan and the return,
+//! [`Assumption::AttackPolicy`] for the reach bands, the block, the chances and the cadence
+//! jitter, and the post-bound soldier, [`Assumption::KnockOut`] for the blow's effect and
+//! [`Assumption::ProfileStats`] for the resistance it consults.
 
 use serde::{Deserialize, Serialize};
 
 use crate::anim::{AnimSet, direction_of, world_ticks};
 use crate::fixed::Fixed;
-use crate::vm::{Assumption, charge_budget};
+use crate::vm::{Assumption, AttackRule, charge_budget};
 use crate::world::{
-    Entity, EntityId, EntityKind, Gait, ORDER_SEARCH_WORK, Posture, Team, World, facing_of,
+    Entity, EntityId, EntityKind, Gait, Posture, SIM_QUOTA_ATTACKS, SIM_QUOTA_PERCEPTION,
+    SIM_QUOTA_STATES, SIM_SEARCH_WORK, SimBudget, Team, World, facing_of,
 };
 
 /// Behaviour state of a human (`observe` reports it as `ai_state`; `docs/original/stealth-and-combat.md`
@@ -174,7 +191,7 @@ pub enum FightPose {
     #[default]
     Idle,
     /// An automatic strike (action 59): a soldier's basic hit (5 hp, two in three land), the
-    /// hero's click attack (never lands against a soldier, [`Assumption::MeleeReach`]).
+    /// hero's click attack (never lands against a soldier, [`AttackRule::Block`]).
     Strike,
     /// The hero's powerful blow of the forward-stroke figure (action 75): 50 hp when it
     /// lands, resolved [`POWERFUL_BLOW_TICKS`] after the order.
@@ -266,10 +283,15 @@ pub const CROUCH_VIEW_DIVISOR: i32 = 2;
 /// Radius in map pixels within which a running player character is heard whatever the
 /// soldier faces (manual p. 16: running makes a lot of noise; the console's `NOISE` shows such a
 /// radius exists). Measured lower bound: soldiers not facing the hero detected his run from
-/// at least 330 px and charged at once (`stealth-and-combat.md` 8.6); the exact radius is not
-/// measured, 350 is the engine's choice above the bound. Walking (nothing at 290 px, measured)
-/// and sneaking make no noise.
+/// at least 330 px ([`NOISE_MEASURED_RADIUS`]) and charged at once (`stealth-and-combat.md`
+/// 8.6); the exact radius is not measured, 350 is the engine's choice above the bound, and a
+/// run heard from beyond the bound records [`Assumption::NoiseRadius`]. Walking (nothing at
+/// 290 px, measured) and sneaking make no noise.
 pub const RUN_NOISE_RADIUS: i32 = 350;
+/// The measured bound of the noise radius in map pixels: a run was detected from at least this
+/// far (`stealth-and-combat.md` 8.6). Hearing within it is measured; hearing between it and
+/// [`RUN_NOISE_RADIUS`] is the engine's hypothesis.
+pub const NOISE_MEASURED_RADIUS: i32 = 330;
 /// Ticks an alerted soldier keeps searching after his last sighting before he returns to his
 /// patrol (5 s at 60 ticks per second). Hypothesis.
 pub const ALERT_TIMEOUT_TICKS: u32 = 300;
@@ -349,10 +371,10 @@ pub const POWERFUL_BLOW_DAMAGE: i32 = 50;
 pub const POWERFUL_BLOW_TICKS: u32 = 57;
 /// Chance of the hero's powerful blow landing on a soldier as `(numerator, denominator)`: one
 /// in three, from 2 of 6 strokes against a halberdier (1.4; small sample). Hypothesis:
-/// resolving a blow records [`Assumption::PowerfulBlowChance`].
+/// resolving a blow records [`AttackRule::HitChance`].
 pub const POWERFUL_BLOW_CHANCE: (u32, u32) = (1, 3);
 /// Ticks between the hero's automatic strikes while fighting (1.5 s): presentation only,
-/// since a click attack never lands against a soldier ([`Assumption::MeleeReach`]; observed
+/// since a click attack never lands against a soldier ([`AttackRule::Block`]; observed
 /// against a pole arm at 52 px over 225 s, 1.3); the interval itself is not measured.
 pub const HERO_SWING_TICKS: u32 = 90;
 /// Fallback duration of a quick strike (actions 59..66: 8 tick halves over 8 frames = 16
@@ -605,8 +627,13 @@ fn state_ticks(world: &World, e: &Entity, block: fn(&AnimSet) -> &[u32; 8], fall
 enum Channel {
     /// Inside the view cone (hypothesis: the geometry is not measured).
     Sight,
-    /// A running character within the noise radius (measured, `stealth-and-combat.md` 8.6).
-    Noise,
+    /// A running character within the noise radius (measured up to [`NOISE_MEASURED_RADIUS`],
+    /// `stealth-and-combat.md` 8.6; `beyond_measured` marks a run heard from farther, the
+    /// engine's hypothesis).
+    Noise {
+        /// Heard from beyond the measured bound.
+        beyond_measured: bool,
+    },
 }
 
 /// Whether the entity's profile has the knock-out blow: a set without action 123 cannot punch;
@@ -684,8 +711,10 @@ fn stimulus(s: &Entity, p: &Entity) -> Option<Channel> {
         return Some(Channel::Sight);
     }
     let noisy = p.target.is_some() && p.gait == Gait::Run && p.posture == Posture::Standing;
-    (noisy && Fixed::length(p.x - s.x, p.y - s.y) <= Fixed::from_int(RUN_NOISE_RADIUS))
-        .then_some(Channel::Noise)
+    let distance = Fixed::length(p.x - s.x, p.y - s.y);
+    (noisy && distance <= Fixed::from_int(RUN_NOISE_RADIUS)).then_some(Channel::Noise {
+        beyond_measured: distance > Fixed::from_int(NOISE_MEASURED_RADIUS),
+    })
 }
 
 /// The entity lists the phases of one tick walk, built once per tick by [`World::sim_index`]
@@ -695,6 +724,8 @@ fn stimulus(s: &Entity, p: &Entity) -> Option<Channel> {
 pub(crate) struct SimIndex {
     /// Player characters a soldier can perceive.
     pub players: Vec<usize>,
+    /// The first player character in slot order (the synthetic objective's runner).
+    pub first_player: Option<usize>,
     /// Soldiers whose perception runs.
     pub perceivers: Vec<usize>,
     /// Humans whose state machine runs (alive, active, not an obstacle, not locked).
@@ -703,6 +734,16 @@ pub(crate) struct SimIndex {
     pub attackers: Vec<usize>,
     /// Guards in the normal state without a walk (their program or patrol may issue one).
     pub idle_guards: Vec<usize>,
+    /// Living, active non-obstacles: the movement phase's list (a walk issued by an earlier
+    /// phase of the same tick is stepped this tick, so the list is not filtered by `target`).
+    pub actors: Vec<usize>,
+    /// Active entities: the animation phase's list.
+    pub active: Vec<usize>,
+    /// Active non-obstacles: the action-change scan's list.
+    pub present: Vec<usize>,
+    /// The obstacles' boxes `(x, y, half width, half height)` in slot order: the key of the
+    /// obstacle index (`World::obstacles`), rebuilt when it differs.
+    pub obstacles: Vec<(Fixed, Fixed, Fixed, Fixed)>,
     /// `(id, index)` of every entity, sorted by id: the attack target and foe lookup.
     pub by_id: Vec<(EntityId, usize)>,
 }
@@ -730,7 +771,7 @@ enum Walk {
 
 /// `list` (ascending entity indices) rotated so that the walk starts at the first entity at or
 /// after `cursor` and wraps around: the round robin of a phase.
-fn rotated(list: &[usize], cursor: u32) -> Vec<usize> {
+pub(crate) fn rotated(list: &[usize], cursor: u32) -> Vec<usize> {
     let start = list.partition_point(|&i| i < cursor as usize);
     list[start..]
         .iter()
@@ -739,10 +780,24 @@ fn rotated(list: &[usize], cursor: u32) -> Vec<usize> {
         .collect()
 }
 
+/// Where a phase's walk over `order` resumes next tick after its grant ran out on the `k`-th
+/// entity: on that entity, unless it was the first of the walk and the phase had its whole
+/// quota (`full`), in which case the walk moves past it (an entity too expensive for a whole
+/// quota must not block every other one; it is served again once the round comes back to
+/// it). A first entity that failed on a partial grant is not at fault and keeps its turn.
+pub(crate) fn resume_at(order: &[usize], k: usize, full: bool) -> u32 {
+    let at = if k == 0 && full {
+        order.get(1).copied().unwrap_or(0)
+    } else {
+        order[k]
+    };
+    at as u32
+}
+
 impl World {
     /// One tick of the stealth layer with the full simulation budget (tests; `simulate` runs
-    /// [`World::sim_index`], [`World::stealth_tick`] and `program_walks` on one budget).
-    /// Returns the work units spent of `SIM_WORK_PER_TICK`.
+    /// [`World::sim_index`], [`World::stealth_tick`] and the phases of `world.rs` on one
+    /// budget). Returns the work units spent of `SIM_WORK_PER_TICK`.
     #[cfg(test)]
     pub(crate) fn ai_tick(&mut self) -> u64 {
         self.ai_tick_with(crate::world::SIM_WORK_PER_TICK)
@@ -754,19 +809,9 @@ impl World {
     pub(crate) fn ai_tick_with(&mut self, budget: u64) -> u64 {
         let mut left = budget;
         if let Some(index) = self.sim_index(&mut left) {
-            self.stealth_tick(&index, &mut left);
-        }
-        budget - left
-    }
-
-    /// The whole simulation of one tick (the pre-index, the stealth phases and the waypoint
-    /// programs) with an explicit budget, as `simulate` runs it; returns the units spent.
-    #[cfg(test)]
-    pub(crate) fn sim_tick_with(&mut self, budget: u64) -> u64 {
-        let mut left = budget;
-        if let Some(index) = self.sim_index(&mut left) {
-            self.stealth_tick(&index, &mut left);
-            self.program_walks(&index.idle_guards, &mut left);
+            let mut sim = SimBudget::new(left);
+            self.stealth_tick(&index, &mut sim);
+            left = sim.left();
         }
         budget - left
     }
@@ -780,14 +825,36 @@ impl World {
         }
         let mut index = SimIndex {
             players: Vec::new(),
+            first_player: None,
             perceivers: Vec::new(),
             humans: Vec::new(),
             attackers: Vec::new(),
             idle_guards: Vec::new(),
+            actors: Vec::new(),
+            active: Vec::new(),
+            present: Vec::new(),
+            obstacles: Vec::new(),
             by_id: Vec::with_capacity(n),
         };
         for (i, e) in self.entities.iter().enumerate() {
             index.by_id.push((e.id, i));
+            if e.kind == EntityKind::Player && index.first_player.is_none() {
+                index.first_player = Some(i);
+            }
+            if e.kind == EntityKind::Obstacle
+                && let Some(&(hw, hh)) = e.patrol.first()
+            {
+                index.obstacles.push((e.x, e.y, hw, hh));
+            }
+            if e.active {
+                index.active.push(i);
+                if e.kind != EntityKind::Obstacle {
+                    index.present.push(i);
+                    if e.alive {
+                        index.actors.push(i);
+                    }
+                }
+            }
             if perceivable(e) {
                 index.players.push(i);
             }
@@ -813,21 +880,29 @@ impl World {
         Some(index)
     }
 
-    /// The stealth phases of one tick: every soldier's perception and alert state and the timed
-    /// states of every human, then the player characters' attack orders (so a state a blow
-    /// enters lasts its full duration from the next tick on). Runs before the waypoint programs
-    /// (which only Patrol-state guards execute) and before the movement.
-    pub(crate) fn stealth_tick(&mut self, index: &SimIndex, left: &mut u64) {
-        let stimuli = self.perception(index, left);
-        self.transitions(index, &stimuli, left);
-        self.attack_orders(index, left);
+    /// The stealth phases of one tick, each on its quota: every soldier's perception and alert
+    /// state and the timed states of every human, then the player characters' attack orders
+    /// (so a state a blow enters lasts its full duration from the next tick on). Runs before
+    /// the waypoint programs (which only Patrol-state guards execute) and before the movement.
+    pub(crate) fn stealth_tick(&mut self, index: &SimIndex, sim: &mut SimBudget) {
+        let mut grant = sim.grant(SIM_QUOTA_PERCEPTION);
+        let stimuli = self.perception(index, &mut grant);
+        sim.settle(grant);
+        let mut grant = sim.grant(SIM_QUOTA_STATES);
+        self.transitions(index, &stimuli, &mut grant);
+        sim.settle(grant);
+        let mut grant = sim.grant(SIM_QUOTA_ATTACKS);
+        self.attack_orders(index, &mut grant);
+        sim.settle(grant);
     }
 
     /// The position of the first player character (in slot order) each soldier perceives this
     /// tick, with the channel. The soldiers are inspected from `cursors.perception` on, round
-    /// robin (one unit each, plus one per player character tested); when the budget runs out
+    /// robin (one unit each, plus one per player character tested); when the grant runs out
     /// the cursor stays on the soldier not finished, who perceives nothing this tick, and the
-    /// next tick resumes there; a completed walk resets the cursor to 0.
+    /// next tick resumes there ([`resume_at`]); a completed walk resets the cursor to 0. A
+    /// soldier's inspection costs at most `MAX_ENTITIES + 1` units, less than the perception
+    /// quota, so a soldier the cursor rests on is always finished on the next tick.
     fn perception(
         &mut self,
         index: &SimIndex,
@@ -835,9 +910,11 @@ impl World {
     ) -> Vec<Option<((Fixed, Fixed), Channel)>> {
         let mut out = vec![None; self.entities.len()];
         let mut cursor = 0u32;
-        'scan: for i in rotated(&index.perceivers, self.cursors.perception) {
+        let full = *budget >= SIM_QUOTA_PERCEPTION;
+        let order = rotated(&index.perceivers, self.cursors.perception);
+        'scan: for (k, &i) in order.iter().enumerate() {
             if !charge_budget(budget, 1) {
-                cursor = i as u32;
+                cursor = resume_at(&order, k, full);
                 break 'scan;
             }
             let s = &self.entities[i];
@@ -846,7 +923,7 @@ impl World {
             }
             for &pi in &index.players {
                 if !charge_budget(budget, 1) {
-                    cursor = i as u32;
+                    cursor = resume_at(&order, k, full);
                     break 'scan;
                 }
                 let p = &self.entities[pi];
@@ -861,7 +938,7 @@ impl World {
     }
 
     /// The state machine of every human (one unit each) from `cursors.states`, round robin;
-    /// a human the budget does not reach keeps its state and timer for this tick.
+    /// a human the grant does not reach keeps its state and timer for this tick.
     fn transitions(
         &mut self,
         index: &SimIndex,
@@ -869,9 +946,11 @@ impl World {
         budget: &mut u64,
     ) {
         let mut cursor = 0u32;
-        for i in rotated(&index.humans, self.cursors.states) {
+        let full = *budget >= SIM_QUOTA_STATES;
+        let order = rotated(&index.humans, self.cursors.states);
+        for (k, &i) in order.iter().enumerate() {
             if !charge_budget(budget, 1) {
-                cursor = i as u32;
+                cursor = resume_at(&order, k, full);
                 break;
             }
             if !stepped(&self.entities[i]) {
@@ -882,17 +961,23 @@ impl World {
         self.cursors.states = cursor;
     }
 
-    /// Order the entity to walk to a point at the given gait; the search draws from the tick's
-    /// simulation budget, capped at the per-order budget (`ORDER_SEARCH_WORK`). An exhausted
-    /// budget leaves the entity standing with its state unchanged so that the next tick
-    /// retries ([`Walk::Exhausted`]); an unreachable target is a definite answer.
+    /// Order the entity to walk to a point at the given gait; the search draws from the
+    /// phase's grant, capped per search at [`SIM_SEARCH_WORK`]. A search that fails with the
+    /// full cap granted is unreachable under this budget, a definite answer
+    /// ([`Walk::Unreachable`]); one that fails with less (the grant was nearly spent) leaves
+    /// the entity standing with its state unchanged so that the next tick, where it comes
+    /// first, retries with the full cap ([`Walk::Exhausted`]).
     fn walk_to(&mut self, i: usize, to: (Fixed, Fixed), gait: Gait, budget: &mut u64) -> Walk {
-        let granted = (*budget).min(ORDER_SEARCH_WORK);
+        let granted = (*budget).min(SIM_SEARCH_WORK);
         let mut search = granted;
         let planned = self.plan_path_with(i, to, &mut search);
         *budget -= granted - search;
         if planned == Err(crate::nav::NavError::WorkExhausted) {
-            return Walk::Exhausted;
+            return if granted >= SIM_SEARCH_WORK {
+                Walk::Unreachable
+            } else {
+                Walk::Exhausted
+            };
         }
         let e = &mut self.entities[i];
         if e.target.is_some() {
@@ -929,8 +1014,10 @@ impl World {
 
     /// Walk back to the alert origin (`Returning`), or patrol at once when there is none or the
     /// entity already stands there or the way back cannot be found. When the budget cannot
-    /// pay the search, the timed state that ended keeps one more tick and retries.
+    /// pay the search, the timed state that ended keeps one more tick and retries. The return
+    /// is part of the alert policy (hypothesis): it records [`Assumption::AlertPolicy`].
     fn go_back(&mut self, i: usize, budget: &mut u64) {
+        self.record_assumption(Assumption::AlertPolicy);
         let e = &self.entities[i];
         let here = (e.x, e.y);
         match e.alert_origin {
@@ -948,8 +1035,10 @@ impl World {
     }
 
     /// A sighting reaches a soldier in a normal state: he notices it (141), then raises the
-    /// alarm (142) and searches. The sequence is a hypothesis (the cone was not measured).
+    /// alarm (142) and searches. The sequence is a hypothesis (the cone was not measured):
+    /// it records [`Assumption::AlertPolicy`] (the caller recorded the channel's source).
     fn notice(&mut self, i: usize, seen: (Fixed, Fixed)) {
+        self.record_assumption(Assumption::AlertPolicy);
         let e = &mut self.entities[i];
         if e.ai_state == AiState::Patrol {
             e.alert_origin = Some((e.x, e.y));
@@ -979,7 +1068,10 @@ impl World {
     }
 
     /// The state machine of one human for this tick (the energy regains its units first, in
-    /// every state).
+    /// every state). A stimulus a perceiving state consumes records its channel's source
+    /// where it changes the state: the view cone ([`Assumption::SightCone`]) or a run heard
+    /// from beyond the measured bound ([`Assumption::NoiseRadius`]); a run heard within the
+    /// bound is measured and records nothing.
     fn advance_state(
         &mut self,
         i: usize,
@@ -989,7 +1081,27 @@ impl World {
     ) {
         let seen = stimulus.map(|(p, _)| p);
         self.regain_energy(i);
-        match self.entities[i].ai_state {
+        let state = self.entities[i].ai_state;
+        if matches!(
+            state,
+            AiState::Patrol
+                | AiState::Returning
+                | AiState::Noticed
+                | AiState::Alarm
+                | AiState::Alerted
+        ) {
+            match stimulus {
+                Some((_, Channel::Sight)) => self.record_assumption(Assumption::SightCone),
+                Some((
+                    _,
+                    Channel::Noise {
+                        beyond_measured: true,
+                    },
+                )) => self.record_assumption(Assumption::NoiseRadius),
+                _ => {}
+            }
+        }
+        match state {
             AiState::Fighting => self.fight_tick(i, index, budget),
             AiState::Dying => {
                 if countdown(&mut self.entities[i]) {
@@ -998,7 +1110,7 @@ impl World {
             }
             AiState::Patrol | AiState::Returning => match stimulus {
                 Some((p, Channel::Sight)) => self.notice(i, p),
-                Some((p, Channel::Noise)) => self.charge(i, p, budget),
+                Some((p, Channel::Noise { .. })) => self.charge(i, p, budget),
                 None => {
                     if self.entities[i].ai_state == AiState::Returning
                         && self.entities[i].target.is_none()
@@ -1012,6 +1124,7 @@ impl World {
                     self.entities[i].last_seen = seen;
                 }
                 if countdown(&mut self.entities[i]) {
+                    self.record_assumption(Assumption::AlertPolicy);
                     self.enter_timed(i, AiState::Alarm, |s| &s.alarm, ALARM_TICKS);
                 }
             }
@@ -1020,6 +1133,7 @@ impl World {
                     self.entities[i].last_seen = seen;
                 }
                 if countdown(&mut self.entities[i]) {
+                    self.record_assumption(Assumption::AlertPolicy);
                     let e = &mut self.entities[i];
                     e.ai_state = AiState::Alerted;
                     e.state_ticks = ALERT_TIMEOUT_TICKS;
@@ -1037,6 +1151,8 @@ impl World {
                         Fixed::length(tx - p.0, ty - p.1) > Fixed::from_int(REPLAN_DISTANCE)
                     });
                     if stale && Fixed::length(e.x - p.0, e.y - p.1) > Fixed::from_int(PUNCH_REACH) {
+                        // The re-plan distance and the search's target are the alert policy.
+                        self.record_assumption(Assumption::AlertPolicy);
                         self.walk_to(i, p, Gait::Run, budget);
                     }
                 }
@@ -1076,14 +1192,17 @@ impl World {
     /// The player characters' attack orders (`combat-measurements.md` 1.1, measured: a left
     /// click on the enemy is the attack order, the character walks up, stops at the fighting
     /// distance and the sword fight begins; the knock-out blow from behind of
-    /// `stealth-and-combat.md` 1 is kept for an unseen approach, a hypothesis). One unit per
-    /// attacker from `cursors.attacks`, round robin; the victim is looked up in the index,
-    /// never by a scan.
+    /// `stealth-and-combat.md` 1 is kept for an unseen approach, a hypothesis: an order that
+    /// resolves with the victim's back to the attacker records
+    /// [`AttackRule::Reach`]). One unit per attacker from `cursors.attacks`, round robin; the
+    /// victim is looked up in the index, never by a scan.
     fn attack_orders(&mut self, index: &SimIndex, budget: &mut u64) {
         let mut cursor = 0u32;
-        for i in rotated(&index.attackers, self.cursors.attacks) {
+        let full = *budget >= SIM_QUOTA_ATTACKS;
+        let order = rotated(&index.attackers, self.cursors.attacks);
+        for (k, &i) in order.iter().enumerate() {
             if !charge_budget(budget, 1) {
-                cursor = i as u32;
+                cursor = resume_at(&order, k, full);
                 break;
             }
             let e = &self.entities[i];
@@ -1107,9 +1226,9 @@ impl World {
             let (dx, dy) = (vx - attacker_pos.0, vy - attacker_pos.1);
             // An unseen approach from behind ends in the knock-out blow at its shorter reach;
             // a drawn figure or a victim who faces the attacker means the sword fight.
-            let punching = self.entities[i].figure.is_none()
-                && is_behind((vx, vy), self.entities[t].facing256, attacker_pos)
-                && can_punch(self, &self.entities[i]);
+            let behind = is_behind((vx, vy), self.entities[t].facing256, attacker_pos);
+            let punching =
+                self.entities[i].figure.is_none() && behind && can_punch(self, &self.entities[i]);
             let reach = if punching { PUNCH_REACH } else { FIGHT_RANGE };
             if Fixed::length(dx, dy) > Fixed::from_int(reach) {
                 if self.entities[i].target.is_none() {
@@ -1119,14 +1238,19 @@ impl World {
                         Walk::Unreachable => self.entities[i].attack_target = None,
                         // Unpaid: the order is kept and planned first next tick.
                         Walk::Exhausted => {
-                            cursor = i as u32;
+                            cursor = resume_at(&order, k, full);
                             break;
                         }
                     }
                 }
                 continue;
             }
-            // In reach: stop, face the victim, then the blow from behind or the fight.
+            // In reach: stop, face the victim, then the blow from behind or the fight. The
+            // frontal fight at the fighting distance is measured; what an approach from
+            // behind ends in is the reach-band hypothesis.
+            if behind {
+                self.record_assumption(Assumption::AttackPolicy(AttackRule::Reach));
+            }
             let e = &mut self.entities[i];
             stop(e);
             e.attack_target = None;
@@ -1182,11 +1306,13 @@ impl World {
     }
 
     /// Ticks until the next automatic swing: a soldier's measured cadence with the RNG's
-    /// jitter, the hero's presentation interval.
+    /// jitter (the spread is the engine's: [`AttackRule::HitChance`]), the hero's
+    /// presentation interval.
     fn next_swing(&mut self, i: usize) -> u32 {
         if self.entities[i].kind == EntityKind::Player {
             HERO_SWING_TICKS
         } else {
+            self.record_assumption(Assumption::AttackPolicy(AttackRule::HitChance));
             let jitter = self.rng.below(2 * SWING_JITTER_TICKS + 1);
             (SOLDIER_SWING_TICKS - SWING_JITTER_TICKS + jitter).max(1)
         }
@@ -1198,6 +1324,7 @@ impl World {
     /// blow, and a due swing starts the next automatic strike.
     fn fight_tick(&mut self, i: usize, index: &SimIndex, budget: &mut u64) {
         let foe = self.entities[i].foe.and_then(|id| index.slot(id));
+        let foe_alive = foe.is_some_and(|t| self.entities[t].alive && self.entities[t].active);
         let engaged = foe.is_some_and(|t| {
             let (me, foe) = (&self.entities[i], &self.entities[t]);
             foe.alive
@@ -1206,7 +1333,7 @@ impl World {
                 && Fixed::length(foe.x - me.x, foe.y - me.y) <= Fixed::from_int(FIGHT_BREAK_RANGE)
         });
         let Some(t) = foe.filter(|_| engaged) else {
-            self.end_fight(i, budget);
+            self.end_fight(i, foe_alive, budget);
             return;
         };
         let e = &mut self.entities[i];
@@ -1227,6 +1354,11 @@ impl World {
             return;
         }
         if e.swing_ticks == 0 {
+            if self.entities[i].kind == EntityKind::Player {
+                // The hero's strike is presentation under the block reading: its start
+                // already rests on it.
+                self.record_assumption(Assumption::AttackPolicy(AttackRule::Block));
+            }
             let ticks = state_ticks(self, &self.entities[i], |s| &s.strike, STRIKE_TICKS);
             let next = self.next_swing(i);
             let e = &mut self.entities[i];
@@ -1237,24 +1369,28 @@ impl World {
     }
 
     /// A pose of fighter `i` against foe `t` ended: a soldier's strike lands two times in
-    /// three for 5 hp and costs him one unit of energy when it does (measured); the hero's
-    /// automatic strike never lands against a soldier ([`Assumption::MeleeReach`], inferred:
-    /// the pole arm's reach or a block); the powerful blow costs two units, lands one time in
-    /// three ([`Assumption::PowerfulBlowChance`]) for 50 hp (measured).
+    /// three for 5 hp and costs him one unit of energy when it does (measured cadence, the
+    /// roll is [`AttackRule::HitChance`]); the hero's automatic strike never lands against a
+    /// soldier ([`AttackRule::Block`], inferred: the pole arm's reach or a block); the
+    /// powerful blow costs two units, lands one time in three ([`AttackRule::HitChance`]) for
+    /// 50 hp (measured).
     fn resolve_blow(&mut self, i: usize, t: usize, pose: FightPose) {
         let from = (self.entities[i].x, self.entities[i].y);
         match pose {
             FightPose::Idle | FightPose::Flinch => {}
             FightPose::Strike => {
                 if self.entities[i].kind == EntityKind::Player {
-                    self.record_assumption(Assumption::MeleeReach);
-                } else if self.rng.below(SOLDIER_HIT_CHANCE.1) < SOLDIER_HIT_CHANCE.0 {
-                    self.spend_energy(i, SOLDIER_HIT_ENERGY);
-                    self.damage(t, from, SOLDIER_HIT_DAMAGE);
+                    self.record_assumption(Assumption::AttackPolicy(AttackRule::Block));
+                } else {
+                    self.record_assumption(Assumption::AttackPolicy(AttackRule::HitChance));
+                    if self.rng.below(SOLDIER_HIT_CHANCE.1) < SOLDIER_HIT_CHANCE.0 {
+                        self.spend_energy(i, SOLDIER_HIT_ENERGY);
+                        self.damage(t, from, SOLDIER_HIT_DAMAGE);
+                    }
                 }
             }
             FightPose::PowerfulBlow => {
-                self.record_assumption(Assumption::PowerfulBlowChance);
+                self.record_assumption(Assumption::AttackPolicy(AttackRule::HitChance));
                 self.spend_energy(i, POWERFUL_BLOW_ENERGY);
                 if self.rng.below(POWERFUL_BLOW_CHANCE.1) < POWERFUL_BLOW_CHANCE.0 {
                     self.damage(t, from, POWERFUL_BLOW_DAMAGE);
@@ -1368,14 +1504,11 @@ impl World {
 
     /// Fighter `i` leaves the fight: a player character stands where he is (normal state), a
     /// soldier walks back to his post or patrols where he stands. A soldier whose foe is
-    /// still alive stands his ground rather than chasing (measured for the halberdier,
+    /// still alive (`foe_alive`, looked up by the caller: the tick's index, or a scan on the
+    /// player's order) stands his ground rather than chasing (measured for the halberdier,
     /// `combat-measurements.md` 3; a hypothesis for every other kind:
-    /// [`Assumption::PostBound`]).
-    pub(crate) fn end_fight(&mut self, i: usize, budget: &mut u64) {
-        let foe_alive = self.entities[i]
-            .foe
-            .and_then(|id| self.entities.iter().find(|e| e.id == id))
-            .is_some_and(|f| f.alive && f.active);
+    /// [`AttackRule::PostBound`]).
+    pub(crate) fn end_fight(&mut self, i: usize, foe_alive: bool, budget: &mut u64) {
         let e = &mut self.entities[i];
         e.foe = None;
         e.pose = FightPose::Idle;
@@ -1392,7 +1525,7 @@ impl World {
         let here = (e.x, e.y);
         let origin = e.alert_origin;
         if foe_alive {
-            self.record_assumption(Assumption::PostBound);
+            self.record_assumption(Assumption::AttackPolicy(AttackRule::PostBound));
         }
         match origin {
             Some(origin) if origin != here => match self.walk_to(i, origin, Gait::Walk, budget) {
@@ -1423,9 +1556,12 @@ impl World {
     /// The blow lands on `t` from `from`: the victim goes down forward when struck from behind,
     /// backward otherwise (41 / 44), unless his resistance makes him immune, in which case the
     /// blow is a stimulus (he notices the attacker). The resistance is the profile's `p4`
-    /// (hypothesis): consulting it records `Assumption::ProfileStats` on the script, if any.
+    /// (hypothesis): consulting it records `Assumption::ProfileStats` on the script, if any;
+    /// what the blow does (the fall, the timer, the immunity) is the knock-out policy
+    /// (`Assumption::KnockOut`), recorded here where it first changes the victim's state.
     fn knock_down(&mut self, t: usize, from: (Fixed, Fixed)) {
         self.record_assumption(Assumption::ProfileStats);
+        self.record_assumption(Assumption::KnockOut);
         let v = &self.entities[t];
         if knock_out_ticks(v.knockout_resistance).is_none() {
             if v.team == Team::Enemy && matches!(v.ai_state, AiState::Patrol | AiState::Returning) {
@@ -2832,5 +2968,122 @@ mod tests {
         assert_eq!(w.hashes(), w2.hashes());
         assert!(w.entities[..n].iter().all(|e| e.target.is_some()));
         assert_eq!(w.cursors.attacks, 0);
+    }
+
+    /// Finding 4 of Codex review 9: the largest accepted snapshot split between player
+    /// characters and soldiers (2^15 each, every pair tested: 2^30 perception pairs a round
+    /// against a 2^24 budget) cannot starve the later phases. Perception spends its quota and
+    /// stops on a cursor that advances every tick; the state transitions still run over every
+    /// human every tick (every energy timer counts down), the attack orders and the waypoint
+    /// programs plan a bounded, growing number of walks per tick from their cursors, and the
+    /// movement, animation and action scans complete every tick; all of it deterministic
+    /// across a clone stepped alongside.
+    #[test]
+    fn every_phase_keeps_its_quota_in_the_largest_hostile_snapshot() {
+        use crate::world::{
+            Instruction, MAX_ENTITIES, SIM_QUOTA_PERCEPTION, SIM_WORK_PER_TICK, SimCursors,
+        };
+        let half = MAX_ENTITIES / 2;
+        let mut w = crowd(half, half);
+        assert_eq!(w.entities.len(), MAX_ENTITIES);
+        w.programs.push(vec![
+            Instruction::GoTo { x: 900, y: 700 },
+            Instruction::Stop,
+        ]);
+        for i in 0..MAX_ENTITIES {
+            let victim = w.entities[(half + i) % MAX_ENTITIES].id;
+            let e = &mut w.entities[i];
+            e.energy = ENERGY_MAX - 1;
+            e.energy_ticks = 5;
+            if i < half {
+                e.attack_target = Some(victim);
+            } else {
+                e.program = Some(0);
+            }
+        }
+        w.validate().unwrap();
+        let start: Vec<(Fixed, Fixed)> = w.entities.iter().map(|e| (e.x, e.y)).collect();
+        let mut twin = w.clone();
+        let planned = |w: &World, range: std::ops::Range<usize>| {
+            w.entities[range]
+                .iter()
+                .filter(|e| e.target.is_some())
+                .count()
+        };
+        let mut attacks_before = 0;
+        let mut programs_before = 0;
+        let mut perception_before = 0;
+        for tick in 1..=3u32 {
+            let spent = w.sim_tick_with(SIM_WORK_PER_TICK);
+            twin.sim_tick_with(SIM_WORK_PER_TICK);
+            assert!(spent <= SIM_WORK_PER_TICK);
+            assert!(
+                spent > SIM_QUOTA_PERCEPTION,
+                "perception spent its whole quota"
+            );
+            let c: SimCursors = w.cursors;
+            // Perception: cut short, the cursor moves through the soldiers (entities
+            // half..) by a bounded number each tick.
+            assert!(c.perception as usize >= half, "{c:?}");
+            assert!(
+                c.perception > perception_before,
+                "no progress at tick {tick}: {c:?}"
+            );
+            assert!(
+                (c.perception as usize - half.max(perception_before as usize)) as u64
+                    <= SIM_QUOTA_PERCEPTION / half as u64 + 2,
+                "{c:?}"
+            );
+            perception_before = c.perception;
+            // The state transitions ran over every human: every timer counted down.
+            assert_eq!(c.states, 0, "{c:?}");
+            assert!(
+                w.entities.iter().all(|e| e.energy_ticks == 5 - tick),
+                "a human's timer was starved at tick {tick}"
+            );
+            // Attack orders and program walks: bounded progress, growing every tick.
+            let attacks = planned(&w, 0..half);
+            let programs = planned(&w, half..MAX_ENTITIES);
+            assert!(attacks > attacks_before, "attacks {attacks} at tick {tick}");
+            assert!(
+                programs > programs_before,
+                "programs {programs} at tick {tick}"
+            );
+            attacks_before = attacks;
+            programs_before = programs;
+            // Movement, animation and the action scan complete every tick.
+            assert_eq!((c.movement, c.animation, c.actions), (0, 0, 0), "{c:?}");
+            assert_eq!(w.hashes(), twin.hashes(), "tick {tick}");
+        }
+        assert!(
+            attacks_before < half && programs_before < half,
+            "bounded per tick"
+        );
+        // The movers moved: every planned walk advanced its entity (the movement phase runs
+        // after the phases that plan, in the same tick).
+        assert!(
+            w.entities
+                .iter()
+                .zip(&start)
+                .filter(|(e, _)| e.target.is_some())
+                .all(|(e, &p)| (e.x, e.y) != p)
+        );
+        w.validate().unwrap();
+    }
+
+    /// Where a phase resumes after its grant ran out on the `k`-th entity of its walk: on it,
+    /// unless it was the first one served with the phase's whole quota, which the walk then
+    /// moves past (one entity too expensive for a quota blocks nobody); a lone entity keeps
+    /// the cursor at 0.
+    #[test]
+    fn a_phase_resumes_on_the_starved_entity_unless_it_alone_exhausted_a_whole_quota() {
+        let order = [3usize, 5, 7];
+        assert_eq!(resume_at(&order, 2, true), 7);
+        assert_eq!(resume_at(&order, 1, false), 5);
+        assert_eq!(resume_at(&order, 0, false), 3);
+        assert_eq!(resume_at(&order, 0, true), 5);
+        assert_eq!(resume_at(&[3], 0, true), 0);
+        assert_eq!(rotated(&order, 6), vec![7, 3, 5]);
+        assert_eq!(rotated(&order, 0), vec![3, 5, 7]);
     }
 }

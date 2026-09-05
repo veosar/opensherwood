@@ -54,14 +54,18 @@
 //! ([`Assumption::Policy`], `natives::NATIVE_TAINT`), a recorded stub invoked or its fabricated
 //! result consumed ([`Assumption::StubResult`]; only the presentation-only stubs of
 //! `natives::NATIVE_TAINT` record nothing on the call), a lenient unknown native
-//! ([`Assumption::UnknownNative`]), and the engine's own hypotheses (perception, the knock-out,
-//! the profile stats, the tick rate, the scroll pickup, the zone presence at load, a walk that
-//! completed without arriving, the `ActionChange` parameter order, the campaign graph, the
-//! lenient asset fallbacks). The set is snapshotted, hashed, validated and exposed as
-//! `ScriptObservation::assumptions` / `tainted`; it only grows (a rolled-back transaction keeps
-//! what it recorded). `mission_won` / `mission_lost` are still recorded, but an outcome reached
-//! with a non-empty set is not authoritative; one reached with an empty set depended on no
-//! hypothesis the engine knows of.
+//! ([`Assumption::UnknownNative`]), and the engine's own hypotheses, each recorded by the rule
+//! itself at the point where it first mutates authoritative state, independent of any callback
+//! or later consumer (Codex review 9, finding 1): the view cone ([`Assumption::SightCone`]), the
+//! unmeasured part of the noise radius ([`Assumption::NoiseRadius`]), the alert policy
+//! ([`Assumption::AlertPolicy`]), the attack policy ([`Assumption::AttackPolicy`]), the knock-out
+//! policy ([`Assumption::KnockOut`]), the profile stats, the tick rate, the scroll pickup, the
+//! zone presence at load, a walk that completed without arriving, the `ActionChange` parameter
+//! order, the campaign graph, the lenient asset fallbacks. The set is snapshotted, hashed,
+//! validated and exposed as `ScriptObservation::assumptions` / `tainted`; it only grows (a
+//! rolled-back transaction keeps what it recorded). `mission_won` / `mission_lost` are still
+//! recorded, but an outcome reached with a non-empty set is not authoritative; one reached with
+//! an empty set depended on no hypothesis the engine knows of.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -275,17 +279,19 @@ pub enum Instr {
         /// Value.
         src: Slot,
     },
-    /// Call a function of the same class (`0x05`); `argc` parameters were pushed.
+    /// Call a function of the same class (`0x05`); `argc` parameters were pushed. When the
+    /// bytecode reads the return value (`0x0a` directly after the call) the translator fuses the
+    /// two quads into this one instruction and leaves a [`Instr::Nop`] in the reader's place, so
+    /// no control flow can reach a result read without the call that produces it (Codex review
+    /// 9, finding 3); `Program::validate` refuses a `dst` on a callee that leaves no value
+    /// (`Function::has_result`). The callee's result is written to `dst` when it returns.
     Call {
         /// Function index in the class table.
         function: u32,
         /// Parameters to pop.
         argc: u32,
-    },
-    /// Read the return value of the preceding call (`0x0a`).
-    GetCallResult {
-        /// Destination.
-        dst: Slot,
+        /// Where the return value goes, if the script reads it.
+        dst: Option<Slot>,
     },
     /// Push an argument for the next [`Instr::Native`] (`0x0b`).
     PushArg {
@@ -377,7 +383,6 @@ impl Instr {
             Instr::LoadParam { .. } => 5,
             Instr::PushParam { .. } => 6,
             Instr::Call { .. } => 7,
-            Instr::GetCallResult { .. } => 8,
             Instr::PushArg { .. } => 9,
             Instr::Native { .. } => 10,
             Instr::LeaveUnresolved => 11,
@@ -546,8 +551,9 @@ impl Program {
     /// argument count of its signature and a result slot only on a native whose signature
     /// leaves a value (`natives::NATIVE_SIGNATURES`; an unknown id is unconstrained, it traps
     /// or is recorded at run time; the call and its result read are one instruction, so no
-    /// control flow can reach a result read without its call), balanced parameter and
-    /// argument stacks in every function
+    /// control flow can reach a result read without its call), the same for script calls (a
+    /// result slot only on a callee with `has_result`), balanced parameter and argument stacks
+    /// in every function
     /// ([`check_stack_balance`]), bindings inside the tables, and element and location
     /// coordinates within `+-MAX_LOCATION_COORD`. The translator performs the same checks
     /// earlier for diagnostics; this is the trust boundary (a snapshot embeds the program).
@@ -647,14 +653,26 @@ impl Program {
                     | Instr::PushParam { src }
                     | Instr::PushArg { src } => slot_ok(src),
                     Instr::LoadParam { dst, index } => slot_ok(dst) && index < f.param_count,
-                    Instr::GetCallResult { dst }
-                    | Instr::LoadInt { dst, .. }
-                    | Instr::LoadFixed { dst, .. } => slot_ok(dst),
-                    Instr::Call { function, argc } => {
+                    Instr::LoadInt { dst, .. } | Instr::LoadFixed { dst, .. } => slot_ok(dst),
+                    Instr::Call {
+                        function,
+                        argc,
+                        dst,
+                    } => {
+                        let Some(callee) = c.functions.get(function as usize) else {
+                            return Err(format!(
+                                "class {ci} instruction {pc} calls function {function}, which does not exist"
+                            ));
+                        };
+                        if dst.is_some() && !callee.has_result {
+                            return Err(format!(
+                                "class {ci} instruction {pc} reads the result of function {function} ({}), which has none",
+                                callee.name
+                            ));
+                        }
                         argc as usize <= MAX_STACK
-                            && c.functions
-                                .get(function as usize)
-                                .is_some_and(|callee| callee.param_count == argc)
+                            && callee.param_count == argc
+                            && dst.is_none_or(slot_ok)
                     }
                     Instr::Native { id, argc, dst } => {
                         if let Some(sig) = crate::natives::native_signature(id) {
@@ -882,10 +900,22 @@ fn encode_instr(e: &mut Encoder, ins: &Instr) {
             encode_slot(e, dst);
             e.u32(index);
         }
-        Instr::Call { function, argc } => {
+        Instr::Call {
+            function,
+            argc,
+            dst,
+        } => {
             e.u32(function).u32(argc);
+            match dst {
+                Some(d) => {
+                    e.u8(1);
+                    encode_slot(e, d);
+                }
+                None => {
+                    e.u8(0);
+                }
+            }
         }
-        Instr::GetCallResult { dst } => encode_slot(e, dst),
         Instr::Native { id, argc, dst } => {
             e.u32(id).u32(argc);
             match dst {
@@ -941,10 +971,9 @@ pub struct Frame {
     pub temps: Vec<i32>,
     /// Parameters.
     pub params: Vec<i32>,
-    /// Return value set by `SetResult`.
+    /// Return value set by `SetResult` (written to the caller's [`Instr::Call`] destination
+    /// when the frame returns; a frame holds no result of a call it made).
     pub result: i32,
-    /// Return value of the last call made from this frame.
-    pub call_result: i32,
 }
 
 /// A queued `ProcessMessage` (natives 43 / 44 / 109 / 110), delivered on the next tick.
@@ -1129,14 +1158,27 @@ pub enum Assumption {
     /// An unknown native was called in lenient mode and answered with a fabricated 0
     /// (`MissionSpec::lenient_natives`).
     UnknownNative(u32),
-    /// The stealth layer's perception hypotheses (the view cone's geometry and the noticed /
-    /// alarm sequence a sighting starts) changed script-visible state: an alert action id of
-    /// an actor alerted by sight reached an `ActionChange` handler. The noise channel (a
-    /// running character heard, the soldiers charging at once) is measured and records
-    /// nothing (`Entity::heard`).
-    Perception,
-    /// The knock-out hypotheses changed script-visible state: native 90 reported a knocked-out
-    /// actor, native 128 refused one, or a knock-out action id reached an `ActionChange`.
+    /// The view cone's geometry (`ai::VIEW_CONE_HALF_ANGLE_256`, `VIEW_RANGE`,
+    /// `CROUCH_VIEW_DIVISOR`: hypotheses, `docs/original/stealth-and-combat.md` 7.2) decided
+    /// that a soldier saw a player character and his state changed on it (he noticed him, or
+    /// an alert of his was refreshed by the sighting). Recorded by the stealth layer where the
+    /// sighting first mutates the state, whether or not any script handler exists.
+    SightCone,
+    /// A running player character was heard from beyond the measured bound of the noise
+    /// radius (`ai::NOISE_MEASURED_RADIUS`, 330 px: soldiers detected a run from at least that
+    /// far) and within the engine's chosen radius (`ai::RUN_NOISE_RADIUS`, 350 px), and the
+    /// soldier's state changed on it. A run heard within the measured bound records nothing.
+    NoiseRadius,
+    /// The alert policy (hypotheses: the noticed -> alarm -> search sequence a sighting starts,
+    /// the alert timeout `ai::ALERT_TIMEOUT_TICKS`, the re-plan distance while searching, the
+    /// return to the post afterwards or after a knock-out) mutated a soldier's state.
+    AlertPolicy,
+    /// The attack policy mutated state; the rule names which part ([`AttackRule`]).
+    AttackPolicy(AttackRule),
+    /// The knock-out policy (hypotheses: the blow always fells a victim below the immune
+    /// resistance, the base duration and its scaling by `p4`, the immune threshold) mutated
+    /// state: a victim fell or shrugged the blow off; also native 90 reporting a knocked-out
+    /// actor, native 128 refusing one, or a knock-out action id reaching an `ActionChange`.
     KnockOut,
     /// The profile stat hypotheses (`p0` hit points, `p4` knock-out resistance) were consulted.
     ProfileStats,
@@ -1162,18 +1204,6 @@ pub enum Assumption {
     /// A profile index or sprite fell back to a default under `OPENSHERWOOD_LENIENT_ASSETS`
     /// (recorded by the app through `MissionSpec::assumptions`).
     LenientAssets,
-    /// A player character's automatic strike was resolved against a soldier and did not land:
-    /// the reading of `combat-measurements.md` 1.3 (225 s of click attacks against a pole arm
-    /// at 52 px never hurt him: the pole arm's reach band or a block) is inferred from one
-    /// fighter pair and applied to every soldier.
-    MeleeReach,
-    /// The hero's powerful blow was resolved: its chance of landing (one in three, from 2 of
-    /// 6 strokes, `combat-measurements.md` 1.4) is a hypothesis; its damage is measured.
-    PowerfulBlowChance,
-    /// A soldier's foe left the fight alive and the soldier stood his ground rather than
-    /// chasing: measured for the halberdier (`combat-measurements.md` 3), a hypothesis for
-    /// every other kind.
-    PostBound,
     /// A melee action id (the stance 54, the strike 59, the powerful blow 75, the flinch 104)
     /// or a death's fall / lying id (41 / 44 / 47 / 48 of a dead actor) reached an
     /// `ActionChange` handler: which id the original plays in each case is inferred by eye
@@ -1185,11 +1215,49 @@ pub enum Assumption {
     HeroDeathLoss,
 }
 
+/// Which part of the attack policy [`Assumption::AttackPolicy`] names (`crate::ai`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttackRule {
+    /// The reach bands of the attack order: an approach from behind (`ai::BACK_ARC_HALF_ANGLE_256`)
+    /// ends in the knock-out blow at `ai::PUNCH_REACH` rather than the measured fight at
+    /// `ai::FIGHT_RANGE`, or a drawn figure / a profile without the blow turns such an
+    /// approach into the fight. Recorded when an attack order resolved with the victim's back
+    /// to the attacker.
+    Reach,
+    /// A player character's automatic strike against a soldier never lands: the reading of
+    /// `combat-measurements.md` 1.3 (225 s of click attacks against a pole arm at 52 px never
+    /// hurt him: the pole arm's reach band or a block) is inferred from one fighter pair and
+    /// applied to every soldier. Recorded when such a strike starts or resolves.
+    Block,
+    /// A chance or a cadence the engine draws from the RNG: the soldier's swing interval
+    /// (`ai::SOLDIER_SWING_TICKS` with `ai::SWING_JITTER_TICKS`, the engine's spread within
+    /// the measured mean), his two-in-three hits (derived from the cadence) and the hero's
+    /// powerful blow landing one time in three (from 2 of 6 strokes, `combat-measurements.md`
+    /// 1.4). Recorded when a swing is timed or a blow is resolved by a roll.
+    HitChance,
+    /// A soldier's foe left the fight alive and the soldier stood his ground rather than
+    /// chasing: measured for the halberdier (`combat-measurements.md` 3), a hypothesis for
+    /// every other kind.
+    PostBound,
+}
+
+impl AttackRule {
+    fn tag(self) -> u8 {
+        match self {
+            AttackRule::Reach => 1,
+            AttackRule::Block => 2,
+            AttackRule::HitChance => 3,
+            AttackRule::PostBound => 4,
+        }
+    }
+}
+
 impl Assumption {
     fn encode(self, e: &mut Encoder) {
         match self {
             Assumption::StubResult(id) => e.u8(1).u32(id),
-            Assumption::Perception => e.u8(2),
+            Assumption::SightCone => e.u8(2),
             Assumption::KnockOut => e.u8(3),
             Assumption::ProfileStats => e.u8(4),
             Assumption::TickRate => e.u8(5),
@@ -1203,9 +1271,9 @@ impl Assumption {
             Assumption::ZoneAtLoad => e.u8(13),
             Assumption::WalkCompletion => e.u8(14),
             Assumption::ActionChangeOrder => e.u8(15),
-            Assumption::MeleeReach => e.u8(16),
-            Assumption::PowerfulBlowChance => e.u8(17),
-            Assumption::PostBound => e.u8(18),
+            Assumption::AttackPolicy(rule) => e.u8(16).u8(rule.tag()),
+            Assumption::NoiseRadius => e.u8(17),
+            Assumption::AlertPolicy => e.u8(18),
             Assumption::CombatActions => e.u8(19),
             Assumption::HeroDeathLoss => e.u8(20),
         };
@@ -1278,10 +1346,6 @@ pub struct ActionChange {
     pub new: i32,
 }
 
-/// Action ids of the alert states (`crate::ai::actions`) whose delivery records
-/// [`Assumption::Perception`] unless the actor was alerted through the measured noise channel
-/// (`Entity::heard`).
-const ALERT_ACTIONS: [u32; 5] = [140, 141, 142, 143, 151];
 /// Action ids of the knock-out (`crate::ai::actions`) whose delivery records
 /// [`Assumption::KnockOut`] (of a living actor; a dead one fell by a blow and records
 /// [`Assumption::CombatActions`] instead).
@@ -2268,8 +2332,9 @@ impl World {
     /// one whose handler returned or trapped is removed, and one the budget cut short is rolled
     /// back ([`Transaction`]) and stays at the front for the next tick (`vm_tick` delivers the
     /// leftovers before `Hourglass`), where the handler runs again from the start over the
-    /// state it saw the first time. An alert or knock-out action reaching a handler records
-    /// the corresponding assumption; every delivery records the parameter-order hypothesis.
+    /// state it saw the first time. A knock-out or melee action reaching a handler records the
+    /// corresponding assumption (the stealth layer recorded its own sources when the state
+    /// changed, handler or not); every delivery records the parameter-order hypothesis.
     pub(crate) fn vm_deliver_action_changes(&mut self) {
         let mut done = 0usize;
         loop {
@@ -2291,22 +2356,19 @@ impl World {
             if self.vm_out_of_work() {
                 break;
             }
-            // The actor bound to the class: an alert it reached through the measured noise
-            // channel is not a hypothesis (`Entity::heard`); a dead actor's fall is the
-            // melee's, not the knock-out's.
-            let (heard, dead) = self
+            // The actor bound to the class: a dead actor's fall is the melee's, not the
+            // knock-out's.
+            let dead = self
                 .vm
                 .as_ref()
                 .and_then(|vm| {
                     let handle = vm.program.classes.get(change.class as usize)?.element?;
                     match vm.program.elements.get(handle as usize)? {
-                        Element::Actor(i) => {
-                            self.entities.get(*i as usize).map(|e| (e.heard, !e.alive))
-                        }
+                        Element::Actor(i) => self.entities.get(*i as usize).map(|e| !e.alive),
                         _ => None,
                     }
                 })
-                .unwrap_or((false, false));
+                .unwrap_or(false);
             // Open the transaction (the capture is charged; when it does not fit the delivery
             // waits for the next tick like an exhausted handler).
             let captured = self.vm.as_mut().and_then(VmState::capture);
@@ -2321,9 +2383,6 @@ impl World {
             if let Some(vm) = self.vm.as_mut() {
                 vm.transaction = Some(txn);
                 let ids = [change.previous, change.new];
-                if !heard && ids.iter().any(|&a| ALERT_ACTIONS.contains(&(a as u32))) {
-                    vm.assume(Assumption::Perception);
-                }
                 let fallen = ids.iter().any(|&a| KNOCK_OUT_ACTIONS.contains(&(a as u32)));
                 if fallen && !dead {
                     vm.assume(Assumption::KnockOut);
@@ -2939,18 +2998,14 @@ impl World {
                     }
                     advance(vm);
                 }
-                Instr::Call { function, argc } => {
+                Instr::Call { function, argc, .. } => {
                     let params = pop_n(&mut vm.param_stack, argc as usize, &mut vm.counters);
-                    // The caller stays on the `Call`; `pop_frame` steps past it.
+                    // The caller stays on the `Call`; `pop_frame` writes the callee's result
+                    // to the call's destination and steps past it.
                     let class = vm.frames.last().map_or(0, |f| f.class);
                     if !push_frame(vm, class, function, params) {
                         advance(vm);
                     }
-                }
-                Instr::GetCallResult { dst } => {
-                    let v = vm.frames.last().map_or(0, |f| f.call_result);
-                    write(vm, dst, v);
-                    advance(vm);
                 }
                 Instr::PushArg { src } => {
                     let v = read(vm, src);
@@ -3083,22 +3138,32 @@ fn push_frame(vm: &mut VmState, class: u32, function: u32, params: Vec<i32>) -> 
         temps: vec![0; f.temps as usize],
         params,
         result: 0,
-        call_result: 0,
     });
     true
 }
 
-/// Pop the current frame; returns the value when the outermost frame returned.
+/// Pop the current frame; returns the value when the outermost frame returned. A frame that
+/// returns to a caller writes its result to the destination of the caller's [`Instr::Call`],
+/// if the call reads one (the fused `0x0a`), then steps the caller past the call.
 fn pop_frame(vm: &mut VmState) -> Option<i32> {
     let done = vm.frames.pop()?;
-    match vm.frames.last_mut() {
-        Some(parent) => {
-            parent.call_result = done.result;
-            parent.pc = parent.pc.saturating_add(1);
-            None
-        }
-        None => Some(done.result),
+    let Some(parent) = vm.frames.last() else {
+        return Some(done.result);
+    };
+    let dst = match vm
+        .program
+        .classes
+        .get(parent.class as usize)
+        .and_then(|c| c.code.get(parent.pc as usize))
+    {
+        Some(Instr::Call { dst, .. }) => *dst,
+        _ => None,
+    };
+    if let Some(dst) = dst {
+        write(vm, dst, done.result);
     }
+    advance(vm);
+    None
 }
 
 fn read(vm: &mut VmState, s: Slot) -> i32 {
@@ -3364,8 +3429,9 @@ pub(crate) mod tests {
             Instr::Call {
                 function: 2,
                 argc: 1,
+                dst: Some(cv(0)),
             },
-            Instr::GetCallResult { dst: cv(0) },
+            Instr::Nop,
             Instr::LoadInt {
                 dst: tv(0),
                 value: 5,
@@ -4297,8 +4363,9 @@ pub(crate) mod tests {
             Instr::Call {
                 function: 1,
                 argc: 1,
+                dst: Some(cv(0)),
             },
-            Instr::GetCallResult { dst: cv(0) },
+            Instr::Nop,
         ];
         let callee = vec![
             Instr::LoadParam {
@@ -4353,9 +4420,28 @@ pub(crate) mod tests {
                 p.classes[0].code[3] = Instr::Call {
                     function: 1,
                     argc: 0,
+                    dst: None,
                 }
             },
             "instruction 3 out of range",
+        );
+        // A result destination on a callee that leaves no value, or on a function that does
+        // not exist, is refused (finding 3 of Codex review 9).
+        reject(
+            |p| {
+                p.classes[0].functions[1].has_result = false;
+            },
+            "reads the result of function 1",
+        );
+        reject(
+            |p| {
+                p.classes[0].code[3] = Instr::Call {
+                    function: 7,
+                    argc: 1,
+                    dst: None,
+                }
+            },
+            "does not exist",
         );
         reject(
             |p| p.classes[0].code[1] = Instr::Jump { target: 7 },
@@ -4415,7 +4501,6 @@ pub(crate) mod tests {
                     temps: vec![0, 0],
                     params: vec![],
                     result: 0,
-                    call_result: 0,
                 });
             },
             "quiescent",
@@ -4831,10 +4916,12 @@ pub(crate) mod tests {
             Instr::Call {
                 function: 1,
                 argc: 1,
+                dst: None,
             },
             Instr::Call {
                 function: 1,
                 argc: 1,
+                dst: None,
             },
             Instr::Native {
                 id: 3,
@@ -4880,6 +4967,7 @@ pub(crate) mod tests {
         let starved = vec![Instr::Call {
             function: 1,
             argc: 1,
+            dst: None,
         }];
         let level = class(
             "StartUp",
@@ -5570,9 +5658,14 @@ pub(crate) mod tests {
             }]
         );
         assert_eq!(vm.class_vars[1], vec![0, 0, 0]);
+        // The sighting is recorded where it changed the guard's state, before any handler ran
+        // (finding 1 of Codex review 9); the delivery adds the parameter-order hypothesis.
         assert!(
-            !vm.assumptions.contains(&Assumption::Perception),
-            "nothing reached the script yet"
+            vm.assumptions.contains(&Assumption::SightCone)
+                && vm.assumptions.contains(&Assumption::AlertPolicy)
+                && !vm.assumptions.contains(&Assumption::ActionChangeOrder),
+            "{:?}",
+            vm.assumptions
         );
         w.validate().unwrap();
         // The queue is state: hashed, restored, validated.
@@ -5597,7 +5690,7 @@ pub(crate) mod tests {
                 vec![actions::NOTICED as i32, actions::IDLE as i32, 1]
             );
             assert!(vm.pending_action_changes.is_empty());
-            assert!(vm.assumptions.contains(&Assumption::Perception));
+            assert!(vm.assumptions.contains(&Assumption::ActionChangeOrder));
         }
         assert_eq!(w.hashes(), w2.hashes());
         // The alarm follows: one more delivery, never a repeat of the first.
@@ -5610,8 +5703,9 @@ pub(crate) mod tests {
             vec![actions::ALARM as i32, actions::NOTICED as i32, 2]
         );
         w.validate().unwrap();
-        // A class without a handler: its changes are dropped as undeliverable and nothing
-        // reaches the script.
+        // A class without a handler: its changes are dropped as undeliverable and no handler
+        // runs, but the sighting itself is a hypothesis the engine took, so the set names it
+        // (the view cone and the alert sequence it started) and nothing else.
         let level = class("StartUp", 0, &[]);
         let mut guard = class("Guard", 0, &[]);
         guard.element = Some(1);
@@ -5622,9 +5716,202 @@ pub(crate) mod tests {
         assert_eq!(w.entities[1].ai_state, AiState::Noticed);
         let vm = w.vm.as_ref().unwrap();
         assert!(vm.pending_action_changes.is_empty());
-        assert!(vm.assumptions.is_empty());
+        assert_eq!(
+            vm.assumptions.iter().copied().collect::<Vec<_>>(),
+            vec![Assumption::SightCone, Assumption::AlertPolicy]
+        );
         w.validate().unwrap();
     }
+    /// Finding 1 of Codex review 9: an engine hypothesis that mutates authoritative state
+    /// taints a win that depends on it through no `ActionChange` handler at all. A hero runs
+    /// 340 px behind a soldier: within the engine's noise radius (350) but beyond the measured
+    /// bound (330); the soldier hears him and charges into the polygon zone, and the level's
+    /// `CheckVictoryCondition` reads native 97 (observed) on him and returns 1. The guard's
+    /// class has no handler, so nothing of the stealth layer ever reaches a script callback,
+    /// yet the win is tainted by `noise_radius` from the tick of the charge on, through a JSON
+    /// snapshot restored into a fresh world and a checkpoint every 50 ticks. The same scene with
+    /// the soldier at 320 px (the measured band) wins untainted: a win over measured rules
+    /// only. In both the hero crouches after his first running tick (by hand: the posture is
+    /// state) so that the charging soldier neither hears him again nor sees him before the
+    /// win (the crouched range is 125 px, the win happens 199 px away).
+    #[test]
+    fn a_charge_from_the_unmeasured_noise_band_taints_a_win_read_from_native_97() {
+        use crate::ai::AiState;
+        use crate::world::{Gait, Posture};
+        let scene = |distance: i32| {
+            // Elements: hero 0, guard 1; native 97 takes the zone as a location index: the
+            // 400..600 square is location 1.
+            let mut victory = native(97, &[1, 1], Some(tv(0)), 1);
+            victory.push(Instr::SetResult { src: tv(0) });
+            let level = class(
+                "StartUp",
+                0,
+                &[("CheckVictoryCondition", 0, true, 0, 4, victory)],
+            );
+            let mut guard = class("Guard", 0, &[]);
+            guard.element = Some(1);
+            let mut w = mission_world(1, Some(program(vec![level, guard], 1)));
+            // The hero at the far end of the zone running east, the guard `distance` px above
+            // him facing away (up).
+            w.entities[0].x = Fixed::from_int(500);
+            w.entities[0].y = Fixed::from_int(599);
+            w.entities[0].target = Some((Fixed::from_int(560), Fixed::from_int(599)));
+            w.entities[0].gait = Gait::Run;
+            w.entities[1].x = Fixed::from_int(500);
+            w.entities[1].y = Fixed::from_int(599 - distance);
+            w.entities[1].facing256 = 192;
+            w.validate().unwrap();
+            w
+        };
+        let mut w = scene(340);
+        assert!(w.vm.as_ref().unwrap().assumptions.is_empty());
+        w.step(&[]);
+        let g = &w.entities[1];
+        assert_eq!(g.ai_state, AiState::Alerted);
+        assert!(g.heard && g.target.is_some());
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(
+            vm.assumptions.iter().copied().collect::<Vec<_>>(),
+            vec![Assumption::NoiseRadius],
+            "the charge itself is measured; hearing from 340 px is not"
+        );
+        assert!(
+            vm.pending_action_changes.is_empty(),
+            "no handler: nothing queued"
+        );
+        assert!(!vm.mission_won);
+        w.entities[0].posture = Posture::Crouched;
+        // The checkpoint: a JSON snapshot restored into a fresh world replays to the same win.
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
+        let snap: crate::world::Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = mission_world(1, None);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.hashes(), w.hashes());
+        let mut ticks = 0;
+        while !w.vm.as_ref().unwrap().mission_won {
+            w.step(&[]);
+            w2.step(&[]);
+            ticks += 1;
+            if ticks % 50 == 0 {
+                assert_eq!(w.hashes(), w2.hashes(), "checkpoint at {ticks}");
+            }
+            assert!(ticks < 600, "the guard never reached the zone");
+        }
+        assert!(w2.vm.as_ref().unwrap().mission_won);
+        assert_eq!(w.hashes(), w2.hashes());
+        let obs = w.script_observation().unwrap();
+        assert!(obs.mission_won && obs.tainted);
+        assert_eq!(
+            obs.assumptions,
+            vec![Assumption::NoiseRadius],
+            "no handler ran, nothing else was taken"
+        );
+        assert_taint_round_trips(&w, &obs.assumptions);
+        // The measured band: the same charge, the same win, no hypothesis taken.
+        let mut w = scene(320);
+        w.step(&[]);
+        assert!(w.entities[1].heard);
+        assert!(w.vm.as_ref().unwrap().assumptions.is_empty());
+        w.entities[0].posture = Posture::Crouched;
+        let mut ticks = 0;
+        while !w.vm.as_ref().unwrap().mission_won {
+            w.step(&[]);
+            ticks += 1;
+            assert!(ticks < 600);
+        }
+        assert_eq!(w.entities[1].ai_state, AiState::Alerted);
+        let obs = w.script_observation().unwrap();
+        assert!(obs.mission_won && !obs.tainted, "{:?}", obs.assumptions);
+        assert_taint_round_trips(&w, &[]);
+    }
+
+    /// Finding 3 of Codex review 9: a script call and its result read are one instruction. The
+    /// callee's value reaches the call's destination when it returns; a program that reads the
+    /// result of a function without one, or calls a function that does not exist, fails
+    /// `validate` (a snapshot embedding it is refused), and a snapshot that still carries the
+    /// old standalone reader does not deserialise at all.
+    #[test]
+    fn call_results_are_fused_into_the_call_and_validated() {
+        // Initialize: cv0 = seven(); void(): sets its result anyway (hostile), read by nobody.
+        let init = vec![
+            Instr::Call {
+                function: 1,
+                argc: 0,
+                dst: Some(cv(0)),
+            },
+            Instr::Nop,
+            Instr::Call {
+                function: 2,
+                argc: 0,
+                dst: None,
+            },
+        ];
+        let seven = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 7,
+            },
+            Instr::SetResult { src: tv(0) },
+        ];
+        let void = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 5,
+            },
+            Instr::SetResult { src: tv(0) },
+        ];
+        let level = class(
+            "StartUp",
+            2,
+            &[
+                ("Initialize", 0, false, 0, 1, init.clone()),
+                ("seven", 0, true, 0, 1, seven.clone()),
+                ("void", 0, false, 0, 1, void.clone()),
+            ],
+        );
+        let base = program(vec![level], 0);
+        base.validate().unwrap();
+        let w = mission_world(0, Some(base.clone()));
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[0], vec![7, 0]);
+        assert_eq!(vm.counters.faults, 0);
+        assert_quiescent(&w);
+        // Reading the void function's result is refused, in the program and in a snapshot.
+        let mut hostile = base.clone();
+        hostile.classes[0].code[3] = Instr::Call {
+            function: 2,
+            argc: 0,
+            dst: Some(cv(1)),
+        };
+        let err = hostile.validate().unwrap_err();
+        assert!(err.contains("reads the result of function 2"), "{err}");
+        let mut w2 = mission_world(0, None);
+        let mut snap = w.snapshot(None);
+        snap.world.vm.as_mut().unwrap().program = hostile.clone();
+        snap.world.vm.as_mut().unwrap().program_digest = hostile.digest();
+        let err = w2.restore(&snap).unwrap_err();
+        assert!(err.contains("reads the result"), "{err}");
+        // Injected past validation the fabricated value is what the call carries, never a
+        // frame's stale scratch: the trust boundary is `validate`, which the world fails.
+        let mut w3 = mission_world(0, None);
+        w3.vm = Some(VmState::new(hostile, vec![], 9, false));
+        assert!(w3.validate().is_err());
+        // The old standalone reader is not an instruction any more: a snapshot carrying it
+        // does not deserialise.
+        let mut json = serde_json::to_value(w.snapshot(None)).unwrap();
+        json["world"]["vm"]["program"]["classes"][0]["code"][2] =
+            serde_json::json!({"get_call_result": {"dst": {"space": "class", "index": 0}}});
+        assert!(serde_json::from_value::<crate::world::Snapshot>(json).is_err());
+        // A missing callee is refused too.
+        let mut missing = base;
+        missing.classes[0].code[1] = Instr::Call {
+            function: 9,
+            argc: 0,
+            dst: None,
+        };
+        assert!(missing.validate().unwrap_err().contains("does not exist"));
+    }
+
     /// A level whose `Initialize` is `init` and whose `CheckVictoryCondition` returns 1 at
     /// once: the win depends on whatever `init` executed.
     fn win_after(init: Vec<Instr>, guards: usize, lenient: bool) -> World {
