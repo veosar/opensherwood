@@ -644,10 +644,60 @@ fn draw_number(fb: &mut Framebuffer, mut value: i32, x: i32, y: i32, c: Color) {
 /// Render a world into a new framebuffer at its logical viewport size, with an optional background
 /// and sprites from `sprites` for entities that carry animation state.
 #[must_use]
+/// One picture of a pick-up item: a bank frame and its anchor relative to the item's position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemFrame {
+    /// Bank frame index.
+    pub frame: u32,
+    /// Anchor offset of the frame from the item position.
+    pub offset_x: i32,
+    /// Anchor offset of the frame from the item position.
+    pub offset_y: i32,
+}
+
+/// The pictures of the pick-up items by kind and stack (the five bonus animation blocks 190..=194 of
+/// the `BONUS_*` sprite banks, `docs/formats/sprite-animations.md`), loaded by the app; a missing
+/// picture falls back to the placeholder disc.
+#[derive(Debug, Clone, Default)]
+pub struct ItemArt {
+    /// Arrow piles by stack (index = stack - 1).
+    pub arrows: Vec<Option<ItemFrame>>,
+    /// Purses by stack.
+    pub purse: Vec<Option<ItemFrame>>,
+}
+
+impl ItemArt {
+    /// The picture of an item of `kind` with `stack` pieces, if loaded.
+    #[must_use]
+    pub fn for_item(&self, kind: ItemKind, stack: u32) -> Option<ItemFrame> {
+        let list = match kind {
+            ItemKind::Arrows => &self.arrows,
+            ItemKind::Purse => &self.purse,
+            ItemKind::Unknown(_) => return None,
+        };
+        if list.is_empty() {
+            return None;
+        }
+        let i = usize::try_from(stack.saturating_sub(1)).unwrap_or(0);
+        list[i.min(list.len() - 1)]
+    }
+}
+
+/// Draw the scene without item pictures (synthetic scenarios and tests).
 pub fn render(
     world: &World,
     background: Option<&Background>,
     sprites: &mut dyn SpriteSource,
+) -> Framebuffer {
+    render_with_items(world, background, sprites, None)
+}
+
+/// Draw the scene; active pick-up items use `items` when it holds their picture.
+pub fn render_with_items(
+    world: &World,
+    background: Option<&Background>,
+    sprites: &mut dyn SpriteSource,
+    items: Option<&ItemArt>,
 ) -> Framebuffer {
     let mut fb = Framebuffer::new(world.viewport.0, world.viewport.1);
     let (cx, cy) = world.camera;
@@ -669,15 +719,23 @@ pub fn render(
         16,
         palette::GOAL,
     );
-    // Pick-up items lie on the ground: a placeholder disc per active item, coloured by kind
-    // (the original's `BONUS_*` sprite banks are not loaded yet), before the markers and the
-    // sprites.
+    // Pick-up items lie on the ground: the `BONUS_*` picture of the kind and stack when the app
+    // loaded it, else a placeholder disc coloured by kind; before the markers and the sprites.
     if let Some(vm) = world.vm.as_ref() {
         for item in vm.items().into_iter().filter(|it| it.active) {
             let (x, y) = (
                 px(Fixed::from_int(item.x), cx),
                 px(Fixed::from_int(item.y), cy),
             );
+            if let Some((art, frame)) = items
+                .and_then(|a| a.for_item(item.kind, u32::from(item.stack)))
+                .and_then(|art| sprites.frame(art.frame).map(|f| (art, f)))
+            {
+                let fx = to_i32(i64::from(x) + i64::from(art.offset_x));
+                let fy = to_i32(i64::from(y) + i64::from(art.offset_y));
+                fb.blit_rgba(fx, fy, frame.width, frame.height, &frame.rgba);
+                continue;
+            }
             let fill = match item.kind {
                 ItemKind::Purse => palette::ITEM_PURSE,
                 ItemKind::Arrows => palette::ITEM_ARROWS,
