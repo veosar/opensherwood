@@ -1010,6 +1010,14 @@ impl SelectPlayerScreen {
                 });
             }
         }
+        // `hovered` is the pointer's element in the complete item array: a button of the column
+        // or, after them, a row.
+        let buttons = self.column.items.len();
+        let (px, py) = self.pointer;
+        let hovered = (0..self.profiles.len().min(PROFILE_ROWS))
+            .find(|&i| hit(Self::row_rect(i), px, py))
+            .map(|i| buttons + i)
+            .or_else(|| self.column.items.iter().position(|it| hit(it.rect, px, py)));
         MenuState {
             screen: match &self.editor {
                 Some(ed) if ed.rename_of.is_some() => "rename_player".into(),
@@ -1017,7 +1025,7 @@ impl SelectPlayerScreen {
                 None => "select_player".into(),
             },
             items,
-            hovered: self.selected,
+            hovered,
             page: None,
         }
     }
@@ -1435,8 +1443,8 @@ impl OptionsScreen {
         None
     }
 
-    /// State for `observe`: the buttons, then the bars (`bar:<n>`, enabled = selected) and slider
-    /// cells (`slider:<n>:<cell>`).
+    /// State for `observe`: the buttons, then the bars (`bar:<n>`, every one clickable, `selected` =
+    /// on) and the sliders (`slider:<n>`).
     #[must_use]
     pub fn state(&self) -> MenuState {
         let mut items = items_to_protocol(&self.column.items);
@@ -1445,8 +1453,8 @@ impl OptionsScreen {
                 action: format!("bar:{i}"),
                 label: text(&self.strings, *label, "option").to_string(),
                 rect: [r.0, r.1, r.2, r.3],
-                enabled: *on,
-                selected: false,
+                enabled: true,
+                selected: *on,
             });
         }
         for (i, (y, label, value)) in self.sliders().iter().enumerate() {
@@ -2166,7 +2174,7 @@ impl LostPage {
 #[derive(Debug, Clone, Default)]
 pub struct HudState {
     /// Campaign money.
-    pub money: u32,
+    pub money: i32,
     /// Clover charms.
     pub clover: u32,
     /// Selected hero's name lines.

@@ -30,3 +30,14 @@ in order of preference:
 
 Until one lands, "Show movies" stays a disabled plate and the outro level is reached without its movie; the
 harness marks both as not implemented (`ui.items[].enabled = false`).
+
+## Provenance
+
+Observation only (2026-09-05, lead session), GOG English build (executable SHA-256
+`1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`): the first 36 bytes of each file read
+with `xxd -l 36 <file>` from the player's copy under `2047/data/Cinematics/`, field meanings from the public
+container description (MultimediaWiki, "Bink Container", https://wiki.multimedia.cx/index.php/Bink_Container;
+the codec page https://wiki.multimedia.cx/index.php/Bink_Video); file sizes from the directory listing;
+frame counts and rate converted from the header words. No executable analysis. No test depends on this file.
+Status of every claim: `observed` for the table and the header fields, `inferred` for the play-back places
+(menu entry, outro).

@@ -35,7 +35,7 @@ belongs to a pickup sparkle, not to a soldier idle. Correction for section 8.4.)
   7.3 s), the halberdier shows the exclamation emoticon (8.3 s), the HUD portrait switches to the
   combat state (a red band with crossed swords over the name area, rows about 665..700). The same
   order given through the **fist icon** (icon click, then the enemy) produced exactly the same
-  sequence: Robin walked up from the front, no punch was seen, the halberdier raised "!" as Robin
+  sequence: Robin walked up from the front, no punch was seen, the halberdier showed the alert mark as Robin
   arrived, and the sword fight began (recording e5). A knock-out from behind was not possible in this
   scene (no unaware soldier reachable), so the "tie-up / carry" prompt was not observed.
 
@@ -126,8 +126,8 @@ range: **not measured** (no arrows in the start area).
 ## 3. Guard behaviour (question 3)
 
 - The halberdier stands guard and does not chase: he fought where he stood and was still at
-  (934,352) after three restarts' worth of fighting - the manual's "halberdiers rarely leave their
-  post" (`observed`).
+  (934,352) after three restarts' worth of fighting; the manual describes pole-arm guards as
+  post-bound (`observed`).
 - No other soldier joined a 5 min fight at the arch (the gate guards and a swordsman patrolling
   beyond the north wall stayed put), so a lone fight is possible in the tutorial courtyard; the mission-
   wide response of stealth-and-combat.md 8.6 was to a *running* hero in the open.
