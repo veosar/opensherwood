@@ -182,20 +182,30 @@ Reading of the two words (2026-09-05, data files and the first mission's tutoria
 | Field | Reading | Confidence | Evidence |
 |---|---|---|---|
 | `unknown_a` | the item's **kind** | medium | the outro's seven entries carry seven distinct values 12..=18 with `unknown_b` = 1 (seven different camp items in one place); in H01 the four entries with value 0 are the arrow piles (one lies at the archery yard next to the training-start scroll, one is activated by the arrows tutorial scroll, the manual's bow needs arrows; observed picture: a bundle of arrows, and the arrows counter receives the pile), the two with value 9 are purses with money (the steward's purse of objective 3, polled with native 235; the item the money tutorial scroll activates), the four with value 8 sit where the pick-up tutorial scroll sends the player (hypothesis: an empty purse, the throwable object; observed picture: a small pouch, the badge counting 1), and the single value 10 is the item the rescued civilian's scroll activates (hypothesis: the charm the clover counter shows) |
-| `unknown_b` | the **stack size** (1..=5), observed | high | the hand pointer over an item carries a badge with the digit `unknown_b` (three items, three distinct values), and the arrows counter rose by `unknown_b` when a pile was taken (`h01-measurements-2.md` 1.1 / 1.3); `unknown_0x08 = 189 + unknown_b` selects one of the five bonus animation blocks 190..=194 of the item's sprite bank (`sprite-animations.md`: the `BONUS_*` banks carry five blocks of one to three frames), the picture of the pile |
+| `unknown_b` | the **stack size** (1..=5), observed | high | the hand pointer over an item carries a badge with the digit `unknown_b` (three items, three distinct values), and the arrows counter rose by `unknown_b` when a pile was taken (`h01-measurements-2.md` 1.1 / 1.3); `unknown_0x08 = 189 + unknown_b` selects one of the five bonus animation blocks 190..=194 of the item's sprite bank (`sprite-animations.md`: the `BONUS_*` banks carry five such blocks; sixteen frames each on the banks read for the engine, below), the picture of the pile |
 
 The engine (`crates/opensherwood-script`, `MissionBinding::from_mission`; ruleset 15, the measured take since
-ruleset 17) binds every record as `Element::Item { x, y, kind, stack }` with kind 0 = arrows, 9 = purse and every
-other value kept raw as `unknown_a` (8 and 10 included until an oracle run settles their effect): the pointer
+ruleset 17, the pouch kind since ruleset 18) binds every record as `Element::Item { x, y, kind, stack }` with kind
+0 = arrows, 9 = purse, 8 = pouch (the small pouch the pick-up tutorial sends the player to, observed; its effect
+when taken is not) and every other value kept raw as `unknown_a` (10 included until an oracle run settles its
+effect): the pointer
 over an active item is the hand with the stack digit, a left click on the sprite (12 x 14 px above the record's
 position, its bottom edge) orders the selected player character onto it, he arrives with his feet within 8 px of
 the position, stoops for 40 ticks and the item vanishes as the counters change (arrows add the stack to the
 character's arrows: measured; a purse adds a documented policy amount of 25 per stack unit to the mission's
-money and one purse to the character's purses, an unknown kind only disappears: hypotheses, the `item_pickup`
-assumption of ADR-0008), native 235 then reads 1. A walk that passes an item or a ground order beside it takes
-nothing (measured). Not verified against the original: the kinds 8 / 10 and their effect, the money a purse
-holds, whether a kind-8 item feeds the purse counter; the item sprites (`Characters/BONUS_*.rhs`) and their
-sparkle loop are the renderer's (`docs/original/ui-flow.md`).
+money and one purse to the character's purses, a pouch or an unknown kind only disappears: hypotheses, the
+`item_pickup` assumption of ADR-0008), native 235 then reads 1. A walk that passes an item or a ground order
+beside it takes nothing (measured). Not verified against the original: the effect of the kinds 8 / 10, the money
+a purse holds, whether a pouch feeds the purse counter. The item sprites are the renderer's
+(`docs/original/ui-flow.md`): the arrow pile draws `Characters/BONUS_Arrows.rhs`, the purse and the pouch
+`BONUS_MoneyBag.rhs` (of the thirteen `BONUS_*` banks the one small tied pouch, matching the observed picture;
+`BONUS_GoldBagsRansom` is the large ransom sack, the rest foodstuffs, plants, nets, stones, a shield, a wasps'
+nest, the clover and a parchment), the block `190 + stack - 1` of the bank, every frame of it cycled on the
+animation clock (observed in the files: the arrow, purse and parchment banks carry sixteen frames of two table
+ticks each per block (timing word 1), a cycle of 32 table ticks = 1.5 s on the measured clock, the sparkle's period of
+`h01-measurements-2.md` 1.5; `sprite-animations.md`'s "one to three frames per item family" counts something
+else and is to be corrected by its owner); the stoop plays the hero's pick-up block 126 (the idle pose for a
+profile without it) while the reported action id stays the idle one (not measured).
 
 ## `HIRN` (version 2)
 

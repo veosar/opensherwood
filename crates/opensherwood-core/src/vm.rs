@@ -37,14 +37,20 @@
 //! (`VmState::pending_action_changes`, snapshotted and hashed) and delivered to the class bound
 //! to the actor as `ActionChange(previous, new)` exactly once: a change whose class has no
 //! handler is dropped as undeliverable, one whose handler returned (or trapped) is removed, and
-//! one the budget cut short stays at the front of the queue for the next tick. A queued handler
-//! runs as a *transaction* ([`Transaction`]): the script-visible state it may mutate (the VM's
-//! variables, queues, money, RNG; the entities a native touches; the selection and the camera)
-//! is captured before it runs, charged to the budget one unit per value copied, and put back
-//! when the budget cuts the handler short, so the retry on the next tick starts the handler
-//! from the state it saw the first time and no effect is applied twice; one that fails
-//! deterministically (a trap, a fault) is rolled back too and consumed, since it would fail
-//! the same way again. A full queue is a deterministic fault ([`Fault::ActionQueueOverflow`]),
+//! one the budget cut short stays at the front of the queue for the next tick. Every callback
+//! runs as a *transaction* ([`Transaction`]; Codex review 11, finding 2: `Hourglass`,
+//! `CheckVictoryCondition`, `Initialize` / `PostInitialize`, the message, zone, scroll and
+//! action handlers alike): the script-visible state it may mutate (the VM's variables,
+//! objectives, queues, sequences, texts, money, patches, attributes, states, RNG; the entities
+//! a native touches; the selection and the camera) is captured before it runs, charged to the
+//! budget one unit per value copied, and put back when the callback fails deterministically (a
+//! trap, a fault, the frame-limit overflow), so no partial effect of an aborted callback
+//! survives it and the same tick's `CheckVictoryCondition` cannot read a variable an
+//! overflowing `Hourglass` wrote. A queued handler is also put back when the budget cuts it
+//! short, so the retry on the next tick starts it from the state it saw the first time and no
+//! effect is applied twice, and one that aborted is consumed, since it would fail the same
+//! way again; an ordinary callback the budget cuts short keeps what it did (the tick stops
+//! there). A full queue is a deterministic fault ([`Fault::ActionQueueOverflow`]),
 //! never a silent drop, and a call that would exceed [`MAX_FRAMES`] is the sticky
 //! [`Fault::CallStackOverflow`] that aborts the callback where it stands (Codex review 10,
 //! finding 3: the call's destination is never left untouched behind a fabricated value).
@@ -499,8 +505,8 @@ pub enum Element {
 
 /// The kind of a pick-up item, read from the `ZORG` record's `unknown_a` (`docs/formats/rhm.md`,
 /// "`ZORG`": the value pairs the first mission's items with the tutorial scrolls that hand them
-/// out; medium confidence for the two named kinds, everything else stays unknown and is kept by
-/// its raw value).
+/// out; medium confidence for the three named kinds, everything else stays unknown and is kept
+/// by its raw value).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
@@ -509,6 +515,12 @@ pub enum ItemKind {
     /// A purse with money (`unknown_a` 9): taking it adds [`PURSE_MONEY_PER_STACK`] times the
     /// stack to the mission's money and one purse to the character's purses.
     Purse,
+    /// A pouch (`unknown_a` 8: the item the first mission's pick-up tutorial sends the player
+    /// to, observed as a small pouch with the badge counting 1, `docs/original/h01-measurements-2.md`
+    /// 1.1 / 1.5; the empty purse of the throw is the hypothesis of `rhm.md`). Taking it only
+    /// removes it: whether it feeds the purse counter is not measured
+    /// ([`Assumption::ItemPickup`]).
+    Pouch,
     /// A kind the engine does not read yet (`unknown_a` value): taking it only removes it.
     #[serde(rename = "unknown_a")]
     Unknown(u16),
@@ -527,6 +539,7 @@ impl ItemKind {
     pub fn from_field(unknown_a: u16) -> Self {
         match unknown_a {
             0 => ItemKind::Arrows,
+            8 => ItemKind::Pouch,
             9 => ItemKind::Purse,
             other => ItemKind::Unknown(other),
         }
@@ -537,6 +550,7 @@ impl ItemKind {
             ItemKind::Arrows => e.u8(1),
             ItemKind::Purse => e.u8(2),
             ItemKind::Unknown(a) => e.u8(3).u32(u32::from(a)),
+            ItemKind::Pouch => e.u8(4),
         };
     }
 }
@@ -1498,17 +1512,19 @@ pub struct Counters {
     pub out_of_action_true: u64,
     /// Native calls whose argument count differed from the signature (a trap), by id.
     pub arity_mismatches: BTreeMap<u32, u64>,
-    /// Queued callbacks rolled back because the budget cut them short (each is retried whole
-    /// on the next tick).
+    /// Callbacks rolled back: every one that aborted (a trap, a fault, the frame limit) and
+    /// every queued handler the budget cut short (retried whole on the next tick).
     pub transactions_rolled_back: u64,
 }
 
-/// The script-visible state a queued callback may mutate, captured before it runs and put back
-/// when the budget cuts it short (module documentation, "Action changes"). The VM part is a
-/// copy of every mutable field but the program, the digest, the path table, the presence sets
-/// and the queue itself; the world part is the entities the callback's natives touched (captured
-/// lazily through [`World::vm_touch_entity`]), the selection and the camera. Never serialised:
-/// a snapshot is quiescent, no transaction is open between callbacks.
+/// The script-visible state a callback may mutate, captured before it runs and put back when
+/// it aborts (a trap, a fault, the frame-limit overflow: every callback, Codex review 11,
+/// finding 2) or, for a queued handler, when the budget cuts it short (module documentation,
+/// "Action changes"). The VM part is a copy of every mutable field but the program, the
+/// digest, the path table, the presence sets, the taken set, the fault and the queue itself;
+/// the world part is the entities the callback's natives touched (captured lazily through
+/// [`World::vm_touch_entity`]), the selection and the camera. Never serialised: a snapshot is
+/// quiescent, no transaction is open between callbacks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
     class_vars: Vec<Vec<i32>>,
@@ -1620,7 +1636,7 @@ pub struct VmState {
     /// Diagnostics (not serialised, not hashed).
     #[serde(skip)]
     pub counters: Counters,
-    /// The open transaction of a queued callback (only while one runs; never serialised).
+    /// The open transaction of the running callback (only while one runs; never serialised).
     #[serde(skip)]
     pub transaction: Option<Transaction>,
 }
@@ -1692,9 +1708,10 @@ impl VmState {
         self.assumptions.insert(assumption);
     }
 
-    /// Capture the mutable VM part of a [`Transaction`], charging one work unit per value
-    /// copied first; `None` (nothing copied, the budget zero) when the copy does not fit.
-    fn capture(&mut self) -> Option<Transaction> {
+    /// Work units a [`Transaction`] capture costs now: one per value copied (every callback
+    /// pays it before it runs).
+    #[must_use]
+    pub(crate) fn capture_cost(&self) -> u64 {
         let sequences: usize = self
             .sequences
             .iter()
@@ -1714,7 +1731,14 @@ impl VmState {
             + self.inactive_elements.len()
             + unknown
             + 8;
-        if !charge(self, cost as u64) {
+        cost as u64
+    }
+
+    /// Capture the mutable VM part of a [`Transaction`], charging one work unit per value
+    /// copied first; `None` (nothing copied, the budget zero) when the copy does not fit.
+    fn capture(&mut self) -> Option<Transaction> {
+        let cost = self.capture_cost();
+        if !charge(self, cost) {
             return None;
         }
         Some(Transaction {
@@ -2573,19 +2597,7 @@ impl World {
                     }
                 })
                 .unwrap_or(false);
-            // Open the transaction (the capture is charged; when it does not fit the delivery
-            // waits for the next tick like an exhausted handler).
-            let captured = self.vm.as_mut().and_then(VmState::capture);
-            let Some(mut txn) = captured else {
-                if let Some(vm) = self.vm.as_mut() {
-                    inc(&mut vm.counters.budget_aborts);
-                }
-                break;
-            };
-            txn.selected = self.selected;
-            txn.camera = self.camera;
             if let Some(vm) = self.vm.as_mut() {
-                vm.transaction = Some(txn);
                 let ids = [change.previous, change.new];
                 let fallen = ids.iter().any(|&a| KNOCK_OUT_ACTIONS.contains(&(a as u32)));
                 if fallen && !dead {
@@ -2596,24 +2608,13 @@ impl World {
                 }
                 vm.assume(Assumption::ActionChangeOrder);
             }
-            match self.vm_invoke(change.class, function, &[change.previous, change.new]) {
-                CallOutcome::Exhausted => {
-                    self.vm_roll_back();
-                    break;
-                }
-                CallOutcome::Aborted => {
-                    // A deterministic failure (a trap, a fault such as the frame limit):
-                    // the handler's partial effects are put back and the change is
-                    // consumed, since it would fail the same way again.
-                    self.vm_roll_back();
-                    done += 1;
-                }
-                CallOutcome::Returned(_) => {
-                    if let Some(vm) = self.vm.as_mut() {
-                        vm.transaction = None;
-                    }
-                    done += 1;
-                }
+            // The handler runs whole or not at all: an exhausted one (or one whose capture
+            // does not fit the budget) is rolled back and waits for the next tick; a
+            // deterministic failure (a trap, a fault such as the frame limit) is rolled back
+            // and the change consumed, since it would fail the same way again.
+            match self.vm_transact(change.class, function, &[change.previous, change.new], true) {
+                CallOutcome::Exhausted => break,
+                CallOutcome::Aborted | CallOutcome::Returned(_) => done += 1,
             }
         }
         if let Some(vm) = self.vm.as_mut() {
@@ -3063,14 +3064,57 @@ impl World {
         Some(self.vm_invoke(class, function, params))
     }
 
-    /// Run one function to completion (nested script calls included) within the budget: one
-    /// unit per instruction plus one per argument transferred by a call or a native. Every exit
-    /// (a return, a budget abort, a fault, a trap) passes through [`teardown`], so the VM is
+    /// Run one callback to completion (nested script calls included) within the budget as a
+    /// transaction ([`Transaction`]; Codex review 11, finding 2): the script-visible state is
+    /// captured first (charged; a capture that does not fit is [`CallOutcome::Exhausted`]
+    /// with nothing run), one unit per instruction plus one per argument transferred by a
+    /// call or a native is charged as it runs, and an aborted callback (a trap, a fault, the
+    /// frame-limit overflow) is rolled back whole, so no partial effect of a callback that
+    /// failed deterministically (a variable set before the recursion, a teleport) survives
+    /// it. A callback the budget cut short keeps what it did so far (the tick stops there;
+    /// the queued handlers of [`World::vm_deliver_action_changes`] use [`World::vm_transact`]
+    /// with the rollback on exhaustion instead, since they are retried whole). Every exit (a
+    /// return, a budget abort, a fault, a trap) passes through [`teardown`], so the VM is
     /// quiescent afterwards whatever the program did.
     pub(crate) fn vm_invoke(&mut self, class: u32, function: u32, params: &[i32]) -> CallOutcome {
+        self.vm_transact(class, function, params, false)
+    }
+
+    /// [`World::vm_invoke`] with the exhaustion policy explicit: `roll_back_exhausted` puts
+    /// the capture back when the budget cut the callback short (a queued handler, retried
+    /// whole next tick); otherwise the partial effects stay. An aborted callback is always
+    /// rolled back; a returned one commits (the transaction is dropped).
+    fn vm_transact(
+        &mut self,
+        class: u32,
+        function: u32,
+        params: &[i32],
+        roll_back_exhausted: bool,
+    ) -> CallOutcome {
+        let captured = self.vm.as_mut().and_then(VmState::capture);
+        let Some(mut txn) = captured else {
+            if let Some(vm) = self.vm.as_mut() {
+                inc(&mut vm.counters.budget_aborts);
+            }
+            return CallOutcome::Exhausted;
+        };
+        txn.selected = self.selected;
+        txn.camera = self.camera;
+        if let Some(vm) = self.vm.as_mut() {
+            vm.transaction = Some(txn);
+        }
         let outcome = self.vm_run(class, function, params);
         if let Some(vm) = self.vm.as_mut() {
             teardown(vm);
+        }
+        match outcome {
+            CallOutcome::Aborted => self.vm_roll_back(),
+            CallOutcome::Exhausted if roll_back_exhausted => self.vm_roll_back(),
+            CallOutcome::Exhausted | CallOutcome::Returned(_) => {
+                if let Some(vm) = self.vm.as_mut() {
+                    vm.transaction = None;
+                }
+            }
         }
         outcome
     }
@@ -3673,7 +3717,7 @@ pub(crate) mod tests {
         let vm = w.vm.as_ref().unwrap();
         assert!(vm.counters.budget_aborts >= 1);
         assert!(vm.frames.is_empty());
-        assert!(vm.counters.instructions >= WORK_BUDGET_PER_TICK);
+        assert!(vm.counters.instructions + vm.capture_cost() >= WORK_BUDGET_PER_TICK);
         assert_eq!(vm.budget, 0, "the tick stopped at zero");
     }
 
@@ -4237,8 +4281,9 @@ pub(crate) mod tests {
 
     #[test]
     fn unknown_natives_trap_in_strict_mode() {
-        // Initialize: cv0 = 1; n999(5); cv1 = 1 -- the trap stops the callback before cv1.
-        // Hourglass keeps running afterwards (cv2 counts ticks).
+        // Initialize: cv0 = 1; n999(5); cv1 = 1 -- the trap stops the callback before cv1 and
+        // rolls it back (every callback is a transaction: cv0 is 0 again). Hourglass keeps
+        // running afterwards (cv2 counts ticks).
         let mut init = vec![Instr::LoadInt {
             dst: cv(0),
             value: 1,
@@ -4271,7 +4316,8 @@ pub(crate) mod tests {
         let mut w = mission_world(0, Some(program(vec![level], 0)));
         let vm = w.vm.as_ref().unwrap();
         assert!(vm.faulted() && !vm.lenient);
-        assert_eq!(vm.class_vars[0], vec![1, 0, 0]);
+        assert_eq!(vm.class_vars[0], vec![0, 0, 0], "rolled back");
+        assert_eq!(vm.counters.transactions_rolled_back, 1);
         assert_eq!(vm.counters.traps, 1);
         assert_eq!(vm.counters.unknown_natives.get(&999), Some(&1));
         assert!(vm.unknown_calls.is_empty());
@@ -4279,7 +4325,7 @@ pub(crate) mod tests {
         w.step(&[]);
         w.step(&[]);
         let vm = w.vm.as_ref().unwrap();
-        assert_eq!(vm.class_vars[0], vec![1, 0, 2], "later callbacks still run");
+        assert_eq!(vm.class_vars[0], vec![0, 0, 2], "later callbacks still run");
         assert!(w.script_observation().unwrap().faulted);
         // The policy and the log are hashed; a log without lenient mode is refused.
         let h = w.hashes();
@@ -5292,13 +5338,14 @@ pub(crate) mod tests {
         // 13 units of dispatch (10 instructions, 3 arguments), the edges for native 97, one per
         // entity (hero and three guards) plus the edges of the one player character for 204.
         let used = WORK_BUDGET_PER_TICK - vm.budget;
-        assert_eq!(used, 13 + edges + (4 + edges));
+        let capture = vm.capture_cost();
+        assert_eq!(used, capture + 13 + edges + (4 + edges));
         // Too little for native 97: nothing is scanned, its result is 0 (stored by the fused
         // call) and the callback aborts at its next instruction with the budget at zero.
         let aborts = vm.counters.budget_aborts;
         let vm = w.vm.as_mut().unwrap();
         vm.class_vars[0] = vec![5, 5];
-        vm.budget = edges;
+        vm.budget = capture + edges;
         assert_eq!(
             w.vm_callback(0, callbacks::HOURGLASS, &[1]),
             Some(CallOutcome::Exhausted)
@@ -5311,7 +5358,7 @@ pub(crate) mod tests {
         // Enough for native 97 and the dispatch up to 204, not for 204's first entity.
         let vm = w.vm.as_mut().unwrap();
         vm.class_vars[0] = vec![5, 5];
-        vm.budget = 7 + edges + 5;
+        vm.budget = capture + 7 + edges + 5;
         assert_eq!(
             w.vm_callback(0, callbacks::HOURGLASS, &[1]),
             Some(CallOutcome::Exhausted)
@@ -7165,6 +7212,105 @@ pub(crate) mod tests {
             vm.pending_action_changes.is_empty(),
             "consumed, not retried"
         );
+        assert_eq!(vm.counters.transactions_rolled_back, 1);
+        assert!(vm.transaction.is_none());
+        w.validate().unwrap();
+    }
+
+    /// Finding 2 of Codex review 11: an ordinary callback that overflows the call stack keeps
+    /// nothing. `Hourglass` sets cv0 = 1, teleports the hero (native 96) and recurses to the
+    /// frame limit; `CheckVictoryCondition` returns cv0: the same tick does not win, later
+    /// ticks do not win, the teleport is rolled back, through a snapshot / restore, with an
+    /// empty assumption set (the win would have been untainted); and an `Initialize` that
+    /// overflows at load leaves the variable and the money it set as they were.
+    #[test]
+    fn an_overflowing_hourglass_is_rolled_back_and_never_wins() {
+        let recurse = |callee: u32| {
+            vec![Instr::Call {
+                function: callee,
+                argc: 0,
+                dst: None,
+            }]
+        };
+        let mut hourglass = vec![Instr::LoadInt {
+            dst: cv(0),
+            value: 1,
+        }];
+        hourglass.extend(native(96, &[0, 0], None, 0));
+        hourglass.extend(recurse(2));
+        let victory = vec![Instr::SetResult { src: cv(0) }];
+        let level = class(
+            "StartUp",
+            1,
+            &[
+                ("Hourglass", 1, false, 0, 2, hourglass),
+                ("CheckVictoryCondition", 0, true, 0, 1, victory),
+                ("Recurse", 0, false, 0, 1, recurse(2)),
+            ],
+        );
+        let mut w = mission_world(0, Some(program(vec![level], 0)));
+        let unchanged = |w: &World, tick: u64| {
+            let vm = w.vm.as_ref().unwrap();
+            assert_eq!(vm.class_vars[0], vec![0], "tick {tick}: cv0 rolled back");
+            assert_eq!(
+                (w.entities[0].x.round(), w.entities[0].y.round()),
+                (100, 100),
+                "tick {tick}: the teleport was rolled back"
+            );
+            assert!(
+                !vm.mission_won && !vm.mission_lost,
+                "tick {tick}: no win from a rolled-back variable"
+            );
+            assert_eq!(vm.fault, Some(Fault::CallStackOverflow), "tick {tick}");
+            assert!(vm.transaction.is_none(), "tick {tick}");
+            assert!(
+                vm.assumptions.is_empty(),
+                "tick {tick}: {:?}",
+                vm.assumptions
+            );
+        };
+        w.step(&[]);
+        unchanged(&w, 0);
+        assert_eq!(w.vm.as_ref().unwrap().counters.transactions_rolled_back, 1);
+        assert!(!w.script_observation().unwrap().mission_won);
+        w.validate().unwrap();
+        assert_quiescent(&w);
+        let snap = w.snapshot(None);
+        for t in 1..5 {
+            w.step(&[]);
+            unchanged(&w, t);
+            assert_eq!(
+                w.vm.as_ref().unwrap().counters.transactions_rolled_back,
+                1 + t
+            );
+        }
+        let mut w2 = mission_world(0, None);
+        w2.restore(&snap).unwrap();
+        for _ in 1..5 {
+            w2.step(&[]);
+        }
+        unchanged(&w2, 4);
+        assert_eq!(w2.hashes(), w.hashes());
+        // The load-time callback: cv0 = 7; n237(77); the recursion. Nothing of it survives.
+        let mut init = vec![Instr::LoadInt {
+            dst: cv(0),
+            value: 7,
+        }];
+        init.extend(native(237, &[77], None, 0));
+        init.extend(recurse(1));
+        let level = class(
+            "StartUp",
+            1,
+            &[
+                ("Initialize", 0, false, 0, 1, init),
+                ("Recurse", 0, false, 0, 1, recurse(1)),
+            ],
+        );
+        let w = mission_world(0, Some(program(vec![level], 0)));
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[0], vec![0]);
+        assert_eq!(vm.money, 0);
+        assert_eq!(vm.fault, Some(Fault::CallStackOverflow));
         assert_eq!(vm.counters.transactions_rolled_back, 1);
         assert!(vm.transaction.is_none());
         w.validate().unwrap();

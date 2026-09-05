@@ -731,6 +731,43 @@ def test_the_soldiers_blows_wear_robin_down_to_the_lost_page(binary, game_dir, t
         assert snapshot is not None and hashes_after_snapshot is not None
 
 
+def test_a_reciprocal_fight_replays_with_equal_hashes(binary, game_dir, tmp_path):
+    """Finding 6 of Codex review 11: the attack order, the walk into reach and the reciprocal fight
+    with the halberdier (his jittered swings draw the gameplay RNG, Robin's strikes are blocked)
+    recorded as a `ReplayV1` from the first briefing page with a checkpoint every 25 ticks, several
+    of them inside the fight, then stopped and played back (`replay.play`): no divergence at any
+    checkpoint, every checkpoint compared, the same final hashes and assumption set, both fighters
+    still naming each other after the playback."""
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=600) as e:
+        e.reset({"mission": "H01_Lin_VL"}, seed=0)
+        e.replay_start(checkpoint_every=25)
+        e.skip_briefing()
+        robin_index, gi = _start_fight(e)
+        p, g = _entity(e, robin_index), _entity(e, gi)
+        assert p["ai_state"] == "fighting" and g["ai_state"] == "fighting"
+        assert p["foe"] == g["id"] and g["foe"] == p["id"]
+        # Long enough for the soldier's first swings (318 +- 32 ticks apart, two in three landing).
+        e.step(400)
+        p, g = _entity(e, robin_index), _entity(e, gi)
+        assert p["foe"] == g["id"] and g["foe"] == p["id"], (p["ai_state"], g["ai_state"])
+        assert p["in_combat"] and g["in_combat"]
+        assert p["alive"] and g["hp"] == 80, "Robin's strikes never land; he is worn down slowly"
+        final = e.observe(entities=False)
+        rec = e.replay_stop(path="replays/h01_reciprocal_fight.jsonl")
+        assert rec["checkpoints"] >= 16, rec["checkpoints"]
+        played = e.replay_play(jsonl=rec["jsonl"])
+        assert played["first_divergence"] is None, played
+        assert played["checkpoints_ok"] == rec["checkpoints"]
+        assert played["hashes"] == final["hashes"]
+        after = e.observe(entities=False)
+        assert after["tick"] == final["tick"]
+        assert after["script"]["assumptions"] == final["script"]["assumptions"]
+        assert {"attack_policy": "hit_chance"} in after["script"]["assumptions"], after["script"]["assumptions"]
+        p, g = _entity(e, robin_index), _entity(e, gi)
+        assert p["foe"] == g["id"] and g["foe"] == p["id"]
+        assert p["ai_state"] == "fighting" and g["ai_state"] == "fighting"
+
+
 def _stroke(e, x, y):
     """The forward stroke (`combat-measurements.md` 1.4): the left button held, the pointer moved
     80 px right and 20 px up, released; two ticks of canonical events at viewport (x, y)."""
@@ -917,9 +954,9 @@ def _walk_pickup(e, robin_index, max_ticks):
 def test_first_mission_lists_its_items_and_the_tip_scrolls_are_active(binary, game_dir, tmp_path):
     """H01 (`docs/original/h01-win-path.md` 2, `docs/formats/rhm.md` "ZORG"): the eleven pick-up items
     are listed in `observe.script.items` with positions, kinds and stacks read from the file: four arrow
-    piles, two purses with money, four of the unread kind 8 and one of kind 10, every stack in 1..=5; the
-    level's `Initialize` deactivates the seven the scripts hand out later (both purses among them) and
-    leaves four lying about (three arrow piles and a kind-8 item); with the items before the scrolls, the
+    piles, two purses with money, four pouches (kind 8, the pick-up tutorial's) and one of the unread kind
+    10, every stack in 1..=5; the level's `Initialize` deactivates the seven the scripts hand out later
+    (both purses among them) and leaves four lying about (three arrow piles and a pouch); with the items before the scrolls, the
     servant's scroll (113) and the two beggar-tip scrolls (120 / 121) are active after load. Nobody has
     taken anything: native 235 reads 0 everywhere, Robin starts with 0 arrows and 0 purses."""
     from collections import Counter
@@ -930,10 +967,10 @@ def test_first_mission_lists_its_items_and_the_tip_scrolls_are_active(binary, ga
         assert sorted(items) == list(range(100, 111)), sorted(items)
         key = lambda it: it["kind"] if isinstance(it["kind"], str) else f"unknown_a {it['kind']['unknown_a']}"  # noqa: E731
         kinds = Counter(key(it) for it in items.values())
-        assert kinds == {"arrows": 4, "purse": 2, "unknown_a 8": 4, "unknown_a 10": 1}, kinds
+        assert kinds == {"arrows": 4, "purse": 2, "pouch": 4, "unknown_a 10": 1}, kinds
         assert all(1 <= it["stack"] <= 5 and not it["taken"] for it in items.values())
         active = Counter(key(it) for it in items.values() if it["active"])
-        assert active == {"arrows": 3, "unknown_a 8": 1}, active
+        assert active == {"arrows": 3, "pouch": 1}, active
         # The two records the tests act on, by element id: the walkway pile and the steward's purse.
         pile = _element(e, WALKWAY_PILE)
         assert pile["kind"] == "item" and pile["item_kind"] == "arrows" and items[WALKWAY_PILE]["active"]
