@@ -14,14 +14,29 @@
 //! sequence barrier (`vm.rs`, [`crate::vm::SeqToken`]); natives 202 (non-blocking) and 203 (a
 //! page that holds its sequence) both queue a `TextRequest` whose `blocking` flag tells them apart.
 //!
+//! Signatures. [`NATIVE_SIGNATURES`] is the one table of `id -> (arity, has_result)` for every
+//! implemented and stub native, derived from the arity column of the spec's rows (the corpus has
+//! exactly one arity per id and reads a result either always or never). The translator checks it
+//! for diagnostics, `Program::validate` refuses a program whose call sites disagree with it (the
+//! trust boundary), and the dispatcher checks it again: a call whose argument count differs from
+//! the signature is a deterministic trap like an unknown native (counted in
+//! `counters.arity_mismatches`), so no required argument ever defaults to 0.
+//!
+//! Hypotheses and taint (ADR-0008, "Hypotheses and taint"). Whenever an outcome depends on a
+//! stub's value or on an engine hypothesis, the VM records an [`Assumption`]: a stub's result
+//! consumed by the script (`GetNativeResult`, `vm.rs`), a call of one of the [`NEVER_WIN_STUBS`],
+//! and here natives 90 / 128 reporting a knock-out. The set is hashed and observable; a mission
+//! result reached with a non-empty set is not authoritative.
+//!
 //! Handles. Elements, locations, paths, doors and patches are their table indices (`NONE_HANDLE`
 //! = none); a location value with [`LOCATION_POINT_BIT`] set packs an actor position (native 95).
 
+use crate::ai::ActorStatus;
 use crate::fixed::Fixed;
 use crate::geom::point_in_polygon;
 use crate::vm::{
-    Element, LOCATION_POINT_BIT, Location, MAX_QUEUE, MISSION_VARIABLES, Message, NONE_HANDLE,
-    Objective, Program, SeqElement, UnknownCall, charge_budget, location_of_point,
+    Assumption, Element, LOCATION_POINT_BIT, Location, MAX_QUEUE, MISSION_VARIABLES, Message,
+    NONE_HANDLE, Objective, Program, SeqElement, UnknownCall, charge_budget, location_of_point,
 };
 
 /// Saturating increment of a per-id diagnostic counter.
@@ -65,6 +80,210 @@ pub const IMPLEMENTED_NATIVES: &[u32] = &[
     217, 233, 236, 237, 240, 245, 250,
 ];
 
+/// Stubs whose zero result keeps a mission from ever being won or lost ("never-win" rows of the
+/// stub policy table: banner capture 178 / 223 / 234, the used flag 222, the door state 182, the
+/// interpolation 213, the hunt 70 and the party join 232): calling one records
+/// [`Assumption::StubResult`] whether or not the script reads a result.
+pub const NEVER_WIN_STUBS: &[u32] = &[70, 178, 182, 213, 222, 223, 232, 234];
+
+/// Signature of a native: the number of arguments its call sites push and whether the script
+/// reads a result (`0x0d`) after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeSignature {
+    /// Arguments popped by the call.
+    pub arity: u32,
+    /// The call leaves a result the script may read.
+    pub has_result: bool,
+}
+
+/// The signature of every implemented and stub native (`id, arity, has_result`), one row per
+/// id in ascending order, from the arity column of the native call table of
+/// `docs/formats/scb.md` (130 and 137 have arity-only rows: their effect is unknown, the
+/// arity is the corpus observation). Pinned by `signature_table_covers_the_known_natives`.
+pub const NATIVE_SIGNATURES: &[(u32, u32, bool)] = &[
+    (0, 2, false),
+    (1, 2, false),
+    (2, 1, true),
+    (3, 1, true),
+    (4, 1, true),
+    (5, 1, true),
+    (6, 1, true),
+    (7, 1, true),
+    (8, 1, true),
+    (9, 1, true),
+    (10, 1, true),
+    (12, 1, true),
+    (13, 1, true),
+    (18, 1, false),
+    (20, 1, false),
+    (24, 2, false),
+    (26, 2, false),
+    (27, 1, false),
+    (28, 1, false),
+    (29, 0, false),
+    (30, 0, false),
+    (31, 0, false),
+    (32, 0, false),
+    (33, 1, false),
+    (34, 1, false),
+    (35, 1, false),
+    (38, 2, false),
+    (39, 1, false),
+    (41, 1, false),
+    (42, 2, false),
+    (43, 2, false),
+    (44, 4, false),
+    (45, 3, false),
+    (46, 4, false),
+    (47, 4, false),
+    (48, 2, false),
+    (49, 2, false),
+    (50, 2, false),
+    (51, 2, false),
+    (52, 1, false),
+    (53, 1, false),
+    (54, 0, false),
+    (55, 0, false),
+    (56, 1, false),
+    (59, 3, false),
+    (62, 3, false),
+    (64, 3, false),
+    (69, 2, false),
+    (70, 6, false),
+    (72, 1, false),
+    (73, 1, false),
+    (74, 0, true),
+    (75, 0, true),
+    (79, 1, true),
+    (80, 1, true),
+    (81, 1, true),
+    (85, 1, true),
+    (86, 2, true),
+    (87, 1, true),
+    (88, 1, true),
+    (89, 1, true),
+    (90, 1, true),
+    (92, 2, false),
+    (93, 1, true),
+    (94, 2, false),
+    (95, 1, true),
+    (96, 2, false),
+    (97, 2, true),
+    (98, 2, true),
+    (99, 1, false),
+    (101, 1, true),
+    (102, 3, false),
+    (103, 1, false),
+    (109, 2, false),
+    (110, 4, false),
+    (111, 0, true),
+    (112, 1, false),
+    (113, 1, false),
+    (114, 1, false),
+    (117, 3, false),
+    (118, 2, true),
+    (119, 0, true),
+    (125, 2, false),
+    (126, 1, true),
+    (128, 1, true),
+    (130, 3, false),
+    (132, 2, false),
+    (133, 3, false),
+    (134, 2, false),
+    (135, 1, false),
+    (137, 2, false),
+    (140, 2, false),
+    (143, 2, false),
+    (144, 1, true),
+    (145, 1, false),
+    (149, 1, false),
+    (150, 1, false),
+    (152, 1, false),
+    (156, 2, false),
+    (159, 0, true),
+    (160, 2, true),
+    (161, 1, true),
+    (163, 0, true),
+    (164, 1, true),
+    (172, 0, true),
+    (173, 0, true),
+    (177, 2, false),
+    (178, 1, false),
+    (180, 2, false),
+    (182, 1, true),
+    (186, 2, false),
+    (187, 2, false),
+    (188, 2, false),
+    (189, 2, false),
+    (191, 2, false),
+    (192, 0, true),
+    (193, 1, true),
+    (194, 2, false),
+    (195, 1, true),
+    (196, 2, false),
+    (197, 2, true),
+    (198, 3, false),
+    (199, 3, false),
+    (200, 2, false),
+    (202, 1, false),
+    (203, 1, false),
+    (204, 1, true),
+    (205, 2, true),
+    (210, 1, true),
+    (211, 0, true),
+    (212, 4, false),
+    (213, 3, true),
+    (214, 1, false),
+    (215, 1, true),
+    (216, 0, true),
+    (217, 1, true),
+    (218, 2, false),
+    (219, 1, false),
+    (220, 1, false),
+    (221, 1, true),
+    (222, 1, true),
+    (223, 1, true),
+    (224, 4, false),
+    (226, 1, false),
+    (228, 3, false),
+    (229, 1, false),
+    (231, 1, true),
+    (232, 1, false),
+    (233, 2, false),
+    (234, 0, true),
+    (235, 1, true),
+    (236, 0, true),
+    (237, 1, false),
+    (240, 1, true),
+    (243, 1, false),
+    (244, 2, false),
+    (245, 0, true),
+    (246, 1, true),
+    (247, 1, false),
+    (248, 1, true),
+    (250, 1, true),
+    (253, 1, true),
+    (254, 2, false),
+    (255, 1, true),
+    (256, 1, true),
+    (258, 1, true),
+    (261, 0, true),
+    (264, 3, false),
+];
+
+/// The signature of a known (implemented or stub) native; `None` for an unknown id, which has no
+/// signature to check (it traps in strict mode, is recorded in lenient mode).
+#[must_use]
+pub fn native_signature(id: u32) -> Option<NativeSignature> {
+    NATIVE_SIGNATURES
+        .binary_search_by_key(&id, |&(i, _, _)| i)
+        .ok()
+        .map(|k| {
+            let (_, arity, has_result) = NATIVE_SIGNATURES[k];
+            NativeSignature { arity, has_result }
+        })
+}
+
 /// Facing units per sixteenth of a turn: the scripts' sixteen directions (natives 93 / 94 / 133,
 /// 0..=15) on the entities' 256-unit facing. Which direction is 0 is not in the spec; the engine
 /// takes direction 0 as facing 0 (the `+x` axis, `world::facing_of`) and counts the same way, a
@@ -104,6 +323,9 @@ pub fn unpack_point(v: i32) -> Option<(i32, i32)> {
     }
 }
 
+/// Argument `i` of a call. `native_call` checks the argument count against the signature before
+/// dispatching, so every index an arm uses is present; the fallback is unreachable and exists
+/// only to keep the accessor total.
 fn arg(args: &[i32], i: usize) -> i32 {
     args.get(i).copied().unwrap_or(0)
 }
@@ -121,7 +343,8 @@ fn polygon_in(program: &Program, value: i32) -> Option<&[(i32, i32)]> {
 
 impl World {
     /// Dispatch native `id` with `args`; returns its result (0 when it has none), or `None`
-    /// when an unknown native traps (strict mode).
+    /// when the call traps: an unknown native in strict mode, or an argument count that differs
+    /// from the native's signature (in either mode: a required argument never defaults).
     pub(crate) fn native_call(&mut self, id: u32, args: &[i32]) -> Option<i32> {
         if native_status(id) == NativeStatus::Unknown {
             let vm = self.vm.as_mut()?;
@@ -137,6 +360,12 @@ impl World {
                 });
             }
             return Some(0);
+        }
+        if native_signature(id).is_none_or(|s| s.arity as usize != args.len()) {
+            let vm = self.vm.as_mut()?;
+            count(&mut vm.counters.arity_mismatches, id);
+            vm.faulted = true;
+            return None;
         }
         let collecting = self.vm.as_ref().is_some_and(|vm| vm.collecting.is_some());
         if collecting
@@ -326,43 +555,55 @@ impl World {
             // interiors: every actor is outdoors, so the policy table's value is 1 iff the
             // building argument is the outdoors handle (-1).
             98 => i32::from(arg(args, 1) == NONE_HANDLE),
+            // The status predicates 85 / 87 / 90 / 128 / 240 all derive from one state function,
+            // [`ActorStatus::of`] (`ai.rs`), so they cannot contradict each other.
             // 85 (actor) -> bool: unusable, dead or removed (medium): dead or deactivated.
             85 => match self.entity_of(arg(args, 0)) {
-                Some(i) => i32::from(!self.entities[i].alive || !self.entities[i].active),
+                Some(i) => {
+                    let s = ActorStatus::of(&self.entities[i]);
+                    i32::from(s.dead || !s.present)
+                }
                 None => 0,
             },
-            // 87 (actor) -> bool: dead (medium): the `Dead` state or `alive` cleared (no damage
-            // model kills anyone yet). 88 / 89 (tied up, netted / captured: unknown / low) stay
-            // stubs returning 0: no such state exists.
+            // 87 (actor) -> bool: dead (medium; no damage model kills anyone yet). 88 / 89 (tied
+            // up, netted / captured: unknown / low) stay stubs returning 0: no such state exists.
             87 => match self.entity_of(arg(args, 0)) {
-                Some(i) => {
-                    let e = &self.entities[i];
-                    i32::from(!e.alive || e.ai_state == crate::ai::AiState::Dead)
-                }
+                Some(i) => i32::from(ActorStatus::of(&self.entities[i]).dead),
                 None => 0,
             },
             // 90 (actor) -> bool: out of action (medium): dead, or knocked down / lying knocked
-            // out (`crate::ai::AiState::out_of_action`; a soldier getting up is back: hypothesis).
-            // Counted in `counters.out_of_action_true` when it reports 1 (diagnostic).
+            // out (a soldier getting up is back: hypothesis). Counted in
+            // `counters.out_of_action_true` when it reports 1 (diagnostic); a knock-out reported
+            // here reaches the script, so it records `Assumption::KnockOut`.
             90 => match self.entity_of(arg(args, 0)) {
                 Some(i) => {
-                    let e = &self.entities[i];
-                    let out = !e.alive || e.ai_state.out_of_action();
-                    if out && let Some(vm) = self.vm.as_mut() {
+                    let s = ActorStatus::of(&self.entities[i]);
+                    if s.out_of_action
+                        && let Some(vm) = self.vm.as_mut()
+                    {
                         vm.counters.out_of_action_true =
                             vm.counters.out_of_action_true.saturating_add(1);
+                        if s.knocked_out {
+                            vm.assumptions.insert(Assumption::KnockOut);
+                        }
                     }
-                    i32::from(out)
+                    i32::from(s.out_of_action)
                 }
                 None => 0,
             },
-            // 128 (actor) -> bool: able to act (medium-low): alive, active and on its feet
-            // (`crate::ai::AiState::standing`); elements that are not actors can act (the policy
-            // table's 1: with 0 no zone would react).
+            // 128 (actor) -> bool: able to act (medium-low): alive, active and on its feet;
+            // elements that are not actors can act (the policy table's 1: with 0 no zone would
+            // react). A 0 caused by a knock-out records `Assumption::KnockOut`.
             128 => match self.entity_of(arg(args, 0)) {
                 Some(i) => {
-                    let e = &self.entities[i];
-                    i32::from(e.alive && e.active && e.ai_state.standing())
+                    let s = ActorStatus::of(&self.entities[i]);
+                    if !s.can_act
+                        && s.knocked_out
+                        && let Some(vm) = self.vm.as_mut()
+                    {
+                        vm.assumptions.insert(Assumption::KnockOut);
+                    }
+                    i32::from(s.can_act)
                 }
                 None => 1,
             },
@@ -370,7 +611,7 @@ impl World {
             // other elements are present unless deactivated (113).
             240 => {
                 if let Some(i) = self.entity_of(arg(args, 0)) {
-                    i32::from(self.entities[i].active)
+                    i32::from(ActorStatus::of(&self.entities[i]).present)
                 } else {
                     let handle = arg(args, 0);
                     i32::from(
@@ -617,10 +858,14 @@ impl World {
                 0
             }
             // Stub natives: recorded per id (see `STUB_NATIVES`), result 0 or the policy value
-            // of `STUB_POLICY_VALUES`.
+            // of `STUB_POLICY_VALUES`. A never-win stub taints the outcome on the call itself;
+            // any other stub taints it when the script reads its result (`vm.rs`).
             other => {
                 if let Some(vm) = self.vm.as_mut() {
                     count(&mut vm.counters.stub_natives, other);
+                    if NEVER_WIN_STUBS.contains(&other) {
+                        vm.assumptions.insert(Assumption::StubResult(other));
+                    }
                 }
                 STUB_POLICY_VALUES
                     .iter()
@@ -807,12 +1052,63 @@ impl World {
     }
 }
 
-/// Message of natives 43 / 44 / 109 / 110: `(target, msg[, arg[, arg2]])`.
+/// Message of natives 43 / 44 / 109 / 110: `(target, msg[, arg[, arg2]])`. The two-argument
+/// forms (43 / 109) carry no arguments for the handler, which reads them as 0: the only place an
+/// absent argument has a meaning.
 fn message_of(args: &[i32]) -> Message {
     Message {
         target: arg(args, 0),
         id: arg(args, 1),
         arg: arg(args, 2),
         arg2: arg(args, 3),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The signature table names exactly the implemented and stub natives, once each, in
+    /// ascending order (a binary search relies on it), and the natives the engine implements
+    /// agree with it on what they consume.
+    #[test]
+    fn signature_table_covers_the_known_natives() {
+        let mut ids: Vec<u32> = NATIVE_SIGNATURES.iter().map(|&(id, _, _)| id).collect();
+        assert!(ids.windows(2).all(|w| w[0] < w[1]), "ascending, unique");
+        let mut known: Vec<u32> = IMPLEMENTED_NATIVES
+            .iter()
+            .chain(STUB_NATIVES)
+            .copied()
+            .collect();
+        known.sort_unstable();
+        ids.sort_unstable();
+        assert_eq!(ids, known);
+        for id in IMPLEMENTED_NATIVES {
+            assert!(
+                !STUB_NATIVES.contains(id),
+                "{id} is both implemented and a stub"
+            );
+        }
+        assert_eq!(
+            native_signature(237),
+            Some(NativeSignature {
+                arity: 1,
+                has_result: false
+            })
+        );
+        assert_eq!(
+            native_signature(236),
+            Some(NativeSignature {
+                arity: 0,
+                has_result: true
+            })
+        );
+        assert_eq!(native_signature(999), None);
+        for id in NEVER_WIN_STUBS {
+            assert_eq!(native_status(*id), NativeStatus::Stub, "{id}");
+        }
+        for (id, _) in STUB_POLICY_VALUES {
+            assert!(native_signature(*id).is_some_and(|s| s.has_result), "{id}");
+        }
     }
 }

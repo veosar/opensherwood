@@ -120,6 +120,10 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
         assert not vm["sequence_active"]
         hero = _hero(e)
         assert vm["camera_target"] == [(hero["x"] + 128) // 256, (hero["y"] + 128) // 256]
+        # Nothing depended on a stub or a hypothesis yet (the world has not ticked): the briefing
+        # is authoritative.
+        sc = e.observe(entities=False)["script"]
+        assert sc["tainted"] is False and sc["assumptions"] == []
         # Nothing left to dismiss: Enter in the world is not a page dismissal.
         e.step(1, key_press("enter"))
         assert e.observe(entities=False).get("ui") is None
@@ -129,8 +133,15 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
         assert vm["counters"]["callbacks"] >= 600
         assert vm["counters"]["budget_aborts"] == 0 and vm["counters"]["faults"] == 0
         assert not vm["faulted"] and vm["counters"]["traps"] == 0
+        assert vm["counters"]["arity_mismatches"] == {}
         assert not vm["mission_won"]
-        assert e.observe(entities=False)["script"]["objectives"][0]["done"] is False
+        sc = e.observe(entities=False)["script"]
+        assert sc["objectives"][0]["done"] is False
+        # The taint of a normal run (ADR-0008, "Hypotheses and taint"): the steward objective polls
+        # the purse object's "taken" predicate (stub 235) and a wait / the Hourglass time was consumed
+        # under the 25-versus-60 tick reading; neither perception nor a knock-out reached the script.
+        assert sc["tainted"] is True
+        assert sc["assumptions"] == [{"stub_result": 235}, "tick_rate"], sc["assumptions"]
 
 
 def test_first_mission_script_is_deterministic_across_processes(binary, game_dir, tmp_path):
@@ -294,8 +305,30 @@ def test_every_mission_script_translates_and_runs_300_ticks_strictly(binary, gam
                 )
             if vm["mission_won"] or vm["mission_lost"]:
                 mismatches.append(f"{name}: won={vm['mission_won']} lost={vm['mission_lost']} by tick {EARLY_TICKS}")
+            if c["arity_mismatches"]:
+                mismatches.append(f"{name}: native arity mismatches {c['arity_mismatches']}")
+            sc = e.observe(entities=False)["script"]
+            if sc["tainted"] != bool(sc["assumptions"]):
+                mismatches.append(f"{name}: tainted={sc['tainted']} but assumptions={sc['assumptions']}")
     assert sum(v is None for v in EXPECTED_AT_LOAD.values()) == 2, "exactly the two Sherwood missions are refused"
     assert not mismatches, "\n".join(mismatches)
+
+
+def test_starting_money_is_seeded_before_initialize(binary, game_dir, tmp_path):
+    """`MissionSpec.starting_money` (the profile's money, 100 by default) reaches the VM before
+    `Initialize` runs and nothing overwrites it afterwards (review 7, finding 3): H10's `Initialize`
+    sets 100000 with native 237 (`docs/formats/scb.md`, "Natives at load per mission") and holds it
+    right after `reset`; H01, whose script only reads the money, keeps the seed."""
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
+        e.reset({"mission": "H10_Yor_VL"}, seed=1)
+        assert e.call("debug.vm")["money"] == 100000
+        e.step(5)
+        assert e.call("debug.vm")["money"] == 100000
+        e.reset({"mission": FIRST_MISSION}, seed=1)
+        assert e.call("debug.vm")["money"] == 100
+        e.skip_briefing()
+        e.step(5)
+        assert e.call("debug.vm")["money"] == 100
 
 
 def walk_to(e, tx, ty, max_steps=400):

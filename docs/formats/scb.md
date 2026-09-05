@@ -251,7 +251,9 @@ consists mostly of the call, described by what its name says it does (`scb_seman
 | 125 | (actor, 1 / 3 / 7) | actor AI mode: 1 right after a new patrol path (132), 7 when a rail point is reached (then an animation), 3 once | low | 65 uses |
 | 126 | (actor) -> state | actor state code compared with 1 and 2 (`== 1`, `op28 1`, `op28 2`); polled in `Hourglass`, tested on the actor entering a zone | low | 18 uses |
 | 128 | (actor) -> bool | actor is able to act (alive / conscious): required `== 1` by every zone that reacts to an actor, by the "eject" helper, and by the "all enemies out of action" helpers for an enemy to still count | medium-low | 103 uses, all `== 1` |
+| 130 | (actor, actor, 1) | effect unknown; arity-only row (the engine records it as a stub, the signature table needs the arity) | high (arity), none (effect) | 3 uses (`ReachPoint`, `Hourglass`, a chase-check helper), the third argument always 1 |
 | 132 | (actor, path) | assign patrol path (actor follows the `RAIL`) | high | 949 uses with `n9`; "new post", "swap path" and "alert reserve soldier" helpers |
+| 137 | (location, 0 / 1) | effect unknown; arity-only row (recorded stub; H01 calls it after the drawbridge rope is cut) | high (arity), none (effect) | 43 uses in message handlers and after lever / sword / arrow activations; the location from 6 or 95, the flag an immediate 0 (29) or 1 (14) |
 | 134 / 135 | (actor, flag) / (actor) | lock / unlock the actor's AI | medium | "lock / unlock everybody's AI" and "lock NPC AI" helpers; msg 13 freeze in H01 |
 | 140 | (actor, 0/1) | patrol mode flag (run?) set right after 132 | low | |
 | 143 | (element, 0 / 1) | animated element off / on (an "initialise animations" helper switches 14 map elements off at start, handlers switch them on) | low | 20 uses; the 113 / 114 pattern of the H01 lights |
@@ -486,7 +488,7 @@ and bound, an `Actor` scratch variable, a "going away" flag).
   11 = shift the shooting timer [H]; 12 = the son goes to location 9 then to scroll 114 [M: 45, 233]; 13 =
   freeze (`arg = 1`) or unfreeze all NPCs (loop over all elements with 80 / 134 / 135 / 197) [L]; 14 = the
   servant's cutscene (texts 8, 9, 10 [H], camera to location 9 [M], the son moves [M], message 12 [H], camera
-  back [M]); 15 = after the drawbridge rope is cut, `n137(location 14, 1)` [L: 137 is not in the table].
+  back [M]); 15 = after the drawbridge rope is cut, `n137(location 14, 1)` [L: 137 has an arity-only row].
 - `Finalize`: empty [H].
 
 **Actor classes** (archers, the sergeant, the target soldiers, the lancers, a shield-bearer, the persecuted
@@ -542,8 +544,8 @@ What a first VM needs for this mission: the calling convention above; natives 0-
 43-45, 48-52, 56, 59, 64, 69, 74, 75, 79, 80, 85, 90, 95, 96, 99, 103, 109, 111, 113, 114, 117, 118, 130,
 132-135, 137, 140, 144, 145, 186, 191, 193, 194, 196, 197, 198, 202-204, 211, 216-218, 233, 235, 243, 4 and
 5 as at least stubs; message delivery to classes by element; the periodic `Hourglass`; the sequence model
-(30 / 32 / 31 with blocking elements). Natives 130 and 137 are used by this mission but have no table
-row yet (single uses; effect unknown); 103 has one (low).
+(30 / 32 / 31 with blocking elements). Natives 130 and 137 are used by this mission and have arity-only
+rows (effect unknown); 103 has one (low).
 
 ## Engine notes
 
@@ -621,6 +623,28 @@ is a hypothesis from the actor classes comparing the second parameter with 141 a
 first with 137 (objects never fire it yet), pinned by `action_changes_reach_the_actors_class`. `FilterAIEvent`
 is not called. `debug.vm.counters.out_of_action_true` counts the calls of 90 that reported 1 (diagnostic);
 the `script` observation's `actor_elements` lists the element handle of every entity.
+
+Signatures, action changes and taint (2026-09-05, ruleset 10, hash schema 12 / snapshot schema 13, Codex review
+7): the arity column above is the one signature table of the engine (`natives.rs`, `NATIVE_SIGNATURES`: `id ->
+arity, has_result` for every implemented and stub id; the corpus has exactly one arity per id and reads a
+result either always or never, and every `0x0d` directly follows its `0x0c` in all 39 files, 20079 reads). The
+translator refuses a call site whose push count differs and a result read after a native without one;
+`Program::validate` repeats both checks (a snapshot cannot smuggle a mismatch in) and the dispatcher traps a
+mismatch instead of reading a missing argument as 0. Every change of an actor's action id is queued
+(`pending_action_changes`, hashed) and delivered to `ActionChange` exactly once, an exhausted tick delivering
+it at the start of the next. Every script-visible value that depends on a stub or an engine hypothesis
+records an assumption (`VmState::assumptions`, hashed; `observe.script.tainted` / `assumptions`, ADR-0008
+"Hypotheses and taint"): a stub's result consumed by the script (`{"stub_result": id}`), a call of a never-win
+stub (70 / 178 / 182 / 213 / 222 / 223 / 232 / 234), an alert or knock-out reaching the script
+(`perception`, `knock_out`), the knock-out resistance consulted (`profile_stats`), a native-56 wait or the
+`Hourglass` time consumed (`tick_rate`), the app's successor rule (`campaign_graph`) and lenient asset
+fallbacks (`lenient_assets`). A won or lost mission of a tainted VM is not authoritative. Strict run of
+2026-09-05 (seed 1, 300 ticks, no page dismissed): no mission traps or mismatches an arity; H01 records
+nothing until the briefing is dismissed, then `stub_result 235` (the purse object's "taken" predicate the
+steward objective polls) and `tick_rate` on its first tick; the tactical missions record their never-win
+banner stubs (178 / 223), the town missions 222 / 235 and the campaign flags 195 / 253. The starting money is
+`MissionSpec::starting_money` (100 by default), applied before `Initialize`: H10 holds 100000 right after
+its load and nothing overwrites it.
 
 ## Cross-references
 

@@ -13,8 +13,9 @@ use opensherwood_core::{
 
 use crate::mission;
 use crate::ui::{
-    Briefing, Credits, HudState, MainMenu, MenuAction, PauseMenu, ProfileSummary, SaveEntry,
-    SaveOutcome, SaveScreen, UiAssets,
+    Briefing, Credits, HudState, MainMenu, MenuAction, OptionsOutcome, OptionsScreen, PauseMenu,
+    ProfileSummary, SaveEntry, SaveOutcome, SaveScreen, SelectOutcome, SelectPlayerScreen,
+    Settings, UiAssets,
 };
 use crate::ui_assets;
 use opensherwood_core::Geometry;
@@ -201,6 +202,11 @@ pub struct Session {
     hud_press_pending: bool,
     /// Next rolling auto-save slot.
     autosave_slot: u32,
+    /// Player settings (loaded from `settings.json` under the artifact directory).
+    settings: Settings,
+    /// Profiles (`profiles.json` under the artifact directory) and the selected one.
+    profiles: Vec<ProfileSummary>,
+    profile_index: usize,
     /// Scenario and seed of the world that is installed (for Restart).
     current: Option<(Scenario, u64)>,
     /// HUD values.
@@ -227,6 +233,13 @@ enum Screen {
         screen: SaveScreen,
         from_pause: bool,
     },
+    /// Options screens; `from_pause` says where Back returns.
+    Options {
+        screen: OptionsScreen,
+        from_pause: bool,
+    },
+    /// Select player screen.
+    SelectPlayer(SelectPlayerScreen),
     /// Credits.
     Credits(Credits),
 }
@@ -351,6 +364,9 @@ impl Session {
             notice: None,
             hud_press_pending: false,
             autosave_slot: 0,
+            settings: Settings::default(),
+            profiles: vec![ProfileSummary::default()],
+            profile_index: 0,
             current: None,
             hud: HudState::default(),
             lenient_natives: false,
@@ -378,7 +394,8 @@ impl Session {
             .ui_assets
             .as_ref()
             .map_or(&[][..], |a| a.strings.as_slice());
-        self.screen = Screen::Menu(MainMenu::new(ProfileSummary::default(), strings));
+        let profile = self.profile();
+        self.screen = Screen::Menu(MainMenu::new(profile, strings));
         self.frame = None;
         self.start_scenario_music();
     }
@@ -672,6 +689,110 @@ impl Session {
         self.frame = None;
     }
 
+    /// The profile in use.
+    fn profile(&self) -> ProfileSummary {
+        self.profiles
+            .get(self.profile_index)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Open the select player screen.
+    fn open_select_player(&mut self) {
+        let _ = self.ui_assets();
+        let strings: Vec<String> = self
+            .ui_assets
+            .as_ref()
+            .map(|a| a.strings.clone())
+            .unwrap_or_default();
+        let selected = (!self.profiles.is_empty()).then_some(self.profile_index);
+        self.screen = Screen::SelectPlayer(SelectPlayerScreen::new(
+            self.profiles.clone(),
+            selected,
+            &strings,
+        ));
+        self.frame = None;
+    }
+
+    /// Write `profiles.json`.
+    fn save_profiles(&self) {
+        let path = self.artifacts.join("profiles.json");
+        let doc = json!({ "selected": self.profile_index, "profiles": self.profiles });
+        match serde_json::to_string_pretty(&doc) {
+            Ok(text) => {
+                if let Err(e) = std::fs::write(&path, text) {
+                    eprintln!("opensherwood: profiles {}: {e}", path.display());
+                }
+            }
+            Err(e) => eprintln!("opensherwood: profiles: {e}"),
+        }
+    }
+
+    /// Read `profiles.json` if present (with `load_settings`, at startup).
+    fn load_profiles(&mut self) {
+        let path = self.artifacts.join("profiles.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(doc) = serde_json::from_str::<Value>(&text) else {
+            return;
+        };
+        if let Ok(list) = serde_json::from_value::<Vec<ProfileSummary>>(doc["profiles"].clone())
+            && !list.is_empty()
+        {
+            self.profile_index = doc["selected"]
+                .as_u64()
+                .map_or(0, |v| v as usize)
+                .min(list.len() - 1);
+            self.profiles = list;
+        }
+    }
+
+    /// Open the options screens from the main menu or the pause menu.
+    fn open_options(&mut self, from_pause: bool) {
+        let _ = self.ui_assets();
+        let strings: Vec<String> = self
+            .ui_assets
+            .as_ref()
+            .map(|a| a.strings.clone())
+            .unwrap_or_default();
+        self.screen = Screen::Options {
+            screen: OptionsScreen::new(self.settings.clone(), &strings),
+            from_pause,
+        };
+        self.frame = None;
+    }
+
+    /// Apply settings: volumes reach the audio output, the rest is kept (and written to
+    /// `settings.json` under the artifact directory).
+    fn apply_settings(&mut self, settings: Settings) {
+        if let Some(audio) = self.audio.as_mut() {
+            audio.set_music_volume(f32::from(settings.volumes[2]) / 10.0);
+            audio.set_effects_volume(f32::from(settings.volumes[0]) / 10.0);
+        }
+        self.settings = settings;
+        let path = self.artifacts.join("settings.json");
+        match serde_json::to_string_pretty(&self.settings) {
+            Ok(text) => {
+                if let Err(e) = std::fs::write(&path, text) {
+                    eprintln!("opensherwood: settings {}: {e}", path.display());
+                }
+            }
+            Err(e) => eprintln!("opensherwood: settings: {e}"),
+        }
+    }
+
+    /// Read `settings.json` and `profiles.json` if present (called once at startup by `main`).
+    pub fn load_settings(&mut self) {
+        self.load_profiles();
+        let path = self.artifacts.join("settings.json");
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && let Ok(s) = serde_json::from_str::<Settings>(&text)
+        {
+            self.settings = s;
+        }
+    }
+
     /// Leave the load / save screen the way it was entered.
     fn leave_saves(&mut self, from_pause: bool) {
         if from_pause && self.world.is_some() {
@@ -868,6 +989,8 @@ impl Session {
                         self.screen = Screen::Credits(Credits::new(crate::window::TICK_RATE));
                     }
                     Some(MenuAction::Load) => self.open_saves(false, false),
+                    Some(MenuAction::Options) => self.open_options(false),
+                    Some(MenuAction::SelectPlayer) => self.open_select_player(),
                     Some(other) => eprintln!("opensherwood: menu action {other:?} not implemented"),
                     None => {}
                 }
@@ -887,6 +1010,47 @@ impl Session {
                     // in the VM; the next page, if any, is shown by `sync_text_screen`.
                     let _ = pages;
                     self.dismiss_text();
+                }
+            }
+            Screen::SelectPlayer(screen) => {
+                let mut outcome = None;
+                for e in events {
+                    if let Some(o) = screen.handle(*e) {
+                        outcome = Some(o);
+                        break;
+                    }
+                }
+                self.frame = None;
+                match outcome {
+                    None => {}
+                    Some(SelectOutcome::Leave) => self.open_menu(),
+                    Some(SelectOutcome::Changed) => {
+                        self.profiles = screen.profiles.clone();
+                        self.profile_index = screen.selected.unwrap_or(0);
+                        self.save_profiles();
+                    }
+                    Some(SelectOutcome::Select(i)) => {
+                        self.profiles = screen.profiles.clone();
+                        self.profile_index = i.min(self.profiles.len().saturating_sub(1));
+                        self.save_profiles();
+                        self.open_menu();
+                    }
+                }
+            }
+            Screen::Options { screen, from_pause } => {
+                let from_pause = *from_pause;
+                let mut outcome = None;
+                for e in events {
+                    if let Some(o) = screen.handle(*e) {
+                        outcome = Some(o);
+                        break;
+                    }
+                }
+                self.frame = None;
+                match outcome {
+                    None => {}
+                    Some(OptionsOutcome::Back) => self.leave_saves(from_pause),
+                    Some(OptionsOutcome::Apply(settings)) => self.apply_settings(settings),
                 }
             }
             Screen::Saves { screen, from_pause } => {
@@ -946,6 +1110,12 @@ impl Session {
                     // without one (or when it cannot load) the main menu follows.
                     match self.next_mission.clone() {
                         Some(next) => {
+                            // The successor rule is a hypothesis of the campaign graph reading.
+                            if let Some(w) = self.world.as_mut() {
+                                w.record_assumption(
+                                    opensherwood_core::vm::Assumption::CampaignGraph,
+                                );
+                            }
                             if let Err(e) = self.reset(Scenario::Mission(next.clone()), 0) {
                                 eprintln!("opensherwood: cannot start {next}: {e}");
                                 self.open_menu();
@@ -976,6 +1146,7 @@ impl Session {
                     Some(MenuAction::Continue) => self.screen = Screen::World,
                     Some(MenuAction::Save) => self.open_saves(true, true),
                     Some(MenuAction::Load) => self.open_saves(false, true),
+                    Some(MenuAction::Options) => self.open_options(true),
                     Some(MenuAction::Restart) => {
                         if let Some((scenario, seed)) = self.current.clone()
                             && let Err(e) = self.reset(scenario, seed)
@@ -1106,6 +1277,8 @@ impl Session {
                 Some(st)
             }
             Screen::Saves { screen, .. } => Some(screen.state()),
+            Screen::Options { screen, .. } => Some(screen.state()),
+            Screen::SelectPlayer(screen) => Some(screen.state()),
             Screen::Credits(c) => Some(c.state()),
         }
     }
@@ -1356,6 +1529,8 @@ impl Session {
             Screen::Debriefing(_) => "debriefing",
             Screen::Credits(_) => "credits",
             Screen::Saves { .. } => "saves",
+            Screen::Options { .. } => "options",
+            Screen::SelectPlayer(_) => "select_player",
         };
         h.update(kind.as_bytes());
         h.update(b"\0");
@@ -1608,6 +1783,7 @@ impl Session {
                 let (mut spec, profiles) =
                     mission::build_spec_checked(&mission_file, info, geometry, lenient_assets())?;
                 spec.lenient_natives = self.lenient_natives;
+                spec.starting_money = i32::try_from(self.profile().money).unwrap_or(0);
                 let mut world = World::new_mission(scenario, seed, &spec)?;
                 let catalog = self.load_catalog(&profiles)?;
                 if !catalog.sets.is_empty() {
@@ -1622,15 +1798,10 @@ impl Session {
 
     /// Make a freshly built world the session's world: the screen is the world, the session tick
     /// is 0, and snapshot handles, queued input and any recording belonged to the previous world.
-    fn install(&mut self, mut world: World, background: Option<Background>) {
+    fn install(&mut self, world: World, background: Option<Background>) {
         self.screen = Screen::World;
         self.current = Some((world.scenario.clone(), world.seed));
-        // The script reads the player's money (native 236) rather than setting it: it is campaign
-        // state, seeded from the profile (the default profile's starting money until profiles exist).
-        // Done before any tick, so replays and snapshots see it from tick 0.
-        if let Some(vm) = world.vm.as_mut() {
-            vm.money = i32::try_from(ProfileSummary::default().money).unwrap_or(0);
-        }
+
         if let Scenario::Mission(name) = &world.scenario {
             let name = name.clone();
             self.load_mission_texts(&name);
@@ -1650,7 +1821,7 @@ impl Session {
         self.notice = None;
         // Presentation state derived from the installed world, never from session history.
         self.hud = HudState {
-            money: ProfileSummary::default().money,
+            money: self.profile().money,
             clover: 0,
             hero_name: self.hero_name_lines(),
         };
@@ -1692,6 +1863,8 @@ impl Session {
                 }
                 Screen::Credits(c) => c.render(self.ui_assets.as_ref()),
                 Screen::Saves { screen, .. } => screen.render(self.ui_assets.as_ref()),
+                Screen::Options { screen, .. } => screen.render(self.ui_assets.as_ref()),
+                Screen::SelectPlayer(screen) => screen.render(self.ui_assets.as_ref()),
                 Screen::Briefing(_) | Screen::Debriefing(_) | Screen::Pause(_) | Screen::World => {
                     let in_mission = matches!(
                         self.world.as_ref().map(|w| &w.scenario),
@@ -2191,6 +2364,8 @@ impl Session {
                         .collect::<Vec<_>>(),
                     "mission_won": vm.mission_won,
                     "mission_lost": vm.mission_lost,
+                    "tainted": vm.tainted(),
+                    "assumptions": vm.assumptions,
                     "money": vm.money,
                     "sequence_active": !vm.sequences.is_empty(),
                     "sequences": vm.sequences.len(),

@@ -66,7 +66,12 @@ NPC's program walks, script native 140) and `fell_backward`. Enemy soldiers that
 and on their feet perceive: a player character inside their view cone (half angle 45 degrees, range 200 px,
 100 px when crouched; occluders ignored) or a running player character within 150 px is a stimulus. A
 knocked-out soldier is out of action for `KNOCK_OUT_BASE_TICKS` (600) scaled by `(100 - p4) / 100`; `p4` >=
-100 makes the blow fail. All of it is in the snapshot, validated and hashed (`actors`).
+100 makes the blow fail. All of it is in the snapshot, validated and hashed (`actors`); `validate` holds the
+layer's invariants (`dead` only with `alive` false, a timer exactly in the timed states, attack orders from a
+player character to an enemy soldier, alert states on enemy soldiers only). Perception and the path searches
+the alert states issue share one per-tick work budget (`ai::AI_WORK_PER_TICK`, 2^24: every entity inspected
+and every soldier / player character pair tested costs one unit, a search its `nav.rs` units); when it runs
+out mid-scan the world's `ai_cursor` (in the snapshot and the `world` hash) marks where the next tick resumes.
 
 ## Replays
 
@@ -122,7 +127,7 @@ expires), and `restore` while a replay is being recorded.
 | `{"synthetic": "corridor"}` | no | 640x480 room, a player, a patrolling guard, three obstacles, a goal |
 | `{"map_view": {"map": "sherwood", "ambiance": "Day"}}` | yes | the retail background of that map with the synthetic units on it and a scrollable camera |
 | `{"mission": "<name>"}` | yes | the retail mission's background, walkable geometry, occluders and actors (NPC, civilian and `TOTO` sprites from the profile table `Configuration/profile.cpf`, see `docs/formats/profile.md`; a default sprite with a logged warning when an entry is unavailable; heroes still in file order; hidden player characters start inactive); NPCs follow their rail programs (walk the rail back and forth, face, wait, glance, loop; see `docs/formats/rhm.md` "Rail programs"), NPCs without a rail stand idle; the mission script (`Data/Levels/<name>.scb`) runs in the core VM (objectives, texts, sequences, messages, zones, activation, patrols; see below); enemy soldiers perceive the player characters and can be knocked out (see "Stealth layer"); viewport 1024x768 |
-| `{"menu": "main"}` | yes | the original main menu; `observe` returns a `ui` object (`screen` = `main_menu`, `briefing`, `pause_menu`, `dialog`, `debriefing`, `credits`, `load` or `save` (the list rows appear as items with `action` = `row:<name>`); `items` with actions and rectangles; `hovered`; briefing `page`; `credits` reports the scroll offset in `page[0]`) while a screen is shown; clicking Play! loads the first mission behind its briefing; Escape in a mission opens the pause menu (Continue / Restart / Quit with confirmation); menus never tick the world; left clicks on HUD widgets act on the interface (kneel / standing figures crouch / stand the selection, other widgets consume the click) and never reach the map |
+| `{"menu": "main"}` | yes | the original main menu; `observe` returns a `ui` object (`screen` = `main_menu`, `briefing`, `pause_menu`, `dialog`, `debriefing`, `credits`, `load`, `save`, `options`, `options_graphics`, `options_sounds`, `options_shortcuts`, `select_player` or `new_player` (list rows appear as items with `action` = `row:<name>`, option bars as `bar:<n>` with `enabled` = selected, sliders as `slider:<n>` with the value in the label); `items` with actions and rectangles; `hovered`; briefing `page`; `credits` reports the scroll offset in `page[0]`) while a screen is shown; clicking Play! loads the first mission behind its briefing; Escape in a mission opens the pause menu (Continue / Restart / Quit with confirmation); menus never tick the world; left clicks on HUD widgets act on the interface (kneel / standing figures crouch / stand the selection, other widgets consume the click) and never reach the map |
 
 ## Scripts
 
@@ -131,9 +136,14 @@ done}]` in the order the script added them), `texts` (pending text indices of th
 shown), `mission_won`, `mission_lost` (`CheckVictoryCondition` returned 1 / 2; both sticky), `sequence_active`,
 `camera_target` (map pixels set by the last camera native),
 `debriefing`, `unknown_natives` (`{id: count}` of natives without an implementation that were called),
-`faulted` (an unknown native stopped a callback), `lenient` and `unknown_calls` (see below), and
+`faulted` (an unknown native stopped a callback), `lenient` and `unknown_calls` (see below),
 `actor_elements` (the script element handle of every entity by entity index, -1 for entities the script
-cannot address: the handle native 3 returns, so a test can aim at the actor a script polls). The app dismisses
+cannot address: the handle native 3 returns, so a test can aim at the actor a script polls), and the taint of
+ADR-0008 ("Hypotheses and taint"): `tainted` (a script-visible value depended on a stub's result or an engine
+hypothesis, so `mission_won` / `mission_lost` are not authoritative) with `assumptions`, the recorded
+`{"stub_result": id}` / `"perception"` / `"knock_out"` / `"profile_stats"` / `"tick_rate"` /
+`"campaign_graph"` / `"lenient_assets"` entries in canonical order (snapshotted and hashed; a normal run of the
+first mission carries `{"stub_result": 235}` and `"tick_rate"` from its first tick after the briefing). The app dismisses
 the text at the front of the queue through `World::vm_dismiss_text` when the briefing parchment closes (one
 dismissal per page, on Enter, Escape or a click on the page). Tests dismiss pages the same way, with canonical
 input: `Engine.skip_briefing()` sends Enter once per page (one session tick each, recorded by an active
@@ -143,8 +153,9 @@ replay). `debug.vm` is inspection only and cannot dismiss a page.
 mission_lost, money, sequence_active, sequences, faulted, lenient, unknown_calls, pending_messages, camera_target, debriefing,
 mission_vars, counters, rng_draws}` (`money` is the script's integer of natives 236 / 237); `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
 `traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives`,
-`objective_done_before_added` and `out_of_action_true` (native 90 calls that reported an actor knocked out or
-dead). Its one mutation, `debug.vm {"win": true}`, marks the mission won: a documented
+`objective_done_before_added`, `out_of_action_true` (native 90 calls that reported an actor knocked out or
+dead), `arity_mismatches` (`{id: count}` of native calls trapped because their argument count differed from the
+signature table) and `action_changes_dropped` (action changes lost to a full queue). Its one mutation, `debug.vm {"win": true}`, marks the mission won: a documented
 harness shortcut used only by the end-of-mission flow test (`test_mission_won_shows_the_debriefing_then_the_menu`),
 because no mission can be won yet through play; it is not a player action and no other test may use it.
 

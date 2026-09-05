@@ -7,9 +7,16 @@
 //! `0x24` is `>=` (its Desperados name), `0x28` is `!=`, `0x2b` is a fixed-point `<`, a jump to
 //! `0xffff` (two occurrences, an unresolved `break` in a switch) returns from the function, and
 //! `0x14` immediates are rounded to 24.8 fixed point.
+//!
+//! Native call sites are checked against the core's signature table
+//! (`opensherwood_core::natives::NATIVE_SIGNATURES`): a known native called with another number
+//! of pushes than its arity, or a `0x0d` after a native that leaves no result (or after anything
+//! but a `0x0c`), is a translation error. `Program::validate` repeats the check in the core; here
+//! it names the class and quad.
 
 use std::collections::BTreeMap;
 
+use opensherwood_core::natives::native_signature;
 use opensherwood_core::vm::{
     BinOp, Class, Element, Function, Instr, Location, Program, Slot, Space,
 };
@@ -543,10 +550,48 @@ fn translate_class(
                 }
                 let argc = pushed_args;
                 pushed_args = 0;
+                if let Some(sig) = native_signature(id)
+                    && sig.arity != argc
+                {
+                    return Err(quad_err(
+                        ci,
+                        c,
+                        pc,
+                        format!(
+                            "native {id} called with {argc} arguments; its signature takes {}",
+                            sig.arity
+                        ),
+                    ));
+                }
                 Instr::Native { id, argc }
             }
-            // 0x0d: read the native result (high).
-            0x0d => Instr::GetNativeResult { dst: slot(q.a)? },
+            // 0x0d: read the native result (high); it directly follows the call (every one of
+            // the corpus does) and that native must leave a result.
+            0x0d => {
+                let call = pc.checked_sub(1).and_then(|p| c.quads.get(p));
+                match call {
+                    Some(prev) if prev.opcode == 0x0c => {
+                        let id = u32::from(prev.a);
+                        if native_signature(id).is_some_and(|s| !s.has_result) {
+                            return Err(quad_err(
+                                ci,
+                                c,
+                                pc,
+                                format!("reads the result of native {id}, which has none"),
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(quad_err(
+                            ci,
+                            c,
+                            pc,
+                            "reads a native result without a native call before it",
+                        ));
+                    }
+                }
+                Instr::GetNativeResult { dst: slot(q.a)? }
+            }
             // 0x0e: jump to quad `a` (high); `0xffff` is an unresolved label: leave the function.
             0x0e => {
                 if q.a == 0xffff {
@@ -762,6 +807,8 @@ mod tests {
             script: Some(program),
             rails: Vec::new(),
             lenient_natives: false,
+            starting_money: 0,
+            assumptions: std::collections::BTreeSet::new(),
         };
         World::new_mission(Scenario::Mission("T".into()), 1, &spec).unwrap()
     }
@@ -1046,9 +1093,27 @@ mod tests {
         bad.quads[1] = q(0x09, 0, 0, 0);
         assert!(translate(&script(bad), &binding()).is_err());
         // Parameter read beyond the count.
-        let mut bad = ok;
+        let mut bad = ok.clone();
         bad.quads[1] = q(0x08, TV, 0, 4);
         assert!(translate(&script(bad), &binding()).is_err());
+        // A native called with the wrong number of pushes (n237 takes one), a result read
+        // after a native without one (n237 again) and a `0x0d` with no call before it.
+        let mut bad = ok.clone();
+        bad.quads[2] = q(0x0c, 237, 0, 0);
+        bad.quads[3] = q(0x01, 0, 0, 0);
+        let err = translate(&script(bad), &binding()).unwrap_err().to_string();
+        assert!(err.contains("native 237 called with 0"), "{err}");
+        let mut bad = ok.clone();
+        bad.quads[3] = q(0x0c, 237, 0, 0);
+        let err = translate(&script(bad), &binding()).unwrap_err().to_string();
+        assert!(err.contains("237") && err.contains("has none"), "{err}");
+        let mut bad = ok;
+        bad.quads[1] = q(0x0d, TV, 0, 0);
+        bad.quads[2] = q(0x01, 0, 0, 0);
+        bad.quads[3] = q(0x01, 0, 0, 0);
+        bad.quads[4] = q(0x01, 0, 0, 0);
+        let err = translate(&script(bad), &binding()).unwrap_err().to_string();
+        assert!(err.contains("without a native call"), "{err}");
         assert!(matches!(
             translate(
                 &Script {

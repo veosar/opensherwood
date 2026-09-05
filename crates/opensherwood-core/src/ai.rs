@@ -15,12 +15,24 @@
 //! comrades or report to the script through `FilterAIEvent`; a knock-out never fails (the
 //! manual's chance is not modelled beyond the resistance threshold); knocked-down bodies do
 //! not move by the animation's displacement.
+//!
+//! Work. One budget per tick ([`AI_WORK_PER_TICK`]) pays for everything the layer does:
+//! perception charges one unit per entity of the pre-index pass (the perceivable player
+//! characters are collected once per tick), one per entity the scan inspects and one per
+//! (soldier, player character) pair tested; every path search the layer issues (the alert run,
+//! the return, the attack approach) draws from the same budget, capped per search at the
+//! per-order budget `world::ORDER_SEARCH_WORK`. The scan walks the entities from
+//! `World::ai_cursor` (round robin: when the budget runs out mid-scan the cursor stays on the
+//! entity not finished and the next tick resumes there; a completed scan resets it to 0). The
+//! cursor is authoritative (snapshot, `validate`, the `world` hash); the budget itself is
+//! granted afresh every tick and never stored.
 
 use serde::{Deserialize, Serialize};
 
 use crate::anim::{AnimSet, direction_of};
 use crate::fixed::Fixed;
-use crate::world::{Entity, EntityKind, Gait, Posture, Team, World, facing_of};
+use crate::vm::{Assumption, charge_budget};
+use crate::world::{Entity, EntityKind, Gait, ORDER_SEARCH_WORK, Posture, Team, World, facing_of};
 
 /// Behaviour state of a human (`observe` reports it as `ai_state`; `docs/original/stealth-and-combat.md`
 /// 2.4 and 3.1). Player characters use `Patrol` (= normal) and `Punching`; soldiers cycle through
@@ -96,6 +108,57 @@ impl AiState {
             AiState::Noticed | AiState::Alarm | AiState::Alerted | AiState::Returning
         )
     }
+
+    /// A state that lasts a counted number of ticks (`Entity::state_ticks` is at least 1 while
+    /// it is in force); the others hold no timer (`state_ticks` is 0).
+    #[must_use]
+    pub fn timed(self) -> bool {
+        matches!(
+            self,
+            AiState::Noticed
+                | AiState::Alarm
+                | AiState::Alerted
+                | AiState::Punching
+                | AiState::KnockedDown
+                | AiState::Lying
+                | AiState::GettingUp
+        )
+    }
+}
+
+/// The one reading of an actor's state the script predicates share (natives 85 / 87 / 90 / 128
+/// / 240, `natives.rs`), so that no two of them can contradict each other: `dead` is the
+/// `Dead` state, which `World::validate` requires to coincide with `!alive`; `present` is the
+/// `active` flag; a knocked-out actor is one down or lying by the blow; `out_of_action` is
+/// dead or knocked out; `can_act` is present, alive and on his feet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActorStatus {
+    /// Dead (the `Dead` state).
+    pub dead: bool,
+    /// Present on the map (`active`).
+    pub present: bool,
+    /// Knocked down or lying knocked out (not dead).
+    pub knocked_out: bool,
+    /// Dead or knocked out: native 90.
+    pub out_of_action: bool,
+    /// Alive, present and standing: native 128.
+    pub can_act: bool,
+}
+
+impl ActorStatus {
+    /// The status of an entity.
+    #[must_use]
+    pub fn of(e: &Entity) -> Self {
+        let dead = !e.alive || e.ai_state == AiState::Dead;
+        let knocked_out = !dead && matches!(e.ai_state, AiState::KnockedDown | AiState::Lying);
+        ActorStatus {
+            dead,
+            present: e.active,
+            knocked_out,
+            out_of_action: dead || knocked_out,
+            can_act: !dead && e.active && e.ai_state.standing(),
+        }
+    }
 }
 
 /// Half opening angle of a soldier's view cone in 1/256 turns: 32 = 45 degrees, a 90 degree
@@ -131,9 +194,13 @@ pub const PUNCH_REACH: i32 = 32;
 /// striking from behind: 48 = 67.5 degrees either side of straight behind (a 135 degree arc).
 /// Hypothesis (the manual only says the punch works best unseen).
 pub const BACK_ARC_HALF_ANGLE_256: i32 = 48;
-/// Pairs (soldier, player character) the perception scan tests per tick before it stops for
-/// the tick: the scan is bounded whatever the entity count and runs on worlds without a VM.
-pub const PERCEPTION_WORK_PER_TICK: u32 = 1 << 16;
+/// Work units the stealth layer may spend in one tick: perception (one per entity pre-indexed,
+/// one per entity inspected, one per soldier / player character pair tested) and the path
+/// searches it issues (the units of `nav.rs`, capped per search at `ORDER_SEARCH_WORK`), granted
+/// at the start of [`World::ai_tick`] and nowhere else. 2^24: a `MAX_ENTITIES` world of
+/// soldiers and no player characters costs 2^17 a tick, and a search over the largest accepted
+/// grid (`nav::MAX_CELLS`) fits three times.
+pub const AI_WORK_PER_TICK: u64 = 1 << 24;
 /// Fallback durations in ticks of the timed states when the profile has no block for the
 /// animation (or the world has no catalog): the spec's tick counts of actions 141, 142, 41, 49
 /// and 123 (`sprite-animations.md`, "Combat, state and stealth ids"; each tick of the timing
@@ -422,51 +489,87 @@ impl World {
     /// One tick of the stealth layer: every soldier's perception and alert state and the timed
     /// states of every human, then the player characters' attack orders (so a state a blow
     /// enters lasts its full duration from the next tick on). Runs before the waypoint programs
-    /// (which only Patrol-state guards execute) and before the movement.
-    pub(crate) fn ai_tick(&mut self) {
-        let stimuli = self.perception();
+    /// (which only Patrol-state guards execute) and before the movement. Returns the work units
+    /// spent of [`AI_WORK_PER_TICK`].
+    pub(crate) fn ai_tick(&mut self) -> u64 {
+        self.ai_tick_with(AI_WORK_PER_TICK)
+    }
+
+    /// [`World::ai_tick`] with an explicit budget (tests exercise the exhaustion paths without
+    /// a `MAX_ENTITIES` world); returns the units spent.
+    pub(crate) fn ai_tick_with(&mut self, budget: u64) -> u64 {
+        let mut left = budget;
+        let stimuli = self.perception(&mut left);
         for i in 0..self.entities.len() {
             let e = &self.entities[i];
             if !e.alive || !e.active || e.kind == EntityKind::Obstacle || e.ai_locked {
                 continue;
             }
-            self.advance_state(i, stimuli.get(i).copied().flatten());
+            self.advance_state(i, stimuli.get(i).copied().flatten(), &mut left);
         }
-        self.attack_orders();
+        self.attack_orders(&mut left);
+        budget - left
     }
 
     /// The position of the first player character (in slot order) each soldier perceives this
-    /// tick; bounded by [`PERCEPTION_WORK_PER_TICK`] pairs, the rest of the soldiers perceive
-    /// nothing this tick.
-    fn perception(&self) -> Vec<Option<(Fixed, Fixed)>> {
+    /// tick. The perceivable player characters are indexed once (one unit per entity), then
+    /// the entities are inspected from `ai_cursor` on, round robin (one unit each, plus one
+    /// per player character tested for a soldier); when the budget runs out the cursor stays on
+    /// the entity not finished, which perceives nothing this tick, and the next tick resumes
+    /// there; a completed scan resets the cursor to 0.
+    fn perception(&mut self, budget: &mut u64) -> Vec<Option<(Fixed, Fixed)>> {
         let n = self.entities.len();
         let mut out = vec![None; n];
-        let mut work = PERCEPTION_WORK_PER_TICK;
-        'scan: for (i, s) in self.entities.iter().enumerate() {
+        if n == 0 {
+            self.ai_cursor = 0;
+            return out;
+        }
+        if !charge_budget(budget, n as u64) {
+            return out;
+        }
+        let players: Vec<usize> = self
+            .entities
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| perceivable(p))
+            .map(|(i, _)| i)
+            .collect();
+        let start = (self.ai_cursor as usize).min(n - 1);
+        let mut cursor = 0u32;
+        'scan: for k in 0..n {
+            let i = (start + k) % n;
+            if !charge_budget(budget, 1) {
+                cursor = i as u32;
+                break 'scan;
+            }
+            let s = &self.entities[i];
             if !perceives(s) {
                 continue;
             }
-            for p in &self.entities {
-                if !perceivable(p) {
-                    continue;
-                }
-                if work == 0 {
+            for &pi in &players {
+                if !charge_budget(budget, 1) {
+                    cursor = i as u32;
                     break 'scan;
                 }
-                work -= 1;
+                let p = &self.entities[pi];
                 if stimulus(s, p) {
                     out[i] = Some((p.x, p.y));
                     break;
                 }
             }
         }
+        self.ai_cursor = cursor;
         out
     }
 
-    /// Order the entity to walk to a point at the given gait (the pathfinding budget of a player
-    /// or program order); `true` when a path was found.
-    fn walk_to(&mut self, i: usize, to: (Fixed, Fixed), gait: Gait) -> bool {
-        self.plan_path(i, to);
+    /// Order the entity to walk to a point at the given gait; the search draws from the tick's
+    /// AI budget, capped at the per-order budget (`ORDER_SEARCH_WORK`); `true` when a path was
+    /// found (an exhausted budget leaves the entity standing, like an unreachable target).
+    fn walk_to(&mut self, i: usize, to: (Fixed, Fixed), gait: Gait, budget: &mut u64) -> bool {
+        let granted = (*budget).min(ORDER_SEARCH_WORK);
+        let mut search = granted;
+        let _ = self.plan_path_with(i, to, &mut search);
+        *budget -= granted - search;
         let e = &mut self.entities[i];
         if e.target.is_some() {
             e.gait = gait;
@@ -501,12 +604,12 @@ impl World {
 
     /// Walk back to the alert origin (`Returning`), or patrol at once when there is none or the
     /// entity already stands there or the way back cannot be found.
-    fn go_back(&mut self, i: usize) {
+    fn go_back(&mut self, i: usize, budget: &mut u64) {
         let e = &self.entities[i];
         let here = (e.x, e.y);
         match e.alert_origin {
             Some(origin) if origin != here => {
-                if self.walk_to(i, origin, Gait::Walk) {
+                if self.walk_to(i, origin, Gait::Walk, budget) {
                     let e = &mut self.entities[i];
                     e.ai_state = AiState::Returning;
                     e.state_ticks = 0;
@@ -530,7 +633,7 @@ impl World {
     }
 
     /// The state machine of one human for this tick.
-    fn advance_state(&mut self, i: usize, seen: Option<(Fixed, Fixed)>) {
+    fn advance_state(&mut self, i: usize, seen: Option<(Fixed, Fixed)>, budget: &mut u64) {
         match self.entities[i].ai_state {
             AiState::Patrol | AiState::Returning => {
                 if let Some(p) = seen {
@@ -558,7 +661,7 @@ impl World {
                     e.ai_state = AiState::Alerted;
                     e.state_ticks = ALERT_TIMEOUT_TICKS;
                     if let Some(p) = e.last_seen {
-                        self.walk_to(i, p, Gait::Run);
+                        self.walk_to(i, p, Gait::Run, budget);
                     }
                 }
             }
@@ -571,12 +674,12 @@ impl World {
                         Fixed::length(tx - p.0, ty - p.1) > Fixed::from_int(REPLAN_DISTANCE)
                     });
                     if stale && Fixed::length(e.x - p.0, e.y - p.1) > Fixed::from_int(PUNCH_REACH) {
-                        self.walk_to(i, p, Gait::Run);
+                        self.walk_to(i, p, Gait::Run, budget);
                     }
                 }
                 None => {
                     if countdown(&mut self.entities[i]) {
-                        self.go_back(i);
+                        self.go_back(i, budget);
                     }
                 }
             },
@@ -600,7 +703,7 @@ impl World {
             }
             AiState::GettingUp => {
                 if countdown(&mut self.entities[i]) {
-                    self.go_back(i);
+                    self.go_back(i, budget);
                 }
             }
             AiState::Dead => {}
@@ -610,7 +713,7 @@ impl World {
     /// The player characters' attack orders (`docs/original/stealth-and-combat.md` 1, tutorial
     /// string 14; the order model is a hypothesis: a left click on an enemy with a character
     /// selected walks into reach, then punches when behind the victim, else stops facing him).
-    fn attack_orders(&mut self) {
+    fn attack_orders(&mut self, budget: &mut u64) {
         for i in 0..self.entities.len() {
             let e = &self.entities[i];
             let Some(target) = e.attack_target else {
@@ -633,7 +736,9 @@ impl World {
             let (vx, vy) = (self.entities[t].x, self.entities[t].y);
             let (dx, dy) = (vx - self.entities[i].x, vy - self.entities[i].y);
             if Fixed::length(dx, dy) > Fixed::from_int(PUNCH_REACH) {
-                if self.entities[i].target.is_none() && !self.walk_to(i, (vx, vy), Gait::Walk) {
+                if self.entities[i].target.is_none()
+                    && !self.walk_to(i, (vx, vy), Gait::Walk, budget)
+                {
                     // Unreachable: the order is dropped.
                     self.entities[i].attack_target = None;
                 }
@@ -658,8 +763,10 @@ impl World {
 
     /// The blow lands on `t` from `from`: the victim goes down forward when struck from behind,
     /// backward otherwise (41 / 44), unless his resistance makes him immune, in which case the
-    /// blow is a stimulus (he notices the attacker).
+    /// blow is a stimulus (he notices the attacker). The resistance is the profile's `p4`
+    /// (hypothesis): consulting it records `Assumption::ProfileStats` on the script, if any.
     fn knock_down(&mut self, t: usize, from: (Fixed, Fixed)) {
+        self.record_assumption(Assumption::ProfileStats);
         let v = &self.entities[t];
         if knock_out_ticks(v.knockout_resistance).is_none() {
             if v.team == Team::Enemy && matches!(v.ai_state, AiState::Patrol | AiState::Returning) {
@@ -1156,10 +1263,324 @@ mod tests {
             |s| s.entities[1].state_ticks = u32::MAX,
             "state ticks",
         );
+        // Semantic invariants: `Dead` and `alive` agree, timed states carry a timer and
+        // untimed ones none, the attack order goes from a player character to an enemy soldier,
+        // alert states belong to enemy soldiers, the blow to player characters, a returning
+        // soldier knows his origin, a last sighting belongs to an alert state.
+        reject(&mut w, |s| s.entities[1].ai_state = AiState::Dead, "dead");
+        reject(&mut w, |s| s.entities[1].alive = false, "dead");
+        reject(&mut w, |s| s.entities[1].state_ticks = 3, "state ticks");
+        reject(
+            &mut w,
+            |s| {
+                s.entities[1].ai_state = AiState::Alerted;
+                s.entities[1].state_ticks = 0;
+            },
+            "state ticks",
+        );
+        reject(
+            &mut w,
+            |s| s.entities[1].attack_target = Some(s.entities[0].id),
+            "attack target",
+        );
+        reject(
+            &mut w,
+            |s| {
+                s.entities[1].team = Team::Civilian;
+                s.entities[0].attack_target = Some(s.entities[1].id);
+            },
+            "attack target",
+        );
+        reject(
+            &mut w,
+            |s| {
+                s.entities[0].ai_state = AiState::Noticed;
+                s.entities[0].state_ticks = 2;
+            },
+            "alert state",
+        );
+        reject(
+            &mut w,
+            |s| {
+                s.entities[1].ai_state = AiState::Punching;
+                s.entities[1].state_ticks = 2;
+            },
+            "punch",
+        );
+        reject(
+            &mut w,
+            |s| {
+                s.entities[1].ai_state = AiState::Returning;
+                s.entities[1].alert_origin = None;
+            },
+            "origin",
+        );
+        reject(
+            &mut w,
+            |s| s.entities[1].last_seen = Some((Fixed::ONE, Fixed::ONE)),
+            "last seen",
+        );
+        // The consistent forms are accepted.
+        let mut snap = w.snapshot(None);
+        snap.world.entities[1].ai_state = AiState::Dead;
+        snap.world.entities[1].alive = false;
+        snap.world.entities[1].state_ticks = 0;
+        w.restore(&snap).unwrap();
+        w.validate().unwrap();
         // Keys still act on a punching character's posture only after the blow: no panic.
         w.step(&[InputEvent::KeyDown {
             key: Key::Letter('c'),
         }]);
         w.validate().unwrap();
+    }
+
+    /// The actor status the script predicates share: `Dead` (with `alive` cleared) is dead
+    /// and out of action, a knocked-out actor is out of action but not dead, a deactivated one
+    /// is absent, and only a standing, present, living actor can act.
+    #[test]
+    fn actor_status_is_one_reading() {
+        let mut w = scene((400, 240), 128, (500, 240));
+        let g = |w: &World| ActorStatus::of(&w.entities[1]);
+        assert_eq!(
+            g(&w),
+            ActorStatus {
+                dead: false,
+                present: true,
+                knocked_out: false,
+                out_of_action: false,
+                can_act: true
+            }
+        );
+        w.entities[1].ai_state = AiState::Lying;
+        let s = g(&w);
+        assert!(s.knocked_out && s.out_of_action && !s.dead && !s.can_act && s.present);
+        w.entities[1].ai_state = AiState::GettingUp;
+        let s = g(&w);
+        assert!(!s.knocked_out && !s.out_of_action && !s.can_act);
+        w.entities[1].ai_state = AiState::Dead;
+        w.entities[1].alive = false;
+        let s = g(&w);
+        assert!(s.dead && s.out_of_action && !s.knocked_out && !s.can_act && s.present);
+        w.entities[1].ai_state = AiState::Patrol;
+        w.entities[1].alive = true;
+        w.entities[1].active = false;
+        let s = g(&w);
+        assert!(!s.dead && !s.present && !s.can_act);
+    }
+
+    /// An open 1000x800 mission of `guards` enemy soldiers at distinct spots facing +x, with
+    /// `players` player characters at the far corner.
+    fn crowd(guards: usize, players: usize) -> World {
+        use crate::geom::Geometry;
+        use crate::world::{ActorSpec, MapInfo, MissionSpec, Scenario};
+        let mut actors = Vec::with_capacity(guards + players);
+        for i in 0..players {
+            actors.push(ActorSpec {
+                profile: "RobinHood".into(),
+                team: Team::Player,
+                x: 900 + (i % 50) as i32,
+                y: 700 + (i / 50 % 50) as i32,
+                facing256: 0,
+                patrol: vec![],
+                program: vec![],
+                active: true,
+                hit_points: 100,
+                knockout_resistance: 0,
+            });
+        }
+        for i in 0..guards {
+            actors.push(ActorSpec {
+                profile: "Soldier A00".into(),
+                team: Team::Enemy,
+                x: 100 + (i % 400) as i32,
+                y: 100 + (i / 400 % 400) as i32,
+                facing256: 0,
+                patrol: vec![],
+                program: vec![],
+                active: true,
+                hit_points: 80,
+                knockout_resistance: 0,
+            });
+        }
+        let spec = MissionSpec {
+            map: MapInfo {
+                width: 1000,
+                height: 800,
+            },
+            geometry: Geometry {
+                boundary: vec![(0, 0), (1000, 0), (1000, 800), (0, 800)],
+                obstacles: vec![],
+                areas: Vec::new(),
+            },
+            actors,
+            script: None,
+            rails: Vec::new(),
+            lenient_natives: false,
+            starting_money: 0,
+            assumptions: std::collections::BTreeSet::new(),
+        };
+        World::new_mission(Scenario::Mission("crowd".into()), 2, &spec).unwrap()
+    }
+
+    /// The largest accepted world of soldiers and no player character costs exactly two units
+    /// per entity (the pre-index pass and the inspection) and finishes its scan every tick.
+    #[test]
+    fn perception_charges_every_inspected_entity_with_no_player_to_perceive() {
+        let n = crate::world::MAX_ENTITIES;
+        let mut w = crowd(n, 0);
+        assert_eq!(w.entities.len(), n);
+        let spent = w.ai_tick();
+        assert_eq!(spent, 2 * n as u64);
+        assert!(spent < AI_WORK_PER_TICK);
+        assert_eq!(w.ai_cursor, 0, "the scan completed");
+        assert!(w.entities.iter().all(|e| e.ai_state == AiState::Patrol));
+    }
+
+    /// Soldiers and player characters: every pair is charged, an exhausted budget stops the
+    /// scan at a cursor that the next tick resumes from, the cursor is authoritative (snapshot,
+    /// hash, validation) and the sweep visits every soldier exactly once per round.
+    #[test]
+    fn perception_resumes_from_its_cursor_when_the_budget_runs_out() {
+        let guards = 40;
+        let players = 3;
+        let n = guards + players;
+        let mut w = crowd(guards, players);
+        // Full budget: pre-index n, inspect n, test 3 players per soldier.
+        assert_eq!(w.ai_tick(), (2 * n + guards * players) as u64);
+        assert_eq!(w.ai_cursor, 0);
+        // n (pre-index) + 3 (players inspected) + 10 soldiers at 1 + 3 each = n + 43: the
+        // eleventh soldier (entity 13) is where the budget runs out.
+        let spent = w.ai_tick_with((n + 43) as u64);
+        assert_eq!(spent, (n + 43) as u64);
+        assert_eq!(w.ai_cursor, 13);
+        w.validate().unwrap();
+        let h = w.hashes();
+        let mut v = w.clone();
+        v.ai_cursor = 0;
+        assert_ne!(
+            v.hashes().get("world"),
+            h.get("world"),
+            "the cursor is hashed"
+        );
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
+        let snap: Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = crowd(guards, players);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.ai_cursor, 13);
+        assert_eq!(w2.hashes(), h);
+        let mut bad = w.snapshot(None);
+        bad.world.ai_cursor = n as u32;
+        assert!(w2.restore(&bad).unwrap_err().contains("cursor"));
+        // The next scan starts at 13: with the budget of the rest of the round (the 30
+        // soldiers 13..=42 at 4 each) plus the pre-index pass and one more unit, it wraps,
+        // inspects the first player character and stops on the second.
+        let rest = (n + 30 * 4 + 1) as u64;
+        assert_eq!(w.ai_tick_with(rest), rest);
+        assert_eq!(w.ai_cursor, 1);
+        // A budget too small for the pre-index pass perceives nothing and moves nothing.
+        w.ai_cursor = 7;
+        assert_eq!(w.ai_tick_with(5), 5);
+        assert_eq!(w.ai_cursor, 7);
+        // Same inputs from the restored world: same states and hashes.
+        w2.ai_tick_with(rest);
+        w2.ai_cursor = 7;
+        w2.ai_tick_with(5);
+        for _ in 0..3 {
+            w.step(&[]);
+            w2.step(&[]);
+        }
+        assert_eq!(w.hashes(), w2.hashes());
+        assert_eq!(w.ai_cursor, 0, "a full tick completes the scan");
+    }
+
+    /// A mass alert: hundreds of soldiers hear the running hero at once and all want a path on
+    /// the same tick. The path searches share the tick's budget: with the real budget every one
+    /// of them is planned within the bound, with a small budget only as many as it pays for and
+    /// the rest stand alerted and re-plan on the following ticks; both are deterministic across
+    /// a snapshot.
+    #[test]
+    fn mass_alerts_share_one_navigation_budget() {
+        let guards = 600;
+        // Soldiers in a 40 x 15 block just behind the hero (facing away from him), who runs
+        // east: all within the noise radius, none with him in their cone.
+        let mut w = crowd(guards, 1);
+        w.entities[0].x = f(500);
+        w.entities[0].y = f(400);
+        for (k, e) in w.entities.iter_mut().skip(1).enumerate() {
+            e.x = f(420 + (k % 40) as i32 * 2);
+            e.y = f(370 + (k / 40) as i32 * 4);
+            e.facing256 = 128;
+        }
+        w.selected = Some(w.entities[0].id);
+        w.validate().unwrap();
+        click(&mut w, 700, 400, Button::Left);
+        click(&mut w, 700, 400, Button::Left);
+        assert_eq!(w.entities[0].gait, Gait::Run);
+        // Everyone noticed him on the double click's tick; the alarm follows, then the run.
+        assert!(
+            w.entities
+                .iter()
+                .skip(1)
+                .all(|e| e.ai_state == AiState::Noticed)
+        );
+        for _ in 0..NOTICED_TICKS + ALARM_TICKS - 1 {
+            w.step(&[]);
+        }
+        assert!(
+            w.entities
+                .iter()
+                .skip(1)
+                .all(|e| e.ai_state == AiState::Alarm)
+        );
+        let snap = w.snapshot(None);
+        // The transition tick with the real budget: every soldier is alerted and running, the
+        // work stayed within the bound.
+        let mut full = w.clone();
+        let spent = full.ai_tick();
+        assert!(spent <= AI_WORK_PER_TICK);
+        assert!(
+            full.entities
+                .iter()
+                .skip(1)
+                .all(|e| e.ai_state == AiState::Alerted && e.target.is_some())
+        );
+        // A budget that covers the perception and a few searches: the rest stand alerted
+        // without a path this tick and get theirs on the following ticks.
+        let n = w.entities.len() as u64;
+        let small = 2 * n + guards as u64 + 3000;
+        let spent = w.ai_tick_with(small);
+        assert!(spent <= small && spent > 2 * n + guards as u64);
+        let planned = w
+            .entities
+            .iter()
+            .skip(1)
+            .filter(|e| e.target.is_some())
+            .count();
+        assert!(
+            planned > 0 && planned < guards,
+            "{planned} of {guards} planned"
+        );
+        assert!(
+            w.entities
+                .iter()
+                .skip(1)
+                .all(|e| e.ai_state == AiState::Alerted)
+        );
+        w.validate().unwrap();
+        for _ in 0..3 {
+            w.step(&[]);
+        }
+        assert!(
+            w.entities.iter().skip(1).all(|e| e.target.is_some()),
+            "the starved soldiers re-planned while the hero stays in earshot"
+        );
+        // Deterministic: the same small budget from the snapshot gives the same world.
+        let mut w2 = crowd(0, 0);
+        w2.restore(&snap).unwrap();
+        w2.ai_tick_with(small);
+        for _ in 0..3 {
+            w2.step(&[]);
+        }
+        assert_eq!(w2.hashes(), w.hashes());
     }
 }
