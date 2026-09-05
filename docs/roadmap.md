@@ -64,11 +64,12 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 
 ## M4: Tutorial slice
 
-- [x] Script VM in core (ADR-0008): all 39 retail scripts translate; the first mission (`H01_Lin_VL`, the tutorial in the retail flow; `EmbTut_FoC_EC` is not reached from Play!) runs its load-time callbacks, briefing sequence, objective 0, `Hourglass` and `CheckVictoryCondition` deterministically (`harness/tests/data/test_script.py`)
+- [x] Script VM in core (ADR-0008): all 39 retail scripts translate and all 39 missions (the camp and the outro included) load strictly with the corrected element table; the first mission (`H01_Lin_VL`, the tutorial in the retail flow; `EmbTut_FoC_EC` is not reached from Play!) runs its load-time callbacks, briefing sequence, objective 0, `Hourglass` and `CheckVictoryCondition` deterministically (`harness/tests/data/test_script.py`)
 - [x] Natives the first mission needs beyond stubs: scroll pick-up, action changes, perception and knock-out state, in-mission text popups and pages presented by the app; the rest are recorded stubs whose use taints the outcome (ADR-0008)
 - [ ] Object activation, rail point events, doors, animations, remarks as real natives
-- [x] Stimuli (sight cone, run noise), alarm states, knock-out; win / lose presentation (debriefing parchments, campaign successor)
-- [ ] Sight blocking by walls, combat (melee, bow), damage and death, items
+- [x] Stimuli (sight cone, run noise), alarm states, knock-out; win / lose presentation (debriefing parchments, the lost page, campaign successor)
+- [x] Melee combat as measured on the original (health, energy, the soldier's hits, the powerful blow, death, the lost page through play)
+- [ ] Sight blocking by walls, the bow, the block and the other figures, soldiers attacking on their own, items
 - [ ] An input-only replay completes the tutorial (needs a canonical input for text dismissal)
 
 ## M5: Representative campaign
