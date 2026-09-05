@@ -25,6 +25,7 @@ use opensherwood_protocol::{
 };
 use opensherwood_render::Occluder;
 use opensherwood_render::{Background, Framebuffer, NoSprites, SpriteFrame, SpriteSource, render};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// Result of an RPC method.
@@ -197,6 +198,8 @@ pub struct Session {
     notice: Option<(String, u32)>,
     /// A HUD press whose release has not arrived yet (swallowed when it does).
     hud_press_pending: bool,
+    /// Next rolling auto-save slot.
+    autosave_slot: u32,
     /// Scenario and seed of the world that is installed (for Restart).
     current: Option<(Scenario, u64)>,
     /// HUD values.
@@ -227,6 +230,19 @@ pub const FIRST_MISSION: &str = "H01_Lin_VL";
 /// How long a non-blocking script text stays on screen (5 s at 60 ticks; the original's timing is
 /// not observed yet).
 const NOTICE_TICKS: u32 = 300;
+/// World ticks between rolling auto saves (one minute at 60 Hz) and the number of slots kept.
+const AUTOSAVE_TICKS: u64 = 3600;
+const AUTOSAVE_SLOTS: u32 = 5;
+/// Save file format version (bumped with the snapshot envelope).
+const SAVE_FORMAT: u32 = 1;
+
+/// A save file: the snapshot envelope plus bookkeeping.
+#[derive(Debug, Serialize, Deserialize)]
+struct SaveFile {
+    format: u32,
+    world_tick: u64,
+    snapshot: Snapshot,
+}
 
 /// Tick rate used by replays and the window (ticks per second).
 pub const TICK_RATE: (u32, u32) = (60, 1);
@@ -257,6 +273,8 @@ pub mod limits {
     /// Snapshot handles kept (oldest are dropped).
     pub const MAX_SNAPSHOTS: usize = 32;
     /// Most queued window input events.
+    /// Largest save file accepted (the snapshot cap of the protocol).
+    pub const MAX_SAVE_BYTES: usize = 64 * 1024 * 1024;
     pub const MAX_QUEUED_INPUT: usize = 10_000;
 }
 
@@ -326,6 +344,7 @@ impl Session {
             next_mission: None,
             notice: None,
             hud_press_pending: false,
+            autosave_slot: 0,
             current: None,
             hud: HudState::default(),
             lenient_natives: false,
@@ -547,6 +566,153 @@ impl Session {
         lines
     }
 
+    /// Restore a snapshot transactionally: the envelope (versions, content identity) is checked,
+    /// then the world is validated and restored into a temporary when the scenario changes (so the
+    /// session's assets, background and catalog, belong to the snapshot's scenario). The session is
+    /// touched only once everything succeeded; a failed restore leaves world, background, screen and
+    /// snapshot handles as they were.
+    fn restore_snapshot(&mut self, snap: &Snapshot) -> Result<(), RpcError> {
+        snap.check_versions().map_err(engine_err)?;
+        let expected = self.scenario_content(&snap.world.scenario)?;
+        snap.check_content(expected.as_deref())
+            .map_err(engine_err)?;
+        // The navigation grid is derived state the core rebuilds on restore; its cost (cells,
+        // polygons, scan-conversion work) is bounded here, before any world is touched, so a
+        // hostile snapshot cannot make the rebuild exhaust time or memory.
+        opensherwood_core::NavGrid::check_budget(
+            &snap.world.geometry,
+            snap.world.map_size.0,
+            snap.world.map_size.1,
+        )
+        .map_err(|e| engine_err(format!("navigation: {e}")))?;
+        let same_scenario = self
+            .world
+            .as_ref()
+            .is_some_and(|w| w.scenario == snap.world.scenario);
+        if same_scenario {
+            // `World::restore` validates against the attached catalog and only then replaces the
+            // state and rebuilds the navigation grid. It runs on a copy so the session's world is
+            // replaced only once the derived state exists.
+            let world = self.world()?;
+            let mut candidate = world.clone();
+            candidate.restore(snap).map_err(engine_err)?;
+            *world = candidate;
+        } else {
+            let (mut world, background) = self
+                .load_scenario(snap.world.scenario.clone(), snap.world.seed)
+                .map_err(engine_err)?;
+            world.restore(snap).map_err(engine_err)?;
+            self.install(world, background);
+        }
+        self.frame = None;
+        Ok(())
+    }
+
+    /// Directory of the session's save files (under the artifact directory).
+    fn saves_dir(&self) -> PathBuf {
+        self.artifacts.join("saves")
+    }
+
+    /// Write the current world as a save file (`saves/<name>.json`): the snapshot envelope with the
+    /// content identity, so a load checks the game data it was made from. Quick and auto saves are
+    /// modern additions (the original saves through its menu); they never run while a screen is
+    /// shown or a replay is recorded.
+    fn write_save(&mut self, name: &str) -> Result<PathBuf, RpcError> {
+        self.require_world_screen()?;
+        self.require_no_notice()?;
+        let content = self
+            .world
+            .as_ref()
+            .map(|w| self.scenario_content(&w.scenario))
+            .transpose()?
+            .flatten();
+        let world = self.world()?;
+        let file = SaveFile {
+            format: SAVE_FORMAT,
+            world_tick: world.tick,
+            snapshot: world.snapshot(content),
+        };
+        let dir = self.saves_dir();
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
+        let path = dir.join(format!("{name}.json"));
+        let text = serde_json::to_string(&file)
+            .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
+        std::fs::write(&path, text)
+            .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
+        Ok(path)
+    }
+
+    /// Load a save file written by `write_save` (transactional like `restore`).
+    fn load_save(&mut self, name: &str) -> Result<(), RpcError> {
+        self.require_world_screen()?;
+        self.require_no_notice()?;
+        if self.recording.is_some() {
+            return Err(engine_err(
+                "a replay is being recorded; stop it before loading",
+            ));
+        }
+        let path = self.saves_dir().join(format!("{name}.json"));
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| engine_err(format!("save {}: {e}", path.display())))?;
+        if text.len() > limits::MAX_SAVE_BYTES {
+            return Err(engine_err("save file too large"));
+        }
+        let file: SaveFile = serde_json::from_str(&text)
+            .map_err(|e| engine_err(format!("save {}: {e}", path.display())))?;
+        if file.format != SAVE_FORMAT {
+            return Err(engine_err(format!(
+                "save format {} is not {SAVE_FORMAT}",
+                file.format
+            )));
+        }
+        self.restore_snapshot(&file.snapshot)
+    }
+
+    /// Quick save (F1) and quick load (F5) from the mission, and rolling auto saves every
+    /// `AUTOSAVE_TICKS` world ticks (`auto-0` .. `auto-<AUTOSAVE_SLOTS - 1>`, oldest overwritten).
+    fn handle_saves(&mut self, events: &[InputEvent]) {
+        let f1 = events.iter().any(|e| {
+            matches!(
+                e,
+                InputEvent::KeyDown {
+                    key: Key::Function(1)
+                }
+            )
+        });
+        let f5 = events.iter().any(|e| {
+            matches!(
+                e,
+                InputEvent::KeyDown {
+                    key: Key::Function(5)
+                }
+            )
+        });
+        if f1 {
+            match self.write_save("quick") {
+                Ok(p) => eprintln!("opensherwood: quick save {}", p.display()),
+                Err(e) => eprintln!("opensherwood: quick save failed: {}", e.message),
+            }
+        }
+        if f5 {
+            match self.load_save("quick") {
+                Ok(()) => eprintln!("opensherwood: quick load"),
+                Err(e) => eprintln!("opensherwood: quick load failed: {}", e.message),
+            }
+        }
+        let due = self
+            .world
+            .as_ref()
+            .is_some_and(|w| w.tick > 0 && w.tick % AUTOSAVE_TICKS == 0);
+        if due && self.recording.is_none() {
+            let slot = self.autosave_slot % AUTOSAVE_SLOTS;
+            match self.write_save(&format!("auto-{slot}")) {
+                Ok(_) => self.autosave_slot = (self.autosave_slot + 1) % AUTOSAVE_SLOTS,
+                Err(e) => eprintln!("opensherwood: auto save failed: {}", e.message),
+            }
+        }
+    }
+
     /// Snapshots and replays describe a directly played world (ADR-0004, "Screens and the world").
     fn require_world_screen(&self) -> Result<(), RpcError> {
         if matches!(self.screen, Screen::World) {
@@ -718,6 +884,9 @@ impl Session {
                             self.notice = None;
                         }
                         self.frame = None;
+                    }
+                    if in_mission {
+                        self.handle_saves(events);
                     }
                     self.sync_text_screen();
                     self.sync_mission_end();
@@ -1583,44 +1752,7 @@ impl Session {
                         ));
                     }
                 };
-                // Transactional: the envelope (versions, content identity) is checked, then the
-                // world is validated and restored into a temporary when the scenario changes (so
-                // the session's assets, background and catalog, belong to the snapshot's
-                // scenario). The session is touched only once everything succeeded; a failed
-                // restore leaves world, background, screen and snapshot handles as they were.
-                snap.check_versions().map_err(engine_err)?;
-                let expected = self.scenario_content(&snap.world.scenario)?;
-                snap.check_content(expected.as_deref())
-                    .map_err(engine_err)?;
-                // The navigation grid is derived state the core rebuilds on restore; its cost
-                // (cells, polygons, scan-conversion work) is bounded here, before any world is
-                // touched, so a hostile snapshot cannot make the rebuild exhaust time or memory.
-                opensherwood_core::NavGrid::check_budget(
-                    &snap.world.geometry,
-                    snap.world.map_size.0,
-                    snap.world.map_size.1,
-                )
-                .map_err(|e| engine_err(format!("navigation: {e}")))?;
-                let same_scenario = self
-                    .world
-                    .as_ref()
-                    .is_some_and(|w| w.scenario == snap.world.scenario);
-                if same_scenario {
-                    // `World::restore` validates against the attached catalog and only then
-                    // replaces the state and rebuilds the navigation grid. It runs on a copy so
-                    // the session's world is replaced only once the derived state exists.
-                    let world = self.world()?;
-                    let mut candidate = world.clone();
-                    candidate.restore(&snap).map_err(engine_err)?;
-                    *world = candidate;
-                } else {
-                    let (mut world, background) = self
-                        .load_scenario(snap.world.scenario.clone(), snap.world.seed)
-                        .map_err(engine_err)?;
-                    world.restore(&snap).map_err(engine_err)?;
-                    self.install(world, background);
-                }
-                self.frame = None;
+                self.restore_snapshot(&snap)?;
                 let world = self.world()?;
                 ok(json!({ "tick": world.tick, "hashes": world.hashes() }))
             }

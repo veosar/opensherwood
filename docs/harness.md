@@ -139,7 +139,7 @@ dismissal per page, on Enter, Escape or a click on the page). Tests dismiss page
 input: `Engine.skip_briefing()` sends Enter once per page (one session tick each, recorded by an active
 replay). `debug.vm` is inspection only and cannot dismiss a page.
 
-`debug.vm` (counters, objectives, pending texts, scrolls with positions and activity) returns `{present, classes, elements, locations, objectives, texts, mission_won,
+`debug.vm` (counters, objectives, pending texts, scrolls with positions and activity); in a mission `F1` writes `saves/quick.json` under the artifact directory and `F5` loads it (the snapshot envelope with the content identity; refused while a screen or notice is shown or a replay is recorded), and every 3600 world ticks a rolling auto save `saves/auto-<0..4>.json` is written returns `{present, classes, elements, locations, objectives, texts, mission_won,
 mission_lost, money, sequence_active, sequences, faulted, lenient, unknown_calls, pending_messages, camera_target, debriefing,
 mission_vars, counters, rng_draws}` (`money` is the script's integer of natives 236 / 237); `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
 `traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives`,
