@@ -228,7 +228,7 @@ pub struct Session {
     profiles: Vec<ProfileSummary>,
     profile_index: usize,
     /// Scenario and seed of the world that is installed (for Restart).
-    current: Option<(Scenario, u64)>,
+    current: Option<(Scenario, u64, Option<i32>)>,
     /// HUD values.
     hud: HudState,
     /// Unknown-native policy for mission scripts (`--lenient-natives`).
@@ -806,9 +806,10 @@ impl Session {
                 return;
             }
         };
-        if doc["format"].as_u64().unwrap_or(1) != 1 {
+        // The version envelope is required: exactly the integer 1.
+        if doc["format"].as_u64() != Some(1) {
             eprintln!(
-                "opensherwood: profiles {}: unknown format; ignored",
+                "opensherwood: profiles {}: missing or unknown format; ignored",
                 path.display()
             );
             return;
@@ -876,8 +877,20 @@ impl Session {
         self.load_profiles();
         let path = self.artifacts.join("settings.json");
         if let Some(text) = read_bounded(&path, PERSIST_MAX_BYTES) {
-            match serde_json::from_str::<Settings>(&text) {
-                Ok(s) => self.settings = s.sanitized(),
+            // The version envelope first (exactly the integer 1), then the document.
+            match serde_json::from_str::<Value>(&text) {
+                Ok(doc) if doc["format"].as_u64() == Some(1) => {
+                    match serde_json::from_value::<Settings>(doc) {
+                        Ok(s) => self.settings = s.sanitized(),
+                        Err(e) => {
+                            eprintln!("opensherwood: settings {}: {e}; ignored", path.display());
+                        }
+                    }
+                }
+                Ok(_) => eprintln!(
+                    "opensherwood: settings {}: missing or unknown format; ignored",
+                    path.display()
+                ),
                 Err(e) => eprintln!("opensherwood: settings {}: {e}; ignored", path.display()),
             }
         }
@@ -1233,11 +1246,12 @@ impl Session {
                 self.frame = None;
                 match outcome {
                     Some(crate::ui::LostOutcome::Restart) => {
-                        if let Some((scenario, seed)) = self.current.clone()
-                            && let Err(e) = self.reset(scenario, seed)
-                        {
-                            eprintln!("opensherwood: cannot restart: {e}");
-                            self.open_menu();
+                        if let Some((scenario, seed, money)) = self.current.clone() {
+                            self.money_override = money;
+                            if let Err(e) = self.reset(scenario, seed) {
+                                eprintln!("opensherwood: cannot restart: {e}");
+                                self.open_menu();
+                            }
                         }
                     }
                     Some(crate::ui::LostOutcome::Load) => self.open_saves(false, false),
@@ -1260,10 +1274,13 @@ impl Session {
                     Some(MenuAction::Load) => self.open_saves(false, true),
                     Some(MenuAction::Options) => self.open_options(true),
                     Some(MenuAction::Restart) => {
-                        if let Some((scenario, seed)) = self.current.clone()
-                            && let Err(e) = self.reset(scenario, seed)
-                        {
-                            eprintln!("opensherwood: cannot restart: {e}");
+                        // Restart replays the same reset descriptor, starting money included, so
+                        // a replay with a restart does not depend on the profile file.
+                        if let Some((scenario, seed, money)) = self.current.clone() {
+                            self.money_override = money;
+                            if let Err(e) = self.reset(scenario, seed) {
+                                eprintln!("opensherwood: cannot restart: {e}");
+                            }
                         }
                     }
                     Some(MenuAction::Quit) => {
@@ -1964,7 +1981,7 @@ impl Session {
     /// is 0, and snapshot handles, queued input and any recording belonged to the previous world.
     fn install(&mut self, world: World, background: Option<Background>) {
         self.screen = Screen::World;
-        self.current = Some((world.scenario.clone(), world.seed));
+        self.current = Some((world.scenario.clone(), world.seed, self.starting_money));
 
         if let Scenario::Mission(name) = &world.scenario {
             let name = name.clone();
@@ -1985,7 +2002,7 @@ impl Session {
         self.notice = None;
         // Presentation state derived from the installed world, never from session history.
         self.hud = HudState {
-            money: u32::try_from(self.profile().money).unwrap_or(0),
+            money: self.profile().money,
             clover: 0,
             hero_name: self.hero_name_lines(),
         };
@@ -2052,7 +2069,7 @@ impl Session {
                         // before the script sets it.
                         let mut hud = self.hud.clone();
                         if let Some(vm) = world.vm.as_ref() {
-                            hud.money = u32::try_from(vm.money).unwrap_or(0);
+                            hud.money = vm.money;
                         }
                         crate::ui::draw_hud(&mut frame, a, &hud);
                         if let Some((text, _)) = &self.notice {

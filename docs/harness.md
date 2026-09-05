@@ -24,7 +24,7 @@ Example session:
 
 ```
 -> {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"pytest"}}
-<- {"jsonrpc":"2.0","id":1,"result":{"protocol":5,"build":"0.1.0","ruleset":5,"capabilities":["synthetic","capture","mission","replay"],"content_fingerprint":null}}
+<- {"jsonrpc":"2.0","id":1,"result":{"protocol":6,"build":"0.1.0","ruleset":12,"capabilities":["synthetic","capture","snapshot","map_view","mission","replay","menu","script"],"content_fingerprint":null}}
 -> {"jsonrpc":"2.0","id":2,"method":"reset","params":{"scenario":{"synthetic":"corridor"},"seed":42}}
 -> {"jsonrpc":"2.0","id":3,"method":"step","params":{"ticks":10,"events":[{"tick_offset":0,"sequence":0,"kind":"pointer_move","x256":25600,"y256":19200},{"tick_offset":0,"sequence":1,"kind":"pointer_down","button":"left"},{"tick_offset":0,"sequence":2,"kind":"pointer_up","button":"left"}]}}
 <- {"jsonrpc":"2.0","id":3,"result":{"tick":10,"hashes":{"total":"...","actors":"..."}}}
@@ -173,7 +173,9 @@ replay). `debug.vm` is inspection only and cannot dismiss a page.
 
 `debug.vm` (counters, objectives, pending texts, scrolls with positions and activity); in a mission `F1` writes `saves/quick.json` under the artifact directory and `F5` loads it (the snapshot envelope with the content identity; refused while a screen or notice is shown or a replay is recorded), and every 3600 world ticks a rolling auto save `saves/auto-<0..4>.json` is written returns `{present, classes, elements, locations, objectives, texts, mission_won,
 mission_lost, tainted, assumptions, money, sequence_active, sequences, faulted, fault, lenient, unknown_calls, pending_messages, camera_target, debriefing,
-mission_vars, counters, rng_draws}` (`money` is the script's integer of natives 236 / 237; `fault` is the
+mission_vars, counters, rng_draws, element}` (`element` answers `{"element": i}`: the entry `i` of the script's element
+table as `{kind: map | unmodelled | actor | object | scroll | polygon, ...}`, `null` beyond the table; `money` is the
+script's integer of natives 236 / 237; `fault` is the
 sticky reason behind `faulted`: `{"unknown_native": id}`, `{"arity_mismatch": id}` or
 `"action_queue_overflow"`, `null` while the script runs as written); `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
 `traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives`,

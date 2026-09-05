@@ -293,12 +293,26 @@ def test_profiles_persist_across_sessions_and_survive_a_fresh_or_corrupt_store(b
         e.step(1, pointer_click(748, 440, "left"))
         rows = [it for it in e.observe(entities=False)["ui"]["items"] if it["action"].startswith("row:")]
         assert len(rows) == 1 and len(rows[0]["label"]) <= 16 and rows[0]["selected"]
-    (fresh / "profiles.json").write_text("{ not json")
+    # Corrupt JSON, a missing version envelope, a string version and a future version are all ignored.
+    for bad in ("{ not json", json.dumps({"selected": 0, "profiles": [{"name": "ghost"}]}),
+                json.dumps({"format": "1", "selected": 0, "profiles": [{"name": "ghost"}]}),
+                json.dumps({"format": 2, "selected": 0, "profiles": [{"name": "ghost"}]})):
+        (fresh / "profiles.json").write_text(bad)
+        with Engine(binary=binary, game_dir=game_dir, artifacts=fresh) as e:
+            e.reset({"menu": "main"}, seed=0)
+            e.step(1, pointer_click(748, 440, "left"))
+            rows = [it for it in e.observe(entities=False)["ui"]["items"] if it["action"].startswith("row:")]
+            assert [r["label"] for r in rows] == ["Player"], bad
+    # Settings: the same envelope rule.
+    (fresh / "settings.json").write_text(json.dumps({"aspect": 2, "effects": [False] * 4, "sound_mode": 0,
+                                                     "sound_quality": 0, "volumes": [1, 1, 1, 1],
+                                                     "comment_frequency": 0, "shortcut_set": 0}))
     with Engine(binary=binary, game_dir=game_dir, artifacts=fresh) as e:
         e.reset({"menu": "main"}, seed=0)
-        e.step(1, pointer_click(748, 440, "left"))
-        rows = [it for it in e.observe(entities=False)["ui"]["items"] if it["action"].startswith("row:")]
-        assert [r["label"] for r in rows] == ["Player"]
+        e.step(1, pointer_click(748, 481, "left"))  # Options
+        e.step(1, pointer_click(748, 522, "left"))  # Sounds
+        ui = e.observe(entities=False)["ui"]
+        assert any(it["action"] == "slider:2" and it["label"].endswith(" 10") for it in ui["items"]), ui
 
 
 def test_rename_edits_the_row_inline(binary, game_dir, tmp_path):
@@ -334,6 +348,12 @@ def test_reset_starting_money_overrides_the_profile(binary, game_dir, tmp_path):
         assert e.call("debug.vm", {})["money"] == 777
         e.step(3)
         out = e.replay_stop()
+        # Restart from the pause menu keeps the session's starting money (not the profile's); a reset
+        # ends a recording, so a replay never spans a restart.
+        e.step(1, [key("escape"), key("escape", "key_up", 1)])
+        e.step(1, pointer_click(748, 563, "left"))  # Restart (row 5)
+        e.skip_briefing()
+        assert e.call("debug.vm", {})["money"] == 777
         assert '"starting_money":777' in out["jsonl"].replace(" ", ""), out["jsonl"][:400]
         # Playback resets with the recorded value, whatever the profile says: the header check
         # after the reset passes and the money is the recorded one.
