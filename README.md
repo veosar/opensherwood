@@ -4,13 +4,18 @@ OpenSherwood is a free, open-source game engine that plays *Robin Hood: The Lege
 Entertainment, 2002) from the data files of a copy you already own. It is a clean-room reimplementation in the
 tradition of OpenMW, Julius and OpenRCT2: the original game's assets are read, never shipped.
 
-**Status: pre-alpha, milestone M2 in progress.** What works today (2026-09-02): the original main menu (pictures,
-fonts and strings from the player's files), Play! loading the first mission behind its briefing pages, every
-retail mission's map and actors, walking with pathfinding and foreground occlusion, animated sprites, music; a
-deterministic core with snapshots, canonical hashes and replays; a headless JSON-RPC harness that plays the engine;
-a borderless-fullscreen window (winit + wgpu). Not yet: HUD, AI behaviour, combat, scripts (objectives, dialogues),
-options, profiles and saves, comparison against the original. See [docs/roadmap.md](docs/roadmap.md) and the
-[status reports](docs/status/).
+**Status: pre-alpha.** What works today (2026-09-05): every screen of the original from the player's files (main
+menu, credits, select player with profiles, options for graphics / sounds / shortcuts, load and save, briefing and
+debriefing parchments, pause menu, HUD with the crouch / stand figures and the mini-map scroll), Play! into any
+retail mission with its script running (objectives, messages, dialogue pages, sequences, scroll pickups), every
+mission's map and actors, walking / running / sneaking with pathfinding and foreground occlusion, a first stealth
+layer (guards notice, alarm, search, can be knocked out from behind), quick save (F1 / F5) and rolling auto saves,
+music and effects; a deterministic core with snapshots, canonical hashes, replays and an assumption-taint model that
+marks outcomes resting on unmeasured hypotheses; a headless JSON-RPC harness that plays the engine and compares it
+against captures of the original; a borderless-fullscreen window at any resolution (winit + wgpu). Not yet: melee
+and bow combat, damage and death, sight blocking by walls, layers / doors / climbing, action icons, movies, the
+Sherwood camp between missions, and therefore no mission can be won through play. See
+[docs/roadmap.md](docs/roadmap.md) and the [status reports](docs/status/).
 
 ## Goals
 
