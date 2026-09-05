@@ -17,7 +17,7 @@ marks outcomes resting on unmeasured hypotheses; a headless JSON-RPC harness tha
 against captures of the original; a borderless-fullscreen window at any resolution (winit + wgpu). Not yet: the
 bow, the block and the other figures, soldiers attacking on their own, sight blocking by walls, layers / doors /
 climbing, action icons, movies, the
-Sherwood camp between missions, and therefore no mission can be won through play. See
+Sherwood camp between missions. The first mission can be won through play (a walk to one scroll: `docs/original/h01-win-path.md`), with the outcome marked as resting on hypotheses. See
 [docs/roadmap.md](docs/roadmap.md) and the [status reports](docs/status/).
 
 ## Goals
