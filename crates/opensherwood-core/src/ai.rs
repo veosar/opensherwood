@@ -19,23 +19,28 @@
 //! manual's chance is not modelled beyond the resistance threshold); knocked-down bodies do
 //! not move by the animation's displacement.
 //!
-//! Work. One budget per tick ([`AI_WORK_PER_TICK`]) pays for everything the layer does:
-//! perception charges one unit per entity of the pre-index pass (the perceivable player
-//! characters are collected once per tick), one per entity the scan inspects and one per
-//! (soldier, player character) pair tested; every path search the layer issues (the alert run,
-//! the return, the attack approach) draws from the same budget, capped per search at the
-//! per-order budget `world::ORDER_SEARCH_WORK`. The scan walks the entities from
-//! `World::ai_cursor` (round robin: when the budget runs out mid-scan the cursor stays on the
-//! entity not finished and the next tick resumes there; a completed scan resets it to 0). The
-//! cursor is authoritative (snapshot, `validate`, the `world` hash); the budget itself is
-//! granted afresh every tick and never stored.
+//! Work. One simulation budget per tick (`world::SIM_WORK_PER_TICK`) pays for everything the
+//! simulation does besides the script: the pre-index pass ([`SimIndex`], one unit per entity,
+//! once), then each phase in turn: perception (one unit per soldier inspected and one per
+//! (soldier, player character) pair tested), the state transitions (one per human), the attack
+//! orders (one per attacker, the victim found by binary search in the index) and, in
+//! `world.rs`, the waypoint programs (one per idle guard); every path search any phase issues
+//! (the alert run, the return, the attack approach, a program's walk) draws from the same
+//! budget, capped per search at the per-order budget `world::ORDER_SEARCH_WORK`. Each phase
+//! walks its list from its own cursor (`World::cursors`, round robin: when the budget runs out
+//! the cursor stays on the entity not finished and the next tick resumes there; a completed
+//! walk resets it to 0), so exhaustion is fair across ticks. The cursors are authoritative
+//! (snapshot, `validate`, the `world` hash); the budget itself is granted afresh every tick and
+//! never stored.
 
 use serde::{Deserialize, Serialize};
 
 use crate::anim::{AnimSet, direction_of, world_ticks};
 use crate::fixed::Fixed;
 use crate::vm::{Assumption, charge_budget};
-use crate::world::{Entity, EntityKind, Gait, ORDER_SEARCH_WORK, Posture, Team, World, facing_of};
+use crate::world::{
+    Entity, EntityId, EntityKind, Gait, ORDER_SEARCH_WORK, Posture, Team, World, facing_of,
+};
 
 /// Behaviour state of a human (`observe` reports it as `ai_state`; `docs/original/stealth-and-combat.md`
 /// 2.4 and 3.1). Player characters use `Patrol` (= normal) and `Punching`; soldiers cycle through
@@ -202,13 +207,6 @@ pub const PUNCH_REACH: i32 = 32;
 /// striking from behind: 48 = 67.5 degrees either side of straight behind (a 135 degree arc).
 /// Hypothesis (the manual only says the punch works best unseen).
 pub const BACK_ARC_HALF_ANGLE_256: i32 = 48;
-/// Work units the stealth layer may spend in one tick: perception (one per entity pre-indexed,
-/// one per entity inspected, one per soldier / player character pair tested) and the path
-/// searches it issues (the units of `nav.rs`, capped per search at `ORDER_SEARCH_WORK`), granted
-/// at the start of [`World::ai_tick`] and nowhere else. 2^24: a `MAX_ENTITIES` world of
-/// soldiers and no player characters costs 2^17 a tick, and a search over the largest accepted
-/// grid (`nav::MAX_CELLS`) fits three times.
-pub const AI_WORK_PER_TICK: u64 = 1 << 24;
 /// Fallback durations in world ticks of the timed states when the profile has no block for
 /// the animation (or the world has no catalog): the soldier profiles' actions 141, 142, 41 and
 /// 49 and the hero's 123 on the animation clock (`sprite-animations.md`, "Reading rules": a
@@ -506,59 +504,144 @@ fn stimulus(s: &Entity, p: &Entity) -> Option<Channel> {
         .then_some(Channel::Noise)
 }
 
+/// The entity lists the phases of one tick walk, built once per tick by [`World::sim_index`]
+/// (one work unit per entity). Every phase walks its own list from its cursor instead of the
+/// whole table, so its work is proportional to the entities it concerns; the conditions are
+/// re-checked per entity when the phase runs, since an earlier phase may have changed them.
+pub(crate) struct SimIndex {
+    /// Player characters a soldier can perceive.
+    pub players: Vec<usize>,
+    /// Soldiers whose perception runs.
+    pub perceivers: Vec<usize>,
+    /// Humans whose state machine runs (alive, active, not an obstacle, not locked).
+    pub humans: Vec<usize>,
+    /// Player characters with an attack order.
+    pub attackers: Vec<usize>,
+    /// Guards in the normal state without a walk (their program or patrol may issue one).
+    pub idle_guards: Vec<usize>,
+    /// `(id, index)` of every entity, sorted by id: the attack target lookup.
+    pub by_id: Vec<(EntityId, usize)>,
+}
+
+/// What a walk order came to ([`World::walk_to`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Walk {
+    /// A path was found; the entity walks.
+    Planned,
+    /// No path exists (or the grid is missing): a definite answer.
+    Unreachable,
+    /// The budget could not pay the search: nothing changed, the next tick retries.
+    Exhausted,
+}
+
+/// `list` (ascending entity indices) rotated so that the walk starts at the first entity at or
+/// after `cursor` and wraps around: the round robin of a phase.
+fn rotated(list: &[usize], cursor: u32) -> Vec<usize> {
+    let start = list.partition_point(|&i| i < cursor as usize);
+    list[start..]
+        .iter()
+        .chain(&list[..start])
+        .copied()
+        .collect()
+}
+
 impl World {
-    /// One tick of the stealth layer: every soldier's perception and alert state and the timed
-    /// states of every human, then the player characters' attack orders (so a state a blow
-    /// enters lasts its full duration from the next tick on). Runs before the waypoint programs
-    /// (which only Patrol-state guards execute) and before the movement. Returns the work units
-    /// spent of [`AI_WORK_PER_TICK`].
+    /// One tick of the stealth layer with the full simulation budget (tests; `simulate` runs
+    /// [`World::sim_index`], [`World::stealth_tick`] and `program_walks` on one budget).
+    /// Returns the work units spent of `SIM_WORK_PER_TICK`.
+    #[cfg(test)]
     pub(crate) fn ai_tick(&mut self) -> u64 {
-        self.ai_tick_with(AI_WORK_PER_TICK)
+        self.ai_tick_with(crate::world::SIM_WORK_PER_TICK)
     }
 
     /// [`World::ai_tick`] with an explicit budget (tests exercise the exhaustion paths without
     /// a `MAX_ENTITIES` world); returns the units spent.
+    #[cfg(test)]
     pub(crate) fn ai_tick_with(&mut self, budget: u64) -> u64 {
         let mut left = budget;
-        let stimuli = self.perception(&mut left);
-        for i in 0..self.entities.len() {
-            let e = &self.entities[i];
-            if !e.alive || !e.active || e.kind == EntityKind::Obstacle || e.ai_locked {
-                continue;
-            }
-            self.advance_state(i, stimuli.get(i).copied().flatten(), &mut left);
+        if let Some(index) = self.sim_index(&mut left) {
+            self.stealth_tick(&index, &mut left);
         }
-        self.attack_orders(&mut left);
         budget - left
     }
 
-    /// The position of the first player character (in slot order) each soldier perceives this
-    /// tick, with the channel. The perceivable player characters are indexed once (one unit per entity), then
-    /// the entities are inspected from `ai_cursor` on, round robin (one unit each, plus one
-    /// per player character tested for a soldier); when the budget runs out the cursor stays on
-    /// the entity not finished, which perceives nothing this tick, and the next tick resumes
-    /// there; a completed scan resets the cursor to 0.
-    fn perception(&mut self, budget: &mut u64) -> Vec<Option<((Fixed, Fixed), Channel)>> {
+    /// The whole simulation of one tick (the pre-index, the stealth phases and the waypoint
+    /// programs) with an explicit budget, as `simulate` runs it; returns the units spent.
+    #[cfg(test)]
+    pub(crate) fn sim_tick_with(&mut self, budget: u64) -> u64 {
+        let mut left = budget;
+        if let Some(index) = self.sim_index(&mut left) {
+            self.stealth_tick(&index, &mut left);
+            self.program_walks(&index.idle_guards, &mut left);
+        }
+        budget - left
+    }
+
+    /// The pre-index pass: one unit per entity, charged before the pass; `None` (nothing
+    /// indexed, the cursors untouched) when it does not fit.
+    pub(crate) fn sim_index(&mut self, left: &mut u64) -> Option<SimIndex> {
         let n = self.entities.len();
-        let mut out = vec![None; n];
-        if n == 0 {
-            self.ai_cursor = 0;
-            return out;
+        if !charge_budget(left, n as u64) {
+            return None;
         }
-        if !charge_budget(budget, n as u64) {
-            return out;
+        let mut index = SimIndex {
+            players: Vec::new(),
+            perceivers: Vec::new(),
+            humans: Vec::new(),
+            attackers: Vec::new(),
+            idle_guards: Vec::new(),
+            by_id: Vec::with_capacity(n),
+        };
+        for (i, e) in self.entities.iter().enumerate() {
+            index.by_id.push((e.id, i));
+            if perceivable(e) {
+                index.players.push(i);
+            }
+            if perceives(e) {
+                index.perceivers.push(i);
+            }
+            if e.alive && e.active && e.kind != EntityKind::Obstacle && !e.ai_locked {
+                index.humans.push(i);
+            }
+            if e.attack_target.is_some() && e.kind == EntityKind::Player {
+                index.attackers.push(i);
+            }
+            if e.alive
+                && e.active
+                && e.kind == EntityKind::Guard
+                && e.target.is_none()
+                && e.ai_state == AiState::Patrol
+            {
+                index.idle_guards.push(i);
+            }
         }
-        let players: Vec<usize> = self
-            .entities
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| perceivable(p))
-            .map(|(i, _)| i)
-            .collect();
-        let start = (self.ai_cursor as usize).min(n - 1);
+        index.by_id.sort_unstable();
+        Some(index)
+    }
+
+    /// The stealth phases of one tick: every soldier's perception and alert state and the timed
+    /// states of every human, then the player characters' attack orders (so a state a blow
+    /// enters lasts its full duration from the next tick on). Runs before the waypoint programs
+    /// (which only Patrol-state guards execute) and before the movement.
+    pub(crate) fn stealth_tick(&mut self, index: &SimIndex, left: &mut u64) {
+        let stimuli = self.perception(index, left);
+        self.transitions(index, &stimuli, left);
+        self.attack_orders(index, left);
+    }
+
+    /// The position of the first player character (in slot order) each soldier perceives this
+    /// tick, with the channel. The soldiers are inspected from `cursors.perception` on, round
+    /// robin (one unit each, plus one per player character tested); when the budget runs out
+    /// the cursor stays on the soldier not finished, who perceives nothing this tick, and the
+    /// next tick resumes there; a completed walk resets the cursor to 0.
+    fn perception(
+        &mut self,
+        index: &SimIndex,
+        budget: &mut u64,
+    ) -> Vec<Option<((Fixed, Fixed), Channel)>> {
+        let mut out = vec![None; self.entities.len()];
         let mut cursor = 0u32;
-        'scan: for k in 0..n {
-            let i = (start + k) % n;
+        'scan: for i in rotated(&index.perceivers, self.cursors.perception) {
             if !charge_budget(budget, 1) {
                 cursor = i as u32;
                 break 'scan;
@@ -567,7 +650,7 @@ impl World {
             if !perceives(s) {
                 continue;
             }
-            for &pi in &players {
+            for &pi in &index.players {
                 if !charge_budget(budget, 1) {
                     cursor = i as u32;
                     break 'scan;
@@ -579,24 +662,51 @@ impl World {
                 }
             }
         }
-        self.ai_cursor = cursor;
+        self.cursors.perception = cursor;
         out
     }
 
+    /// The state machine of every human (one unit each) from `cursors.states`, round robin;
+    /// a human the budget does not reach keeps its state and timer for this tick.
+    fn transitions(
+        &mut self,
+        index: &SimIndex,
+        stimuli: &[Option<((Fixed, Fixed), Channel)>],
+        budget: &mut u64,
+    ) {
+        let mut cursor = 0u32;
+        for i in rotated(&index.humans, self.cursors.states) {
+            if !charge_budget(budget, 1) {
+                cursor = i as u32;
+                break;
+            }
+            let e = &self.entities[i];
+            if !e.alive || !e.active || e.kind == EntityKind::Obstacle || e.ai_locked {
+                continue;
+            }
+            self.advance_state(i, stimuli.get(i).copied().flatten(), budget);
+        }
+        self.cursors.states = cursor;
+    }
+
     /// Order the entity to walk to a point at the given gait; the search draws from the tick's
-    /// AI budget, capped at the per-order budget (`ORDER_SEARCH_WORK`); `true` when a path was
-    /// found (an exhausted budget leaves the entity standing, like an unreachable target).
-    fn walk_to(&mut self, i: usize, to: (Fixed, Fixed), gait: Gait, budget: &mut u64) -> bool {
+    /// simulation budget, capped at the per-order budget (`ORDER_SEARCH_WORK`). An exhausted
+    /// budget leaves the entity standing with its state unchanged so that the next tick
+    /// retries ([`Walk::Exhausted`]); an unreachable target is a definite answer.
+    fn walk_to(&mut self, i: usize, to: (Fixed, Fixed), gait: Gait, budget: &mut u64) -> Walk {
         let granted = (*budget).min(ORDER_SEARCH_WORK);
         let mut search = granted;
-        let _ = self.plan_path_with(i, to, &mut search);
+        let planned = self.plan_path_with(i, to, &mut search);
         *budget -= granted - search;
+        if planned == Err(crate::nav::NavError::WorkExhausted) {
+            return Walk::Exhausted;
+        }
         let e = &mut self.entities[i];
         if e.target.is_some() {
             e.gait = gait;
-            true
+            Walk::Planned
         } else {
-            false
+            Walk::Unreachable
         }
     }
 
@@ -625,20 +735,21 @@ impl World {
     }
 
     /// Walk back to the alert origin (`Returning`), or patrol at once when there is none or the
-    /// entity already stands there or the way back cannot be found.
+    /// entity already stands there or the way back cannot be found. When the budget cannot
+    /// pay the search, the timed state that ended keeps one more tick and retries.
     fn go_back(&mut self, i: usize, budget: &mut u64) {
         let e = &self.entities[i];
         let here = (e.x, e.y);
         match e.alert_origin {
-            Some(origin) if origin != here => {
-                if self.walk_to(i, origin, Gait::Walk, budget) {
+            Some(origin) if origin != here => match self.walk_to(i, origin, Gait::Walk, budget) {
+                Walk::Planned => {
                     let e = &mut self.entities[i];
                     e.ai_state = AiState::Returning;
                     e.state_ticks = 0;
-                } else {
-                    self.resume_patrol(i);
                 }
-            }
+                Walk::Unreachable => self.resume_patrol(i),
+                Walk::Exhausted => self.entities[i].state_ticks = 1,
+            },
             _ => self.resume_patrol(i),
         }
     }
@@ -763,8 +874,15 @@ impl World {
     /// The player characters' attack orders (`docs/original/stealth-and-combat.md` 1, tutorial
     /// string 14; the order model is a hypothesis: a left click on an enemy with a character
     /// selected walks into reach, then punches when behind the victim, else stops facing him).
-    fn attack_orders(&mut self, budget: &mut u64) {
-        for i in 0..self.entities.len() {
+    /// One unit per attacker from `cursors.attacks`, round robin; the victim is looked up in
+    /// the index, never by a scan.
+    fn attack_orders(&mut self, index: &SimIndex, budget: &mut u64) {
+        let mut cursor = 0u32;
+        for i in rotated(&index.attackers, self.cursors.attacks) {
+            if !charge_budget(budget, 1) {
+                cursor = i as u32;
+                break;
+            }
             let e = &self.entities[i];
             let Some(target) = e.attack_target else {
                 continue;
@@ -774,7 +892,11 @@ impl World {
             {
                 continue;
             }
-            let victim = self.entities.iter().position(|v| v.id == target);
+            let victim = index
+                .by_id
+                .binary_search_by_key(&target, |&(id, _)| id)
+                .ok()
+                .map(|k| index.by_id[k].1);
             let valid = victim.is_some_and(|t| {
                 let v = &self.entities[t];
                 v.alive && v.active && v.kind == EntityKind::Guard && v.ai_state.standing()
@@ -786,11 +908,17 @@ impl World {
             let (vx, vy) = (self.entities[t].x, self.entities[t].y);
             let (dx, dy) = (vx - self.entities[i].x, vy - self.entities[i].y);
             if Fixed::length(dx, dy) > Fixed::from_int(PUNCH_REACH) {
-                if self.entities[i].target.is_none()
-                    && !self.walk_to(i, (vx, vy), Gait::Walk, budget)
-                {
-                    // Unreachable: the order is dropped.
-                    self.entities[i].attack_target = None;
+                if self.entities[i].target.is_none() {
+                    match self.walk_to(i, (vx, vy), Gait::Walk, budget) {
+                        Walk::Planned => {}
+                        // Unreachable: the order is dropped.
+                        Walk::Unreachable => self.entities[i].attack_target = None,
+                        // Unpaid: the order is kept and planned first next tick.
+                        Walk::Exhausted => {
+                            cursor = i as u32;
+                            break;
+                        }
+                    }
                 }
                 continue;
             }
@@ -809,6 +937,7 @@ impl World {
             self.enter_timed(i, AiState::Punching, |s| &s.punch, PUNCH_TICKS);
             self.knock_down(t, attacker_pos);
         }
+        self.cursors.attacks = cursor;
     }
 
     /// The blow lands on `t` from `from`: the victim goes down forward when struck from behind,
@@ -855,7 +984,7 @@ impl World {
 mod tests {
     use super::*;
     use crate::input::{Button, InputEvent, Key};
-    use crate::world::{Scenario, Snapshot};
+    use crate::world::{SIM_WORK_PER_TICK, Scenario, Snapshot};
 
     fn f(v: i32) -> Fixed {
         Fixed::from_int(v)
@@ -1507,17 +1636,22 @@ mod tests {
         World::new_mission(Scenario::Mission("crowd".into()), 2, &spec).unwrap()
     }
 
-    /// The largest accepted world of soldiers and no player character costs exactly two units
-    /// per entity (the pre-index pass and the inspection) and finishes its scan every tick.
+    /// The largest accepted world of soldiers and no player character costs exactly three
+    /// units per entity (the pre-index pass, the inspection and the state transition) and
+    /// finishes its walks every tick.
     #[test]
     fn perception_charges_every_inspected_entity_with_no_player_to_perceive() {
         let n = crate::world::MAX_ENTITIES;
         let mut w = crowd(n, 0);
         assert_eq!(w.entities.len(), n);
         let spent = w.ai_tick();
-        assert_eq!(spent, 2 * n as u64);
-        assert!(spent < AI_WORK_PER_TICK);
-        assert_eq!(w.ai_cursor, 0, "the scan completed");
+        assert_eq!(spent, 3 * n as u64);
+        assert!(spent < SIM_WORK_PER_TICK);
+        assert_eq!(
+            w.cursors,
+            crate::world::SimCursors::default(),
+            "the walks completed"
+        );
         assert!(w.entities.iter().all(|e| e.ai_state == AiState::Patrol));
     }
 
@@ -1530,18 +1664,22 @@ mod tests {
         let players = 3;
         let n = guards + players;
         let mut w = crowd(guards, players);
-        // Full budget: pre-index n, inspect n, test 3 players per soldier.
-        assert_eq!(w.ai_tick(), (2 * n + guards * players) as u64);
-        assert_eq!(w.ai_cursor, 0);
-        // n (pre-index) + 3 (players inspected) + 10 soldiers at 1 + 3 each = n + 43: the
-        // eleventh soldier (entity 13) is where the budget runs out.
+        // Full budget: pre-index n, inspect every soldier and test 3 players each, then one
+        // transition per human.
+        assert_eq!(w.ai_tick(), (2 * n + guards * (1 + players)) as u64);
+        assert_eq!(w.cursors.perception, 0);
+        assert_eq!(w.cursors.states, 0);
+        // n (pre-index) + 10 soldiers at 1 + 3 each + 3 = n + 43: the eleventh soldier (entity
+        // 13) is where the budget runs out, on his third player; the transitions get nothing
+        // and their cursor stays at the first human.
         let spent = w.ai_tick_with((n + 43) as u64);
         assert_eq!(spent, (n + 43) as u64);
-        assert_eq!(w.ai_cursor, 13);
+        assert_eq!(w.cursors.perception, 13);
+        assert_eq!(w.cursors.states, 0);
         w.validate().unwrap();
         let h = w.hashes();
         let mut v = w.clone();
-        v.ai_cursor = 0;
+        v.cursors.perception = 0;
         assert_ne!(
             v.hashes().get("world"),
             h.get("world"),
@@ -1551,31 +1689,31 @@ mod tests {
         let snap: Snapshot = serde_json::from_str(&json).unwrap();
         let mut w2 = crowd(guards, players);
         w2.restore(&snap).unwrap();
-        assert_eq!(w2.ai_cursor, 13);
+        assert_eq!(w2.cursors.perception, 13);
         assert_eq!(w2.hashes(), h);
         let mut bad = w.snapshot(None);
-        bad.world.ai_cursor = n as u32;
+        bad.world.cursors.perception = n as u32;
         assert!(w2.restore(&bad).unwrap_err().contains("cursor"));
         // The next scan starts at 13: with the budget of the rest of the round (the 30
         // soldiers 13..=42 at 4 each) plus the pre-index pass and one more unit, it wraps,
-        // inspects the first player character and stops on the second.
+        // inspects the first soldier (entity 3) and stops on his first player.
         let rest = (n + 30 * 4 + 1) as u64;
         assert_eq!(w.ai_tick_with(rest), rest);
-        assert_eq!(w.ai_cursor, 1);
+        assert_eq!(w.cursors.perception, 3);
         // A budget too small for the pre-index pass perceives nothing and moves nothing.
-        w.ai_cursor = 7;
+        w.cursors.perception = 7;
         assert_eq!(w.ai_tick_with(5), 5);
-        assert_eq!(w.ai_cursor, 7);
+        assert_eq!(w.cursors.perception, 7);
         // Same inputs from the restored world: same states and hashes.
         w2.ai_tick_with(rest);
-        w2.ai_cursor = 7;
+        w2.cursors.perception = 7;
         w2.ai_tick_with(5);
         for _ in 0..3 {
             w.step(&[]);
             w2.step(&[]);
         }
         assert_eq!(w.hashes(), w2.hashes());
-        assert_eq!(w.ai_cursor, 0, "a full tick completes the scan");
+        assert_eq!(w.cursors.perception, 0, "a full tick completes the scan");
     }
 
     /// A mass alert: hundreds of soldiers hear the running hero at once and all want a path on
@@ -1614,34 +1752,40 @@ mod tests {
         // once, alerted and running, the work stayed within the bound.
         let mut full = w.clone();
         let spent = full.ai_tick();
-        assert!(spent <= AI_WORK_PER_TICK);
+        assert!(spent <= SIM_WORK_PER_TICK);
         assert!(
             full.entities
                 .iter()
                 .skip(1)
                 .all(|e| e.ai_state == AiState::Alerted && e.heard && e.target.is_some())
         );
-        // A budget that covers the perception and a few searches: the rest stand alerted
-        // without a path this tick and get theirs on the following ticks.
+        // A budget that covers the perception and a few transitions with their searches: the
+        // soldiers the transition walk did not reach stay in their normal state this tick
+        // (they hear him again next tick, and the cursor gives them the first turn), the
+        // ones it reached are alerted, with or without a path.
         let n = w.entities.len() as u64;
         let small = 2 * n + guards as u64 + 3000;
         let spent = w.ai_tick_with(small);
         assert!(spent <= small && spent > 2 * n + guards as u64);
-        let planned = w
+        let alerted = w
             .entities
             .iter()
             .skip(1)
-            .filter(|e| e.target.is_some())
+            .filter(|e| e.ai_state == AiState::Alerted)
             .count();
         assert!(
-            planned > 0 && planned < guards,
-            "{planned} of {guards} planned"
+            alerted > 0 && alerted < guards,
+            "{alerted} of {guards} alerted"
         );
         assert!(
             w.entities
                 .iter()
                 .skip(1)
-                .all(|e| e.ai_state == AiState::Alerted)
+                .all(|e| matches!(e.ai_state, AiState::Alerted | AiState::Patrol))
+        );
+        assert_ne!(
+            w.cursors.states, 0,
+            "the transition walk resumes where it stopped"
         );
         w.validate().unwrap();
         // Thirty ticks later the hero has run 50 px east, out of everyone's reach, and every
@@ -1662,5 +1806,152 @@ mod tests {
             w2.step(&[]);
         }
         assert_eq!(w2.hashes(), w.hashes());
+    }
+    /// An open 1000x800 mission of `guards` idle soldiers, each with a waypoint program that
+    /// walks to the far corner and stops, at distinct spots; no player character.
+    fn idle_patrol_world(guards: usize) -> World {
+        use crate::geom::Geometry;
+        use crate::world::{ActorSpec, Instruction, MapInfo, MissionSpec, Scenario};
+        let actors = (0..guards)
+            .map(|i| ActorSpec {
+                profile: "Soldier A00".into(),
+                team: Team::Enemy,
+                x: 100 + (i % 400) as i32,
+                y: 100 + (i / 400 % 400) as i32,
+                facing256: 0,
+                patrol: vec![],
+                program: vec![Instruction::GoTo { x: 900, y: 700 }, Instruction::Stop],
+                active: true,
+                hit_points: 80,
+                knockout_resistance: 0,
+            })
+            .collect();
+        let spec = MissionSpec {
+            map: MapInfo {
+                width: 1000,
+                height: 800,
+            },
+            geometry: Geometry {
+                boundary: vec![(0, 0), (1000, 0), (1000, 800), (0, 800)],
+                obstacles: vec![],
+                areas: Vec::new(),
+            },
+            actors,
+            script: None,
+            rails: Vec::new(),
+            lenient_natives: false,
+            starting_money: 0,
+            assumptions: std::collections::BTreeSet::new(),
+        };
+        World::new_mission(Scenario::Mission("patrol".into()), 2, &spec).unwrap()
+    }
+
+    /// Finding 4 of Codex review 8: thousands of idle guards whose programs all want a path
+    /// on the same tick draw their searches from the one simulation budget: the tick's work
+    /// stays within `SIM_WORK_PER_TICK`; with a small budget only as many are planned as it
+    /// pays for, the program cursor marks the next one, the rest keep their instruction and
+    /// are planned on the following ticks from the cursor on; all of it deterministic across
+    /// a snapshot.
+    #[test]
+    fn mass_idle_patrols_share_the_simulation_budget() {
+        let guards = 3000;
+        let mut w = idle_patrol_world(guards);
+        let snap = w.snapshot(None);
+        let mut full = w.clone();
+        let spent = full.sim_tick_with(SIM_WORK_PER_TICK);
+        assert!(spent <= SIM_WORK_PER_TICK);
+        let planned = full.entities.iter().filter(|e| e.target.is_some()).count();
+        assert!(planned > 0);
+        // A small budget: the pre-index, the (empty) stealth walks, then a few searches.
+        let small = 3 * guards as u64 + 20_000;
+        let spent = w.sim_tick_with(small);
+        assert!(spent <= small);
+        let planned = w.entities.iter().filter(|e| e.target.is_some()).count();
+        assert!(
+            planned > 0 && planned < guards,
+            "{planned} of {guards} planned"
+        );
+        assert_ne!(
+            w.cursors.programs, 0,
+            "the program walk resumes where it stopped"
+        );
+        assert!(
+            w.entities.iter().all(|e| e.pc == 0 && e.wait_ticks == 0),
+            "an unpaid search skips no instruction"
+        );
+        w.validate().unwrap();
+        // The cursor is authoritative.
+        let h = w.hashes();
+        let mut v = w.clone();
+        v.cursors.programs = 0;
+        assert_ne!(v.hashes().get("world"), h.get("world"));
+        // Over the following ticks every guard is planned (in cursor order, none twice
+        // before the round completes) and the cursor rests at 0 once the walk fits.
+        let mut w2 = idle_patrol_world(0);
+        w2.restore(&snap).unwrap();
+        w2.sim_tick_with(small);
+        assert_eq!(w2.hashes(), h);
+        let mut ticks = 0;
+        while w.entities.iter().any(|e| e.target.is_none() && e.pc == 0) {
+            w.step(&[]);
+            w2.step(&[]);
+            ticks += 1;
+            assert!(ticks < 50, "starved guards");
+        }
+        assert_eq!(w.hashes(), w2.hashes());
+        assert_eq!(w.cursors.programs, 0);
+    }
+
+    /// Player characters attacking as many soldiers: the victim lookup goes through the
+    /// tick's index (no scan per attacker), one unit per attacker, the searches from the
+    /// shared budget; a small budget serves a prefix from the attack cursor and the rest
+    /// on the following ticks, deterministically across a snapshot.
+    #[test]
+    fn mass_attack_orders_are_indexed_and_cursor_resumed() {
+        let n = 300;
+        let mut w = crowd(n, n);
+        // The soldiers do not perceive (locked); every player character attacks his own.
+        for i in 0..n {
+            w.entities[n + i].ai_locked = true;
+            w.entities[i].attack_target = Some(w.entities[n + i].id);
+        }
+        w.validate().unwrap();
+        let snap = w.snapshot(None);
+        let total = w.entities.len() as u64;
+        let mut full = w.clone();
+        let spent = full.ai_tick();
+        assert!(spent <= SIM_WORK_PER_TICK);
+        assert!(
+            full.entities[..n].iter().all(|e| e.target.is_some()),
+            "every attacker walks into reach"
+        );
+        assert_eq!(full.cursors, crate::world::SimCursors::default());
+        // Pre-index, no perceivers, the humans' transitions (the locked soldiers are not
+        // among them), then the attackers: a budget for a handful of searches.
+        let small = 2 * total + 5000;
+        let spent = w.ai_tick_with(small);
+        assert!(spent <= small);
+        let walking = w.entities[..n]
+            .iter()
+            .filter(|e| e.target.is_some())
+            .count();
+        assert!(walking > 0 && walking < n, "{walking} of {n} planned");
+        assert_ne!(w.cursors.attacks, 0);
+        assert!(
+            w.entities[..n].iter().all(|e| e.attack_target.is_some()),
+            "an unpaid order is kept"
+        );
+        w.validate().unwrap();
+        let mut w2 = crowd(0, 0);
+        w2.restore(&snap).unwrap();
+        w2.ai_tick_with(small);
+        assert_eq!(w2.hashes(), w.hashes());
+        for _ in 0..3 {
+            w.step(&[]);
+            w2.step(&[]);
+        }
+        assert_eq!(w.hashes(), w2.hashes());
+        assert!(w.entities[..n].iter().all(|e| e.target.is_some()));
+        assert_eq!(w.cursors.attacks, 0);
     }
 }

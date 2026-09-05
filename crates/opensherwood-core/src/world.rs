@@ -17,7 +17,9 @@ use crate::hash::{Encoder, HASH_SCHEMA_VERSION, Hashes, total};
 use crate::input::{Button, InputEvent, Key, button_tag, encode_key};
 use crate::nav::{DEFAULT_SEARCH_WORK, NavError, NavGrid};
 use crate::rng::Rng;
-use crate::vm::{Assumption, Program, SCRIPT_RNG_STREAM, ScriptObservation, VmState};
+use crate::vm::{
+    Assumption, Program, SCRIPT_RNG_STREAM, ScriptObservation, VmState, charge_budget,
+};
 
 /// Stable entity identifier (index + generation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -567,9 +569,10 @@ pub const MAX_GEOMETRY_COORD: i32 = crate::geom::MAX_COORD;
 pub const MAX_ENTITY_COORD: i32 = crate::geom::MAX_COORD;
 /// RNG stream id of the gameplay stream (the script stream is [`SCRIPT_RNG_STREAM`]).
 pub const GAMEPLAY_RNG_STREAM: u64 = 1;
-/// Work budget of one movement order issued by the player or by an NPC's waypoint program
-/// (A* node expansions and smoothing cells, `nav.rs`); orders issued by the script are charged
-/// to the VM's per-tick budget instead.
+/// Work budget of one movement order issued by the player (A* node expansions and smoothing
+/// cells, `nav.rs`), and the cap of one search issued by the simulation (an NPC's waypoint
+/// program, the stealth layer), which otherwise draws from the tick's [`SIM_WORK_PER_TICK`];
+/// orders issued by the script are charged to the VM's per-tick budget instead.
 pub const ORDER_SEARCH_WORK: u64 = DEFAULT_SEARCH_WORK;
 /// A second left click on the ground within this many ticks of the first (20 at 60 Hz, a third
 /// of a second) ...
@@ -657,10 +660,10 @@ pub struct World {
     /// `None` for worlds without a script.
     #[serde(default)]
     pub vm: Option<VmState>,
-    /// Entity index the stealth layer's perception scan resumes from (`ai.rs`: round robin
-    /// when the tick's AI budget ran out mid-scan; 0 after a completed scan).
+    /// Where each phase of the simulation resumes when the tick's budget ran out (`ai.rs`,
+    /// "Work": round robin per phase; 0 after a completed walk).
     #[serde(default)]
-    pub ai_cursor: u32,
+    pub cursors: SimCursors,
     /// Navigation grid derived from `geometry` and `map_size`: not serialised, built by every
     /// constructor, `set_geometry` and `restore` before the world is committed (a world the core
     /// hands out always has it; movement orders are refused, never unbounded, without it).
@@ -671,6 +674,35 @@ pub struct World {
     pub catalog: Catalog,
 }
 
+/// The entity index each simulation phase resumes from when the tick's budget ran out
+/// (`ai.rs`, "Work"): authoritative (snapshot, `validate`: every cursor names an entity or is
+/// 0, the `world` hash).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimCursors {
+    /// The perception walk over the soldiers.
+    pub perception: u32,
+    /// The state transitions over the humans.
+    pub states: u32,
+    /// The attack orders over the attacking player characters.
+    pub attacks: u32,
+    /// The waypoint programs and legacy patrols over the idle guards.
+    pub programs: u32,
+}
+
+impl SimCursors {
+    fn all(self) -> [u32; 4] {
+        [self.perception, self.states, self.attacks, self.programs]
+    }
+}
+
+/// Work units the simulation may spend in one tick besides the script (`ai.rs`, "Work"): the
+/// pre-index pass, perception, the state transitions, the attack orders, the waypoint programs
+/// and every path search any of them issues (the units of `nav.rs`, capped per search at
+/// [`ORDER_SEARCH_WORK`]), granted at the start of `simulate` and nowhere else. 2^24: a
+/// `MAX_ENTITIES` world of idle soldiers costs 2^18 a tick before any search, and a search over
+/// the largest accepted grid (`nav::MAX_CELLS`) fits three times.
+pub const SIM_WORK_PER_TICK: u64 = 1 << 24;
+
 /// Snapshot schema version (9: sequence barrier tokens, VM counters and budget no longer
 /// serialised, snapshots must be quiescent; 11: entity `gait` / `posture`, the world's
 /// `last_ground_click`; 12: the stealth layer: entity `team`, `ai_state`, `state_ticks`,
@@ -678,8 +710,11 @@ pub struct World {
 /// `knockout_resistance`, `npc_gait`, `fell_backward`; actor specs carry `hit_points` and
 /// `knockout_resistance`; 13: the VM's `assumptions` and `pending_action_changes`, the
 /// world's `ai_cursor`, mission specs carry `starting_money` and `assumptions`; 14: entity
-/// `heard`, animation `elapsed` in clock units of the measured animation clock).
-pub const SNAPSHOT_VERSION: u32 = 14;
+/// `heard`, animation `elapsed` in clock units of the measured animation clock; 15: the
+/// world's `cursors` (one per simulation phase) replace `ai_cursor`, the VM's `fault`
+/// replaces `faulted`, native calls carry their result slot, frames no longer hold a native
+/// result, the assumption registry grew).
+pub const SNAPSHOT_VERSION: u32 = 15;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -869,7 +904,7 @@ impl World {
     }
 
     /// Plan a path for entity `index` to `target` (map pixels) within [`ORDER_SEARCH_WORK`]
-    /// (the budget of a player or program order). Targets on unwalkable ground are moved to the
+    /// (the budget of a player's order). Targets on unwalkable ground are moved to the
     /// nearest walkable cell; unreachable targets and an exhausted budget clear the order.
     pub(crate) fn plan_path(&mut self, index: usize, target: (Fixed, Fixed)) {
         let mut budget = ORDER_SEARCH_WORK;
@@ -1119,7 +1154,7 @@ impl World {
             geometry,
             programs: Vec::new(),
             vm: None,
-            ai_cursor: 0,
+            cursors: SimCursors::default(),
             nav: Some(nav),
             catalog: Catalog::default(),
         })
@@ -1389,15 +1424,16 @@ impl World {
                 }
             }
         }
-        if !self.entities.is_empty() && self.ai_cursor as usize >= self.entities.len() {
-            return Err(format!(
-                "ai cursor {} beyond the {} entities",
-                self.ai_cursor,
-                self.entities.len()
-            ));
-        }
-        if self.entities.is_empty() && self.ai_cursor != 0 {
-            return Err("ai cursor without entities".into());
+        for cursor in self.cursors.all() {
+            if !self.entities.is_empty() && cursor as usize >= self.entities.len() {
+                return Err(format!(
+                    "simulation cursor {cursor} beyond the {} entities",
+                    self.entities.len()
+                ));
+            }
+            if self.entities.is_empty() && cursor != 0 {
+                return Err("simulation cursor without entities".into());
+            }
         }
         if let Some(sel) = self.selected
             && !ids.contains(&sel)
@@ -1632,59 +1668,13 @@ impl World {
             Fixed::from_int(self.map_size.0 as i32),
             Fixed::from_int(self.map_size.1 as i32),
         );
-        // The stealth layer first (`ai.rs`): attack orders, perception, alert and knock-out
-        // states; an alerted or knocked-out guard does not run its program below.
-        self.ai_tick();
-        // Idle guards run their waypoint program, or pick their next legacy patrol point (path
-        // planning needs &mut self, so collect first).
-        let mut to_plan: Vec<(usize, (Fixed, Fixed))> = Vec::new();
-        let programs = &self.programs;
-        let rng = &mut self.rng;
-        for (i, e) in self.entities.iter_mut().enumerate() {
-            if !(e.alive
-                && e.active
-                && e.kind == EntityKind::Guard
-                && e.target.is_none()
-                && e.ai_state == AiState::Patrol)
-            {
-                continue;
-            }
-            if e.wait_ticks > 0 {
-                e.wait_ticks -= 1;
-                continue;
-            }
-            // A locked AI (script natives 134 / 135) holds its program or patrol where it is.
-            if e.ai_locked {
-                continue;
-            }
-            match e.program.and_then(|p| programs.get(p as usize)) {
-                Some(program) => {
-                    if let Some(t) = run_program(e, program, rng) {
-                        to_plan.push((i, t));
-                    }
-                }
-                None if !e.patrol.is_empty() => {
-                    to_plan.push((i, e.patrol[e.patrol_index as usize % e.patrol.len()]));
-                }
-                None => {}
-            }
-        }
-        for (i, t) in to_plan {
-            self.plan_path(i, t);
-            if self.entities[i].target.is_some() {
-                // Program walks use the gait the script set (native 140).
-                self.entities[i].gait = self.entities[i].npc_gait;
-            }
-            if self.entities[i].target.is_none() {
-                // Unreachable point: skip it.
-                let e = &mut self.entities[i];
-                if e.program.is_some() {
-                    e.pc = e.pc.saturating_add(1);
-                } else {
-                    e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
-                }
-                e.wait_ticks = 10;
-            }
+        // One simulation budget (`SIM_WORK_PER_TICK`) for the pre-index pass, the stealth
+        // layer (`ai.rs`: perception, alert and knock-out states, attack orders; an alerted
+        // or knocked-out guard does not run its program below) and the waypoint programs.
+        let mut left = SIM_WORK_PER_TICK;
+        if let Some(index) = self.sim_index(&mut left) {
+            self.stealth_tick(&index, &mut left);
+            self.program_walks(&index.idle_guards, &mut left);
         }
         for e in &mut self.entities {
             if !e.alive || !e.active || e.kind == EntityKind::Obstacle {
@@ -1794,6 +1784,80 @@ impl World {
         }
     }
 
+    /// The waypoint programs and legacy patrols of the idle guards (`idle`, from the tick's
+    /// pre-index), one unit per guard from `cursors.programs`, round robin: a guard whose
+    /// program or patrol wants a walk gets a path search within what the budget has left,
+    /// capped at [`ORDER_SEARCH_WORK`]. An unreachable point is skipped after a pause; a search
+    /// the budget cut short leaves the guard where he is with his instruction unchanged, the
+    /// cursor on him, so the next tick plans him first.
+    pub(crate) fn program_walks(&mut self, idle: &[usize], left: &mut u64) {
+        let start = idle.partition_point(|&i| i < self.cursors.programs as usize);
+        let order: Vec<usize> = idle[start..]
+            .iter()
+            .chain(&idle[..start])
+            .copied()
+            .collect();
+        let mut cursor = 0u32;
+        for i in order {
+            if !charge_budget(left, 1) {
+                cursor = i as u32;
+                break;
+            }
+            let programs = &self.programs;
+            let rng = &mut self.rng;
+            let e = &mut self.entities[i];
+            if !(e.alive
+                && e.active
+                && e.kind == EntityKind::Guard
+                && e.target.is_none()
+                && e.ai_state == AiState::Patrol)
+            {
+                continue;
+            }
+            if e.wait_ticks > 0 {
+                e.wait_ticks -= 1;
+                continue;
+            }
+            // A locked AI (script natives 134 / 135) holds its program or patrol where it is.
+            if e.ai_locked {
+                continue;
+            }
+            let target = match e.program.and_then(|p| programs.get(p as usize)) {
+                Some(program) => run_program(e, program, rng),
+                None if !e.patrol.is_empty() => {
+                    Some(e.patrol[e.patrol_index as usize % e.patrol.len()])
+                }
+                None => None,
+            };
+            let Some(t) = target else {
+                continue;
+            };
+            let granted = (*left).min(ORDER_SEARCH_WORK);
+            let mut search = granted;
+            let planned = self.plan_path_with(i, t, &mut search);
+            *left -= granted - search;
+            if planned == Err(NavError::WorkExhausted) {
+                // Not unreachable, unpaid: the same walk is planned first next tick.
+                cursor = i as u32;
+                break;
+            }
+            let e = &mut self.entities[i];
+            if e.target.is_some() {
+                // Program walks use the gait the script set (native 140).
+                e.gait = e.npc_gait;
+            } else {
+                // Unreachable point: skip it.
+                if e.program.is_some() {
+                    e.pc = e.pc.saturating_add(1);
+                } else {
+                    e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
+                }
+                e.wait_ticks = 10;
+            }
+        }
+        self.cursors.programs = cursor;
+    }
+
     /// Snapshot everything authoritative. `content` is the fingerprint of the game content the
     /// world was built from (`None` for synthetic scenarios); the core has no I/O, so the app
     /// supplies it.
@@ -1901,7 +1965,9 @@ impl World {
             encode_key(*k, &mut keys);
         }
         w.u32(self.keys_down.len() as u32).bytes(&keys);
-        w.u32(self.ai_cursor);
+        for cursor in self.cursors.all() {
+            w.u32(cursor);
+        }
         parts.insert("world".into(), w.finish());
 
         let mut a = Encoder::new("actors");
@@ -2220,7 +2286,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "9b77c737177ac9b39b208aa54f269ee7dd60eb71c9a173441f333151027cc3fa";
+        "d27f5fc5cb0434b393321b8d28fc10574d22373d74d577d286c798c773c76ace";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -2302,8 +2368,17 @@ mod tests {
         w.entities[1].heard = true;
         variants.push(("heard", w));
         let mut w = base.clone();
-        w.ai_cursor = 1;
-        variants.push(("ai_cursor", w));
+        w.cursors.perception = 1;
+        variants.push(("cursors.perception", w));
+        let mut w = base.clone();
+        w.cursors.states = 1;
+        variants.push(("cursors.states", w));
+        let mut w = base.clone();
+        w.cursors.attacks = 1;
+        variants.push(("cursors.attacks", w));
+        let mut w = base.clone();
+        w.cursors.programs = 1;
+        variants.push(("cursors.programs", w));
         let mut w = base.clone();
         w.programs.push(vec![Instruction::Stop]);
         variants.push(("programs", w));

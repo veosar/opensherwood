@@ -1340,6 +1340,16 @@ impl Session {
                     pointer = (Fixed::from_raw(x256).round(), Fixed::from_raw(y256).round());
                     out.push(*e);
                 }
+                // The `;` key toggles the mini-map (`combat-measurements.md` 5) and is an interface
+                // key: neither the press nor the release reaches the world.
+                InputEvent::KeyDown {
+                    key: Key::Semicolon,
+                } => {
+                    self.minimap_open = !self.minimap_open && self.minimap.is_some();
+                }
+                InputEvent::KeyUp {
+                    key: Key::Semicolon,
+                } => {}
                 InputEvent::PointerDown {
                     button: opensherwood_core::Button::Left,
                 } => match crate::ui::hud_hit(pointer.0, pointer.1) {
@@ -2547,7 +2557,8 @@ impl Session {
                     "money": vm.money,
                     "sequence_active": !vm.sequences.is_empty(),
                     "sequences": vm.sequences.len(),
-                    "faulted": vm.faulted,
+                    "faulted": vm.faulted(),
+                    "fault": vm.fault,
                     "lenient": vm.lenient,
                     "unknown_calls": vm.unknown_calls,
                     "pending_messages": vm.messages.len(),

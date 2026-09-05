@@ -48,6 +48,8 @@ pub enum Key {
     Function(u8),
     /// Backspace (text fields).
     Backspace,
+    /// Semicolon (the original's mini-map shortcut).
+    Semicolon,
 }
 
 /// One input event in logical viewport coordinates (24.8 fixed point, `x256 = x * 256`).
@@ -146,6 +148,7 @@ pub fn encode_key(key: Key, out: &mut Vec<u8>) {
         Key::Left => out.push(10),
         Key::Right => out.push(11),
         Key::Backspace => out.push(12),
+        Key::Semicolon => out.push(13),
         Key::Letter(c) => {
             out.push(32);
             out.extend_from_slice(&(c as u32).to_le_bytes());

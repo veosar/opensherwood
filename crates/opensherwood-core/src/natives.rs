@@ -14,19 +14,30 @@
 //! sequence barrier (`vm.rs`, [`crate::vm::SeqToken`]); natives 202 (non-blocking) and 203 (a
 //! page that holds its sequence) both queue a `TextRequest` whose `blocking` flag tells them apart.
 //!
-//! Signatures. [`NATIVE_SIGNATURES`] is the one table of `id -> (arity, has_result)` for every
-//! implemented and stub native, derived from the arity column of the spec's rows (the corpus has
-//! exactly one arity per id and reads a result either always or never). The translator checks it
-//! for diagnostics, `Program::validate` refuses a program whose call sites disagree with it (the
-//! trust boundary), and the dispatcher checks it again: a call whose argument count differs from
-//! the signature is a deterministic trap like an unknown native (counted in
-//! `counters.arity_mismatches`), so no required argument ever defaults to 0.
+//! Signatures. [`NATIVE_SIGNATURES`] is the one table of `id -> (arity, returns_value,
+//! read_in_corpus)` for every implemented and stub native: the arity from the arity column of
+//! the spec's rows (the corpus has exactly one arity per id), `returns_value` from the row's
+//! `-> result` notation (the semantic contract: the value the call leaves, which the dispatcher
+//! honours) and `read_in_corpus` from the observation that a `0x0d` follows the call in the
+//! retail scripts (a corpus fact, kept apart from the contract; today the two agree for every
+//! id). The translator checks the table for diagnostics, `Program::validate` refuses a program
+//! whose call sites disagree with it (the trust boundary: a wrong argument count, or a result
+//! slot on a native that leaves no value), and the dispatcher checks the arity again: a call
+//! whose argument count differs from the signature is a deterministic trap like an unknown
+//! native (counted in `counters.arity_mismatches`), so no required argument ever defaults to 0.
 //!
-//! Hypotheses and taint (ADR-0008, "Hypotheses and taint"). Whenever an outcome depends on a
-//! stub's value or on an engine hypothesis, the VM records an [`Assumption`]: a stub's result
-//! consumed by the script (`GetNativeResult`, `vm.rs`), a call of one of the [`NEVER_WIN_STUBS`],
-//! and here natives 90 / 128 reporting a knock-out. The set is hashed and observable; a mission
-//! result reached with a non-empty set is not authoritative.
+//! Hypotheses and taint (ADR-0008, "Hypotheses and taint"; `vm.rs`, [`Assumption`]).
+//! [`NATIVE_TAINT`] classifies every known native ([`Taint`]): an *observed* native records
+//! nothing on the call (its value is read from modelled state or its effect goes through the
+//! same code paths the player's orders use); a *policy* native records
+//! `Assumption::Policy(id)` on every call (the engine's reading of the row is a choice the spec
+//! does not settle: 98, 128, 140, 245 and the rest of the policy list); a *branch* native
+//! records `Policy(id)` from its own arm on the branch that is a policy; an *effect* stub
+//! records `Assumption::StubResult(id)` on every call (its documented effect is not modelled),
+//! and a *presentation* stub records nothing on the call, each with its one-line proof in the
+//! table. A lenient unknown call records `Assumption::UnknownNative(id)`. Reading any stub's
+//! fabricated result records `StubResult(id)` (`vm.rs`). Natives 90 / 128 reporting a knock-out
+//! record `Assumption::KnockOut`, native 56 outside a sequence `Assumption::TickRate`.
 //!
 //! Handles. Elements, locations, paths, doors and patches are their table indices (`NONE_HANDLE`
 //! = none); a location value with [`LOCATION_POINT_BIT`] set packs an actor position (native 95).
@@ -35,8 +46,9 @@ use crate::ai::ActorStatus;
 use crate::fixed::Fixed;
 use crate::geom::point_in_polygon;
 use crate::vm::{
-    Assumption, Element, LOCATION_POINT_BIT, Location, MAX_QUEUE, MISSION_VARIABLES, Message,
-    NONE_HANDLE, Objective, Program, SeqElement, UnknownCall, charge_budget, location_of_point,
+    Assumption, Element, Fault, LOCATION_POINT_BIT, Location, MAX_QUEUE, MISSION_VARIABLES,
+    Message, NONE_HANDLE, Objective, Program, SeqElement, UnknownCall, charge_budget,
+    location_of_point,
 };
 
 /// Saturating increment of a per-id diagnostic counter.
@@ -80,195 +92,412 @@ pub const IMPLEMENTED_NATIVES: &[u32] = &[
     217, 233, 236, 237, 240, 245, 250,
 ];
 
-/// Stubs whose zero result keeps a mission from ever being won or lost ("never-win" rows of the
-/// stub policy table: banner capture 178 / 223 / 234, the used flag 222, the door state 182, the
-/// interpolation 213, the hunt 70 and the party join 232): calling one records
-/// [`Assumption::StubResult`] whether or not the script reads a result.
-pub const NEVER_WIN_STUBS: &[u32] = &[70, 178, 182, 213, 222, 223, 232, 234];
+/// What calling a known native records in the taint model (module documentation, "Hypotheses
+/// and taint"; [`NATIVE_TAINT`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Taint {
+    /// Implemented; the value is read from modelled state or the effect goes through the code
+    /// paths the player's orders use: nothing is recorded on the call.
+    Observed,
+    /// Implemented; the engine's reading of the row is a policy the spec does not settle:
+    /// every call records `Assumption::Policy(id)`.
+    Policy,
+    /// Implemented; one of its branches is a policy: the arm records `Assumption::Policy(id)`
+    /// itself when it takes that branch.
+    Branch,
+    /// A recorded stub with a documented effect the engine does not model: every call records
+    /// `Assumption::StubResult(id)`.
+    Effect,
+    /// A recorded stub proven presentation-only (the justification is in the table): the call
+    /// records nothing; reading its result, if it has one, still records `StubResult(id)`.
+    Presentation,
+}
 
-/// Signature of a native: the number of arguments its call sites push and whether the script
-/// reads a result (`0x0d`) after it.
+/// The taint class of every implemented and stub native, one row per id in ascending order
+/// (the same ids as [`NATIVE_SIGNATURES`]; pinned by `taint_table_covers_the_known_natives`).
+/// Policy rows, with the choice the engine made: 8 (a building index without interiors), 44 /
+/// 110 (the third / fourth message arguments are ignored: unknown, perhaps a delay), 45 (the
+/// mode is ignored), 64 (a walk; the row is low), 93 / 94 / 133 (the direction encoding
+/// `FACING_UNITS_PER_DIRECTION` is low), 98 (every actor is outdoors), 128 (the able-to-act
+/// reading, medium-low; non-actors always can act), 134 / 135 (locking halts the walk: low),
+/// 140 (0 walk / else run: low), 159 (the off-map location: low), 161 (the engine's generator,
+/// not the original's), 193 / 194 / 196 (stored values whose meaning is low), 204 (the count
+/// of player characters in the polygon: low), 245 (the number of live player characters).
+/// Branch rows: 111 / 211 / 250 record when more than one player character exists (which one
+/// is "main" is observed only with a single one), 240 for a non-actor element (present unless
+/// deactivated: the policy table's 1). Presentation rows, each proven by its row of
+/// `docs/formats/scb.md`: 62 (an expression on the actor's face: nothing reads it), 69 (a
+/// remark / gesture before a dialogue line: a voice line, nothing reads it), 149 / 150 (a level
+/// sound played once / at start: audio only), 243 (a highlight on the actor a cutscene text
+/// talks about, always inside a sequence: a HUD effect nothing reads).
+pub const NATIVE_TAINT: &[(u32, Taint)] = &[
+    (0, Taint::Observed),
+    (1, Taint::Observed),
+    (2, Taint::Observed),
+    (3, Taint::Observed),
+    (4, Taint::Observed),
+    (5, Taint::Observed),
+    (6, Taint::Observed),
+    (7, Taint::Effect),
+    (8, Taint::Policy),
+    (9, Taint::Observed),
+    (10, Taint::Observed),
+    (12, Taint::Observed),
+    (13, Taint::Observed),
+    (18, Taint::Effect),
+    (20, Taint::Effect),
+    (24, Taint::Effect),
+    (26, Taint::Observed),
+    (27, Taint::Observed),
+    (28, Taint::Observed),
+    (29, Taint::Effect),
+    (30, Taint::Observed),
+    (31, Taint::Observed),
+    (32, Taint::Observed),
+    (33, Taint::Observed),
+    (34, Taint::Observed),
+    (35, Taint::Effect),
+    (38, Taint::Effect),
+    (39, Taint::Effect),
+    (41, Taint::Effect),
+    (42, Taint::Effect),
+    (43, Taint::Observed),
+    (44, Taint::Policy),
+    (45, Taint::Policy),
+    (46, Taint::Effect),
+    (47, Taint::Effect),
+    (48, Taint::Observed),
+    (49, Taint::Effect),
+    (50, Taint::Effect),
+    (51, Taint::Effect),
+    (52, Taint::Effect),
+    (53, Taint::Effect),
+    (54, Taint::Effect),
+    (55, Taint::Effect),
+    (56, Taint::Observed),
+    (59, Taint::Effect),
+    (62, Taint::Presentation),
+    (64, Taint::Policy),
+    (69, Taint::Presentation),
+    (70, Taint::Effect),
+    (72, Taint::Effect),
+    (73, Taint::Effect),
+    (74, Taint::Observed),
+    (75, Taint::Observed),
+    (79, Taint::Observed),
+    (80, Taint::Effect),
+    (81, Taint::Effect),
+    (85, Taint::Observed),
+    (86, Taint::Observed),
+    (87, Taint::Observed),
+    (88, Taint::Effect),
+    (89, Taint::Effect),
+    (90, Taint::Observed),
+    (92, Taint::Effect),
+    (93, Taint::Policy),
+    (94, Taint::Policy),
+    (95, Taint::Observed),
+    (96, Taint::Observed),
+    (97, Taint::Observed),
+    (98, Taint::Policy),
+    (99, Taint::Effect),
+    (101, Taint::Effect),
+    (102, Taint::Effect),
+    (103, Taint::Effect),
+    (109, Taint::Observed),
+    (110, Taint::Policy),
+    (111, Taint::Branch),
+    (112, Taint::Effect),
+    (113, Taint::Observed),
+    (114, Taint::Observed),
+    (117, Taint::Observed),
+    (118, Taint::Observed),
+    (119, Taint::Effect),
+    (125, Taint::Effect),
+    (126, Taint::Effect),
+    (128, Taint::Policy),
+    (130, Taint::Effect),
+    (132, Taint::Observed),
+    (133, Taint::Policy),
+    (134, Taint::Policy),
+    (135, Taint::Policy),
+    (137, Taint::Effect),
+    (140, Taint::Policy),
+    (143, Taint::Effect),
+    (144, Taint::Observed),
+    (145, Taint::Observed),
+    (149, Taint::Presentation),
+    (150, Taint::Presentation),
+    (152, Taint::Effect),
+    (156, Taint::Effect),
+    (159, Taint::Policy),
+    (160, Taint::Observed),
+    (161, Taint::Policy),
+    (163, Taint::Effect),
+    (164, Taint::Effect),
+    (172, Taint::Effect),
+    (173, Taint::Effect),
+    (177, Taint::Effect),
+    (178, Taint::Effect),
+    (180, Taint::Effect),
+    (182, Taint::Effect),
+    (186, Taint::Effect),
+    (187, Taint::Effect),
+    (188, Taint::Effect),
+    (189, Taint::Effect),
+    (191, Taint::Effect),
+    (192, Taint::Observed),
+    (193, Taint::Policy),
+    (194, Taint::Policy),
+    (195, Taint::Effect),
+    (196, Taint::Policy),
+    (197, Taint::Effect),
+    (198, Taint::Effect),
+    (199, Taint::Effect),
+    (200, Taint::Effect),
+    (202, Taint::Observed),
+    (203, Taint::Observed),
+    (204, Taint::Policy),
+    (205, Taint::Effect),
+    (210, Taint::Effect),
+    (211, Taint::Branch),
+    (212, Taint::Effect),
+    (213, Taint::Effect),
+    (214, Taint::Effect),
+    (215, Taint::Effect),
+    (216, Taint::Observed),
+    (217, Taint::Observed),
+    (218, Taint::Effect),
+    (219, Taint::Effect),
+    (220, Taint::Effect),
+    (221, Taint::Effect),
+    (222, Taint::Effect),
+    (223, Taint::Effect),
+    (224, Taint::Effect),
+    (226, Taint::Effect),
+    (228, Taint::Effect),
+    (229, Taint::Effect),
+    (231, Taint::Effect),
+    (232, Taint::Effect),
+    (233, Taint::Observed),
+    (234, Taint::Effect),
+    (235, Taint::Effect),
+    (236, Taint::Observed),
+    (237, Taint::Observed),
+    (240, Taint::Branch),
+    (243, Taint::Presentation),
+    (244, Taint::Effect),
+    (245, Taint::Policy),
+    (246, Taint::Effect),
+    (247, Taint::Effect),
+    (248, Taint::Effect),
+    (250, Taint::Branch),
+    (253, Taint::Effect),
+    (254, Taint::Effect),
+    (255, Taint::Effect),
+    (256, Taint::Effect),
+    (258, Taint::Effect),
+    (261, Taint::Effect),
+    (264, Taint::Effect),
+];
+
+/// The taint class of a known native; `None` for an unknown id.
+#[must_use]
+pub fn native_taint(id: u32) -> Option<Taint> {
+    NATIVE_TAINT
+        .binary_search_by_key(&id, |&(i, _)| i)
+        .ok()
+        .map(|k| NATIVE_TAINT[k].1)
+}
+
+/// Signature of a native: the number of arguments its call sites push, whether the call leaves
+/// a value (the semantic contract) and whether the retail corpus reads one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeSignature {
     /// Arguments popped by the call.
     pub arity: u32,
-    /// The call leaves a result the script may read.
-    pub has_result: bool,
+    /// The call leaves a value the script may read (the row's `-> result`); a result slot on a
+    /// native without one is refused by `Program::validate`.
+    pub returns_value: bool,
+    /// A `0x0d` follows the call somewhere in the retail corpus (the observation, kept apart
+    /// from the contract).
+    pub read_in_corpus: bool,
 }
 
-/// The signature of every implemented and stub native (`id, arity, has_result`), one row per
-/// id in ascending order, from the arity column of the native call table of
-/// `docs/formats/scb.md` (130 and 137 have arity-only rows: their effect is unknown, the
-/// arity is the corpus observation). Pinned by `signature_table_covers_the_known_natives`.
-pub const NATIVE_SIGNATURES: &[(u32, u32, bool)] = &[
-    (0, 2, false),
-    (1, 2, false),
-    (2, 1, true),
-    (3, 1, true),
-    (4, 1, true),
-    (5, 1, true),
-    (6, 1, true),
-    (7, 1, true),
-    (8, 1, true),
-    (9, 1, true),
-    (10, 1, true),
-    (12, 1, true),
-    (13, 1, true),
-    (18, 1, false),
-    (20, 1, false),
-    (24, 2, false),
-    (26, 2, false),
-    (27, 1, false),
-    (28, 1, false),
-    (29, 0, false),
-    (30, 0, false),
-    (31, 0, false),
-    (32, 0, false),
-    (33, 1, false),
-    (34, 1, false),
-    (35, 1, false),
-    (38, 2, false),
-    (39, 1, false),
-    (41, 1, false),
-    (42, 2, false),
-    (43, 2, false),
-    (44, 4, false),
-    (45, 3, false),
-    (46, 4, false),
-    (47, 4, false),
-    (48, 2, false),
-    (49, 2, false),
-    (50, 2, false),
-    (51, 2, false),
-    (52, 1, false),
-    (53, 1, false),
-    (54, 0, false),
-    (55, 0, false),
-    (56, 1, false),
-    (59, 3, false),
-    (62, 3, false),
-    (64, 3, false),
-    (69, 2, false),
-    (70, 6, false),
-    (72, 1, false),
-    (73, 1, false),
-    (74, 0, true),
-    (75, 0, true),
-    (79, 1, true),
-    (80, 1, true),
-    (81, 1, true),
-    (85, 1, true),
-    (86, 2, true),
-    (87, 1, true),
-    (88, 1, true),
-    (89, 1, true),
-    (90, 1, true),
-    (92, 2, false),
-    (93, 1, true),
-    (94, 2, false),
-    (95, 1, true),
-    (96, 2, false),
-    (97, 2, true),
-    (98, 2, true),
-    (99, 1, false),
-    (101, 1, true),
-    (102, 3, false),
-    (103, 1, false),
-    (109, 2, false),
-    (110, 4, false),
-    (111, 0, true),
-    (112, 1, false),
-    (113, 1, false),
-    (114, 1, false),
-    (117, 3, false),
-    (118, 2, true),
-    (119, 0, true),
-    (125, 2, false),
-    (126, 1, true),
-    (128, 1, true),
-    (130, 3, false),
-    (132, 2, false),
-    (133, 3, false),
-    (134, 2, false),
-    (135, 1, false),
-    (137, 2, false),
-    (140, 2, false),
-    (143, 2, false),
-    (144, 1, true),
-    (145, 1, false),
-    (149, 1, false),
-    (150, 1, false),
-    (152, 1, false),
-    (156, 2, false),
-    (159, 0, true),
-    (160, 2, true),
-    (161, 1, true),
-    (163, 0, true),
-    (164, 1, true),
-    (172, 0, true),
-    (173, 0, true),
-    (177, 2, false),
-    (178, 1, false),
-    (180, 2, false),
-    (182, 1, true),
-    (186, 2, false),
-    (187, 2, false),
-    (188, 2, false),
-    (189, 2, false),
-    (191, 2, false),
-    (192, 0, true),
-    (193, 1, true),
-    (194, 2, false),
-    (195, 1, true),
-    (196, 2, false),
-    (197, 2, true),
-    (198, 3, false),
-    (199, 3, false),
-    (200, 2, false),
-    (202, 1, false),
-    (203, 1, false),
-    (204, 1, true),
-    (205, 2, true),
-    (210, 1, true),
-    (211, 0, true),
-    (212, 4, false),
-    (213, 3, true),
-    (214, 1, false),
-    (215, 1, true),
-    (216, 0, true),
-    (217, 1, true),
-    (218, 2, false),
-    (219, 1, false),
-    (220, 1, false),
-    (221, 1, true),
-    (222, 1, true),
-    (223, 1, true),
-    (224, 4, false),
-    (226, 1, false),
-    (228, 3, false),
-    (229, 1, false),
-    (231, 1, true),
-    (232, 1, false),
-    (233, 2, false),
-    (234, 0, true),
-    (235, 1, true),
-    (236, 0, true),
-    (237, 1, false),
-    (240, 1, true),
-    (243, 1, false),
-    (244, 2, false),
-    (245, 0, true),
-    (246, 1, true),
-    (247, 1, false),
-    (248, 1, true),
-    (250, 1, true),
-    (253, 1, true),
-    (254, 2, false),
-    (255, 1, true),
-    (256, 1, true),
-    (258, 1, true),
-    (261, 0, true),
-    (264, 3, false),
+/// The signature of every implemented and stub native (`id, arity, returns_value,
+/// read_in_corpus`), one row per id in ascending order, from the arity and result columns of
+/// the native call table of `docs/formats/scb.md` (130 and 137 have arity-only rows: their
+/// effect is unknown, the arity is the corpus observation). Pinned by
+/// `signature_table_covers_the_known_natives`.
+pub const NATIVE_SIGNATURES: &[(u32, u32, bool, bool)] = &[
+    (0, 2, false, false),
+    (1, 2, false, false),
+    (2, 1, true, true),
+    (3, 1, true, true),
+    (4, 1, true, true),
+    (5, 1, true, true),
+    (6, 1, true, true),
+    (7, 1, true, true),
+    (8, 1, true, true),
+    (9, 1, true, true),
+    (10, 1, true, true),
+    (12, 1, true, true),
+    (13, 1, true, true),
+    (18, 1, false, false),
+    (20, 1, false, false),
+    (24, 2, false, false),
+    (26, 2, false, false),
+    (27, 1, false, false),
+    (28, 1, false, false),
+    (29, 0, false, false),
+    (30, 0, false, false),
+    (31, 0, false, false),
+    (32, 0, false, false),
+    (33, 1, false, false),
+    (34, 1, false, false),
+    (35, 1, false, false),
+    (38, 2, false, false),
+    (39, 1, false, false),
+    (41, 1, false, false),
+    (42, 2, false, false),
+    (43, 2, false, false),
+    (44, 4, false, false),
+    (45, 3, false, false),
+    (46, 4, false, false),
+    (47, 4, false, false),
+    (48, 2, false, false),
+    (49, 2, false, false),
+    (50, 2, false, false),
+    (51, 2, false, false),
+    (52, 1, false, false),
+    (53, 1, false, false),
+    (54, 0, false, false),
+    (55, 0, false, false),
+    (56, 1, false, false),
+    (59, 3, false, false),
+    (62, 3, false, false),
+    (64, 3, false, false),
+    (69, 2, false, false),
+    (70, 6, false, false),
+    (72, 1, false, false),
+    (73, 1, false, false),
+    (74, 0, true, true),
+    (75, 0, true, true),
+    (79, 1, true, true),
+    (80, 1, true, true),
+    (81, 1, true, true),
+    (85, 1, true, true),
+    (86, 2, true, true),
+    (87, 1, true, true),
+    (88, 1, true, true),
+    (89, 1, true, true),
+    (90, 1, true, true),
+    (92, 2, false, false),
+    (93, 1, true, true),
+    (94, 2, false, false),
+    (95, 1, true, true),
+    (96, 2, false, false),
+    (97, 2, true, true),
+    (98, 2, true, true),
+    (99, 1, false, false),
+    (101, 1, true, true),
+    (102, 3, false, false),
+    (103, 1, false, false),
+    (109, 2, false, false),
+    (110, 4, false, false),
+    (111, 0, true, true),
+    (112, 1, false, false),
+    (113, 1, false, false),
+    (114, 1, false, false),
+    (117, 3, false, false),
+    (118, 2, true, true),
+    (119, 0, true, true),
+    (125, 2, false, false),
+    (126, 1, true, true),
+    (128, 1, true, true),
+    (130, 3, false, false),
+    (132, 2, false, false),
+    (133, 3, false, false),
+    (134, 2, false, false),
+    (135, 1, false, false),
+    (137, 2, false, false),
+    (140, 2, false, false),
+    (143, 2, false, false),
+    (144, 1, true, true),
+    (145, 1, false, false),
+    (149, 1, false, false),
+    (150, 1, false, false),
+    (152, 1, false, false),
+    (156, 2, false, false),
+    (159, 0, true, true),
+    (160, 2, true, true),
+    (161, 1, true, true),
+    (163, 0, true, true),
+    (164, 1, true, true),
+    (172, 0, true, true),
+    (173, 0, true, true),
+    (177, 2, false, false),
+    (178, 1, false, false),
+    (180, 2, false, false),
+    (182, 1, true, true),
+    (186, 2, false, false),
+    (187, 2, false, false),
+    (188, 2, false, false),
+    (189, 2, false, false),
+    (191, 2, false, false),
+    (192, 0, true, true),
+    (193, 1, true, true),
+    (194, 2, false, false),
+    (195, 1, true, true),
+    (196, 2, false, false),
+    (197, 2, true, true),
+    (198, 3, false, false),
+    (199, 3, false, false),
+    (200, 2, false, false),
+    (202, 1, false, false),
+    (203, 1, false, false),
+    (204, 1, true, true),
+    (205, 2, true, true),
+    (210, 1, true, true),
+    (211, 0, true, true),
+    (212, 4, false, false),
+    (213, 3, true, true),
+    (214, 1, false, false),
+    (215, 1, true, true),
+    (216, 0, true, true),
+    (217, 1, true, true),
+    (218, 2, false, false),
+    (219, 1, false, false),
+    (220, 1, false, false),
+    (221, 1, true, true),
+    (222, 1, true, true),
+    (223, 1, true, true),
+    (224, 4, false, false),
+    (226, 1, false, false),
+    (228, 3, false, false),
+    (229, 1, false, false),
+    (231, 1, true, true),
+    (232, 1, false, false),
+    (233, 2, false, false),
+    (234, 0, true, true),
+    (235, 1, true, true),
+    (236, 0, true, true),
+    (237, 1, false, false),
+    (240, 1, true, true),
+    (243, 1, false, false),
+    (244, 2, false, false),
+    (245, 0, true, true),
+    (246, 1, true, true),
+    (247, 1, false, false),
+    (248, 1, true, true),
+    (250, 1, true, true),
+    (253, 1, true, true),
+    (254, 2, false, false),
+    (255, 1, true, true),
+    (256, 1, true, true),
+    (258, 1, true, true),
+    (261, 0, true, true),
+    (264, 3, false, false),
 ];
 
 /// The signature of a known (implemented or stub) native; `None` for an unknown id, which has no
@@ -276,11 +505,15 @@ pub const NATIVE_SIGNATURES: &[(u32, u32, bool)] = &[
 #[must_use]
 pub fn native_signature(id: u32) -> Option<NativeSignature> {
     NATIVE_SIGNATURES
-        .binary_search_by_key(&id, |&(i, _, _)| i)
+        .binary_search_by_key(&id, |&(i, _, _, _)| i)
         .ok()
         .map(|k| {
-            let (_, arity, has_result) = NATIVE_SIGNATURES[k];
-            NativeSignature { arity, has_result }
+            let (_, arity, returns_value, read_in_corpus) = NATIVE_SIGNATURES[k];
+            NativeSignature {
+                arity,
+                returns_value,
+                read_in_corpus,
+            }
         })
 }
 
@@ -350,9 +583,11 @@ impl World {
             let vm = self.vm.as_mut()?;
             count(&mut vm.counters.unknown_natives, id);
             if !vm.lenient {
-                vm.faulted = true;
+                vm.set_fault(Fault::UnknownNative(id));
                 return None;
             }
+            // The fabricated 0 and the omitted effect are a hypothesis on every call.
+            vm.assume(Assumption::UnknownNative(id));
             if vm.unknown_calls.len() < MAX_QUEUE {
                 vm.unknown_calls.push(UnknownCall {
                     id,
@@ -364,8 +599,17 @@ impl World {
         if native_signature(id).is_none_or(|s| s.arity as usize != args.len()) {
             let vm = self.vm.as_mut()?;
             count(&mut vm.counters.arity_mismatches, id);
-            vm.faulted = true;
+            vm.set_fault(Fault::ArityMismatch(id));
             return None;
+        }
+        // The taint of the call itself (`NATIVE_TAINT`), recorded before the native runs or is
+        // collected as a sequence element.
+        if let Some(vm) = self.vm.as_mut() {
+            match native_taint(id) {
+                Some(Taint::Policy) => vm.assume(Assumption::Policy(id)),
+                Some(Taint::Effect) => vm.assume(Assumption::StubResult(id)),
+                Some(Taint::Observed | Taint::Branch | Taint::Presentation) | None => {}
+            }
         }
         let collecting = self.vm.as_ref().is_some_and(|vm| vm.collecting.is_some());
         if collecting
@@ -481,8 +725,14 @@ impl World {
             // 32 (): barrier, wait for the previous elements (high): a sequence element
             // (`SeqElement::Barrier`); outside a sequence there is nothing to wait for. 56
             // (ticks): wait (high; 25 script ticks per second is the hypothesis); outside a
-            // sequence there is nothing to wait for either.
-            32 | 56 => 0,
+            // sequence there is nothing to wait for either, which rests on the same reading.
+            32 => 0,
+            56 => {
+                if let Some(vm) = self.vm.as_mut() {
+                    vm.assume(Assumption::TickRate);
+                }
+                0
+            }
             // 33 (location): camera to location; 34 (location): camera returns to location
             // (medium). Outside a sequence they act at once.
             33 | 34 => {
@@ -539,6 +789,7 @@ impl World {
             },
             94 | 133 => {
                 if let Some(entity) = self.entity_of(arg(args, 0)) {
+                    self.vm_touch_entity(entity);
                     let dir = if id == 133 {
                         let to = self.location_position(arg(args, 1));
                         self.vm_teleport(entity as u32, to);
@@ -593,7 +844,8 @@ impl World {
             },
             // 128 (actor) -> bool: able to act (medium-low): alive, active and on its feet;
             // elements that are not actors can act (the policy table's 1: with 0 no zone would
-            // react). A 0 caused by a knock-out records `Assumption::KnockOut`.
+            // react). A policy row: every call records `Assumption::Policy(128)`
+            // (`native_call`); a 0 caused by a knock-out records `Assumption::KnockOut` too.
             128 => match self.entity_of(arg(args, 0)) {
                 Some(i) => {
                     let s = ActorStatus::of(&self.entities[i]);
@@ -601,24 +853,25 @@ impl World {
                         && s.knocked_out
                         && let Some(vm) = self.vm.as_mut()
                     {
-                        vm.assumptions.insert(Assumption::KnockOut);
+                        vm.assume(Assumption::KnockOut);
                     }
                     i32::from(s.can_act)
                 }
                 None => 1,
             },
             // 240 (actor) -> bool: present on the map (medium-low): the entity's `active` flag;
-            // other elements are present unless deactivated (113).
+            // other elements are present unless deactivated (113): that branch is the policy
+            // table's value and records `Assumption::Policy(240)`.
             240 => {
                 if let Some(i) = self.entity_of(arg(args, 0)) {
                     i32::from(ActorStatus::of(&self.entities[i]).present)
                 } else {
                     let handle = arg(args, 0);
-                    i32::from(
-                        self.vm
-                            .as_ref()
-                            .is_none_or(|vm| !vm.inactive_elements.contains(&handle)),
-                    )
+                    let Some(vm) = self.vm.as_mut() else {
+                        return 1;
+                    };
+                    vm.assume(Assumption::Policy(240));
+                    i32::from(!vm.inactive_elements.contains(&handle))
                 }
             }
             // 140 (actor, 0 / 1 / 2): the gait of the actor's patrol walks (low; the reading
@@ -627,6 +880,7 @@ impl World {
             // from now on; a walk under way keeps its gait.
             140 => {
                 if let Some(i) = self.entity_of(arg(args, 0)) {
+                    self.vm_touch_entity(i);
                     self.entities[i].npc_gait = if arg(args, 1) == 0 {
                         Gait::Walk
                     } else {
@@ -670,8 +924,21 @@ impl World {
             // 111 () -> actor: the player's character (medium); 211 () -> actor: the main
             // player character (medium): both the first player entity. 250 (0) -> actor: player
             // character by campaign id, always 0 = the main character (medium): the policy table
-            // requires 211's value (0 would be element 0).
-            111 | 211 | 250 => self.player_element(0),
+            // requires 211's value (0 would be element 0). Which character is "main" is observed
+            // only with a single one: with several, the choice records `Assumption::Policy`.
+            111 | 211 | 250 => {
+                let players = self
+                    .entities
+                    .iter()
+                    .filter(|e| e.kind == EntityKind::Player)
+                    .count();
+                if players > 1
+                    && let Some(vm) = self.vm.as_mut()
+                {
+                    vm.assume(Assumption::Policy(id));
+                }
+                self.player_element(0)
+            }
             // 113 / 114 (element): deactivate / activate an element (high).
             113 | 114 => {
                 self.set_element_active(arg(args, 0), id == 114);
@@ -697,6 +964,7 @@ impl World {
                         .and_then(|p| vm.paths.get(p).copied())
                 });
                 if let Some(i) = self.entity_of(arg(args, 0)) {
+                    self.vm_touch_entity(i);
                     let e = &mut self.entities[i];
                     e.program = program.flatten();
                     e.pc = 0;
@@ -714,6 +982,7 @@ impl World {
             // touched.
             134 | 135 => {
                 if let Some(i) = self.entity_of(arg(args, 0)) {
+                    self.vm_touch_entity(i);
                     let e = &mut self.entities[i];
                     e.ai_locked = id == 134;
                     if e.ai_locked && e.kind != EntityKind::Player {
@@ -858,14 +1127,11 @@ impl World {
                 0
             }
             // Stub natives: recorded per id (see `STUB_NATIVES`), result 0 or the policy value
-            // of `STUB_POLICY_VALUES`. A never-win stub taints the outcome on the call itself;
-            // any other stub taints it when the script reads its result (`vm.rs`).
+            // of `STUB_POLICY_VALUES`. The call's taint was recorded by `native_call`
+            // (`NATIVE_TAINT`); a result read taints in `vm.rs`.
             other => {
                 if let Some(vm) = self.vm.as_mut() {
                     count(&mut vm.counters.stub_natives, other);
-                    if NEVER_WIN_STUBS.contains(&other) {
-                        vm.assumptions.insert(Assumption::StubResult(other));
-                    }
                 }
                 STUB_POLICY_VALUES
                     .iter()
@@ -980,6 +1246,7 @@ impl World {
     fn set_element_active(&mut self, handle: i32, active: bool) {
         match self.entity_of(handle) {
             Some(i) => {
+                self.vm_touch_entity(i);
                 let e = &mut self.entities[i];
                 e.active = active;
                 if !active {
@@ -1023,6 +1290,7 @@ impl World {
         if i >= self.entities.len() || !self.entities[i].alive || !self.entities[i].active {
             return;
         }
+        self.vm_touch_entity(i);
         let mut budget = self.vm.as_ref().map_or(0, |vm| vm.budget);
         let planned = self.plan_path_with(i, (Fixed::from_int(x), Fixed::from_int(y)), &mut budget);
         if let Some(vm) = self.vm.as_mut() {
@@ -1035,6 +1303,7 @@ impl World {
 
     /// Native 96: teleport; `None` puts the entity off the map (deactivated).
     pub(crate) fn vm_teleport(&mut self, entity: u32, to: Option<(i32, i32)>) {
+        self.vm_touch_entity(entity as usize);
         let Some(e) = self.entities.get_mut(entity as usize) else {
             return;
         };
@@ -1073,7 +1342,7 @@ mod tests {
     /// agree with it on what they consume.
     #[test]
     fn signature_table_covers_the_known_natives() {
-        let mut ids: Vec<u32> = NATIVE_SIGNATURES.iter().map(|&(id, _, _)| id).collect();
+        let mut ids: Vec<u32> = NATIVE_SIGNATURES.iter().map(|&(id, _, _, _)| id).collect();
         assert!(ids.windows(2).all(|w| w[0] < w[1]), "ascending, unique");
         let mut known: Vec<u32> = IMPLEMENTED_NATIVES
             .iter()
@@ -1093,22 +1362,58 @@ mod tests {
             native_signature(237),
             Some(NativeSignature {
                 arity: 1,
-                has_result: false
+                returns_value: false,
+                read_in_corpus: false,
             })
         );
         assert_eq!(
             native_signature(236),
             Some(NativeSignature {
                 arity: 0,
-                has_result: true
+                returns_value: true,
+                read_in_corpus: true,
             })
         );
         assert_eq!(native_signature(999), None);
-        for id in NEVER_WIN_STUBS {
-            assert_eq!(native_status(*id), NativeStatus::Stub, "{id}");
+        // The corpus never reads a value a native does not leave.
+        for &(id, _, returns_value, read_in_corpus) in NATIVE_SIGNATURES {
+            assert!(returns_value || !read_in_corpus, "{id}");
         }
         for (id, _) in STUB_POLICY_VALUES {
-            assert!(native_signature(*id).is_some_and(|s| s.has_result), "{id}");
+            assert!(
+                native_signature(*id).is_some_and(|s| s.returns_value),
+                "{id}"
+            );
         }
+    }
+
+    /// The taint table names exactly the known natives, in order: implemented ones are
+    /// observed, policy or branch rows, stubs are effect or presentation rows; the ids the
+    /// review named are policy rows and the presentation list is the documented one.
+    #[test]
+    fn taint_table_covers_the_known_natives() {
+        let ids: Vec<u32> = NATIVE_TAINT.iter().map(|&(id, _)| id).collect();
+        let sig_ids: Vec<u32> = NATIVE_SIGNATURES.iter().map(|&(id, _, _, _)| id).collect();
+        assert_eq!(ids, sig_ids, "one taint row per signature row, same order");
+        for &(id, taint) in NATIVE_TAINT {
+            let status = native_status(id);
+            let consistent = match taint {
+                Taint::Observed | Taint::Policy | Taint::Branch => {
+                    status == NativeStatus::Implemented
+                }
+                Taint::Effect | Taint::Presentation => status == NativeStatus::Stub,
+            };
+            assert!(consistent, "{id}: {taint:?} versus {status:?}");
+        }
+        for id in [98, 128, 140, 245] {
+            assert_eq!(native_taint(id), Some(Taint::Policy), "{id}");
+        }
+        let presentation: Vec<u32> = NATIVE_TAINT
+            .iter()
+            .filter(|(_, t)| *t == Taint::Presentation)
+            .map(|&(id, _)| id)
+            .collect();
+        assert_eq!(presentation, vec![62, 69, 149, 150, 243]);
+        assert_eq!(native_taint(999), None);
     }
 }
