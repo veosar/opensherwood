@@ -37,7 +37,7 @@ belongs to a pickup sparkle, not to a soldier idle. Correction for section 8.4.)
   order given through the **fist icon** (icon click, then the enemy) produced exactly the same
   sequence: Robin walked up from the front, no punch was seen, the halberdier showed the alert mark as Robin
   arrived, and the sword fight began (recording e5). A knock-out from behind was not possible in this
-  scene (no unaware soldier reachable), so the "tie-up / carry" prompt was not observed.
+  scene (no unaware soldier reachable), so the capture prompt that follows a knock-out was not observed.
 
 ### 1.2 Health and energy bars (`observed`, confidence high)
 
@@ -73,8 +73,8 @@ the figure attacks against strong enemies is what the numbers say.
 
 ### 1.4 The drawn figures (`observed`, small sample)
 
-Method: hold the left button, move the pointer 80 px right and 20 px up (the manual's "stroke
-forwards" = slow powerful blow), release; the start point on open mud 50..100 px left-below Robin.
+Method: hold the left button, move the pointer 80 px right and 20 px up (the manual's forward stroke,
+the slow powerful blow), release; the start point on open mud 50..100 px left-below Robin.
 While the button is held the target soldier is drawn with a **yellow outline** (twice a blue one -
 meaning unknown), so the engine locks the figure onto the nearest enemy.
 

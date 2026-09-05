@@ -22,9 +22,10 @@ in order of preference:
 
 1. A Rust Bink 1 video + audio decoder written from the public description (`opensherwood-formats` or a
    separate crate); several weeks of work, no third-party licence question.
-2. NihAV's RAD decoders (Rust, AGPL-3.0 with relicensing offered by the author on request): a Git
-   dependency; the AGPL is GPLv3-compatible under GPLv3 section 13 but would attach its network clause to
-   the combined work; to be decided by the maintainer.
+2. NihAV's RAD decoders (Rust; the project states its licence as AGPL-3.0 and says other free licences can
+   be discussed with the author: https://nihav.org/intro.html, https://codecs.multimedia.cx/2020/07/nihav-released/):
+   a Git dependency; the AGPL is GPLv3-compatible under GPLv3 section 13 but would attach its network
+   clause to the combined work; to be decided by the maintainer after reading the upstream licence files.
 3. Shelling out to a system `ffmpeg` for a pre-decoded frame stream: works on developer machines, not a
    shippable player experience.
 
