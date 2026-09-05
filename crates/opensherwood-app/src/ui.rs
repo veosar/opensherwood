@@ -1945,6 +1945,8 @@ pub enum HudAction {
     Crouch,
     /// Stand the selected character up (standing figure).
     Stand,
+    /// Toggle the mini-map (map scroll).
+    Map,
     /// A widget without behaviour yet: the click is consumed, not passed to the world.
     Consumed,
 }
@@ -1957,7 +1959,9 @@ pub fn hud_hit(x: i32, y: i32) -> Option<HudAction> {
         Some(HudAction::Crouch)
     } else if hit(r::STAND, x, y) {
         Some(HudAction::Stand)
-    } else if [r::EYES, r::TOWERS, r::MAP_SCROLL, r::PLAN, r::PORTRAIT]
+    } else if hit(r::MAP_SCROLL, x, y) {
+        Some(HudAction::Map)
+    } else if [r::EYES, r::TOWERS, r::PLAN, r::PORTRAIT]
         .iter()
         .any(|&rc| hit(rc, x, y))
     {
@@ -2020,6 +2024,64 @@ pub fn draw_notice(scene: &mut Framebuffer, assets: &UiAssets, text: &str) {
     for line in lines {
         font.draw_centered(scene, &line, MENU_FRAME.0 as i32 / 2, ty);
         ty += font.height() as i32 + 2;
+    }
+}
+
+/// The level's mini-map picture (`Data/Levels/<ambiance>/<map>.min`, 225x183 in every level).
+#[derive(Debug, Clone)]
+pub struct Minimap {
+    /// Width.
+    pub width: u32,
+    /// Height.
+    pub height: u32,
+    /// Opaque RGBA pixels.
+    pub rgba: Vec<u8>,
+}
+
+/// The mini-map overlay (`ui-flow.md` 9.3 element 2: the map scroll opens it, a right click closes
+/// it; the `;` key of the shortcut list is not mapped yet). The picture is a parchment scroll with
+/// the map painted inside (its corners hold the UI colour key). The presentation is the engine's
+/// until the original's is captured: the scroll centred on the screen, with the camera's view drawn
+/// as a yellow rectangle in map proportion; the world keeps running underneath.
+pub fn draw_minimap(
+    scene: &mut Framebuffer,
+    m: &Minimap,
+    camera: (i32, i32),
+    view: (u32, u32),
+    map: (u32, u32),
+) {
+    let (w, h) = (m.width as i32, m.height as i32);
+    let x = (MENU_FRAME.0 as i32 - w) / 2;
+    let y = (MENU_FRAME.1 as i32 - h) / 2;
+    scene.blit_rgba(x, y, m.width, m.height, &m.rgba);
+    if map.0 == 0 || map.1 == 0 {
+        return;
+    }
+    let sx = |v: i32| x + (i64::from(v) * i64::from(w) / i64::from(map.0)) as i32;
+    let sy = |v: i32| y + (i64::from(v) * i64::from(h) / i64::from(map.1)) as i32;
+    let (x0, y0) = (sx(camera.0).max(x), sy(camera.1).max(y));
+    let (x1, y1) = (
+        sx(camera.0.saturating_add(view.0 as i32)).min(x + w),
+        sy(camera.1.saturating_add(view.1 as i32)).min(y + h),
+    );
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let c = [255, 230, 90, 255];
+    scene.fill_rect(x0, y0, x1, y0 + 1, c);
+    scene.fill_rect(x0, y1 - 1, x1, y1, c);
+    scene.fill_rect(x0, y0, x0 + 1, y1, c);
+    scene.fill_rect(x1 - 1, y0, x1, y1, c);
+}
+
+/// The `observe.ui` state while the mini-map overlay is open (no items: it has no buttons).
+#[must_use]
+pub fn minimap_state() -> opensherwood_protocol::UiState {
+    opensherwood_protocol::UiState {
+        screen: "minimap".into(),
+        items: Vec::new(),
+        hovered: None,
+        page: None,
     }
 }
 

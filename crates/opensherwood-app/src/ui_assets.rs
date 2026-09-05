@@ -110,6 +110,13 @@ fn frame_with(img: &Image16, keyed: bool, budget: &mut RgbaBudget) -> Option<Spr
 /// Bytes of decoded UI pictures a single `load` may materialise.
 const UI_RGBA_BUDGET: usize = 64 * 1024 * 1024;
 
+/// Decode one keyed UI-style picture on its own budget (the mini-map scroll, whose margins hold the
+/// colour key like the widgets).
+pub(crate) fn keyed_frame(img: &Image16) -> Option<SpriteFrame> {
+    let mut budget = RgbaBudget::new(UI_RGBA_BUDGET);
+    frame_with(img, true, &mut budget)
+}
+
 fn load_font(game: &GameDir, name: &str) -> Option<FontAtlas> {
     let data = game.read(&format!("Data/Interface/Fonts/{name}")).ok()?;
     let f = font::parse_bitmap(&data)

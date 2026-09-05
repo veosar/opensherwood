@@ -219,6 +219,7 @@ Manual p.11 numbers the elements; observed positions at 1024x768:
 |---|---|---|---|
 | 1 | Game information: the money and clover counters (L100 / 0 at the start), yellow outlined text | (4,4) and (4,20) | font `tooltips.tfn` (*inferred*); clover icon `BTTN` 165 |
 | 2 | Mini-map scroll, opens the mini-map; right-click closes it | top-right, scroll at ~(945,25)-(1000,75) | `BTTN` 61 (61x52) *inferred* |
+|   | Engine: the overlay draws the level's `.min` picture centred with the camera's view as a rectangle; the original's presentation (position, frame, whether the world pauses) is not captured yet (open question 5). | | |
 | 3 | Zoom towers = zoom levels (normal / near / distant), two small tower icons | (998,8)-(1024,60) | `BTTN` 4 (26x46) / 5 (26x54) |
 | - | Robin's eyes in the foliage (top-right corner) - decoration / hidden button? | (950,0)-(1024,60) | `BTTN` 60 (74x60) |
 | 4 | Hero portrait: parchment with the face, name "Robin / Hood" in two lines, action icons (bow, fist = knock out, purse = throw purse) and two counters "0" (arrows) and "0" (purses / money bags) | (70,632)-(185,765) | portrait faces `PIC` 136..155 (40x50) and `PICC` 242..244; frame *unknown* |
