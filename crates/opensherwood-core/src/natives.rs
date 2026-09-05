@@ -71,9 +71,9 @@ pub const SEQUENCE_ELEMENTS: &[u32] = &[
 pub const STUB_NATIVES: &[u32] = &[
     7, 18, 20, 24, 29, 35, 38, 39, 41, 42, 46, 47, 49, 50, 51, 52, 53, 54, 55, 59, 62, 69, 70, 72,
     73, 80, 81, 88, 89, 92, 99, 101, 102, 103, 112, 119, 125, 126, 130, 137, 143, 149, 150, 152,
-    156, 163, 164, 172, 173, 177, 178, 180, 182, 186, 187, 188, 189, 191, 195, 197, 198, 199, 200,
-    205, 210, 212, 213, 214, 215, 218, 219, 220, 221, 222, 223, 224, 226, 228, 229, 231, 232, 234,
-    235, 243, 244, 246, 247, 248, 253, 254, 255, 256, 258, 261, 264,
+    156, 163, 164, 165, 166, 170, 172, 173, 174, 177, 178, 180, 182, 186, 187, 188, 189, 191, 195,
+    197, 198, 199, 200, 205, 210, 212, 213, 214, 215, 218, 219, 220, 221, 222, 223, 224, 226, 228,
+    229, 231, 232, 234, 235, 239, 243, 244, 246, 247, 248, 249, 253, 254, 255, 256, 258, 261, 264,
 ];
 
 /// Stub natives whose recorded result is not 0: the value the stub policy table of the spec
@@ -81,8 +81,10 @@ pub const STUB_NATIVES: &[u32] = &[
 /// `policy_values_of_the_stub_table_are_pinned`. 253 / 255 (campaign character alive / present,
 /// medium-low) return 1: with 0 every `CheckVictoryCondition` that tests them loses at tick 1.
 /// 205 (i-th actor inside a zone, medium) returns -1 (no actor): 0 would be a map element handed
-/// to 80 / 81 / 99 / 243. (128 and 240 read the real states since the stealth layer exists.)
-pub const STUB_POLICY_VALUES: &[(u32, i32)] = &[(205, -1), (253, 1), (255, 1)];
+/// to 80 / 81 / 99 / 243. 174 (the mission team's size limit, `docs/formats/sherwood-hub.md`)
+/// returns 5, a positive limit, so the deployment zone admits a character (the team size 163
+/// stays 0). (128 and 240 read the real states since the stealth layer exists.)
+pub const STUB_POLICY_VALUES: &[(u32, i32)] = &[(174, 5), (205, -1), (253, 1), (255, 1)];
 
 /// Natives the engine implements (acting on the world or the VM state).
 pub const IMPLEMENTED_NATIVES: &[u32] = &[
@@ -129,7 +131,14 @@ pub enum Taint {
 /// `docs/formats/scb.md`: 62 (an expression on the actor's face: nothing reads it), 69 (a
 /// remark / gesture before a dialogue line: a voice line, nothing reads it), 149 / 150 (a level
 /// sound played once / at start: audio only), 243 (a highlight on the actor a cutscene text
-/// talks about, always inside a sequence: a HUD effect nothing reads).
+/// talks about, always inside a sequence: a HUD effect nothing reads). The Sherwood hub's team
+/// natives (`docs/formats/sherwood-hub.md`, effect stubs until the team logic exists): 165 /
+/// 166 add / remove a character to / from the mission team (no value), 170 "the team satisfies
+/// the mission's requirements" (0), 172 the selected level code (0x4248 = the two ASCII letters
+/// of a level code; 0 = none: the stub's 0), 173 a 0 / 1 state gating the team limit and the
+/// camp helpers (0), 174 the team size limit (the policy value 5), 239 the deployment scroll's
+/// `IsTaken`-style helper (no value), 249 the size of the team to send (0: message 1000's loop
+/// runs zero times).
 pub const NATIVE_TAINT: &[(u32, Taint)] = &[
     (0, Taint::Observed),
     (1, Taint::Observed),
@@ -235,8 +244,12 @@ pub const NATIVE_TAINT: &[(u32, Taint)] = &[
     (161, Taint::Policy),
     (163, Taint::Effect),
     (164, Taint::Effect),
+    (165, Taint::Effect),
+    (166, Taint::Effect),
+    (170, Taint::Effect),
     (172, Taint::Effect),
     (173, Taint::Effect),
+    (174, Taint::Effect),
     (177, Taint::Effect),
     (178, Taint::Effect),
     (180, Taint::Effect),
@@ -284,6 +297,7 @@ pub const NATIVE_TAINT: &[(u32, Taint)] = &[
     (235, Taint::Effect),
     (236, Taint::Observed),
     (237, Taint::Observed),
+    (239, Taint::Effect),
     (240, Taint::Branch),
     (243, Taint::Presentation),
     (244, Taint::Effect),
@@ -291,6 +305,7 @@ pub const NATIVE_TAINT: &[(u32, Taint)] = &[
     (246, Taint::Effect),
     (247, Taint::Effect),
     (248, Taint::Effect),
+    (249, Taint::Effect),
     (250, Taint::Branch),
     (253, Taint::Effect),
     (254, Taint::Effect),
@@ -434,8 +449,12 @@ pub const NATIVE_SIGNATURES: &[(u32, u32, bool, bool)] = &[
     (161, 1, true, true),
     (163, 0, true, true),
     (164, 1, true, true),
+    (165, 1, false, false),
+    (166, 1, false, false),
+    (170, 0, true, true),
     (172, 0, true, true),
     (173, 0, true, true),
+    (174, 0, true, true),
     (177, 2, false, false),
     (178, 1, false, false),
     (180, 2, false, false),
@@ -483,6 +502,7 @@ pub const NATIVE_SIGNATURES: &[(u32, u32, bool, bool)] = &[
     (235, 1, true, true),
     (236, 0, true, true),
     (237, 1, false, false),
+    (239, 0, false, false),
     (240, 1, true, true),
     (243, 1, false, false),
     (244, 2, false, false),
@@ -490,6 +510,7 @@ pub const NATIVE_SIGNATURES: &[(u32, u32, bool, bool)] = &[
     (246, 1, true, true),
     (247, 1, false, false),
     (248, 1, true, true),
+    (249, 0, true, true),
     (250, 1, true, true),
     (253, 1, true, true),
     (254, 2, false, false),
@@ -816,8 +837,9 @@ impl World {
                 }
                 None => 0,
             },
-            // 87 (actor) -> bool: dead (medium; no damage model kills anyone yet). 88 / 89 (tied
-            // up, netted / captured: unknown / low) stay stubs returning 0: no such state exists.
+            // 87 (actor) -> bool: dead (medium): killed in the melee (`ai.rs`, hit points at
+            // 0, from the tick of the blow on). 88 / 89 (tied up, netted / captured: unknown /
+            // low) stay stubs returning 0: no such state exists.
             87 => match self.entity_of(arg(args, 0)) {
                 Some(i) => i32::from(ActorStatus::of(&self.entities[i]).dead),
                 None => 0,

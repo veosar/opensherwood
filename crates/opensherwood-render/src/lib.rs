@@ -516,6 +516,116 @@ pub mod palette {
     pub const POINTER: Color = [255, 255, 0, 255];
     /// Outside the map.
     pub const VOID: Color = [0, 0, 0, 255];
+    /// The health bar of the actor under the pointer (`combat-measurements.md` 1.2, measured).
+    pub const HEALTH_HOVERED: Color = [255, 0, 0, 255];
+    /// The health bar of any other fighter.
+    pub const HEALTH: Color = [123, 0, 0, 255];
+    /// The energy bar of the actor under the pointer.
+    pub const ENERGY_HOVERED: Color = [0, 200, 255, 255];
+    /// The energy bar of any other fighter.
+    pub const ENERGY: Color = [0, 101, 123, 255];
+    /// The spent part of a bar.
+    pub const BAR_BACKGROUND: Color = [0, 0, 0, 255];
+    /// The damage numbers (cream).
+    pub const DAMAGE_NUMBER: Color = [238, 210, 140, 255];
+}
+
+/// The bars under a fighter's feet (`combat-measurements.md` 1.2, measured): a red health row
+/// and, 4 px lower, a blue energy row, each 20 px wide and 3 px tall on a black background,
+/// starting 10 px left of the feet and 8 px below them; the filled width is the value's share
+/// of 20 px rounded down (5 hp per pixel for the hero's 100, 4 for a halberdier's 80).
+pub mod bars {
+    /// Width of a bar in pixels.
+    pub const WIDTH: i32 = 20;
+    /// Height of a bar in pixels.
+    pub const HEIGHT: i32 = 3;
+    /// Left edge of the bars relative to the feet.
+    pub const LEFT: i32 = -10;
+    /// Top of the health row relative to the feet.
+    pub const HEALTH_TOP: i32 = 8;
+    /// Top of the energy row relative to the feet.
+    pub const ENERGY_TOP: i32 = 12;
+
+    /// Filled pixels of a bar showing `value` of `max` (0 when `max` is not positive).
+    #[must_use]
+    pub fn filled(value: i32, max: i32) -> i32 {
+        if max <= 0 {
+            return 0;
+        }
+        let px = i64::from(value.clamp(0, max)) * i64::from(WIDTH) / i64::from(max);
+        px as i32
+    }
+}
+
+/// The damage numbers (`combat-measurements.md` 1.2, measured): cream digits about 15 px tall
+/// drawn at the victim's head (the feet's x, 67 px above the feet) rising 50 px in 1.5 s.
+pub mod damage_numbers {
+    /// Top of the digits relative to the victim's feet at the hit.
+    pub const TOP: i32 = -67;
+    /// Left edge of the digits relative to the victim's feet.
+    pub const LEFT: i32 = -2;
+    /// Horizontal scale of the 3x5 glyphs.
+    pub const SCALE_X: i32 = 2;
+    /// Vertical scale of the 3x5 glyphs.
+    pub const SCALE_Y: i32 = 3;
+    /// Gap between glyphs in pixels.
+    pub const GAP: i32 = 2;
+
+    /// 3x5 digit glyphs, one row per bit triple (MSB left), 0..=9.
+    pub const GLYPHS: [[u8; 5]; 10] = [
+        [0b111, 0b101, 0b101, 0b101, 0b111],
+        [0b010, 0b110, 0b010, 0b010, 0b111],
+        [0b111, 0b001, 0b111, 0b100, 0b111],
+        [0b111, 0b001, 0b111, 0b001, 0b111],
+        [0b101, 0b101, 0b111, 0b001, 0b001],
+        [0b111, 0b100, 0b111, 0b001, 0b111],
+        [0b111, 0b100, 0b111, 0b101, 0b111],
+        [0b111, 0b001, 0b001, 0b001, 0b001],
+        [0b111, 0b101, 0b111, 0b101, 0b111],
+        [0b111, 0b101, 0b111, 0b001, 0b111],
+    ];
+
+    /// Pixels a number has risen after `age` ticks of its rise.
+    #[must_use]
+    pub fn rise(age: u32) -> i32 {
+        use opensherwood_core::ai::{DAMAGE_NUMBER_RISE, DAMAGE_NUMBER_TICKS};
+        let age = age.min(DAMAGE_NUMBER_TICKS);
+        (i64::from(DAMAGE_NUMBER_RISE) * i64::from(age) / i64::from(DAMAGE_NUMBER_TICKS)) as i32
+    }
+}
+
+/// Draw a non-negative number with the damage-number glyphs, its top-left at `(x, y)`.
+fn draw_number(fb: &mut Framebuffer, mut value: i32, x: i32, y: i32, c: Color) {
+    use damage_numbers::{GAP, GLYPHS, SCALE_X, SCALE_Y};
+    value = value.max(0);
+    let mut digits = Vec::new();
+    loop {
+        digits.push((value % 10) as usize);
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    let mut left = i64::from(x);
+    for &d in digits.iter().rev() {
+        for (row, bits) in GLYPHS[d].iter().enumerate() {
+            for col in 0..3 {
+                if bits & (0b100 >> col) == 0 {
+                    continue;
+                }
+                let x0 = left + i64::from(col) * i64::from(SCALE_X);
+                let y0 = i64::from(y) + row as i64 * i64::from(SCALE_Y);
+                fb.fill_rect(
+                    to_i32(x0),
+                    to_i32(y0),
+                    to_i32(x0 + i64::from(SCALE_X)),
+                    to_i32(y0 + i64::from(SCALE_Y)),
+                    c,
+                );
+            }
+        }
+        left += 3 * i64::from(SCALE_X) + i64::from(GAP);
+    }
 }
 
 /// Render a world into a new framebuffer at its logical viewport size, with an optional background
@@ -546,8 +656,9 @@ pub fn render(
         16,
         palette::GOAL,
     );
-    // Ground markers first (target lines, selection circles), then sprites in depth order.
-    for e in world.entities.iter().filter(|e| e.alive && e.active) {
+    // Ground markers first (target lines, selection circles), then sprites in depth order
+    // (dead bodies stay on the map).
+    for e in world.entities.iter().filter(|e| e.active) {
         if e.kind == EntityKind::Obstacle {
             let (hw, hh) = (e.patrol[0].0, e.patrol[0].1);
             fb.fill_rect(
@@ -583,7 +694,7 @@ pub fn render(
         .entities
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.alive && e.active && e.kind != EntityKind::Obstacle)
+        .filter(|(_, e)| e.active && e.kind != EntityKind::Obstacle)
         .map(|(i, e)| (e.y.round(), i))
         .collect();
     order.sort_unstable();
@@ -637,6 +748,67 @@ pub fn render(
                 !behind.iter().any(|o| o.covers(mx, my))
             });
         }
+    }
+    // The bars of every fighter and of the actor under the pointer, then the damage numbers
+    // (`combat-measurements.md` 1.2), over the sprites.
+    let hovered = world.actor_at_pointer();
+    for e in world
+        .entities
+        .iter()
+        .filter(|e| e.alive && e.active && e.kind != EntityKind::Obstacle)
+        .filter(|e| e.foe.is_some() || hovered == Some(e.id))
+    {
+        let (fx, fy) = (i64::from(px(e.x, cx)), i64::from(px(e.y, cy)));
+        let is_hovered = hovered == Some(e.id);
+        let rows = [
+            (
+                bars::HEALTH_TOP,
+                bars::filled(e.hp, e.hp_max),
+                if is_hovered {
+                    palette::HEALTH_HOVERED
+                } else {
+                    palette::HEALTH
+                },
+            ),
+            (
+                bars::ENERGY_TOP,
+                bars::filled(e.energy, opensherwood_core::ai::ENERGY_MAX),
+                if is_hovered {
+                    palette::ENERGY_HOVERED
+                } else {
+                    palette::ENERGY
+                },
+            ),
+        ];
+        for (top, filled, colour) in rows {
+            let (x0, y0) = (fx + i64::from(bars::LEFT), fy + i64::from(top));
+            fb.fill_rect(
+                to_i32(x0),
+                to_i32(y0),
+                to_i32(x0 + i64::from(bars::WIDTH)),
+                to_i32(y0 + i64::from(bars::HEIGHT)),
+                palette::BAR_BACKGROUND,
+            );
+            fb.fill_rect(
+                to_i32(x0),
+                to_i32(y0),
+                to_i32(x0 + i64::from(filled)),
+                to_i32(y0 + i64::from(bars::HEIGHT)),
+                colour,
+            );
+        }
+    }
+    for d in &world.damage_numbers {
+        let x = i64::from(d.x) - i64::from(cx) + i64::from(damage_numbers::LEFT);
+        let y = i64::from(d.y) - i64::from(cy) + i64::from(damage_numbers::TOP)
+            - i64::from(damage_numbers::rise(d.age));
+        draw_number(
+            &mut fb,
+            d.amount,
+            to_i32(x),
+            to_i32(y),
+            palette::DAMAGE_NUMBER,
+        );
     }
     let (mx, my) = (
         Fixed::from_raw(world.pointer.0).round(),
@@ -757,6 +929,119 @@ mod tests {
         let fb3 = render(&w, Some(&bg), &mut Src);
         let i = ((34u32 * fb3.width + 50) * 4) as usize;
         assert_eq!(&fb3.rgba[i..i + 3], &[0, 0, 255]);
+    }
+
+    /// The bars of `combat-measurements.md` 1.2: for a fighter, 20 px wide rows 3 px tall at
+    /// the measured offsets under the feet, the health filled by its share (5 hp per pixel
+    /// for 100 hp), the energy one unit per pixel, the spent part black; brighter for the
+    /// actor under the pointer; none for an idle actor; the damage numbers rise in cream.
+    #[test]
+    fn bars_and_damage_numbers_are_drawn_where_measured() {
+        use opensherwood_core::{AiState, FightPose};
+        let mut w = World::new(Scenario::Synthetic("corridor".into()), 1).unwrap();
+        w.selected = None;
+        let (pid, gid) = (w.entities[0].id, w.entities[1].id);
+        // Nobody fights, nothing is hovered: no bars anywhere near the feet.
+        let idle = render(&w, None, &mut NoSprites);
+        let px = |fb: &Framebuffer, x: i32, y: i32| {
+            let i = ((y as u32 * fb.width + x as u32) * 4) as usize;
+            [fb.rgba[i], fb.rgba[i + 1], fb.rgba[i + 2], 255]
+        };
+        assert_eq!(px(&idle, 70, 248), palette::GROUND);
+        // The player (feet at 80,240) fights the guard (400,120) by hand: 50 of 100 hp, 17 energy.
+        for (i, foe) in [(0, gid), (1, pid)] {
+            let e = &mut w.entities[i];
+            e.ai_state = AiState::Fighting;
+            e.foe = Some(foe);
+            e.pose = FightPose::Idle;
+        }
+        w.entities[1].target = None;
+        w.entities[0].hp = 50;
+        w.entities[0].energy = 17;
+        w.entities[0].energy_ticks = 10;
+        w.validate().unwrap();
+        let fb = render(&w, None, &mut NoSprites);
+        // Health row: rows 248..251 (feet + 8), x 70..90 (feet - 10): ten red, ten black.
+        for y in 248..251 {
+            assert_eq!(px(&fb, 70, y), palette::HEALTH, "row {y}");
+            assert_eq!(px(&fb, 79, y), palette::HEALTH);
+            assert_eq!(px(&fb, 80, y), palette::BAR_BACKGROUND);
+            assert_eq!(px(&fb, 89, y), palette::BAR_BACKGROUND);
+        }
+        assert_eq!(px(&fb, 69, 249), palette::GROUND);
+        assert_eq!(px(&fb, 90, 249), palette::GROUND);
+        // The rows above and below the bar show the player's own disc.
+        assert_eq!(px(&fb, 79, 247), palette::PLAYER);
+        assert_eq!(px(&fb, 79, 251), palette::PLAYER);
+        // Energy row 4 px lower: rows 252..255, 17 blue then 3 black.
+        for y in 252..255 {
+            assert_eq!(px(&fb, 70, y), palette::ENERGY, "row {y}");
+            assert_eq!(px(&fb, 86, y), palette::ENERGY);
+            assert_eq!(px(&fb, 87, y), palette::BAR_BACKGROUND);
+        }
+        assert_eq!(px(&fb, 79, 255), palette::GROUND);
+        // The guard's full bars (feet 400,120): 20 red, 20 blue.
+        assert_eq!(px(&fb, 390, 128), palette::HEALTH);
+        assert_eq!(px(&fb, 409, 128), palette::HEALTH);
+        assert_eq!(px(&fb, 409, 132), palette::ENERGY);
+        // Hovering the guard brightens his bars only.
+        w.pointer = (400 * 256, 120 * 256);
+        w.pointer_seen = true;
+        let fb = render(&w, None, &mut NoSprites);
+        assert_eq!(px(&fb, 390, 128), palette::HEALTH_HOVERED);
+        assert_eq!(px(&fb, 390, 132), palette::ENERGY_HOVERED);
+        assert_eq!(px(&fb, 70, 248), palette::HEALTH);
+        // An idle actor under the pointer shows his bars too.
+        let mut w = World::new(Scenario::Synthetic("corridor".into()), 1).unwrap();
+        w.selected = None;
+        w.pointer = (80 * 256, 240 * 256);
+        w.pointer_seen = true;
+        let fb = render(&w, None, &mut NoSprites);
+        assert_eq!(px(&fb, 70, 248), palette::HEALTH_HOVERED);
+        assert_eq!(px(&fb, 89, 248), palette::HEALTH_HOVERED);
+        // A damage number "50" over the player's head (top at feet - 67 = 173, left at 78),
+        // rising 50 px over its 90 ticks: the "5" glyph's top row is cream, and the same
+        // glyph 25 px higher at age 45.
+        w.damage_numbers.push(opensherwood_core::DamageNumber {
+            x: 80,
+            y: 240,
+            amount: 50,
+            age: 0,
+        });
+        let fb = render(&w, None, &mut NoSprites);
+        assert_eq!(px(&fb, 78, 173), palette::DAMAGE_NUMBER);
+        assert_eq!(px(&fb, 83, 173), palette::DAMAGE_NUMBER);
+        assert_eq!(
+            px(&fb, 78, 176),
+            palette::DAMAGE_NUMBER,
+            "the 5's left stroke"
+        );
+        assert_eq!(px(&fb, 83, 176), palette::GROUND, "the 5's open right side");
+        assert_eq!(damage_numbers::rise(45), 25);
+        assert_eq!(damage_numbers::rise(90), 50);
+        w.damage_numbers[0].age = 45;
+        let fb2 = render(&w, None, &mut NoSprites);
+        assert_eq!(px(&fb2, 78, 148), palette::DAMAGE_NUMBER);
+        assert_eq!(px(&fb2, 78, 173), palette::GROUND);
+        assert_eq!(
+            bars::filled(30, 80),
+            7,
+            "the halberdier at 30 of 80 hp shows 7 px"
+        );
+        assert_eq!(bars::filled(95, 100), 19);
+        assert_eq!(bars::filled(0, 0), 0);
+        assert_eq!(bars::filled(i32::MAX, i32::MAX), 20);
+        // Dead bodies stay on the map: a dead guard is still drawn.
+        let mut w = World::new(Scenario::Synthetic("corridor".into()), 1).unwrap();
+        w.selected = None;
+        let g = &mut w.entities[1];
+        g.alive = false;
+        g.hp = 0;
+        g.ai_state = AiState::Dead;
+        g.target = None;
+        w.validate().unwrap();
+        let fb = render(&w, None, &mut NoSprites);
+        assert_eq!(px(&fb, 400, 120), palette::GUARD);
     }
 
     #[test]

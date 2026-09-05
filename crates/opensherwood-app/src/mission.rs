@@ -37,7 +37,7 @@ use opensherwood_core::{ActorSpec, Geometry, Instruction, MapInfo, MissionSpec, 
 use opensherwood_formats::cpf::{self, ProfileTable, SoldierProfile};
 use opensherwood_formats::rhm::{self, ActorGroup, Command, CommandTable, Mission, RailPoint};
 use opensherwood_formats::scb;
-use opensherwood_script::{MissionBinding, map_element_count, translate_with_report};
+use opensherwood_script::{MissionBinding, translate_with_report};
 
 /// Hero profiles in the order player characters appear in mission files (placeholder: the
 /// campaign decides the team; see the module documentation).
@@ -398,13 +398,31 @@ fn npc_sprite<'a>(
     }
 }
 
-/// Build the spec from a loaded mission and the background size (one log line with the rail and
-/// script translation summary). Refuses a mission whose script exists but cannot be translated or bound (unknown
-/// map index space, element table mismatch, invalid program) unless `lenient`; a mission file that has
-/// no script at all is accepted only when `lenient` let `load` skip it. Refuses, unless `lenient`, a
-/// mission with any actor on a default sprite (a profile index outside its table, an unavailable
-/// sprite or no table): a fallback substitutes the default sprite, hit points and knock-out
-/// resistance, which lenient mode records as `Assumption::LenientAssets` on the spec.
+/// Ambiance directory (`Data/Levels/<ambiance>/<map>.map`) of a mission's `FOOT.variant`
+/// (`docs/formats/rhm.md`, `FOOT`: 1 Day, 2 Night, 4 Fog, 16 Custom1 is the working hypothesis;
+/// anything else reads as Day). The engine falls back to `Day` with a log line when the variant's
+/// picture does not exist (`Fog/Leicester.map` and `Fog/sherwood.map` are absent from the retail
+/// data: `docs/formats/sherwood-hub.md`, section 1).
+#[must_use]
+pub fn ambiance_for_variant(variant: u32) -> &'static str {
+    match variant {
+        2 => "Night",
+        4 => "Fog",
+        16 => "Custom1",
+        _ => "Day",
+    }
+}
+
+/// Build the spec from a loaded mission, the background size and the size of the map's part of
+/// the script element table (`map_elements`: `opensherwood_script::map_element_count` of the
+/// parsed `.rhp`, `None` when the map file was unavailable), with one log line carrying the rail
+/// and script translation summary. Refuses a mission whose script exists but cannot be translated
+/// or bound (no map element count, element table mismatch, invalid program) unless `lenient`; a
+/// mission file that has no script at all is accepted only when `lenient` let `load` skip it.
+/// Refuses, unless `lenient`, a mission with any actor on a default sprite (a profile index
+/// outside its table, an unavailable sprite or no table): a fallback substitutes the default
+/// sprite, hit points and knock-out resistance, which lenient mode records as
+/// `Assumption::LenientAssets` on the spec.
 ///
 /// # Errors
 ///
@@ -413,9 +431,10 @@ pub fn build_spec_checked(
     loaded: &LoadedMission,
     map: MapInfo,
     geometry: Geometry,
+    map_elements: Option<u32>,
     lenient: bool,
 ) -> Result<(MissionSpec, Vec<String>), String> {
-    let (mut spec, profiles, stats) = build_spec_with_stats(loaded, map, geometry);
+    let (mut spec, profiles, stats) = build_spec_with_stats(loaded, map, geometry, map_elements);
     eprintln!(
         "opensherwood: mission {} on {}: {}",
         loaded.mission.header.mission_id,
@@ -450,12 +469,14 @@ pub fn build_spec_checked(
     Ok((spec, profiles))
 }
 
-/// [`build_spec`] returning the translation counts instead of logging them.
+/// [`build_spec_checked`] without the checks, returning the translation counts instead of
+/// logging them (`map_elements` as there).
 #[must_use]
 pub fn build_spec_with_stats(
     loaded: &LoadedMission,
     map: MapInfo,
     geometry: Geometry,
+    map_elements: Option<u32>,
 ) -> (MissionSpec, Vec<String>, ProgramStats) {
     let mission = &loaded.mission;
     let table = loaded.profiles.as_ref();
@@ -564,10 +585,9 @@ pub fn build_spec_with_stats(
             ActorGroup::Meow { .. } | ActorGroup::Objects { .. } | ActorGroup::Unknown { .. } => {}
         }
     }
-    let script = loaded
-        .script
-        .as_ref()
-        .and_then(|script| translate_script(script, mission, actors.len(), &mut stats));
+    let script = loaded.script.as_ref().and_then(|script| {
+        translate_script(script, mission, actors.len(), map_elements, &mut stats)
+    });
     (
         MissionSpec {
             map,
@@ -585,16 +605,18 @@ pub fn build_spec_with_stats(
 }
 
 /// Translate the mission script against the mission's element table; `None` (with the reason
-/// in `stats.script_error`) when the table does not match the actors or the script is invalid.
+/// in `stats.script_error`) when the map's element count is unknown (no `.rhp`), the table does
+/// not match the actors or the script is invalid.
 fn translate_script(
     script: &scb::Script,
     mission: &Mission,
     actor_count: usize,
+    map_elements: Option<u32>,
     stats: &mut ProgramStats,
 ) -> Option<opensherwood_core::Program> {
-    let Some(map_elements) = map_element_count(&mission.header.map) else {
+    let Some(map_elements) = map_elements else {
         stats.script_error = Some(format!(
-            "no element index space known for map {}",
+            "no element index space for map {}: its .rhp (FLIM and TUPO counts) was not loaded",
             mission.header.map
         ));
         return None;
@@ -867,6 +889,16 @@ mod tests {
     }
 
     #[test]
+    fn ambiance_follows_the_variant_bits() {
+        assert_eq!(ambiance_for_variant(1), "Day");
+        assert_eq!(ambiance_for_variant(2), "Night");
+        assert_eq!(ambiance_for_variant(4), "Fog");
+        assert_eq!(ambiance_for_variant(16), "Custom1");
+        assert_eq!(ambiance_for_variant(0), "Day");
+        assert_eq!(ambiance_for_variant(8), "Day");
+    }
+
+    #[test]
     fn wait_operand_is_hundredths_of_a_second() {
         assert_eq!(
             wait_ticks(100),
@@ -1133,6 +1165,7 @@ mod tests {
                 height: 100,
             },
             Geometry::default(),
+            None,
         );
         let stats: Vec<(i32, i32)> = spec
             .actors
@@ -1191,6 +1224,7 @@ mod tests {
                 height: 100,
             },
             Geometry::default(),
+            None,
         );
         let active: Vec<bool> = spec.actors.iter().map(|a| a.active).collect();
         assert_eq!(active, [true, false, true, true, true, true, true, true]);
@@ -1204,6 +1238,7 @@ mod tests {
                 height: 100,
             },
             Geometry::default(),
+            None,
         );
         let actors: Vec<String> = spec.actors.iter().map(|a| a.profile.clone()).collect();
         (actors, profiles, stats)
@@ -1303,9 +1338,9 @@ mod tests {
             width: 100,
             height: 100,
         };
-        let err = build_spec_checked(&loaded, map, Geometry::default(), false).unwrap_err();
+        let err = build_spec_checked(&loaded, map, Geometry::default(), None, false).unwrap_err();
         assert!(err.contains("1 on a default sprite"), "{err}");
-        let (spec, _) = build_spec_checked(&loaded, map, Geometry::default(), true).unwrap();
+        let (spec, _) = build_spec_checked(&loaded, map, Geometry::default(), None, true).unwrap();
         assert!(spec.assumptions.contains(&Assumption::LenientAssets));
         assert_eq!(spec.actors[2].profile, NPC_PROFILE);
         assert_eq!(spec.starting_money, DEFAULT_STARTING_MONEY);
@@ -1321,14 +1356,14 @@ mod tests {
             available_sprites: referenced_sprites(&clean, &table),
             script: None,
         };
-        let (spec, _) = build_spec_checked(&loaded, map, Geometry::default(), false).unwrap();
+        let (spec, _) = build_spec_checked(&loaded, map, Geometry::default(), None, false).unwrap();
         assert!(spec.assumptions.is_empty());
         assert_eq!(spec.actors.len(), 4);
         // A sprite the bank could not load is the same fallback (strict `load` fails earlier).
         let mut partial = loaded;
         partial.available_sprites.remove("Guard A01");
-        assert!(build_spec_checked(&partial, map, Geometry::default(), false).is_err());
-        let (spec, _) = build_spec_checked(&partial, map, Geometry::default(), true).unwrap();
+        assert!(build_spec_checked(&partial, map, Geometry::default(), None, false).is_err());
+        let (spec, _) = build_spec_checked(&partial, map, Geometry::default(), None, true).unwrap();
         assert!(spec.assumptions.contains(&Assumption::LenientAssets));
     }
 }

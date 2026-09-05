@@ -51,9 +51,10 @@ Running plays the run block (action 7), crouching the crouched idle / sneak bloc
 that have them; a frame lasts its tick half plus one table ticks of 46.875 ms (`observe` reports the animation's
 `elapsed` in clock units, 16 per world tick and 45 per table tick); the double-click memory (`last_ground_click`),
 gait and posture are in the snapshot and the `world` / `actors` hashes. A **left click on an enemy soldier** while a player character is selected is an
-**attack order** (hypothesis: the manual's fist icon is not drawn yet): the character walks into reach
-(`attack_target` names the victim), then delivers the knock-out blow when he stands behind the victim, else
-stops facing him; a ground order or a right click cancels it. See "Stealth layer" below.
+**attack order** (measured, `docs/original/combat-measurements.md` 1.1: no icon, no key): the character walks
+into reach (`attack_target` names the victim), then delivers the knock-out blow when he arrives unseen behind
+the victim, else stops 52 px short facing him and the fight begins; a ground order or a right click cancels
+it. See "Stealth layer" and "Melee" below.
 
 ## Stealth layer
 
@@ -64,10 +65,13 @@ carry `team` (`player` / `enemy` / `civilian`), `ai_state`
 140 / 143 / 151), `returning` (walking back to the post), `punching` (123, player characters), `knocked_down`
 (41 / 44), `lying` (47 / 48, knocked out), `getting_up` (49), `dead`), `state_ticks` (ticks left in a timed
 state), `last_seen` and `alert_origin` (map points, 24.8), `attack_target` (entity id), `action` (the sprite
-action id the entity reports: a change fires the script's `ActionChange(previous, new)`), `hit_points`
-(profile `p0`; 100 without a profile value), `knockout_resistance` (profile `p4`), `npc_gait` (the gait of the
-NPC's program walks, script native 140), `fell_backward` and `heard` (the current alert came from a run heard,
-the measured channel, rather than from the view cone). Enemy soldiers that are alive, active, unlocked
+action id the entity reports: a change fires the script's `ActionChange(previous, new)`), `hp` / `hp_max`
+(hit points left / full: the hero's measured 100, a soldier's profile `pre[0]`, 100 without a profile value),
+`energy` / `energy_ticks` (0..20 and the ticks to the next regained unit), `foe`, `pose`, `pose_ticks`,
+`swing_ticks`, `figure` and `in_combat` (see "Melee"), `knockout_resistance` (profile `p4`), `npc_gait` (the
+gait of the NPC's program walks, script native 140), `fell_backward` and `heard` (the current alert came
+from a run heard, the measured channel, rather than from the view cone). The `ai_state` values `fighting`
+(in a melee), `dying` (killed, the fall playing) and `dead` (lying for good) belong to the melee. Enemy soldiers that are alive, active, unlocked
 and on their feet perceive: a player character inside their view cone (half angle 45 degrees, range 250 px,
 125 px when crouched; occluders ignored) starts the noticed -> alarm -> alerted sequence; a running player
 character within 350 px is heard whatever the soldier faces and he charges at once (`alerted`, the alert run).
@@ -83,6 +87,35 @@ same budget (its `nav.rs` units, capped per search at `world::ORDER_SEARCH_WORK`
 entities from its own cursor (the snapshot's `cursors: {perception, states, attacks, programs}`, in the
 `world` hash); when the budget runs out the cursor marks where the next tick resumes, and a search it
 could not pay changes nothing (the guard keeps his instruction, the attacker his order).
+
+## Melee
+
+`docs/original/combat-measurements.md` and the "Engine" section of `docs/original/stealth-and-combat.md`
+(measured 2026-09-05 unless marked). The **left button acts on its release**: a press and a release within 32
+map px is the click of "Orders and movement modes", a longer stroke a drawn figure; the world's `press`
+remembers the press (snapshotted, `world` hash). A left click on an enemy soldier is the **attack order**: the
+character walks up and, unless he arrives unseen from behind (the knock-out above), stops 52 px from the
+victim's feet and the **fight** begins: both are `ai_state` = `fighting` with `foe` naming the other and
+`in_combat` true in `observe`; the soldier turns to the attacker and fights where he stands. The soldier
+swings every ~5.3 s (318 ticks with the gameplay RNG's jitter, `swing_ticks`), two swings in three land for
+5 hp (`hp` falls, never regenerates) and cost him one unit of `energy` (0..20, regained after ~4 s); the
+hero's automatic strikes never land against a soldier (hypothesis: the pole arm's reach or a block, recorded
+as the `melee_reach` assumption). The **forward stroke** (`pointer_down` on the ground, `pointer_move` at
+least 32 px to the right within 45 degrees, `pointer_up`: the manual's figure, drawn 80 px right and 20 px up
+in the measurements) locks onto the nearest enemy soldier (`figure` = `forward_stroke` until delivered) and,
+in the fight, plays the **powerful blow** (`pose` = `powerful_blow`, action 75, `pose_ticks` = 57 to its
+resolution): two units of energy (regained one per 0.9 s), 50 hp when it lands (one in three: the
+`powerful_blow_chance` assumption). `pose` is otherwise `idle` (the stance, action 54), `strike` (59) or
+`flinch` (104, when hit). A ground order or a right click leaves the fight; the soldier stands his ground and
+walks back to his post (the `post_bound` assumption for every kind but the halberdier). At 0 hp the entity is
+dead: `alive` false and `ai_state` = `dying` (the fall, 44 from the front / 41 from behind) then `dead`
+(48 / 47 for good, the body stays drawn); natives 85 / 87 / 90 report it from the tick of the blow. A player
+character's death sets **`observe.hero_dead`** (sticky, hashed) and the app shows the lost page on that
+tick whether or not the script's `CheckVictoryCondition` reports the loss. `capture` draws, for every
+fighter and for the actor under the pointer, a 20 x 3 px red health row 8 px below the feet (10 px left of
+them; (255,0,0) hovered, (123,0,0) otherwise; 1 px per 5 hp of the hero) and a blue energy row 4 px lower
+((0,200,255) / (0,101,123); 1 px per unit), the spent part black, and cream damage numbers rising 50 px in
+1.5 s over the victim's head (`observe` does not list them: presentation only, snapshotted but not hashed).
 
 ## Replays
 

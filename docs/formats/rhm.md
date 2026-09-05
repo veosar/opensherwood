@@ -71,7 +71,11 @@ hash); they are stored but not interpreted.
 639 Leicester, 916 York, 92 Sherwood; equals the first word of the `.rhp` `SPOK` chunk, which is how the loader
 matches "proto-level" and mission), `u32 variant` (1 for 28 files, 2 for 4, 4 for 6, 16 for H07; the Day / Night /
 Fog / Custom ambiance as bits is the hypothesis, consistent with `Levels/Custom1/Nottingham.map` existing for H07),
-`pstring16 map name`, `u32 mission_id` (0..=0x33; 0 for eight ambush/tactical missions).
+`pstring16 map name`, `u32 mission_id` (0..=0x33; 0 for eight ambush/tactical missions). The engine loads the
+background of that ambiance (`crates/opensherwood-app/src/mission.rs`, `ambiance_for_variant`: 1 Day, 2 Night,
+4 Fog, 16 Custom1) and falls back to `Day` with a log line where the retail data has no such picture
+(`Fog/Leicester.map` for S02, `Fog/sherwood.map` for the outro); the mapping is the hypothesis above, not a
+verified fact.
 
 ## `POUF` (version 3)
 
@@ -90,7 +94,7 @@ an entry by repeating its two strings.
 | Tag | Version | Records | Meaning |
 |---|---|---|---|
 | `MEOW` | 2 | 0 in all files | unknown (animals?) |
-| `SCOT` | 4 | 1..=5 per mission (50 in `Sherwood.rhm`) | player-character start slots (no profile: the team comes from the campaign state) |
+| `SCOT` | 4 | 1..=5 per mission (50 in `Sherwood.rhm`) | player-character start slots (no profile: the team comes from the campaign state); in the script element table they sit at the tail, after `ZORG` and `TING` (`scb.md`, Index spaces) |
 | `OILE` | 3 | 0..=77 | civilians (`profile.cpf` CV table) |
 | `TOTO` | 2 | 0..=11 | player-character sprites used as NPCs: prisoners, bride, guests (`profile.cpf` PC table) |
 | `BORG` | 4 | 3..=184 (2463 total) | armed humans: soldiers, guards, knights, officers, VIPs, merry men, the trainer (`profile.cpf` SD table) |
@@ -355,7 +359,9 @@ Evidence (all 39 missions, `harness/tools/probe/rhm_profiles.py`):
 Confidence: high for the three index -> table mappings (every one of the ~130 designer-named records
 agrees, the unused-index set matches the "do not use" entries, and no alternative table has 68 / 24 / 10
 entries). Not established: what the engine draws for a `SCOT` slot (campaign state), the meaning of the
-stat fields, and whether the original honours `unknown_0x16` of `SCOT`.
+stat fields, and whether the original honours `unknown_0x16` of `SCOT`. Established (2026-09-05,
+`sherwood-hub.md` 4.3): the `SCOT` records are script elements placed after the `ZORG` and `TING` entries at
+the tail of the level's element table, not in front of the other actors.
 
 How to verify in the engine: load `H01_Lin_VL` with the mapping and compare against the observed start of
 the original (`docs/original/campaign-flow.md`): two blue halberdiers on the wall above the gate,

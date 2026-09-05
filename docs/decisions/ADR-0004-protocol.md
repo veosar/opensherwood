@@ -5,7 +5,13 @@ Date: 2026-09-02. Status: accepted.
 Versions in force (2026-09-05, Codex review 7): protocol 6 (`reset.starting_money` and `ReplayHeader.starting_money`: the mission's starting money is a canonical input recorded in the header, playback resets with it; `UiItem.selected`; `observe.persistence_error`; replay time is the session tick: header `time:
 "session"`, checkpoints carry `world_tick`, a `session` digest and the `frame` hash, the tick-0 and terminal
 checkpoints are required and compared; `ui` observation,
-`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 12
+`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 13
+(2026-09-05, the melee of `docs/original/combat-measurements.md`: hit points (the hero's 100, a soldier's
+`pre[0]`), energy, the soldier's 5-hp hits at the measured cadence, the hero's forward-stroke powerful blow (50
+hp, drawn with the pointer: the left button now acts on its release, a stroke being a figure), death at 0 hp
+(`dying` -> `dead`, the fall's ids) and `hero_dead` raising the loss; `Entity::hit_points` is now `hp_max`
+beside `hp`; the assumption registry grew by `melee_reach`, `powerful_blow_chance`, `post_bound`,
+`combat_actions`, `hero_death_loss`; `observe` entities carry `in_combat` and the root `hero_dead`); ruleset 12
 (2026-09-05, Codex review 8: the taint is dependency-closed (every low-confidence opcode, policy native, effect
 stub, lenient unknown call and engine hypothesis records its `Assumption` when taken), queued `ActionChange`
 handlers run transactionally (rolled back when the budget cuts them short, a full queue is a fault), one
@@ -44,11 +50,16 @@ program digest; schema 13: the entity `heard` flag under `actors`;
 the animation `elapsed` bytes now count clock units; schema 12: the VM's `assumptions` under `scripts`,
 its `pending_action_changes` under `scheduler`, the `ai_cursor` under `world`; schema 11: entity `team`, `ai_state`, `state_ticks`,
 `action`, `hit_points`, `knockout_resistance`, `npc_gait`, `fell_backward`, `last_seen`, `alert_origin` and
-`attack_target` under `actors`; schema 10: entity `gait` / `posture` tags under `actors`,
+`attack_target` under `actors`; schema 15: entity `hp`, `hp_max`, `energy`, `energy_ticks`, the pose tag,
+`pose_ticks`, `swing_ticks`, the figure tag and `foe` under `actors` (replacing `hit_points`), `hero_dead` and
+`press` under `world`, the melee's assumption tags under `scripts`; schema 10: entity `gait` / `posture` tags under `actors`,
 the `last_ground_click` under `world`; schema 9: `scripts` and `scheduler` parts carry the VM state including sequence tokens and the
 barrier wait; frames and stacks are no longer encoded because a snapshot must be quiescent; entity `active` /
 `ai_locked` flags under `actors`, the `script` RNG stream under `rng`; schema 9 adds the player's `money`
-(natives 236 / 237) and `mission_lost` (`CheckVictoryCondition` = 2) to `scripts`), snapshot schema 15 (the
+(natives 236 / 237) and `mission_lost` (`CheckVictoryCondition` = 2) to `scripts`), snapshot schema 16 (the
+melee: entity `hp` / `hp_max` (replacing `hit_points`) / `energy` / `energy_ticks` /
+`foe` / `pose` / `pose_ticks` / `swing_ticks` / `figure`, the world's `press`, `hero_dead` and
+`damage_numbers`; schema 15: the
 world's `cursors` replace `ai_cursor`, the VM's `fault` replaces `faulted`, `Instr::Native` carries `dst`,
 frames hold no native result; schema 14: entity
 `heard`, animation `elapsed` in clock units; schema 13: the VM's

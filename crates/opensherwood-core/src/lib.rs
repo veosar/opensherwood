@@ -6,8 +6,8 @@
 //!
 //! Milestone M0 ships a *synthetic* world (no game data) that exercises the whole determinism contract:
 //! canonical input, RNG streams, movement, selection, snapshot/restore and hashing. Missions add the
-//! script VM ([`vm`], natives in [`natives`]; ADR-0008) and the stealth layer ([`ai`]: perception,
-//! alert states, the knock-out), which are part of the same contract.
+//! script VM ([`vm`], natives in [`natives`]; ADR-0008) and the stealth and combat layer ([`ai`]:
+//! perception, alert states, the knock-out, the melee), which are part of the same contract.
 
 pub mod ai;
 pub mod anim;
@@ -21,7 +21,7 @@ pub mod rng;
 pub mod vm;
 pub mod world;
 
-pub use ai::AiState;
+pub use ai::{AiState, FightPose, Figure};
 pub use anim::{AnimSet, AnimState, Catalog, FrameSpec, direction_of};
 pub use fixed::Fixed;
 pub use geom::Geometry;
@@ -30,9 +30,9 @@ pub use input::{Button, InputEvent, Key};
 pub use nav::{NavError, NavGrid};
 pub use vm::{Program, VmState};
 pub use world::{
-    ActorSpec, Entity, EntityId, EntityKind, Gait, GroundClick, Instruction, MapInfo, MissionSpec,
-    Observation, Posture, Scenario, Snapshot, Team, World,
+    ActorSpec, DamageNumber, Entity, EntityId, EntityKind, EntityObservation, Gait, GroundClick,
+    Instruction, MapInfo, MissionSpec, Observation, Posture, Scenario, Snapshot, Team, World,
 };
 
 /// Ruleset version: bump when simulation semantics change so old replays/hashes are not compared.
-pub const RULESET_VERSION: u32 = 12;
+pub const RULESET_VERSION: u32 = 13;

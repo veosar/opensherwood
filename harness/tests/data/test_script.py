@@ -4,7 +4,8 @@
 `PostInitialize` adds the primary objective 0 and plays one sequence: text pages 0, 1, 2, then the camera
 returns to the hero. Every player action here is canonical input: pages are dismissed with Enter through
 the briefing screen (`Engine.skip_briefing`), walks are left clicks on the ground, the pause menu is Escape. `debug.vm`
-only inspects, except `{"win": true}`, the documented shortcut of the end-of-mission test (docs/harness.md).
+only inspects (`{"element": i}` describes one entry of the element table), except `{"win": true}`, the
+documented shortcut of the end-of-mission test (docs/harness.md).
 """
 
 from __future__ import annotations
@@ -15,32 +16,36 @@ from opensherwood_harness import Engine, key_press, pointer_click
 
 FIRST_MISSION = "H01_Lin_VL"
 
-# Ticks every loadable mission runs in strict mode without a fault (`docs/formats/scb.md`, "Natives at load
-# per mission": the lenient run of 2026-09-02 reached tick 500 everywhere; the strict run of 2026-09-03 too).
+# Ticks every mission runs in strict mode without a fault (`docs/formats/scb.md`, "Natives at load per
+# mission": the lenient run of 2026-09-02 reached tick 500 everywhere; the strict run of 2026-09-03 too, and
+# the strict run of 2026-09-05 over all 39 files under the corrected element table).
 EARLY_TICKS = 300
 
 # Script state right after loading each mission with seed 1 (`PostInitialize` ran): whether an unknown
 # native trapped (`faulted`), how many traps, and the stub natives called (`{id: calls}`). Derived from the
 # engine on 2026-09-03 (ruleset 7, hash schema 9: every native the load-time closure reaches is implemented
-# or a recorded stub, so no loadable script traps); a change here is a deliberate edit that goes with the
-# native that caused it, never a silent drift. The two missions strict loading refuses are listed with
-# `None`.
-EXPECTED_AT_LOAD: dict[str, tuple[bool, int, dict[str, int]] | None] = {
-    "Emb01_FoA_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 3}),
-    "Emb02_FoC_MK": (False, 0, {"54": 1, "224": 3, "244": 4}),
-    "Emb03_FoC_MP": (False, 0, {"51": 1, "54": 1, "73": 1, "224": 3}),
-    "Emb04_FoA_MP": (False, 0, {"51": 1, "54": 1, "73": 1, "224": 3}),
-    "Emb05_FoB_MP": (False, 0, {"20": 1, "54": 1, "73": 1, "224": 4, "244": 4}),
-    "Emb06_FoC_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 4}),
+# or a recorded stub, so no loadable script traps) and re-recorded on 2026-09-05 with the corrected element
+# table (`docs/formats/sherwood-hub.md`, section 4: the player slots at the tail, the map prefix from the
+# `.rhp`): the forest missions now report their hidden player slots through stub 244 (slot empty), the
+# "every element" loops of H05 / Str01 / Str02 (stubs 80 / 81) cover the `ZORG` / `TING` entries, and the two
+# Sherwood missions load strictly. A change here is a deliberate edit that goes with the native or binding
+# that caused it, never a silent drift.
+EXPECTED_AT_LOAD: dict[str, tuple[bool, int, dict[str, int]]] = {
+    "Emb01_FoA_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 3, "244": 4}),
+    "Emb02_FoC_MK": (False, 0, {"54": 1, "224": 3}),
+    "Emb03_FoC_MP": (False, 0, {"51": 1, "54": 1, "73": 1, "224": 3, "244": 4}),
+    "Emb04_FoA_MP": (False, 0, {"51": 1, "54": 1, "73": 1, "224": 3, "244": 5}),
+    "Emb05_FoB_MP": (False, 0, {"20": 1, "54": 1, "73": 1, "224": 4}),
+    "Emb06_FoC_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 4, "244": 5}),
     "Emb07_FoB_JMS": (False, 0, {"54": 1, "188": 1, "224": 4}),
-    "Emb08_FoA_JMS": (False, 0, {"51": 1, "54": 1, "180": 1, "224": 4, "228": 2, "244": 4}),
-    "Emb09_FoB_JMS": (False, 0, {"54": 1, "73": 2, "195": 1, "224": 4, "244": 1}),
-    "EmbTut_FoC_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 3}),
+    "Emb08_FoA_JMS": (False, 0, {"51": 1, "54": 1, "180": 1, "224": 4, "228": 2}),
+    "Emb09_FoB_JMS": (False, 0, {"54": 1, "73": 2, "195": 1, "224": 4}),
+    "EmbTut_FoC_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 3, "244": 4}),
     "H01_Lin_VL": (False, 0, {"186": 2, "191": 6, "198": 5}),
     "H02_Not_EC": (False, 0, {"24": 1, "186": 10, "187": 2, "188": 9, "189": 9, "191": 8, "198": 17, "264": 3}),
     "H03_Der_MK": (False, 0, {"42": 2, "50": 1, "51": 1, "53": 7, "54": 1, "99": 17, "186": 6, "188": 1, "189": 4, "191": 1, "195": 1, "218": 6}),
     "H04_Lei_VL": (False, 0, {"38": 1, "51": 2, "191": 2, "195": 1, "198": 17, "254": 1}),
-    "H05_Lin_EC": (False, 0, {"24": 2, "80": 176, "99": 1, "177": 2, "186": 9, "191": 7, "198": 48}),
+    "H05_Lin_EC": (False, 0, {"24": 2, "80": 198, "99": 1, "177": 2, "186": 9, "191": 7, "198": 48}),
     "H07_Not_MK": (False, 0, {"20": 1, "50": 1, "80": 2, "92": 1, "99": 1, "177": 3, "180": 5, "186": 15, "187": 15, "188": 15, "189": 15, "191": 4, "195": 1, "205": 2, "218": 3, "244": 1, "247": 1, "264": 5}),
     "H09_Not_VL": (False, 0, {"186": 4, "187": 4, "188": 1, "189": 1, "191": 8, "198": 8}),
     "H10_Yor_VL": (False, 0, {"24": 2, "35": 1, "51": 1, "54": 1, "99": 1, "186": 3, "187": 3, "191": 4, "195": 2, "198": 8}),
@@ -50,21 +55,21 @@ EXPECTED_AT_LOAD: dict[str, tuple[bool, int, dict[str, int]] | None] = {
     "S03_FoB_MP": (False, 0, {"20": 1, "38": 1, "54": 1, "125": 3, "156": 1, "177": 14, "232": 1}),
     "S04_Der_EC": (False, 0, {"186": 5, "187": 1, "188": 5, "189": 5, "191": 3, "198": 7}),
     "S05_Yrk_EC": (False, 0, {"20": 1, "24": 3, "51": 1, "54": 1, "99": 3, "156": 1, "186": 7, "188": 4, "189": 6, "191": 4, "198": 10, "218": 7, "264": 3}),
-    "SherwoodOutro": None,  # no script element index space for the Sherwood map yet (docs/formats/scb.md)
-    "Str01_Lin_EC": (False, 0, {"80": 215, "99": 12, "186": 1, "188": 1, "189": 1, "191": 7, "198": 42}),
-    "Str02_Der_MP": (False, 0, {"20": 1, "81": 166, "189": 4, "191": 1, "195": 2, "198": 11}),
+    "SherwoodOutro": (False, 0, {"54": 1, "180": 11}),
+    "Str01_Lin_EC": (False, 0, {"80": 241, "99": 12, "186": 1, "188": 1, "189": 1, "191": 7, "198": 42}),
+    "Str02_Der_MP": (False, 0, {"20": 1, "81": 182, "189": 4, "191": 1, "195": 2, "198": 11}),
     "Str03_Yor_MK": (False, 0, {"51": 1, "99": 4, "143": 14, "186": 7, "188": 1, "189": 3, "191": 4, "195": 1}),
-    "Tac01_FoA_MP": (False, 0, {"20": 1, "54": 1, "224": 6}),
-    "Tac02_FoB_EC": (False, 0, {"20": 1, "54": 1, "198": 55, "224": 9}),
-    "Tac03_FoC_MP": (False, 0, {"39": 1, "52": 1, "54": 1, "224": 2}),
-    "Tac04_FoA_EC": (False, 0, {"20": 1, "54": 1, "224": 5}),
+    "Tac01_FoA_MP": (False, 0, {"20": 1, "54": 1, "224": 6, "244": 5}),
+    "Tac02_FoB_EC": (False, 0, {"20": 1, "54": 1, "198": 55, "224": 9, "244": 5}),
+    "Tac03_FoC_MP": (False, 0, {"39": 1, "52": 1, "54": 1, "224": 2, "244": 5}),
+    "Tac04_FoA_EC": (False, 0, {"20": 1, "54": 1, "224": 5, "244": 5}),
     "Tac05_FoC_MP": (False, 0, {"177": 8, "198": 8}),
     "Tac06_FoB_EC": (False, 0, {"20": 1, "54": 1, "224": 3}),
-    "Tac17_FoC_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 4}),
-    "Tac18_FoA_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 3, "244": 5}),
-    "Tac19_FoB_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 2}),
-    "Tac21_FoB_EC": (False, 0, {"20": 1, "186": 1, "188": 1, "189": 1, "224": 4}),
-    "sherwood": None,  # no script element index space for the Sherwood map yet (docs/formats/scb.md)
+    "Tac17_FoC_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 4, "244": 5}),
+    "Tac18_FoA_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 3}),
+    "Tac19_FoB_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 2, "244": 4}),
+    "Tac21_FoB_EC": (False, 0, {"20": 1, "186": 1, "188": 1, "189": 1, "224": 4, "244": 5}),
+    "sherwood": (False, 0, {"7": 1, "150": 1, "195": 25, "210": 10, "214": 1, "215": 14, "256": 50, "261": 1}),
 }
 
 
@@ -287,9 +292,9 @@ def test_mission_snapshot_restore_continuation(binary, game_dir, tmp_path):
 
 
 def test_every_mission_script_translates_and_runs_300_ticks_strictly(binary, game_dir, tmp_path):
-    """Every retail script loads and its state after `PostInitialize` is the expected one
-    (`EXPECTED_AT_LOAD`): faults, traps and stub calls are asserted, not printed. Then every loadable
-    mission runs `EARLY_TICKS` ticks in strict mode (no page dismissed: the briefing sequences stay
+    """Every retail script (all 39, the Sherwood hub and outro included) loads strictly and its state
+    after `PostInitialize` is the expected one (`EXPECTED_AT_LOAD`): faults, traps and stub calls are
+    asserted, not printed. Then every mission runs `EARLY_TICKS` ticks in strict mode (no page dismissed: the briefing sequences stay
     on their first page, `Hourglass` / `CheckVictoryCondition` / messages / zones run) without a fault,
     a trap, a run-time fault or a budget abort, and none is won or lost by tick `EARLY_TICKS`."""
     names = sorted(p.stem for p in (game_dir / "DATA" / "Levels").glob("*.scb"))
@@ -301,9 +306,8 @@ def test_every_mission_script_translates_and_runs_300_ticks_strictly(binary, gam
             expected = EXPECTED_AT_LOAD[name]
             try:
                 e.reset({"mission": name}, seed=1)
-            except Exception as ex:  # noqa: BLE001 - a refused load is compared with the table too
-                if expected is not None:
-                    mismatches.append(f"{name}: refused: {ex}")
+            except Exception as ex:  # noqa: BLE001 - a refused load is a mismatch like any other
+                mismatches.append(f"{name}: refused: {ex}")
                 continue
             vm = e.call("debug.vm")
             if not vm["present"]:
@@ -312,9 +316,6 @@ def test_every_mission_script_translates_and_runs_300_ticks_strictly(binary, gam
             got = (vm["faulted"], vm["counters"]["traps"], vm["counters"]["stub_natives"])
             if got != expected:
                 mismatches.append(f"{name}: (faulted, traps, stubs) {got} != {expected}")
-            if expected is None:
-                mismatches.append(f"{name}: loaded although the table says refused")
-                continue
             e.step(EARLY_TICKS)
             vm = e.call("debug.vm")
             c = vm["counters"]
@@ -330,8 +331,59 @@ def test_every_mission_script_translates_and_runs_300_ticks_strictly(binary, gam
             sc = e.observe(entities=False)["script"]
             if sc["tainted"] != bool(sc["assumptions"]):
                 mismatches.append(f"{name}: tainted={sc['tainted']} but assumptions={sc['assumptions']}")
-    assert sum(v is None for v in EXPECTED_AT_LOAD.values()) == 2, "exactly the two Sherwood missions are refused"
     assert not mismatches, "\n".join(mismatches)
+
+
+def test_first_mission_element_table_has_the_hero_at_its_tail(binary, game_dir, tmp_path):
+    """The element index space of `docs/formats/scb.md` ("Index spaces"): in H01 the map's 50 entries
+    (38 animated elements, 12 patches) come first, the mission's civilians from 50, the eleven `ZORG`
+    entries 115..=125 are inert, the single player slot is element 126 (the hero, entity 0: the element
+    the level's `Initialize` addresses with native 117) and the script polygons follow it."""
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
+        e.reset({"mission": FIRST_MISSION}, seed=1)
+        assert e.observe()["entities"][0]["kind"] == "player", "the hero is entity 0"
+        vm = e.call("debug.vm", {"element": 126})
+        assert vm["element"] == {"kind": "actor", "entity": 0}
+        assert e.call("debug.vm", {"element": 49})["element"] == {"kind": "map", "index": 49}
+        assert e.call("debug.vm", {"element": 50})["element"] == {"kind": "actor", "entity": 1}
+        for i in range(115, 126):
+            assert e.call("debug.vm", {"element": i})["element"]["kind"] == "unmodelled", i
+        assert e.call("debug.vm", {"element": 127})["element"]["kind"] == "polygon"
+        assert e.call("debug.vm", {"element": vm["elements"]})["element"] is None
+
+
+def test_sherwood_camp_and_outro_load_strictly_and_run(binary, game_dir, tmp_path):
+    """The Sherwood hub (`Sherwood.rhm` with the lower-case `sherwood.scb`) and the outro load with their
+    scripts under the index space of `docs/formats/sherwood-hub.md` (map prefix 20 = 20 `FLIM` + 0 `TUPO`):
+    the hub binds the trainer at 21 (entity 51: the 50 slots and the recruit come first), its 23 scrolls
+    at 28..=50 and the 50 player slots at 51..=100; the outro (variant 4, no `Fog/sherwood.map`: the engine
+    falls back to the day background) puts the hero at 70. Both run their load-time callbacks and 300
+    strict ticks without a trap."""
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
+        for name in ("Sherwood", "sherwood"):
+            e.reset({"mission": name}, seed=1)
+            vm = e.call("debug.vm")
+            assert vm["present"] and vm["classes"] == 31 and vm["elements"] == 116
+            assert e.call("debug.vm", {"element": 21})["element"] == {"kind": "actor", "entity": 51}
+            assert e.call("debug.vm", {"element": 28})["element"]["kind"] == "scroll"
+            assert e.call("debug.vm", {"element": 50})["element"]["kind"] == "scroll"
+            assert e.call("debug.vm", {"element": 51})["element"] == {"kind": "actor", "entity": 0}
+            assert e.call("debug.vm", {"element": 100})["element"] == {"kind": "actor", "entity": 49}
+            assert e.call("debug.vm", {"element": 101})["element"]["kind"] == "polygon"
+            assert len(vm["scrolls"]) == 23
+        e.step(EARLY_TICKS)
+        vm = e.call("debug.vm")
+        assert not vm["faulted"] and vm["counters"]["traps"] == 0 and vm["counters"]["faults"] == 0
+        assert not vm["mission_won"] and not vm["mission_lost"]
+        e.reset({"mission": "SherwoodOutro"}, seed=1)
+        vm = e.call("debug.vm")
+        assert vm["present"] and vm["classes"] == 11 and vm["elements"] == 73
+        assert e.call("debug.vm", {"element": 70})["element"] == {"kind": "actor", "entity": 0}
+        assert e.call("debug.vm", {"element": 54})["element"]["kind"] == "object"
+        assert e.observe(entities=False)["map_size"] == [1920, 1088]
+        e.step(EARLY_TICKS)
+        vm = e.call("debug.vm")
+        assert not vm["faulted"] and vm["counters"]["traps"] == 0 and vm["counters"]["faults"] == 0
 
 
 def test_starting_money_is_seeded_before_initialize(binary, game_dir, tmp_path):

@@ -318,12 +318,32 @@ pub struct Rhp {
     pub az: Vec<u8>,
     /// `DARK`.
     pub dark: Vec<DarkZone>,
-    /// `TUPO` body after the version word (layout not established).
+    /// `TUPO` body after the version word (layout not established beyond the leading count).
     pub tupo: Vec<u8>,
     /// `LOUD` body after the version word (layout not established).
     pub loud: Vec<u8>,
     /// `PPPP`.
     pub pppp: Pppp,
+}
+
+impl Rhp {
+    /// Number of `TUPO` records (map patches): the leading `u16` of the raw body, 0 when the
+    /// body is shorter than that. With the `FLIM` count it sizes the map's part of the script
+    /// element table (`docs/formats/scb.md`, "Index spaces").
+    #[must_use]
+    pub fn tupo_count(&self) -> u16 {
+        tupo_count(&self.tupo)
+    }
+}
+
+/// The `u16 n` at the head of a raw `TUPO` body (`docs/formats/rhp.md`, "Raw chunks"); 0 for a
+/// body too short to hold it.
+#[must_use]
+pub fn tupo_count(tupo: &[u8]) -> u16 {
+    match tupo {
+        [lo, hi, ..] => u16::from_le_bytes([*lo, *hi]),
+        _ => 0,
+    }
 }
 
 fn room(r: &Reader<'_>, n: usize, size: usize, what: &'static str) -> Result<(), FormatError> {
@@ -855,6 +875,14 @@ mod tests {
         // a wrong packed size is rejected
         b[13] = 8;
         assert!(parse_faces(&b).is_err());
+    }
+
+    #[test]
+    fn tupo_count_is_the_leading_word() {
+        assert_eq!(tupo_count(&[]), 0);
+        assert_eq!(tupo_count(&[7]), 0);
+        assert_eq!(tupo_count(&[6, 0]), 6);
+        assert_eq!(tupo_count(&[0x0b, 0, 1, 2, 3]), 11);
     }
 
     #[test]

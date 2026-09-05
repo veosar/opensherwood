@@ -9,11 +9,14 @@ menu, credits, select player with profiles, options for graphics / sounds / shor
 debriefing parchments, pause menu, HUD with the crouch / stand figures and the mini-map scroll), Play! into any
 retail mission with its script running (objectives, messages, dialogue pages, sequences, scroll pickups), every
 mission's map and actors, walking / running / sneaking with pathfinding and foreground occlusion, a first stealth
-layer (guards notice, alarm, search, can be knocked out from behind), quick save (F1 / F5) and rolling auto saves,
+layer (guards notice, alarm, search, can be knocked out from behind), melee with health, energy and death as
+measured on the original (a click on the enemy starts the fight, the forward stroke is the powerful blow, the
+hero's death shows the lost page), quick save (F1 / F5) and rolling auto saves,
 music and effects; a deterministic core with snapshots, canonical hashes, replays and an assumption-taint model that
 marks outcomes resting on unmeasured hypotheses; a headless JSON-RPC harness that plays the engine and compares it
-against captures of the original; a borderless-fullscreen window at any resolution (winit + wgpu). Not yet: melee
-and bow combat, damage and death, sight blocking by walls, layers / doors / climbing, action icons, movies, the
+against captures of the original; a borderless-fullscreen window at any resolution (winit + wgpu). Not yet: the
+bow, the block and the other figures, soldiers attacking on their own, sight blocking by walls, layers / doors /
+climbing, action icons, movies, the
 Sherwood camp between missions, and therefore no mission can be won through play. See
 [docs/roadmap.md](docs/roadmap.md) and the [status reports](docs/status/).
 

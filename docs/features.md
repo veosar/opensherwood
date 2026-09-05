@@ -53,12 +53,25 @@ fheroes2, VCMI) and by what the original executable already contains (developer 
   selected is an attack order: the character walks into reach (32 px) and, if his profile has the knock-out
   blow (123: Robin) and he stands behind the victim (within 67.5 degrees of straight behind), the victim goes
   down (41), lies knocked out (47) for 10 s scaled by his knock-out resistance (`profile.md` `p4`; 100 =
-  immune), gets up (49) and returns to his post; from the front the character stops and faces him. Hit points
-  come from the profile (`p0`), without a damage model yet. Script natives 85 / 87 / 90 / 128 / 240 read these
-  states, 140 sets the gait of an NPC's program walks. Every constant is a hypothesis pinned by tests
-  (`ai.rs`, `harness/tests/data/test_mission.py`). Not yet: sight blocked by walls, civilians raising the
-  alarm, walking noise, the rails' check-for radius, soldiers fighting or shooting, comrades reviving a body,
-  `FilterAIEvent` stimuli, the fist / action icons, the stars over a knocked-out head, damage and death.
+  immune), gets up (49) and returns to his post; from the front the character stops 52 px short and the
+  sword fight begins. Script natives 85 / 87 / 90 / 128 / 240 read these states, 140 sets the gait of an
+  NPC's program walks. The cone, the timers and the punch's arc are hypotheses pinned by tests (`ai.rs`,
+  `harness/tests/data/test_mission.py`). Not yet: sight blocked by walls, civilians raising the alarm,
+  walking noise, the rails' check-for radius, soldiers starting fights or shooting, comrades reviving a
+  body, `FilterAIEvent` stimuli, the fist / action icons, the stars over a knocked-out head.
+- **Melee, health and death** (`docs/original/combat-measurements.md`, measured on the original 2026-09-05;
+  the "Engine" section of `docs/original/stealth-and-combat.md`). The hero has 100 hit points, a soldier his
+  profile's (`pre[0]`: 80 for a halberdier), everyone 20 units of energy; health never regenerates. In a fight
+  the soldier swings every ~5.3 s and two swings in three land for 5 hp (one unit of his energy, back after
+  ~4 s); the hero's own click attacks never hurt a soldier (inferred from a pole arm at 52 px: recorded as an
+  assumption). The forward stroke (the left button held and dragged to the right: the button acts on its
+  release) is the powerful blow: 50 hp when it lands (one time in three: an assumption), two units of energy
+  regained one per 0.9 s, resolved 0.95 s after the order; two landed blows kill a halberdier. At 0 hp the
+  entity falls (44 / 41) and lies for good (48 / 47), dead for the script's natives from the tick of the blow;
+  a player character's death shows the lost page on the same tick. Bars under the feet (a 20 px red health
+  row, a blue energy row 4 px lower, for fighters and the hovered actor) and cream damage numbers rising 50
+  px in 1.5 s are drawn as measured. Not yet: the block and the other eight figures, soldiers attacking on
+  their own, several soldiers on one hero, the 25-hp blow, the bow.
 - **Mission scripts.** Every retail mission's compiled script (`.scb`) is translated to the core VM and runs
   (ADR-0008, `docs/formats/scb.md` "Engine"): `Initialize` / `PostInitialize` at load, `Hourglass` and
   `CheckVictoryCondition` every tick, messages between classes, sequences (text pages that wait for the player,

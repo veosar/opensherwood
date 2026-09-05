@@ -1,6 +1,8 @@
 # The Sherwood camp (`Sherwood.rhm` / `sherwood.scb`) and the outro (`SherwoodOutro.rhm` / `.scb`)
 
-Status: **analysed from data only** (2026-09-05, analyst session; no executable analysis). The two levels are
+Status: **implemented** (2026-09-05, implementer session: steps 1..=3 of section 6 are in the engine, all 39
+missions load strictly and run 300 ticks; step 4, the native rows, is with the lead; step 5 is campaign work).
+The analysis below is **from data only** (2026-09-05, analyst session; no executable analysis). The two levels are
 ordinary `DUTY` missions on the `sherwood` map; nothing in their container, actor records, profile indices or
 sprites differs from the 37 loadable missions. The single reason the strict loader refuses them is the script
 binding: `map_element_count("sherwood")` is `None`, so `docs/formats/scb.md` "Index spaces" cannot place the
@@ -17,11 +19,11 @@ game text are never reproduced: elements are named by chunk, index and role.
 | Level | Mission file | Script | Map | Background | Text index | Level record |
 |---|---|---|---|---|---|---|
 | Camp (hub) | `Data/Levels/Sherwood.rhm` (`FOOT`: map id 92, variant 1, mission id 0) | `Data/Levels/sherwood.scb` (lower-case base name, the only such pair; the engine's VFS is case-insensitive, `crates/opensherwood-assets`) | `sherwood.rhp` (1920x1088) | `Levels/Day/Sherwood.map`, `Night/sherwood.map`; `.min` in Day / Night / Fog | `Text/RHLevelHQ.red` (192 bytes: a 37-entry text list, 1 won, 1 lost, 7 short briefings) | `HQ` in `profile.cpf` (kind 4 = Sherwood, location 8) |
-| Outro | `Data/Levels/SherwoodOutro.rhm` (map id 92, **variant 4**, mission id 0) | `Data/Levels/SherwoodOutro.scb` | same | variant 4 has no `Fog/sherwood.map` (only a `.min`); which background the original uses is **open** (the engine loads `Day` for every mission today) | `RHLevelVO.red` (148 bytes, 4 texts) is the campaign-flow mapping; the level record whose map is Sherwood and whose code is not `HQ` is `EY` (`profile.md`). The outro script shows no text, so the choice does not matter for loading | `EY` (or `VO`), `unknown_h` = 0, `unknown_i` = 0 |
+| Outro | `Data/Levels/SherwoodOutro.rhm` (map id 92, **variant 4**, mission id 0) | `Data/Levels/SherwoodOutro.scb` | same | variant 4 has no `Fog/sherwood.map` (only a `.min`); which background the original uses is **open** (since 2026-09-05 the engine selects the ambiance directory by variant, `rhm.md` `FOOT`, and, this picture being absent, falls back to `Day` with a log line) | `RHLevelVO.red` (148 bytes, 4 texts) is the campaign-flow mapping; the level record whose map is Sherwood and whose code is not `HQ` is `EY` (`profile.md`). The outro script shows no text, so the choice does not matter for loading | `EY` (or `VO`), `unknown_h` = 0, `unknown_i` = 0 |
 
 Confidence: high (file listing, `FOOT` chunks, `.red` sizes, `profile.md`).
 
-## 2. Why the loader refuses them (observed)
+## 2. Why the loader refused them (observed before 2026-09-05)
 
 `Engine.reset({"mission": "Sherwood"})`, `"sherwood"` and `"SherwoodOutro"` all fail with
 
@@ -108,7 +110,9 @@ map or per mission); their *sum* is what places the mission's records. The posit
 not observable either (no polygon class references itself by index in any file); the hub's script never
 addresses an index beyond its scrolls, so it does not matter for loading.
 
-Per-map prefix `K = F + T` (replaces the current `map_element_count` values):
+Per-map prefix `K = F + T` (since 2026-09-05 computed from the `.rhp` by `map_element_count`; the table is kept as
+`known_map_element_count`, a cross-check asserted by `crates/opensherwood-script/tests/gamedata.rs`; "current value"
+below is the value the engine used before):
 
 | Map | `FLIM` | `TUPO` | `K` (new) | current value | change |
 |---|---|---|---|---|---|
@@ -278,27 +282,30 @@ get / set pair of campaign bit words here, which refines the "availability of pl
 
 ## 6. Implementation plan
 
-1. **Replace `map_element_count`** (`crates/opensherwood-script/src/lib.rs`) by a value computed from the
+1. **Done (2026-09-05).** **Replace `map_element_count`** (`crates/opensherwood-script/src/lib.rs`) by a value computed from the
    parsed `.rhp`: `flims.len() + tupo_count` where `tupo_count` is the leading `u16` of the raw `TUPO` chunk
    (add `Map::tupo_count()` or a typed count to `opensherwood-formats::rhp`; the engine already parses the
    `.rhp` in `Engine::load_map`, so pass the two counts, or the `Map`, into `mission::build_spec_checked` ->
    `translate_script`). Keep a table of the nine expected values as a data-backed test. Half a day.
-2. **Reorder `MissionBinding::from_mission`**: `[map F+T] [POUF] [OILE] [TOTO] [BORG] [BOOM] [SKRO] [ZORG]
+2. **Done (2026-09-05).** **Reorder `MissionBinding::from_mission`**: `[map F+T] [POUF] [OILE] [TOTO] [BORG] [BOOM] [SKRO] [ZORG]
    [TING] [SCOT] [polygons]`. Entity numbering must stay the app's (`SCOT` entities first, then `OILE`, `TOTO`,
    `BORG` in file order): compute each group's first entity id from the counts instead of numbering in table
    order. `ZORG` and `TING` entries become `Element::Unmodelled`. Half a day including the unit tests
    (`map_element_count` tests at lib.rs ~1153, a synthetic mission with `SCOT` self-references in the tail).
-3. **Tests and docs**: `harness/tests/data/test_mission.py` (39 loads, no accepted failures),
+3. **Done (2026-09-05).** **Tests and docs**: `harness/tests/data/test_mission.py` (39 loads, no accepted failures),
    `harness/tests/data/test_script.py` (`EXPECTED_AT_LOAD` rows for `sherwood` and `SherwoodOutro`; the
    load-time native counts of the eleven re-bound missions may change, re-record them with the same procedure);
    `docs/formats/scb.md` "Index spaces" and the H01 walkthrough (index 49 is a patch, 126 is the hero, 115..=125
    are `ZORG`; the "PC = 49" line goes), the per-mission table rows of the two Sherwood files; `docs/formats/rhm.md`
    (`SCOT` records are elements at the tail); `docs/status`. Half a day.
-4. **Natives**: add rows / stubs for 165, 166, 170, 174, 239, 249 (stub policy of `scb.md`: 170 should return 0
-   until the team logic exists, 174 a positive limit such as 5, 163 / 249 zero, 164 / 250 the main character),
-   refine 172 (selected level code, 0 = none), 173 (0 / 1 state), 195 / 196 (campaign word get / set). One day
-   including the recorded-stub tests.
-5. Then the hub loads strictly with its script and the 300-tick harness check applies to 39 of 39. The camp
+4. **Natives (done 2026-09-05, ruleset 13):** 165, 166, 170, 174, 239, 249 are recorded stubs in
+   `natives.rs` (the taint and signature tables; arities from the corpus: 165 / 166 `(actor)` no value, 170 /
+   172 / 173 / 174 / 249 `() -> int`, 239 `()` no value): 170 returns 0 until the team logic exists, 174 the
+   policy limit 5 (`STUB_POLICY_VALUES`), 163 / 249 / 172 / 173 zero (172 = the selected level code, 0 = none;
+   173 = the 0 / 1 state), 164 / 250 the main character; pinned by `policy_values_of_the_stub_table_are_pinned`.
+   Still open: 195 / 196 (campaign word get / set), the `scb.md` rows for the six ids.
+5. **The loading part is done** (2026-09-05: the hub and the outro load strictly with their scripts, the
+   300-tick harness check applies to 39 of 39, and none of the six natives without a row is reached in it). The camp
    *gameplay* (campaign screen, team selection through the deployment zone, sending the team = message 1000,
    production between missions = message 1001 and natives 199 / 200, recruits, the report scroll) is campaign
    work beyond the loader; the outro's background variant (4) is open until the original is captured.
@@ -317,3 +324,11 @@ from `scb_elements.py`'s self-references; `native_sets.py`: native ids per file 
 Sherwood files), the `TUPO` / `FLIM` counts read from the nine `.rhp` files, and the manual's Sherwood pages
 (paraphrased). No executable analysis. Designer names, labels, compiled-script identifiers and game text are
 not reproduced; roles are described in our own words.
+
+Build: GOG English, executable SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`.
+Reproduction without the scratch probes: `crates/opensherwood-script/tests/gamedata.rs`
+(`map_element_counts_match_the_known_prefixes`, `every_retail_mission_binds_with_the_player_slots_at_the_tail`)
+recomputes the prefixes and the self-reference counts from the player's files; the two scratch probes were
+one-off derivations of the same numbers and are not needed to check the claims. Tests that depend on this
+document: those two, `test_script.py::test_first_mission_element_table_has_the_hero_at_its_tail`,
+`test_script.py::test_sherwood_camp_and_outro_load_strictly_and_run` and the 39-mission strict run.
