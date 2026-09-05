@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use opensherwood_core::vm::Element;
+use opensherwood_core::vm::{Element, ItemKind};
 use opensherwood_formats::{rhm, rhp, scb};
 use opensherwood_script::{
     MissionBinding, known_map_element_count, map_element_count, translate_with_report,
@@ -182,12 +182,46 @@ fn every_retail_mission_binds_with_the_player_slots_at_the_tail() {
             assert_eq!(map_element_count(map), 50);
             assert_eq!(binding.elements[49], (None, Element::Map(49)));
             assert_eq!(binding.elements[50].1, Element::Actor(1));
+            // The eleven `ZORG` pick-up items precede the fifteen scrolls
+            // (`docs/original/h01-win-path.md` 2): kinds 0 (arrows) and 9 (purses) are read,
+            // the others kept by their raw value.
             assert!(
-                binding.elements[115..=125]
+                binding.elements[100..=110]
                     .iter()
-                    .all(|(n, e)| n.is_none() && matches!(e, Element::Unmodelled(_)))
+                    .all(|(n, e)| n.is_none() && matches!(e, Element::Item { .. }))
+            );
+            assert!(
+                binding.elements[111..=125]
+                    .iter()
+                    .all(|(n, e)| n.is_some() && matches!(e, Element::Scroll { .. }))
             );
             assert_eq!(mission.zorg.len(), 11);
+            assert_eq!(
+                binding.elements[100].1,
+                Element::Item {
+                    x: 2199,
+                    y: 1092,
+                    kind: ItemKind::Arrows,
+                    stack: 2
+                }
+            );
+            assert_eq!(
+                binding.elements[105].1,
+                Element::Item {
+                    x: 572,
+                    y: 1388,
+                    kind: ItemKind::Purse,
+                    stack: 3
+                }
+            );
+            assert!(matches!(
+                binding.elements[106].1,
+                Element::Item {
+                    kind: ItemKind::Unknown(8),
+                    stack: 1,
+                    ..
+                }
+            ));
             // The lone visible hero's slot carries no class name: the level addresses it by
             // index (`n117(126, ..)`), which is the reference that places it.
             assert_eq!(binding.elements[126], (None, Element::Actor(0)));

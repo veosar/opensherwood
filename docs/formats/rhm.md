@@ -27,7 +27,7 @@ warning (executable strings), so the reader keeps unknown tags in `unknown_chunk
 | `FOOT` | 4 | header: map id, variant, map name, mission id | Header |
 | `POUF` | 3 | animated map elements used by the mission (traps, hiding places) | Tenant? / Animation? |
 | `BOYZ` | 3 | six actor class groups `MEOW SCOT OILE TOTO BORG BOOM` | Actor |
-| `ZORG` | 2 | small placed items, 5 kinds | Bonus (hypothesis) |
+| `ZORG` | 2 | pick-up items: a kind and a stack size per record | Bonus (hypothesis) |
 | `HIRN` | 2 | AI data: `HOLE` waypoints, `BUSH` points, `POW ` beam-me points, `NLIP` zones | Tactic |
 | `RAIL` | 3 | patrol paths with per-waypoint command programs | Path |
 | `SKRO` | 4 | scrolls (parchments) | Scroll |
@@ -167,12 +167,31 @@ never used here.
 | | u8 | unknown_u8 | always 1 |
 | | opt name | name | every retail object is named (`<label>_<8 hex digits>`) |
 
-## `ZORG` (version 2)
+## `ZORG` (version 2): pick-up items
 
 `u16 count`; records: `u16 unknown_a` (0..=18; 9 and 0 most common), `u16 unknown_b` (1..=5), Placement with
 direction 0 and `unknown_0x08 == 189 + unknown_b` in all 449 records. Entries cluster in groups of 2-3 near
-scroll or actor positions (in the tutorial two entries sit next to the treasure scroll). Bonus / pick-up items with a
-kind and a stack size (the executable's `Bonus[...]` chunk) is the working hypothesis; not verified.
+scroll or actor positions (in the tutorial two entries sit next to the treasure scroll). They are the
+**pick-up items** of the missions (the executable's `Bonus` chunk and its "bonus" element class;
+`docs/original/h01-win-path.md` 2 pairs every entry of the first mission with the scroll, actor or message
+that hands it out, and the scripts address the block with natives 113 / 114 / 235 only).
+
+Reading of the two words (2026-09-05, data files and the first mission's tutorial texts, paraphrased):
+
+| Field | Reading | Confidence | Evidence |
+|---|---|---|---|
+| `unknown_a` | the item's **kind** | medium | the outro's seven entries carry seven distinct values 12..=18 with `unknown_b` = 1 (seven different camp items in one place); in H01 the four entries with value 0 are the arrow piles (one lies at the archery yard next to the training-start scroll, one is activated by the scroll whose text says arrows must be gathered first, the manual's bow needs arrows), the two with value 9 are purses with money (the steward's purse of objective 3, polled with native 235; the item the "forgotten full purse" scroll activates), the four with value 8 sit where the pick-up tutorial says a probably *empty* purse was lost (hypothesis: an empty purse, the throwable object), and the single value 10 is the item the rescued poor man's scroll activates while its text hands over a lucky charm (hypothesis: the charm the clover counter shows) |
+| `unknown_b` | the **stack size** (1..=5) | low | `unknown_0x08 = 189 + unknown_b` selects one of the five bonus animation blocks 190..=194 of the item's sprite bank (`sprite-animations.md`: the `BONUS_*` banks carry five blocks of one to three frames), so the value picks the picture of the pile; that the picture also counts the pieces (2, 3, 4, 5 arrows) is the reading the engine takes |
+
+The engine (`crates/opensherwood-script`, `MissionBinding::from_mission`; ruleset 15) binds every record as
+`Element::Item { x, y, kind, stack }` with kind 0 = arrows, 9 = purse and every other value kept raw as
+`unknown_a` (8 and 10 included until an oracle run settles them): a click on an active item walks the selected
+player character to it, within the scroll pickup radius the item is taken (arrows add the stack to the
+character's arrows, a purse adds a documented policy amount of 25 per stack unit to the mission's money and one
+purse to the character's purses, an unknown kind only disappears), native 235 then reads 1. Every pickup
+records the `item_pickup` assumption (ADR-0008). Not verified against the original: the kinds 8 / 10, the
+stack as a count, the money a purse holds, the pick-up gesture and radius; the item sprites (`Characters/BONUS_*.rhs`)
+are not drawn yet (the engine draws a placeholder disc per kind).
 
 ## `HIRN` (version 2)
 
@@ -379,7 +398,7 @@ text-like resource.
 ## Open questions
 
 - The placement qualifier triple against `.rhp` geometry; the waypoint command names; `POUF` entry body;
-  `CAVE` target table; `ZORG` kind / count; the content of the `OILE` beggar lists; `SCOT` flag bytes and
+  `CAVE` target table; the `ZORG` kinds other than 0 / 9 and whether `unknown_b` counts the pieces; the content of the `OILE` beggar lists; `SCOT` flag bytes and
   trailer; which hero occupies which `SCOT` slot; `BOOM` unknown words; the `NLIP` point values; the stat
   fields of `profile.cpf`.
 

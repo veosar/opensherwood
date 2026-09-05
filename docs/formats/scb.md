@@ -296,7 +296,7 @@ consists mostly of the call, described by what its name says it does (`scb_seman
 | 231 / 246 | (zone) -> bool | group presence in a zone: 231 = a group is inside (civilians in a house, an army position), 246 = the player characters are all inside (victory `n246(exit zone) == 1` in H03, H04, S04) | low | 5 / 3 uses |
 | 232 | (actor) | actor joins the player's party (freed prisoners: `n114(x); n232(x)`; S03 at start) | medium | 10 uses |
 | 233 | (actor, element) | actor goes to / addresses element (an actor, a scroll, a zone) | medium | H01: the servant goes to Robin, the son goes to a scroll position, the persecuted one goes to a zone |
-| 235 | (element) -> bool | element taken / used (purse object) | low | H01 steward objective |
+| 235 | (element) -> bool | pick-up item taken by a player character (72 uses, every argument a `ZORG` item through native 3, every result compared with 1 in `Hourglass` (38), `CheckVictoryCondition` (33) and one `IsTaken`); engine: 1 once a player character picked the item up (`VmState::taken_items`, `Assumption::Policy(235)` on every call) | low | H01 steward objective (`n235(105)`: the purse at (572,1388)); `rhm.md` "`ZORG`" |
 | 236 / 237 | () -> int; (v) | get / set the player's money (`n237(n236() + 25)`, `n236() < 100000`, `n237(n236() - 2000)`) | high | 8 / 5 uses |
 | 240 | (actor) -> bool | actor is present (active on the map): the "all enemies out of action" helpers require `== 1`; `== 0` or-ed with 89 declares the messenger lost in Tac21 | medium-low | 22 uses |
 | 243 | (actor) | highlight actor during a cutscene | low | 340 uses in `IsTaken`, always inside a sequence on the actor the text talks about |
@@ -436,7 +436,7 @@ not, and what a first implementation would be where the row is confident enough.
   last. Under the earlier model (`SCOT` first, `K` read off one mission per map) eleven missions were bound
   with their records shifted by 1..=4: H02, H09, H12, H05, Str01, H03, S04, Str02, H10, S05, Str03. For H01:
   map elements 0..=49 (38 animated, 12 patches), civilians 50..=56, soldiers 57..=94, objects 95..=99, `ZORG`
-  items 100..=110 (inert), scrolls 111..=125, the hero's slot 126 (the element whose two attributes the level's
+  items 100..=110 (pick-up items, `Element::Item`: `rhm.md` "`ZORG`"), scrolls 111..=125, the hero's slot 126 (the element whose two attributes the level's
   `Initialize` zeroes), polygons 127..=138.
 - **Locations (native 6)**: `GULP` points then polygons (exact bound in 11 files).
 - **Paths (native 9)**: `RAIL` index.
@@ -705,6 +705,25 @@ scripts; equal for every id today). A 0x0c and the 0x0d after it are one IR inst
 id, argc, dst }`; the 0x0d quad becomes a no-op so quad indices stay instruction indices), and a jump whose
 target is a 0x0d quad is refused at translation: no control flow reaches a result read without its call,
 and frames hold no native result.
+
+Pick-up items (2026-09-05, ruleset 15, hash schema 17 / snapshot schema 18): the `ZORG` records are
+`Element::Item { x, y, kind, stack }` in the element table (`rhm.md` "`ZORG`": kind 0 arrows, 9 purse, the rest
+raw as `unknown_a`; the stack is `unknown_b`). Natives 113 / 114 hide and show them like any non-actor element
+(the first mission's `Initialize` hides seven, its messages and scroll handlers show them later), 193 / 194
+store their state like any handle (the corpus never addresses an item with them), and 235 is now implemented:
+1 once a player character picked the item up, recorded in `VmState::taken_items` (hashed under `scripts`,
+snapshotted, validated to name items only), 0 for an item still lying there or hidden and for every other
+element; the reading is a policy (`{"policy": 235}` replaces the former `stub_result 235` in the taint of the
+first mission). The pickup is a player order (`World::left_click`): a left click within 12 map px of an active
+item (`ITEM_CLICK_RADIUS`, the placeholder disc's size) orders the selected player character to walk to it
+(`Entity::pickup` holds the handle; any other order or the item's disappearance clears it), and
+`World::resolve_pickups` takes the item once he is within the scroll radius (24 px, `SCROLL_PICKUP_RADIUS`):
+arrows add their stack to `Entity::arrows`, a purse adds `PURSE_MONEY_PER_STACK` (25) per stack unit to the
+money of natives 236 / 237 and one to `Entity::purses`, an unknown kind only disappears; the item is marked
+taken and deactivated, the walk ends there. No class is bound to an item (no `IsTaken`-style notification
+exists for them in the corpus). Every pickup records `Assumption::ItemPickup` (the gesture, the radius, the
+kind and stack reading, the purse amount: hypotheses), pinned by `items_are_taken_on_a_click_and_native_235_reads_it`.
+Native counts: 74 implemented, 94 stubs.
 
 ## Cross-references
 

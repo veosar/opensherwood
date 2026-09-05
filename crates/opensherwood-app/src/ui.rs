@@ -2179,6 +2179,10 @@ pub struct HudState {
     pub clover: u32,
     /// Selected hero's name lines.
     pub hero_name: Vec<String>,
+    /// The selected hero's arrows (the counter under the bow icon; `Entity::arrows`).
+    pub arrows: i32,
+    /// The selected hero's purses (the counter under the purse icon; `Entity::purses`).
+    pub purses: i32,
 }
 
 /// HUD widget rectangles (x, y, w, h) at 1024x768, located by template matching (see `draw_hud`).
@@ -2197,6 +2201,13 @@ pub mod hud_rects {
     pub const PLAN: (i32, i32, i32, i32) = (964, 701, 43, 41);
     /// Portrait parchment.
     pub const PORTRAIT: (i32, i32, i32, i32) = (70, 640, 220, 110);
+    /// Top-left of the arrow counter of the portrait's action row (`combat-measurements.md`
+    /// 1.1, observed: the bow icon at (100,715), the fist at (135,715), the purse at
+    /// (165,715), the counters below them; the icons are not drawn yet, the exact offset of
+    /// the counters under them is not measured).
+    pub const ARROW_COUNTER: (i32, i32) = (96, 728);
+    /// Top-left of the purse counter: below the purse icon.
+    pub const PURSE_COUNTER: (i32, i32) = (161, 728);
 }
 
 /// What a click on the HUD does.
@@ -2265,6 +2276,12 @@ pub fn draw_hud(scene: &mut Framebuffer, assets: &UiAssets, hud: &HudState) {
         for (i, line) in hud.hero_name.iter().enumerate() {
             font.draw(scene, line, 140, 665 + 18 * i as i32);
         }
+        // The portrait's two counters ("0" and "0" at a mission's start, `ui-flow.md` 9.3
+        // element 4): arrows under the bow icon, purses under the purse icon.
+        let (ax, ay) = hud_rects::ARROW_COUNTER;
+        font.draw(scene, &hud.arrows.to_string(), ax, ay);
+        let (px, py) = hud_rects::PURSE_COUNTER;
+        font.draw(scene, &hud.purses.to_string(), px, py);
     }
 }
 

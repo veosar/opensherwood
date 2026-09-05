@@ -5,7 +5,13 @@ Date: 2026-09-02. Status: accepted.
 Versions in force (2026-09-05, Codex review 7): protocol 6 (`reset.starting_money` and `ReplayHeader.starting_money`: the mission's starting money is a canonical input recorded in the header, playback resets with it; `UiItem.selected`; `observe.persistence_error`; replay time is the session tick: header `time:
 "session"`, checkpoints carry `world_tick`, a `session` digest and the `frame` hash, the tick-0 and terminal
 checkpoints are required and compared; `ui` observation,
-`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 14
+`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 15
+(2026-09-05, pick-up items: the `ZORG` records are `item` elements with a kind and a stack, a left click on an
+active item orders the selected player character onto it and he takes it within the scroll radius (arrows,
+purses with a policy amount of money, unknown kinds), native 235 reads the taken flag, `Entity::arrows` /
+`purses` / `pickup` and the VM's `taken_items` are authoritative, the assumption registry grew by
+`item_pickup`; snapshot schema 18, hash schema 17: the new entity fields under `actors`, `taken_items` and the
+`item` element tag under `scripts`), ruleset 14
 (2026-09-05, Codex review 9: the engine's hypotheses record their assumption where they first mutate state
 (`sight_cone`, `noise_radius`, `alert_policy`, `{attack_policy: reach | block | hit_chance | post_bound}`
 replace `perception`, `melee_reach`, `powerful_blow_chance`, `post_bound`; `knock_out` is recorded at the blow),

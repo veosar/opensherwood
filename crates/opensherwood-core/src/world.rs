@@ -21,7 +21,8 @@ use crate::input::{Button, InputEvent, Key, button_tag, encode_key};
 use crate::nav::{DEFAULT_SEARCH_WORK, NavError, NavGrid};
 use crate::rng::Rng;
 use crate::vm::{
-    Assumption, Program, SCRIPT_RNG_STREAM, ScriptObservation, VmState, charge_budget,
+    Assumption, ItemKind, PURSE_MONEY_PER_STACK, Program, SCRIPT_RNG_STREAM, SCROLL_PICKUP_RADIUS,
+    ScriptObservation, VmState, charge_budget,
 };
 
 /// Stable entity identifier (index + generation).
@@ -234,6 +235,20 @@ pub struct Entity {
     /// state). Only set in an alert state; `observe` reports it.
     #[serde(default)]
     pub heard: bool,
+    /// Arrows carried (player characters; the portrait's arrow counter, 0 at a mission's start:
+    /// `combat-measurements.md` 2). Gathered from arrow items ([`crate::vm::ItemKind::Arrows`]).
+    #[serde(default)]
+    pub arrows: i32,
+    /// Purses picked up (player characters; the portrait's purse counter): one per purse item
+    /// taken ([`crate::vm::ItemKind::Purse`]).
+    #[serde(default)]
+    pub purses: i32,
+    /// The pick-up item (element handle) this player character was ordered onto by a left
+    /// click on it: the walk is towards the item, and [`World::resolve_pickups`] takes the
+    /// item when he comes within [`crate::vm::SCROLL_PICKUP_RADIUS`]. Cleared by any other
+    /// order and when the item is gone.
+    #[serde(default)]
+    pub pickup: Option<i32>,
 }
 
 impl Entity {
@@ -665,6 +680,13 @@ pub const SYNTHETIC_PLAYER_SPEED: Fixed = Fixed::from_raw(364);
 pub const SYNTHETIC_GUARD_SPEED: Fixed = Fixed::from_raw(182);
 /// Largest state timer a snapshot may carry (`Entity::state_ticks`).
 pub const MAX_STATE_TICKS: u32 = 1 << 24;
+/// Largest number of arrows or purses a snapshot may give one character.
+pub const MAX_PICKUP_COUNT: i32 = 1 << 20;
+/// A left click within this many map pixels of an active pick-up item's position is a click on
+/// the item: the selected player character walks to it and takes it (hypothesis: the
+/// original's hit test is the item's sprite, `docs/original/ui-flow.md` 9.4 "click on it";
+/// the engine draws items as small discs of about this size).
+pub const ITEM_CLICK_RADIUS: i32 = 12;
 
 /// Every check a walkable geometry must pass before it may drive movement: vertex budget and
 /// coordinate range (`-MAX_GEOMETRY_COORD..=MAX_GEOMETRY_COORD`).
@@ -1066,8 +1088,10 @@ impl ObstacleIndex {
 /// VM's `Call` carries its result slot (the standalone reader is gone) and frames hold no
 /// call result, the assumption registry was reshaped: `sight_cone`, `noise_radius`,
 /// `alert_policy` and `attack_policy: {reach, block, hit_chance, post_bound}` replace
-/// `perception`, `melee_reach`, `powerful_blow_chance` and `post_bound`).
-pub const SNAPSHOT_VERSION: u32 = 17;
+/// `perception`, `melee_reach`, `powerful_blow_chance` and `post_bound`; 18: pick-up items:
+/// the element table's `item` entries, the VM's `taken_items`, entity `arrows`, `purses` and
+/// `pickup`, the assumption registry grew by `item_pickup`).
+pub const SNAPSHOT_VERSION: u32 = 18;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -1182,6 +1206,9 @@ impl World {
                 npc_gait: Gait::Walk,
                 fell_backward: false,
                 heard: false,
+                arrows: 0,
+                purses: 0,
+                pickup: None,
             });
         }
         // The original opens a mission with the camera on the hero.
@@ -1424,6 +1451,9 @@ impl World {
             npc_gait: Gait::Walk,
             fell_backward: false,
             heard: false,
+            arrows: 0,
+            purses: 0,
+            pickup: None,
         });
         entities.push(Entity {
             id: id(1),
@@ -1466,6 +1496,9 @@ impl World {
             npc_gait: Gait::Walk,
             fell_backward: false,
             heard: false,
+            arrows: 0,
+            purses: 0,
+            pickup: None,
         });
         let obstacles: &[(i32, i32, i32, i32)] = if map.is_some() {
             &[]
@@ -1514,6 +1547,9 @@ impl World {
                 npc_gait: Gait::Walk,
                 fell_backward: false,
                 heard: false,
+                arrows: 0,
+                purses: 0,
+                pickup: None,
             });
         }
         let geometry = Geometry::default();
@@ -1821,6 +1857,26 @@ impl World {
                     e.id
                 ));
             }
+            // The pick-up counters never go negative and stay bounded; a pick-up order belongs
+            // to a player character and names a pick-up item of the script's table.
+            if !(0..=MAX_PICKUP_COUNT).contains(&e.arrows)
+                || !(0..=MAX_PICKUP_COUNT).contains(&e.purses)
+            {
+                return Err(format!(
+                    "entity {:?} carries {} arrows and {} purses, outside 0..={MAX_PICKUP_COUNT}",
+                    e.id, e.arrows, e.purses
+                ));
+            }
+            if let Some(h) = e.pickup {
+                let item = self.vm.as_ref().and_then(|vm| vm.item(h));
+                if e.kind != EntityKind::Player || item.is_none() {
+                    return Err(format!(
+                        "entity {:?} has a pick-up order on {h}, which is not a pick-up item \
+                         it can take",
+                        e.id
+                    ));
+                }
+            }
             if e.ai_state == AiState::Fighting
                 && !(e.kind == EntityKind::Player
                     || (e.kind == EntityKind::Guard && e.team == Team::Enemy))
@@ -1987,8 +2043,100 @@ impl World {
         }
         self.scroll();
         self.vm_tick();
+        self.resolve_pickups();
         self.simulate();
         self.tick = self.tick.saturating_add(1);
+    }
+
+    /// The active pick-up item under the pointer (within [`ITEM_CLICK_RADIUS`] of its position;
+    /// the nearest one, ties broken by the lower handle), if the world runs a script.
+    #[must_use]
+    pub fn item_at_pointer(&self) -> Option<i32> {
+        let vm = self.vm.as_ref()?;
+        let (px, py) = self.pointer_in_map();
+        let (px, py) = (i64::from(px.round()), i64::from(py.round()));
+        let radius = i64::from(ITEM_CLICK_RADIUS);
+        vm.items()
+            .into_iter()
+            .filter(|it| it.active)
+            .filter_map(|it| {
+                let (dx, dy) = (px - i64::from(it.x), py - i64::from(it.y));
+                let d2 = dx * dx + dy * dy;
+                (d2 <= radius * radius).then_some((d2, it.element))
+            })
+            .min()
+            .map(|(_, handle)| handle)
+    }
+
+    /// Player characters ordered onto a pick-up item ([`Entity::pickup`]) take it when they
+    /// come within [`SCROLL_PICKUP_RADIUS`] of it (the same approach rule as the scrolls'; the
+    /// manual's "click on it" gesture, the radius and the effects are hypotheses:
+    /// [`Assumption::ItemPickup`]): arrows add their stack to the character's `arrows`, a purse
+    /// adds [`PURSE_MONEY_PER_STACK`] per stack unit to the mission's money and one purse to
+    /// the character's `purses`, an unknown kind only disappears. The item is marked taken
+    /// (native 235) and deactivated (it is no longer drawn or pickable), and the walk ends
+    /// there. An order whose item vanished (deactivated by the script, taken by another
+    /// character) or whose walk ended short of it is dropped.
+    fn resolve_pickups(&mut self) {
+        if self.vm.is_none() {
+            return;
+        }
+        for i in 0..self.entities.len() {
+            let Some(handle) = self.entities[i].pickup else {
+                continue;
+            };
+            let e = &self.entities[i];
+            let item = self.vm.as_ref().and_then(|vm| {
+                let (x, y, kind, stack) = vm.item(handle)?;
+                (vm.element_active(handle) && !vm.taken_items.contains(&handle))
+                    .then_some((x, y, kind, stack))
+            });
+            let Some((x, y, kind, stack)) = item else {
+                self.entities[i].pickup = None;
+                continue;
+            };
+            if !(e.alive && e.active && e.kind == EntityKind::Player) {
+                self.entities[i].pickup = None;
+                continue;
+            }
+            let dx = i64::from(e.x.round()) - i64::from(x);
+            let dy = i64::from(e.y.round()) - i64::from(y);
+            if dx * dx + dy * dy > SCROLL_PICKUP_RADIUS * SCROLL_PICKUP_RADIUS {
+                if e.target.is_none() {
+                    // The walk ended short of the item (unreachable, cancelled by a state).
+                    self.entities[i].pickup = None;
+                }
+                continue;
+            }
+            let Some(vm) = self.vm.as_mut() else { return };
+            vm.assume(Assumption::ItemPickup);
+            vm.taken_items.insert(handle);
+            if vm.inactive_elements.len() < crate::vm::MAX_QUEUE * 16 {
+                vm.inactive_elements.insert(handle);
+            }
+            match kind {
+                ItemKind::Arrows => {
+                    let e = &mut self.entities[i];
+                    e.arrows = e
+                        .arrows
+                        .saturating_add(i32::from(stack))
+                        .min(MAX_PICKUP_COUNT);
+                }
+                ItemKind::Purse => {
+                    vm.money = vm
+                        .money
+                        .saturating_add(PURSE_MONEY_PER_STACK.saturating_mul(i32::from(stack)));
+                    let e = &mut self.entities[i];
+                    e.purses = e.purses.saturating_add(1).min(MAX_PICKUP_COUNT);
+                }
+                ItemKind::Unknown(_) => {}
+            }
+            let e = &mut self.entities[i];
+            e.pickup = None;
+            e.target = None;
+            e.path.clear();
+            e.gait = Gait::Walk;
+        }
     }
 
     /// Pointer position in map pixels (24.8).
@@ -2151,6 +2299,26 @@ impl World {
         }
         self.entities[i].attack_target = None;
         self.entities[i].figure = None;
+        self.entities[i].pickup = None;
+        // A click on a pick-up item (`docs/original/ui-flow.md` 9.4, the tutorial's "click on
+        // it"): the character walks to the item and `resolve_pickups` takes it on arrival.
+        if let Some(handle) = self.item_at_pointer() {
+            self.last_ground_click = None;
+            let (x, y) = self
+                .vm
+                .as_ref()
+                .and_then(|vm| vm.item(handle))
+                .map_or(target, |(x, y, _, _)| {
+                    (Fixed::from_int(x), Fixed::from_int(y))
+                });
+            self.plan_path(i, (x, y));
+            let e = &mut self.entities[i];
+            e.gait = Gait::Walk;
+            if e.target.is_some() {
+                e.pickup = Some(handle);
+            }
+            return;
+        }
         let double = self.last_ground_click.is_some_and(|c| {
             self.tick.saturating_sub(c.tick) <= DOUBLE_CLICK_TICKS
                 && Fixed::length(target.0 - c.x, target.1 - c.y)
@@ -2189,6 +2357,7 @@ impl World {
                 e.gait = Gait::Walk;
                 e.attack_target = None;
                 e.figure = None;
+                e.pickup = None;
             }
             _ => self.selected = None,
         }
@@ -2203,6 +2372,7 @@ impl World {
         let e = &mut self.entities[i];
         e.attack_target = Some(id);
         e.figure = figure;
+        e.pickup = None;
     }
 
     /// Player character `i` leaves his fight on the player's order; his foe stands his ground
@@ -2771,6 +2941,8 @@ impl World {
                 .u8(e.npc_gait.tag())
                 .u8(u8::from(e.fell_backward))
                 .u8(u8::from(e.heard))
+                .i32(e.arrows)
+                .i32(e.purses)
                 .u32(e.wait_ticks)
                 .u32(e.patrol_index)
                 .u32(e.patrol.len() as u32);
@@ -2803,6 +2975,10 @@ impl World {
                     None => a.u8(0),
                 };
             }
+            match e.pickup {
+                Some(h) => a.u8(1).i32(h),
+                None => a.u8(0),
+            };
         }
         a.u32(self.programs.len() as u32);
         for p in &self.programs {
@@ -3080,7 +3256,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "5b219a178d50c352500722d92ddc7cd229dd6183ab65966e1e34c5c8789f7f22";
+        "3413b5f039d7ea32341154268a80f4aea6374934a4c4a70ded8f278e05817f80";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {

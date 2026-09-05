@@ -148,7 +148,8 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
         sc = e.observe(entities=False)["script"]
         assert sc["objectives"][0]["done"] is False
         # The taint of a normal run: the archery training plays animations (49 / 51) and shoots (59),
-        # the steward objective polls the purse object's "taken" predicate (stub 235), the scroll
+        # the steward objective polls the purse item's "taken" predicate (235: implemented on the
+        # pick-up items, a policy reading of a low row), the scroll
         # states are read and written (193 / 194: low-confidence rows), a wait / the Hourglass time
         # was consumed under the 25-versus-60 tick reading, a sequence walk completed without
         # arriving (the sergeant walks to an archer's spot) and `ActionChange` handlers ran (the
@@ -156,8 +157,8 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
         assert sc["tainted"] is True
         assert sc["assumptions"] == [
             {"stub_result": 49}, {"stub_result": 51}, {"stub_result": 59},
-            {"stub_result": 186}, {"stub_result": 191}, {"stub_result": 198}, {"stub_result": 235},
-            {"policy": 134}, {"policy": 193}, {"policy": 194}, {"policy": 196},
+            {"stub_result": 186}, {"stub_result": 191}, {"stub_result": 198},
+            {"policy": 134}, {"policy": 193}, {"policy": 194}, {"policy": 196}, {"policy": 235},
             "tick_rate", "walk_completion", "action_change_order",
         ], sc["assumptions"]
         assert "sight_cone" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
@@ -337,7 +338,7 @@ def test_every_mission_script_translates_and_runs_300_ticks_strictly(binary, gam
 def test_first_mission_element_table_has_the_hero_at_its_tail(binary, game_dir, tmp_path):
     """The element index space of `docs/formats/scb.md` ("Index spaces"): in H01 the map's 50 entries
     (38 animated elements, 12 patches) come first, the mission's civilians from 50, the eleven `ZORG`
-    pick-up items 100..=110 are inert and precede the fifteen scrolls 111..=125 (the file's chunk order,
+    pick-up items 100..=110 precede the fifteen scrolls 111..=125 (the file's chunk order,
     `docs/original/h01-win-path.md` 2), the single player slot is element 126 (the hero, entity 0: the
     element the level's `Initialize` addresses with native 117) and the script polygons follow it."""
     with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
@@ -348,7 +349,7 @@ def test_first_mission_element_table_has_the_hero_at_its_tail(binary, game_dir, 
         assert e.call("debug.vm", {"element": 49})["element"] == {"kind": "map", "index": 49}
         assert e.call("debug.vm", {"element": 50})["element"] == {"kind": "actor", "entity": 1}
         for i in range(100, 111):
-            assert e.call("debug.vm", {"element": i})["element"]["kind"] == "unmodelled", i
+            assert e.call("debug.vm", {"element": i})["element"]["kind"] == "item", i
         for i in range(111, 126):
             assert e.call("debug.vm", {"element": i})["element"]["kind"] == "scroll", i
         assert e.call("debug.vm", {"element": 127})["element"]["kind"] == "polygon"
