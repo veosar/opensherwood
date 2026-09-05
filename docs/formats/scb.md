@@ -565,12 +565,16 @@ rows (effect unknown); 103 has one (low).
 
 ## Engine notes
 
-Sequence scheduling and scroll pickup (engine hypotheses, 2026-09-02): every sequence advances independently
-each tick (one per element, like the original's sequence manager); running them one after another queued a
-scroll's popup behind the archery-training sequences of the first mission. A player character within 24 map
-pixels of an active scroll bound to a class triggers `IsTaken` once per approach; a non-zero result takes the
-scroll (it becomes inactive). Observed in the engine: the third-nearest scroll of the first mission shows a
-text page, the two nearer ones activate their areas without text. Natives implemented and stubbed are listed
+Sequence scheduling (engine hypothesis, 2026-09-02): every sequence advances independently each tick (one per
+element, like the original's sequence manager); running them one after another queued a scroll's popup behind
+the archery-training sequences of the first mission. Scroll reading (measured, 2026-09-05,
+`docs/original/h01-measurements-2.md` 1; ruleset 17): a scroll is read by an order, never by proximity: a left
+click on the scroll's sprite walks the selected player character to about 18 px short of it, a pause of 42
+ticks follows the arrival, then `IsTaken(actor)` runs on the first class bound to the scroll (`World::vm_read_scroll`,
+from `World::resolve_pickups`); a non-zero result takes the scroll (it becomes inactive: a hypothesis,
+`Assumption::ScrollPickup`; observed, the tutorial scrolls stay after reading and the training-start scroll
+vanishes), a zero result leaves it for another order. Observed in the engine: the third-nearest scroll of the
+first mission shows a text page, the two nearer ones activate their areas without text. Natives implemented and stubbed are listed
 in `crates/opensherwood-core/src/natives.rs` (`IMPLEMENTED_NATIVES`, `STUB_NATIVES`).
 
 Barrier and completion tokens (engine model of native 32, 2026-09-02): inside a sequence every element that
@@ -714,15 +718,16 @@ store their state like any handle (the corpus never addresses an item with them)
 1 once a player character picked the item up, recorded in `VmState::taken_items` (hashed under `scripts`,
 snapshotted, validated to name items only), 0 for an item still lying there or hidden and for every other
 element; the reading is a policy (`{"policy": 235}` replaces the former `stub_result 235` in the taint of the
-first mission). The pickup is a player order (`World::left_click`): a left click within 12 map px of an active
-item (`ITEM_CLICK_RADIUS`, the placeholder disc's size) orders the selected player character to walk to it
-(`Entity::pickup` holds the handle; any other order or the item's disappearance clears it), and
-`World::resolve_pickups` takes the item once he is within the scroll radius (24 px, `SCROLL_PICKUP_RADIUS`):
-arrows add their stack to `Entity::arrows`, a purse adds `PURSE_MONEY_PER_STACK` (25) per stack unit to the
-money of natives 236 / 237 and one to `Entity::purses`, an unknown kind only disappears; the item is marked
-taken and deactivated, the walk ends there. No class is bound to an item (no `IsTaken`-style notification
-exists for them in the corpus). Every pickup records `Assumption::ItemPickup` (the gesture, the radius, the
-kind and stack reading, the purse amount: hypotheses), pinned by `items_are_taken_on_a_click_and_native_235_reads_it`.
+first mission). The pickup is a player order (`World::left_click`; measured, `docs/original/h01-measurements-2.md`
+1, ruleset 17): a left click on an active item's sprite (`PICKUP_HIT_HALF_WIDTH` / `PICKUP_HIT_HEIGHT`: 12 x 14 px
+above the record's position) orders the selected player character to walk onto it (`Entity::pickup` holds the
+handle; any other order or the item's disappearance clears it), and `World::resolve_pickups` takes the item once
+the walk arrived within `ITEM_TAKE_RADIUS` (8 px) and the stoop of `STOOP_TICKS` (40, `Entity::pickup_ticks`) ran:
+arrows add their stack to `Entity::arrows` (measured), a purse adds `PURSE_MONEY_PER_STACK` (25) per stack unit
+to the money of natives 236 / 237 and one to `Entity::purses`, an unknown kind only disappears (both hypotheses,
+`Assumption::ItemPickup`); the item is marked taken and deactivated. A passing walk takes nothing. No class is
+bound to an item (no `IsTaken`-style notification exists for them in the corpus). Pinned by
+`items_are_taken_on_a_click_and_native_235_reads_it`.
 Native counts: 74 implemented, 94 stubs.
 
 ## Cross-references

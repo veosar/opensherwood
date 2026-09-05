@@ -70,7 +70,14 @@ settled before any interpreter is written: a VM living above core cannot be snap
   charge on a heard run records nothing of its own), `AttackPolicy(MultiParty)`, the
   `CallStackOverflow` fault, `AiState::ReturnPending`, the movement quota of 2^21 above every atomic
   movement query (entity sizes, obstacle half extents and the index's cell occupancy bounded and
-  validated), the world's `figure_target`).
+  validated), the world's `figure_target`); ruleset 17, snapshot schema 20 and hash schema 19 (2026-09-06,
+  the second H01 oracle session `docs/original/h01-measurements-2.md` applied: pick-ups and scrolls are
+  order-bound with the measured arrival, stoop and pause (`Entity::pickup` names an item or a scroll,
+  `Entity::pickup_ticks` is the pause; the VM's `scroll_presence` and the 24 px approach rule are gone,
+  `IsTaken` fires from `World::resolve_pickups`), the view cone is the measured sector of 80 degrees
+  with the elliptical reach 270 x 194 px bound to the facing plus the rear radius hypothesis; `SightCone`
+  narrowed to the rear radius and the crouch divisor, `ScrollPickup` to the take-on-non-zero rule,
+  `ItemPickup` to a purse's amount and an unknown kind's effect).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
 - **What is authoritative and what is not.** `VmState::counters` (instructions, callbacks, budget aborts,
   faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
@@ -183,8 +190,11 @@ settled before any interpreter is written: a VM living above core cannot be snap
   each justified in the table); `UnknownNative(id)` on every lenient unknown call; the engine's own rules record their source **where
   the rule first mutates authoritative state, independent of any callback or later consumer** (Codex
   review 9, finding 1: a hypothesis-driven position can win a mission through an observed native such as
-  97 with no `ActionChange` handler in sight): `SightCone` when the view cone's geometry decided a
-  sighting and a soldier's state changed on it (he noticed, or his alert was refreshed), `NoiseRadius`
+  97 with no `ActionChange` handler in sight): `SightCone` when the unmeasured part of the sight (the rear
+  radius `ai::REAR_SIGHT_RADIUS`, one event; the crouch divisor) decided a sighting and a soldier's state
+  changed on it (he noticed, or his alert was refreshed; the cone's sector, elliptical reach and binding
+  to the facing are measured, `docs/original/h01-measurements-2.md` 6, and a standing character seen
+  inside it records nothing), `NoiseRadius`
   when a run was heard from beyond the measured 330 px bound (`ai::NOISE_MEASURED_RADIUS`) and within the
   engine's 350 px (`RUN_NOISE_RADIUS`: an engine choice above the bound; a run heard within the bound is
   measured and records nothing), `AlertPolicy` when the noticed -> alarm -> search sequence a sighting starts or the
@@ -210,10 +220,13 @@ settled before any interpreter is written: a VM living above core cannot be snap
   animation clock, the noise channel within its bound and the immediate charge, hit points, energy,
   damage, cadence, the fighting distance, the blow's timing, the attack order, death and the lost page)
   record nothing; `TickRate` when a native-56 wait ran (in a sequence or outside one) or
-  `Hourglass` read its time; `ScrollPickup` when `IsTaken` fired (the pickup radius and the
-  take-on-non-zero rule); `ItemPickup` when a player character took a pick-up item
-  (`World::resolve_pickups`: the click gesture, the scroll radius reused, the kind / stack reading of the
-  `ZORG` record and the purse amount `PURSE_MONEY_PER_STACK` are hypotheses; native 235 reading the taken
+  `Hourglass` read its time; `ScrollPickup` when a scroll's `IsTaken` returned non-zero and the scroll was
+  deactivated (the take-on-non-zero rule: what makes a scroll vanish after its reading is not measured;
+  the reading itself, an order on the scroll, the stop 18 px short and the pause of 42 ticks, is measured
+  and records nothing); `ItemPickup` when a player character took a purse or an item of an unknown kind
+  (`World::resolve_pickups`: the purse amount `PURSE_MONEY_PER_STACK` and the unknown kind's effect are
+  hypotheses; the order, the arrival within 8 px, the stoop of 40 ticks and an arrow pile adding its
+  `unknown_b` are measured and record nothing; native 235 reading the taken
   flag records `Policy(235)` on the call); `ZoneAtLoad` when a zone callback fired on the first scan for a character
   standing inside at load; `WalkCompletion` when a barrier was released by a walk that did not arrive;
   `ActionChangeOrder` on every `ActionChange` delivery (the parameter order); `CampaignGraph` when the

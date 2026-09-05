@@ -55,7 +55,9 @@
 //!
 //! Taint. Every hypothesis of this layer records its [`Assumption`] where it first mutates
 //! authoritative state, whether or not a script handler exists (Codex review 9, finding 1):
-//! [`Assumption::SightCone`] when a sighting changed a soldier's state, [`Assumption::NoiseRadius`]
+//! [`Assumption::SightCone`] when a sighting the rear radius ([`REAR_SIGHT_RADIUS`]) or the
+//! crouch divisor decided changed a soldier's state (a standing character seen inside the
+//! measured cone records nothing), [`Assumption::NoiseRadius`]
 //! when a run was heard from beyond the measured bound ([`NOISE_MEASURED_RADIUS`]),
 //! [`Assumption::AlertPolicy`] for the alert sequence a sighting starts and the re-plan,
 //! [`Assumption::AlertTimeout`] for the alert timeout and the return to the post (the charge
@@ -286,18 +288,34 @@ impl ActorStatus {
     }
 }
 
-/// Half opening angle of a soldier's view cone in 1/256 turns: 32 = 45 degrees, a 90 degree
-/// cone. Hypothesis (no field of the data reads as an angle; `stealth-and-combat.md` 2.3 / 7.2).
-pub const VIEW_CONE_HALF_ANGLE_256: i32 = 32;
-/// Range of the view cone in map pixels. Hypothesis, bounded by the measurement: a walking
-/// hero 290..450 px from standing soldiers (not facing him) provoked nothing
-/// (`stealth-and-combat.md` 8.6), so the range of a soldier not facing him is below 290 px;
-/// a facing soldier was not measured. 250 keeps the sight beyond the rails' check-for radii
-/// (25..125) and native 160's distances (10..150).
-pub const VIEW_RANGE: i32 = 250;
+/// Half opening angle of a soldier's view cone in 1/256 turns: 28 = 39.4 degrees, the measured
+/// sector of about 80 degrees (half-angle 40) the Alt overlay draws for the archery sergeant
+/// (`docs/original/h01-measurements-2.md` 6, one actor, confidence medium). The cone is bound
+/// to the actor's facing: the archers facing north never noticed a hero 60..110 px behind
+/// them over minutes (section 3).
+pub const VIEW_CONE_HALF_ANGLE_256: i32 = 28;
+/// Reach of the view cone in map pixels along the screen x axis: measured about 270 px
+/// (`h01-measurements-2.md` 6). The boundary is an ellipse, not a circle: along y the reach is
+/// [`VIEW_RANGE`] times [`VIEW_Y_COMPRESSION`] (196 px), so a y offset is weighted by 25 / 18
+/// before the range test ([`in_view_cone`]).
+pub const VIEW_RANGE: i32 = 270;
+/// The view cone's y axis compressed to 0.72 of its x axis (18 / 25; measured: the top of the
+/// sector at 196 px for a reach of 270 along x, `h01-measurements-2.md` 6). Whether the
+/// compression is the game's distance metric or a projected drawing is not separated; the
+/// engine applies it as the metric.
+pub const VIEW_Y_COMPRESSION: (i32, i32) = (18, 25);
 /// A crouched player character is seen at the range over this divisor (manual p. 16: crouching
-/// characters are less visible; the factor is a hypothesis).
+/// characters are less visible; the factor is a hypothesis: a sighting of a crouched character
+/// records [`Assumption::SightCone`]).
 pub const CROUCH_VIEW_DIVISOR: i32 = 2;
+/// Radius in map pixels within which a soldier notices a standing player character whatever
+/// he faces (behind him included). Hypothesis from one event (`h01-measurements-2.md` 3: a
+/// walking hero was noticed within 3 s at 40..60 px from behind an archer facing north, while
+/// a hero 60..110 px behind the archers was not seen for minutes): either such a radius or
+/// the archers' turns while shooting; the engine takes the radius, halved by
+/// [`CROUCH_VIEW_DIVISOR`] for a crouched character, and records [`Assumption::SightCone`]
+/// when it decides a sighting.
+pub const REAR_SIGHT_RADIUS: i32 = 50;
 /// Radius in map pixels within which a running player character is heard whatever the
 /// soldier faces (manual p. 16: running makes a lot of noise; the console's `NOISE` shows such a
 /// radius exists). Measured lower bound: soldiers not facing the hero detected his run from
@@ -483,8 +501,11 @@ pub fn cos256(a: i32) -> i32 {
 }
 
 /// Whether the point `(px, py)` lies inside the cone of an observer at `(ox, oy)` facing
-/// `facing256` (0 = +x, clockwise on screen), with the given range in map pixels and half angle
-/// in 1/256 turns. The observer's own position counts as inside. All arithmetic in `i64`.
+/// `facing256` (0 = +x, clockwise on screen), with the given reach along x in map pixels and
+/// half angle in 1/256 turns. The reach is elliptical ([`VIEW_Y_COMPRESSION`]: the y offset
+/// weighs 25 / 18 of the x offset, so a reach of 270 along x is 196 along y, as measured);
+/// the angle is tested on the screen offsets as measured. The observer's own position counts
+/// as inside. All arithmetic in `i64`.
 #[must_use]
 pub fn in_view_cone(
     (ox, oy): (Fixed, Fixed),
@@ -494,16 +515,41 @@ pub fn in_view_cone(
     half_angle256: i32,
 ) -> bool {
     let (dx, dy) = (px - ox, py - oy);
-    let len = i64::from(Fixed::length(dx, dy).raw());
-    if len > i64::from(range_px) * 256 {
+    if !within_elliptical_reach(dx, dy, range_px) {
         return false;
     }
+    let len = i64::from(Fixed::length(dx, dy).raw());
     if len == 0 {
         return true;
     }
     let dot = i64::from(cos256(facing256)) * i64::from(dx.raw())
         + i64::from(sin256(facing256)) * i64::from(dy.raw());
     dot >= len * i64::from(cos256(half_angle256))
+}
+
+/// Whether the offset `(dx, dy)` lies within the sight's elliptical reach: `range_px` along x,
+/// `range_px` times [`VIEW_Y_COMPRESSION`] along y (`dx^2 * 18^2 + dy^2 * 25^2 <= (range *
+/// 18)^2` on the raw 24.8 values, in `i128`; an offset beyond either semi-axis is rejected
+/// first).
+#[must_use]
+pub fn within_elliptical_reach(dx: Fixed, dy: Fixed, range_px: i32) -> bool {
+    let (num, den) = (
+        i64::from(VIEW_Y_COMPRESSION.0),
+        i64::from(VIEW_Y_COMPRESSION.1),
+    );
+    let range = i64::from(range_px.max(0)) * 256;
+    let (dx, dy) = (i64::from(dx.raw()).abs(), i64::from(dy.raw()).abs());
+    if dx > range || dy * den > range * num {
+        return false;
+    }
+    let (dx, dy, num, den, range) = (
+        i128::from(dx),
+        i128::from(dy),
+        i128::from(num),
+        i128::from(den),
+        i128::from(range),
+    );
+    dx * dx * num * num + dy * dy * den * den <= range * range * num * num
 }
 
 /// Whether an attacker at `(ax, ay)` stands behind a victim at `(tx, ty)` facing `facing256`:
@@ -643,8 +689,14 @@ fn state_ticks(world: &World, e: &Entity, block: fn(&AnimSet) -> &[u32; 8], fall
 /// How a soldier perceived a player character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Channel {
-    /// Inside the view cone (hypothesis: the geometry is not measured).
-    Sight,
+    /// Seen: inside the view cone (measured geometry, `h01-measurements-2.md` 6: records
+    /// nothing for a standing character) or within the rear radius ([`REAR_SIGHT_RADIUS`]);
+    /// `hypothetical` marks a sighting the engine's hypotheses decided (the rear radius, or
+    /// the crouch divisor for a crouched character), recorded as [`Assumption::SightCone`].
+    Sight {
+        /// Decided by the rear radius or the crouch divisor rather than the measured cone.
+        hypothetical: bool,
+    },
     /// A running character within the noise radius (measured up to [`NOISE_MEASURED_RADIUS`],
     /// `stealth-and-combat.md` 8.6; `beyond_measured` marks a run heard from farther, the
     /// engine's hypothesis).
@@ -711,25 +763,28 @@ pub(crate) fn fightable(v: &Entity) -> bool {
         && v.ai_state.standing()
 }
 
-/// Whether (and how) soldier `s` sees or hears player character `p` this tick: sight first,
-/// then the noise of a run.
+/// Whether (and how) soldier `s` sees or hears player character `p` this tick: the view cone
+/// (measured for a standing character; the crouch divisor is a hypothesis), the rear radius
+/// (a hypothesis), then the noise of a run.
 fn stimulus(s: &Entity, p: &Entity) -> Option<Channel> {
-    let range = if p.posture == Posture::Crouched {
-        VIEW_RANGE / CROUCH_VIEW_DIVISOR
-    } else {
-        VIEW_RANGE
-    };
+    let crouched = p.posture == Posture::Crouched;
+    let divisor = if crouched { CROUCH_VIEW_DIVISOR } else { 1 };
     if in_view_cone(
         (s.x, s.y),
         s.facing256,
         (p.x, p.y),
-        range,
+        VIEW_RANGE / divisor,
         VIEW_CONE_HALF_ANGLE_256,
     ) {
-        return Some(Channel::Sight);
+        return Some(Channel::Sight {
+            hypothetical: crouched,
+        });
+    }
+    let distance = Fixed::length(p.x - s.x, p.y - s.y);
+    if distance <= Fixed::from_int(REAR_SIGHT_RADIUS / divisor) {
+        return Some(Channel::Sight { hypothetical: true });
     }
     let noisy = p.target.is_some() && p.gait == Gait::Run && p.posture == Posture::Standing;
-    let distance = Fixed::length(p.x - s.x, p.y - s.y);
     (noisy && distance <= Fixed::from_int(RUN_NOISE_RADIUS)).then_some(Channel::Noise {
         beyond_measured: distance > Fixed::from_int(NOISE_MEASURED_RADIUS),
     })
@@ -1131,9 +1186,10 @@ impl World {
 
     /// The state machine of one human for this tick (the energy regains its units first, in
     /// every state). A stimulus a perceiving state consumes records its channel's source
-    /// where it changes the state: the view cone ([`Assumption::SightCone`]) or a run heard
-    /// from beyond the measured bound ([`Assumption::NoiseRadius`]); a run heard within the
-    /// bound is measured and records nothing. `false` when the transition needed a path
+    /// where it changes the state: a sighting the rear radius or the crouch divisor decided
+    /// ([`Assumption::SightCone`]) or a run heard from beyond the measured bound
+    /// ([`Assumption::NoiseRadius`]); a sighting inside the measured cone of a standing
+    /// character and a run heard within the bound record nothing. `false` when the transition needed a path
     /// search the budget could not pay: nothing changed (a timed state that ended keeps one
     /// more tick) and the caller retries next tick with the cursor on this entity.
     fn advance_state(
@@ -1156,7 +1212,9 @@ impl World {
                 | AiState::Alerted
         ) {
             match stimulus {
-                Some((_, Channel::Sight)) => self.record_assumption(Assumption::SightCone),
+                Some((_, Channel::Sight { hypothetical: true })) => {
+                    self.record_assumption(Assumption::SightCone);
+                }
                 Some((
                     _,
                     Channel::Noise {
@@ -1175,7 +1233,7 @@ impl World {
                 true
             }
             AiState::Patrol | AiState::Returning | AiState::ReturnPending => match stimulus {
-                Some((p, Channel::Sight)) => {
+                Some((p, Channel::Sight { .. })) => {
                     self.notice(i, p);
                     true
                 }
@@ -1781,39 +1839,149 @@ mod tests {
         }
     }
 
+    /// The measured cone (`h01-measurements-2.md` 6): a sector of 80 degrees bound to the
+    /// facing, reaching 270 px along x and 196 px along y (an ellipse), tested with the
+    /// engine's constants.
     #[test]
     fn view_cone_geometry() {
-        let o = (f(100), f(100));
-        // Facing +x: points ahead inside, behind and sideways outside, range respected.
-        assert!(in_view_cone(o, 0, (f(200), f(100)), 200, 32));
+        let (r, h) = (VIEW_RANGE, VIEW_CONE_HALF_ANGLE_256);
+        let o = (f(1000), f(1000));
+        // Facing +x: a hero 250 px ahead is seen, 250 px behind is not; the reach along x is
+        // 270 (at 270 inside, at 271 outside).
+        assert!(in_view_cone(o, 0, (f(1250), f(1000)), r, h), "250 px ahead");
         assert!(
-            in_view_cone(o, 0, (f(200), f(190)), 200, 32),
-            "just inside 45 degrees"
+            !in_view_cone(o, 0, (f(750), f(1000)), r, h),
+            "250 px behind"
         );
         assert!(
-            !in_view_cone(o, 0, (f(200), f(210)), 200, 32),
-            "just outside 45 degrees"
+            in_view_cone(o, 0, (f(1270), f(1000)), r, h),
+            "at the x reach"
         );
-        assert!(!in_view_cone(o, 0, (f(100), f(200)), 200, 32), "sideways");
-        assert!(!in_view_cone(o, 0, (f(0), f(100)), 200, 32), "behind");
+        assert!(!in_view_cone(o, 0, (f(1271), f(1000)), r, h), "beyond it");
+        // Facing north (-y, facing 192): the reach along y is 196: seen at 180, not at 200.
         assert!(
-            in_view_cone(o, 0, (f(300), f(100)), 200, 32),
-            "at the range"
+            in_view_cone(o, 192, (f(1000), f(820)), r, h),
+            "180 px north"
         );
         assert!(
-            !in_view_cone(o, 0, (f(301), f(100)), 200, 32),
-            "beyond the range"
+            !in_view_cone(o, 192, (f(1000), f(800)), r, h),
+            "200 px north"
         );
-        assert!(in_view_cone(o, 0, o, 200, 32), "the observer's own spot");
-        // Facing screen-down (+y, facing 64) and the diagonals.
-        assert!(in_view_cone(o, 64, (f(100), f(250)), 200, 32));
-        assert!(!in_view_cone(o, 64, (f(100), f(0)), 200, 32));
-        assert!(in_view_cone(o, 32, (f(200), f(200)), 200, 32));
-        assert!(in_view_cone(o, 192, (f(100), f(0)), 200, 32));
+        assert!(
+            in_view_cone(o, 192, (f(1000), f(806)), r, h),
+            "194 px north"
+        );
+        assert!(
+            !in_view_cone(o, 192, (f(1000), f(805)), r, h),
+            "195 px north"
+        );
+        assert!(
+            !in_view_cone(o, 192, (f(1000), f(1250)), r, h),
+            "250 px south"
+        );
+        // The half angle is about 40 degrees (28 / 256 turns = 39.4): facing +x at 100 px,
+        // an offset of 80 px sideways (38.7 degrees) is inside, 86 px (40.7) outside.
+        assert!(in_view_cone(o, 0, (f(1100), f(1080)), r, h), "38.7 degrees");
+        assert!(
+            !in_view_cone(o, 0, (f(1100), f(1086)), r, h),
+            "40.7 degrees"
+        );
+        assert!(!in_view_cone(o, 0, (f(1000), f(1100)), r, h), "sideways");
+        assert!(in_view_cone(o, 0, o, r, h), "the observer's own spot");
+        // The ellipse: the diagonal (150, 150) weighs sqrt(150^2 + 208^2) = 257 (inside), the
+        // diagonal (170, 170) 291 (outside); facing the diagonal so the angle passes.
+        assert!(in_view_cone(o, 32, (f(1150), f(1150)), r, h));
+        assert!(!in_view_cone(o, 32, (f(1170), f(1170)), r, h));
+        assert!(within_elliptical_reach(f(0), f(194), r));
+        assert!(!within_elliptical_reach(f(0), f(195), r));
+        assert!(within_elliptical_reach(f(-270), f(0), r));
+        // The crouch divisor halves both axes.
+        assert!(in_view_cone(
+            o,
+            0,
+            (f(1130), f(1000)),
+            r / CROUCH_VIEW_DIVISOR,
+            h
+        ));
+        assert!(!in_view_cone(
+            o,
+            0,
+            (f(1140), f(1000)),
+            r / CROUCH_VIEW_DIVISOR,
+            h
+        ));
         // Extremes never panic.
         let big = (Fixed::MAX, Fixed::MIN);
         let _ = in_view_cone(big, i32::MIN, (Fixed::MIN, Fixed::MAX), i32::MAX, i32::MAX);
+        let _ = in_view_cone(big, i32::MIN, (Fixed::MIN, Fixed::MAX), i32::MIN, i32::MIN);
+        let _ = within_elliptical_reach(Fixed::MIN, Fixed::MIN, i32::MAX);
         let _ = is_behind(big, i32::MAX, (Fixed::MIN, Fixed::MIN));
+    }
+
+    /// The rear radius (`h01-measurements-2.md` 3, hypothesis): a standing hero 40 px behind
+    /// a soldier is seen whatever the soldier faces and the sighting records `SightCone`; at
+    /// 60 px behind him nothing is seen; a crouched hero is seen within half the radius only.
+    #[test]
+    fn rear_radius_and_crouch_divisor_are_the_hypotheses_the_sighting_records() {
+        use crate::vm::tests::{class, mission_world, program};
+        // A world with a script so the taint is recorded; the soldier at (300, 300) faces +x.
+        let fresh = || {
+            let level = class("StartUp", 0, &[]);
+            let mut w = mission_world(1, Some(program(vec![level], 1)));
+            w.entities[1].facing256 = 0;
+            w
+        };
+        let mut w = fresh();
+        let hero_at = |w: &mut World, x: i32, y: i32| {
+            w.entities[0].x = Fixed::from_int(x);
+            w.entities[0].y = Fixed::from_int(y);
+            w.entities[0].posture = Posture::Standing;
+        };
+        // 60 px behind: nothing.
+        hero_at(&mut w, 240, 300);
+        w.step(&[]);
+        assert_eq!(w.entities[1].ai_state, AiState::Patrol);
+        // 40 px behind: noticed under the rear-radius hypothesis.
+        hero_at(&mut w, 260, 300);
+        w.step(&[]);
+        assert_eq!(w.entities[1].ai_state, AiState::Noticed);
+        assert!(
+            w.vm.as_ref()
+                .unwrap()
+                .assumptions
+                .contains(&Assumption::SightCone)
+        );
+        // A crouched hero 40 px behind: beyond the halved radius, nothing.
+        let mut w = fresh();
+        hero_at(&mut w, 260, 300);
+        w.entities[0].posture = Posture::Crouched;
+        w.step(&[]);
+        assert_eq!(w.entities[1].ai_state, AiState::Patrol);
+        // A standing hero 200 px ahead: the measured cone, no assumption.
+        let mut w = fresh();
+        hero_at(&mut w, 500, 300);
+        w.step(&[]);
+        assert_eq!(w.entities[1].ai_state, AiState::Noticed);
+        assert!(
+            !w.vm
+                .as_ref()
+                .unwrap()
+                .assumptions
+                .contains(&Assumption::SightCone)
+        );
+        // A crouched hero 100 px ahead: the crouch divisor decided the sighting (270 / 2 =
+        // 135 px reach): a hypothesis.
+        let mut w = fresh();
+        hero_at(&mut w, 400, 300);
+        w.entities[0].posture = Posture::Crouched;
+        w.step(&[]);
+        assert_eq!(w.entities[1].ai_state, AiState::Noticed);
+        assert!(
+            w.vm.as_ref()
+                .unwrap()
+                .assumptions
+                .contains(&Assumption::SightCone)
+        );
     }
 
     #[test]
@@ -2000,8 +2168,11 @@ mod tests {
 
     #[test]
     fn knock_out_from_behind_and_a_stop_from_the_front() {
-        // The guard at (400, 240) faces -x (away from the player at (500, 240)).
+        // The guard at (400, 240) faces -x (away from the player at (500, 240)); the player
+        // sneaks up (crouched: the rear radius halves to 25 px, under the punch's reach; a
+        // walking approach would be noticed at 50 px, `REAR_SIGHT_RADIUS`).
         let mut w = scene((400, 240), 128, (500, 240));
+        w.entities[0].posture = Posture::Crouched;
         click(&mut w, 400, 240, Button::Left);
         let p = &w.entities[0];
         assert_eq!(p.attack_target, Some(w.entities[1].id));
@@ -2020,7 +2191,7 @@ mod tests {
             );
             w.step(&[]);
             ticks += 1;
-            assert!(ticks < 200, "never struck: {:?}", states(&w));
+            assert!(ticks < 400, "never struck: {:?}", states(&w));
         }
         let (p, g) = (&w.entities[0], &w.entities[1]);
         assert!(p.attack_target.is_none() && p.target.is_none());
@@ -2203,9 +2374,10 @@ mod tests {
     #[test]
     fn stealth_state_survives_snapshots_and_is_validated() {
         let mut w = scene((400, 240), 128, (500, 240));
+        w.entities[0].posture = Posture::Crouched;
         click(&mut w, 400, 240, Button::Left);
-        // 68 px into reach at 1.42 px per tick, then the 60-tick fall.
-        for _ in 0..130 {
+        // 68 px into reach at the sneak's 0.28 px per tick, then the 60-tick fall.
+        for _ in 0..400 {
             w.step(&[]);
         }
         assert_eq!(w.entities[1].ai_state, AiState::Lying);
@@ -2804,7 +2976,7 @@ mod tests {
         // untouched (no origin, no timer, no target) until the search is paid.
         let mut w = crowd(1, 1);
         let h = &mut w.entities[0];
-        h.x = f(500);
+        h.x = f(520);
         h.y = f(400);
         h.target = Some((f(700), f(400)));
         h.gait = Gait::Run;
@@ -3312,10 +3484,10 @@ mod tests {
     #[test]
     fn mass_alerts_share_one_navigation_budget() {
         let guards = 600;
-        // Soldiers in a 40 x 15 block just behind the hero (facing away from him), who runs
-        // east: all within the noise radius, none with him in their cone.
+        // Soldiers in a 40 x 15 block behind the hero (facing away from him, beyond the rear
+        // radius), who runs east: all within the noise radius, none with him in their cone.
         let mut w = crowd(guards, 1);
-        w.entities[0].x = f(500);
+        w.entities[0].x = f(560);
         w.entities[0].y = f(400);
         for (k, e) in w.entities.iter_mut().skip(1).enumerate() {
             e.x = f(420 + (k % 40) as i32 * 2);
@@ -3327,7 +3499,7 @@ mod tests {
         // The hero runs east (the order set by hand so that the tick of the mass alert can be
         // stepped with an explicit budget below).
         let hero = &mut w.entities[0];
-        hero.target = Some((f(700), f(400)));
+        hero.target = Some((f(760), f(400)));
         hero.gait = Gait::Run;
         assert!(
             w.entities

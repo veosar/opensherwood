@@ -431,14 +431,20 @@ def walk_to(e, tx, ty, max_steps=400):
     return e.observe()
 
 
-def test_walking_onto_a_scroll_shows_its_text(binary, game_dir, tmp_path):
-    """Scroll pickup (`IsTaken`): Robin walks to the reachable scrolls of the first mission, nearest
-    first; the tutorial scrolls show a text page (native 202 / 203), so one appears within a few."""
+def test_clicking_a_scroll_stops_short_of_it_and_pauses_before_its_text(binary, game_dir, tmp_path):
+    """Scroll reading (`docs/original/h01-measurements-2.md` 1.2 / 1.4, measured): a scroll is read by an
+    order on it. Walking onto the nearest reachable scroll of the first mission with a ground order reads
+    nothing; a left click on the scroll's sprite walks Robin to about 18 px short of it, `IsTaken` runs
+    42 ticks after the arrival, and the tutorial scrolls show a text page (native 202 / 203), so one appears
+    within a few readings, nearest first."""
+    import math
+
     with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
-        e.reset({"mission": "H01_Lin_VL"}, seed=0)
+        e.reset({"mission": FIRST_MISSION}, seed=0)
         e.skip_briefing()
         obs = e.observe()
-        robin = next(x for x in obs["entities"] if x["kind"] == "player")
+        robin_index = next(i for i, x in enumerate(obs["entities"]) if x["kind"] == "player")
+        robin = obs["entities"][robin_index]
         rx, ry = robin["x"] // 256, robin["y"] // 256
         cam = obs["camera"]
         e.step(2, pointer_click(rx - cam[0], ry - cam[1], "left"))
@@ -450,9 +456,64 @@ def test_walking_onto_a_scroll_shows_its_text(binary, game_dir, tmp_path):
             if nav["path_cells"]:
                 reachable.append((nav["path_cells"], s))
         assert reachable, "no scroll reachable from the start"
+        reachable = [s for _, s in sorted(reachable, key=lambda t: t[0])]
+        # A ground order 10 px below the nearest scroll (outside its sprite): the walk ends beside it
+        # and reads nothing.
+        first = reachable[0]
+        walk_to(e, first["x"], first["y"] + 10)
+        p = e.observe()["entities"][robin_index]
+        assert p["target"] is None and p["pickup"] is None and not e.observe(entities=False).get("ui")
+        still = next(x for x in e.call("debug.vm", {})["scrolls"] if x["element"] == first["element"])
+        assert still["active"], "a walk onto the scroll does not read it"
         taken = []
-        for _, s in sorted(reachable, key=lambda t: t[0])[:5]:
-            o = walk_to(e, s["x"], s["y"])
+        for s in reachable[:5]:
+            # The click on the scroll's sprite (3 px right of and 2 px above its base).
+            cam = e.observe(entities=False)["camera"]
+            sx, sy = s["x"] - cam[0] + 3, s["y"] - cam[1] - 2
+            if not (0 <= sx < 1024 and 0 <= sy < 768):
+                o = e.observe()
+                p = o["entities"][robin_index]
+                # Bring the camera over: scroll towards the scroll from the hero's screen position.
+                for key, d in (("right", s["x"] - 512 - cam[0]), ("left", cam[0] - (s["x"] - 512)), ("down", s["y"] - 384 - cam[1]), ("up", cam[1] - (s["y"] - 384))):
+                    n = d // 8
+                    if n > 0:
+                        e.step(n, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": key}])
+                        e.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "key_up", "key": key}])
+                cam = e.observe(entities=False)["camera"]
+                sx, sy = s["x"] - cam[0] + 3, s["y"] - cam[1] - 2
+            p = e.observe()["entities"][robin_index]
+            # From farther than the stop distance the walk ends about 18 px short; a hero already
+            # within it does not move.
+            was_far = math.hypot(p["x"] / 256 - s["x"], p["y"] / 256 - s["y"]) > 18
+            e.step(1, pointer_click(sx, sy, "left"))
+            p = e.observe()["entities"][robin_index]
+            assert p["pickup"] == s["element"], (s, p["pickup"])
+            arrived = None
+            if p["target"] is None:
+                # Already within the stop distance: the pause starts on the click's tick.
+                arrived = 0
+                assert p["pickup_ticks"] == 42, p
+            o = None
+            for t in range(2000):
+                e.step(1)
+                o = e.observe()
+                p = o["entities"][robin_index]
+                if arrived is None and p["target"] is None:
+                    arrived = t + 1
+                    short = math.hypot(p["x"] / 256 - s["x"], p["y"] / 256 - s["y"])
+                    assert (12 if was_far else 0) <= short <= 26, f"stopped {short:.1f} px short of scroll {s['element']}"
+                    assert p["pickup_ticks"] == 42, p
+                if p["pickup"] is None:
+                    assert arrived is not None and t + 1 == arrived + 42, (t + 1, arrived)
+                    break
+            else:
+                raise AssertionError(f"the reading of scroll {s['element']} never resolved")
+            # The handler's page comes up through its sequence on the following ticks.
+            for _ in range(30):
+                if o.get("ui"):
+                    break
+                e.step(1)
+                o = e.observe()
             vm = e.call("debug.vm", {})
             still = next(x for x in vm["scrolls"] if x["element"] == s["element"])
             taken.append((s["element"], not still["active"], bool(o.get("ui"))))
@@ -460,4 +521,4 @@ def test_walking_onto_a_scroll_shows_its_text(binary, game_dir, tmp_path):
                 assert o["ui"]["screen"] == "briefing"
                 print("scroll", s["element"], "showed a text page; visited:", taken)
                 return
-        raise AssertionError(f"no text page after visiting scrolls {taken}")
+        raise AssertionError(f"no text page after reading scrolls {taken}")

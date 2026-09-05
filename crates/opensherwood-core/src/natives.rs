@@ -125,7 +125,8 @@ pub enum Taint {
 /// 140 (0 walk / else run: low), 159 (the off-map location: low), 161 (the engine's generator,
 /// not the original's), 193 / 194 / 196 (stored values whose meaning is low), 204 (the count
 /// of player characters in the polygon: low), 235 (an item is "taken" once a player character
-/// picked it up, `VmState::taken_items`; the row is low and the pickup itself a hypothesis),
+/// picked it up, `VmState::taken_items`; the row is low; the pickup itself is measured,
+/// `docs/original/h01-measurements-2.md` 1),
 /// 245 (the number of live player characters).
 /// Branch rows: 111 / 211 / 250 record when more than one player character exists (which one
 /// is "main" is observed only with a single one), 240 for a non-actor element (present unless
@@ -1289,7 +1290,7 @@ impl World {
                 if !active {
                     e.target = None;
                     e.path.clear();
-                    e.pickup = None;
+                    e.clear_pickup();
                     if self.selected == Some(e.id) {
                         self.selected = None;
                     }

@@ -176,22 +176,26 @@ scroll or actor positions (in the tutorial two entries sit next to the treasure 
 `docs/original/h01-win-path.md` 2 pairs every entry of the first mission with the scroll, actor or message
 that hands it out, and the scripts address the block with natives 113 / 114 / 235 only).
 
-Reading of the two words (2026-09-05, data files and the first mission's tutorial texts, paraphrased):
+Reading of the two words (2026-09-05, data files and the first mission's tutorial texts, paraphrased;
+`unknown_b` confirmed against the running original on 2026-09-05, `docs/original/h01-measurements-2.md` 1):
 
 | Field | Reading | Confidence | Evidence |
 |---|---|---|---|
-| `unknown_a` | the item's **kind** | medium | the outro's seven entries carry seven distinct values 12..=18 with `unknown_b` = 1 (seven different camp items in one place); in H01 the four entries with value 0 are the arrow piles (one lies at the archery yard next to the training-start scroll, one is activated by the scroll whose text says arrows must be gathered first, the manual's bow needs arrows), the two with value 9 are purses with money (the steward's purse of objective 3, polled with native 235; the item the "forgotten full purse" scroll activates), the four with value 8 sit where the pick-up tutorial says a probably *empty* purse was lost (hypothesis: an empty purse, the throwable object), and the single value 10 is the item the rescued poor man's scroll activates while its text hands over a lucky charm (hypothesis: the charm the clover counter shows) |
-| `unknown_b` | the **stack size** (1..=5) | low | `unknown_0x08 = 189 + unknown_b` selects one of the five bonus animation blocks 190..=194 of the item's sprite bank (`sprite-animations.md`: the `BONUS_*` banks carry five blocks of one to three frames), so the value picks the picture of the pile; that the picture also counts the pieces (2, 3, 4, 5 arrows) is the reading the engine takes |
+| `unknown_a` | the item's **kind** | medium | the outro's seven entries carry seven distinct values 12..=18 with `unknown_b` = 1 (seven different camp items in one place); in H01 the four entries with value 0 are the arrow piles (one lies at the archery yard next to the training-start scroll, one is activated by the arrows tutorial scroll, the manual's bow needs arrows; observed picture: a bundle of arrows, and the arrows counter receives the pile), the two with value 9 are purses with money (the steward's purse of objective 3, polled with native 235; the item the money tutorial scroll activates), the four with value 8 sit where the pick-up tutorial scroll sends the player (hypothesis: an empty purse, the throwable object; observed picture: a small pouch, the badge counting 1), and the single value 10 is the item the rescued civilian's scroll activates (hypothesis: the charm the clover counter shows) |
+| `unknown_b` | the **stack size** (1..=5), observed | high | the hand pointer over an item carries a badge with the digit `unknown_b` (three items, three distinct values), and the arrows counter rose by `unknown_b` when a pile was taken (`h01-measurements-2.md` 1.1 / 1.3); `unknown_0x08 = 189 + unknown_b` selects one of the five bonus animation blocks 190..=194 of the item's sprite bank (`sprite-animations.md`: the `BONUS_*` banks carry five blocks of one to three frames), the picture of the pile |
 
-The engine (`crates/opensherwood-script`, `MissionBinding::from_mission`; ruleset 15) binds every record as
-`Element::Item { x, y, kind, stack }` with kind 0 = arrows, 9 = purse and every other value kept raw as
-`unknown_a` (8 and 10 included until an oracle run settles them): a click on an active item walks the selected
-player character to it, within the scroll pickup radius the item is taken (arrows add the stack to the
-character's arrows, a purse adds a documented policy amount of 25 per stack unit to the mission's money and one
-purse to the character's purses, an unknown kind only disappears), native 235 then reads 1. Every pickup
-records the `item_pickup` assumption (ADR-0008). Not verified against the original: the kinds 8 / 10, the
-stack as a count, the money a purse holds, the pick-up gesture and radius; the item sprites (`Characters/BONUS_*.rhs`)
-are not drawn yet (the engine draws a placeholder disc per kind).
+The engine (`crates/opensherwood-script`, `MissionBinding::from_mission`; ruleset 15, the measured take since
+ruleset 17) binds every record as `Element::Item { x, y, kind, stack }` with kind 0 = arrows, 9 = purse and every
+other value kept raw as `unknown_a` (8 and 10 included until an oracle run settles their effect): the pointer
+over an active item is the hand with the stack digit, a left click on the sprite (12 x 14 px above the record's
+position, its bottom edge) orders the selected player character onto it, he arrives with his feet within 8 px of
+the position, stoops for 40 ticks and the item vanishes as the counters change (arrows add the stack to the
+character's arrows: measured; a purse adds a documented policy amount of 25 per stack unit to the mission's
+money and one purse to the character's purses, an unknown kind only disappears: hypotheses, the `item_pickup`
+assumption of ADR-0008), native 235 then reads 1. A walk that passes an item or a ground order beside it takes
+nothing (measured). Not verified against the original: the kinds 8 / 10 and their effect, the money a purse
+holds, whether a kind-8 item feeds the purse counter; the item sprites (`Characters/BONUS_*.rhs`) and their
+sparkle loop are the renderer's (`docs/original/ui-flow.md`).
 
 ## `HIRN` (version 2)
 

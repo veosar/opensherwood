@@ -5,7 +5,13 @@ Date: 2026-09-02. Status: accepted.
 Versions in force (2026-09-05, Codex review 7): protocol 6 (`reset.starting_money` and `ReplayHeader.starting_money`: the mission's starting money is a canonical input recorded in the header, playback resets with it; `UiItem.selected`; `observe.persistence_error`; replay time is the session tick: header `time:
 "session"`, checkpoints carry `world_tick`, a `session` digest and the `frame` hash, the tick-0 and terminal
 checkpoints are required and compared; `ui` observation,
-`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 16
+`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 17
+(2026-09-06, the second H01 oracle session: pick-ups and scrolls are order-bound with the measured arrival (8 px),
+stoop (40 ticks) and scroll stop (18 px) / pause (42 ticks) in `Entity::pickup_ticks` (in `observe`, snapshotted and
+hashed; `pickup` may name a scroll, the VM's `scroll_presence` is gone), the hit area is the sprite (12 x 14 px above
+the record's position), the view cone is the measured 80-degree sector with the elliptical reach 270 x 194 px bound
+to the facing plus the 50 px rear-radius hypothesis; `sight_cone`, `scroll_pickup` and `item_pickup` are narrowed to
+what stays unmeasured; snapshot schema 20, hash schema 19), ruleset 16
 (2026-09-05, Codex review 10: the alert timeout and the return to the post are their own source
 `alert_timeout`, recorded before a heard charge stores them (the hearing within 330 px and the charge itself
 record nothing, so no charge wins untainted); a soldier fights one player character at a time and a second

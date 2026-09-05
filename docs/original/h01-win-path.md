@@ -132,7 +132,7 @@ tick 0..2   Enter, Enter, Enter                       the three briefing pages (
 tick 3      left click at screen (512,384)            map (1937,1384): select Robin
 tick 5..159 hold Left 5 x 30 ticks                    camera to x = 225
 tick 160..252 hold Up 3 x 30 ticks                    camera to y = 280
-tick 253    left click at screen (28,100)             map (253,380): walk order to the son's scroll
+tick 253    left click at screen (28,96)              on the son's scroll at map (253,380) (ruleset 17: a scroll is read by an order on it; a ground click beside it no longer wins)
 tick 254..3096 wait                                   Robin arrives, IsTaken fires, variable 2 = 1
 world tick 3083: mission_won, debriefing 0, the won page is shown
 ```
