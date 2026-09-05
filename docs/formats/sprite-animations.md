@@ -178,7 +178,7 @@ Roles of the locomotion, crouch, climb, jump, fall and melee ids (direction 4 st
 | 69..75 | further strikes and combos; 71..74 sweeping swings (the half-circle and circle attacks), 75 the over-the-head finishing blow |
 | 118..121 | **carried body**: lifted by the hips until it hangs head-down / hangs over a shoulder / set down feet first / stands limp (corrected 2026-09-03 from an earlier "kneel" reading; civilians and soldiers have the set too, so bodies keep their own sprite while carried) |
 | 127 | curled up on the ground, arms over the head (cower / duck; tumble for soldiers) |
-| 190..197 | bonus / accessory item frames (one to three frames per item family; the coin's 48 one-frame animations are 3 blocks x 16 directions) |
+| 190..197 | bonus / accessory item frames (16 frames of two table ticks per item block, the 1.5 s sparkle cycle measured on the original (`h01-measurements-2.md` 1); the coin's 48 one-frame animations are 3 blocks x 16 directions) |
 
 ### Combat, state and stealth ids (2026-09-03, by eye on `RobinHood`, `Soldier A00`, `ManCivilianPoor`, `Longchamp Dead`)
 

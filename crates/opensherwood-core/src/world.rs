@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::ai::{
-    AiState, DAMAGE_NUMBER_TICKS, ENERGY_MAX, FIGURE_MIN_STROKE, FightPose, Figure, SimIndex,
-    action_id, fightable, resume_at, rotated, wanted_animation,
+    AiState, DAMAGE_NUMBER_TICKS, ENERGY_MAX, FIGURE_MIN_STROKE, FightPose, Figure,
+    PendingStimulus, SimIndex, action_id, fightable, resume_at, rotated, wanted_animation,
 };
 use crate::anim::{AnimState, Catalog, UNITS_PER_TABLE_TICK, direction_of};
 use crate::fixed::Fixed;
@@ -259,6 +259,12 @@ pub struct Entity {
     /// `None`.
     #[serde(default)]
     pub pickup_ticks: u32,
+    /// The stimulus of a transition of this soldier's state machine that the tick's budget
+    /// could not pay ([`crate::ai::PendingStimulus`]: position and channel), consumed by the
+    /// retry next tick when the perception yields none (Codex review 11, finding 3). Only on
+    /// a living enemy soldier.
+    #[serde(default)]
+    pub pending_stimulus: Option<PendingStimulus>,
 }
 
 impl Entity {
@@ -1274,7 +1280,7 @@ impl ObstacleIndex {
 /// `fault` by `call_stack_overflow`; obstacle half extents, entity sizes and the obstacle
 /// index's cell occupancy are bounded; 20: the measured pick-ups and view cone (ruleset 17):
 /// entity `pickup_ticks`, `pickup` may name a scroll, the VM's `scroll_presence` is gone).
-pub const SNAPSHOT_VERSION: u32 = 20;
+pub const SNAPSHOT_VERSION: u32 = 21;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -1381,6 +1387,7 @@ impl World {
                 energy: ENERGY_MAX,
                 energy_ticks: 0,
                 foe: None,
+                pending_stimulus: None,
                 pose: FightPose::Idle,
                 pose_ticks: 0,
                 swing_ticks: 0,
@@ -1627,6 +1634,7 @@ impl World {
             energy: ENERGY_MAX,
             energy_ticks: 0,
             foe: None,
+            pending_stimulus: None,
             pose: FightPose::Idle,
             pose_ticks: 0,
             swing_ticks: 0,
@@ -1673,6 +1681,7 @@ impl World {
             energy: ENERGY_MAX,
             energy_ticks: 0,
             foe: None,
+            pending_stimulus: None,
             pose: FightPose::Idle,
             pose_ticks: 0,
             swing_ticks: 0,
@@ -1725,6 +1734,7 @@ impl World {
                 energy: 0,
                 energy_ticks: 0,
                 foe: None,
+                pending_stimulus: None,
                 pose: FightPose::Idle,
                 pose_ticks: 0,
                 swing_ticks: 0,
@@ -2148,6 +2158,17 @@ impl World {
                     e.id
                 ));
             }
+            if let Some(p) = e.pending_stimulus {
+                let bound = Fixed::from_int(MAX_ENTITY_COORD);
+                let soldier = e.kind == EntityKind::Guard && e.team == Team::Enemy && e.alive;
+                if !soldier || p.x.abs() > bound || p.y.abs() > bound {
+                    return Err(format!(
+                        "entity {:?} holds a pending stimulus {p:?} but is not a living enemy \
+                         soldier or the position is out of range",
+                        e.id
+                    ));
+                }
+            }
         }
         for e in &self.entities {
             if let Some(t) = e.attack_target {
@@ -2177,18 +2198,22 @@ impl World {
                         e.id
                     ));
                 }
-                // Two living fighters name each other (Codex review 10, finding 7): a foe
-                // who is alive and fights someone else is a fight the world cannot hold
-                // (a foe dead or out of the fight is the stale reference the next tick ends).
+                // Reciprocity is an invariant (Codex review 10, finding 7; Codex review 11,
+                // finding 5): the opponent of every living, active fighter fights back with
+                // the reciprocal id while he lives. A dead opponent is the stale reference
+                // the next tick ends (`kill` detaches him on the tick of the blow); an
+                // inactive fighter (hidden by native 113 mid-fight) is left to the tick that
+                // ends his fight from the other side.
                 if let Some(&(_, _, fi)) = foe
                     && e.alive
+                    && e.active
                     && e.ai_state == AiState::Fighting
                 {
                     let o = &self.entities[fi];
-                    if o.alive && o.ai_state == AiState::Fighting && o.foe != Some(e.id) {
+                    if o.alive && (o.ai_state != AiState::Fighting || o.foe != Some(e.id)) {
                         return Err(format!(
-                            "entity {:?} fights {f:?}, who fights {:?}: a fight between two living actors is reciprocal",
-                            e.id, o.foe
+                            "entity {:?} fights {f:?}, who is {:?} with foe {:?}: a fight between two living actors is reciprocal",
+                            e.id, o.ai_state, o.foe
                         ));
                     }
                 }
@@ -2416,7 +2441,11 @@ impl World {
                             let e = &mut self.entities[i];
                             e.purses = e.purses.saturating_add(1).min(MAX_PICKUP_COUNT);
                         }
-                        ItemKind::Unknown(_) => vm.assume(Assumption::ItemPickup),
+                        // The pouch's effect (the purse counter?) and an unknown kind's are
+                        // not measured: the item only disappears, tainted.
+                        ItemKind::Pouch | ItemKind::Unknown(_) => {
+                            vm.assume(Assumption::ItemPickup);
+                        }
                     }
                     self.entities[i].clear_pickup();
                 }
@@ -3295,6 +3324,10 @@ impl World {
                 Some(h) => a.u8(1).i32(h),
                 None => a.u8(0),
             };
+            match e.pending_stimulus {
+                Some(p) => a.u8(1).i32(p.x.raw()).i32(p.y.raw()).u8(p.channel.tag()),
+                None => a.u8(0),
+            };
         }
         a.u32(self.programs.len() as u32);
         for p in &self.programs {
@@ -3572,7 +3605,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "4f3ce8a754064331e3837fc4b223e386ad4cfc32b386702bb421c30517ba7f4d";
+        "9123f0392394a79da918d7d2567bfc573f1a5dd6570a03aad15ec1fe2c9e5331";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -3697,6 +3730,28 @@ mod tests {
         let mut w = base.clone();
         w.entities[0].pickup_ticks = 7;
         variants.push(("pickup_ticks", w));
+        let mut w = base.clone();
+        w.entities[1].pending_stimulus = Some(PendingStimulus {
+            x: Fixed::ONE,
+            y: Fixed::ONE,
+            channel: crate::ai::Channel::Noise {
+                beyond_measured: false,
+            },
+        });
+        let mut w2 = w.clone();
+        w2.entities[1].pending_stimulus = Some(PendingStimulus {
+            x: Fixed::ONE,
+            y: Fixed::ONE,
+            channel: crate::ai::Channel::Noise {
+                beyond_measured: true,
+            },
+        });
+        assert_ne!(
+            w.hashes().total(),
+            w2.hashes().total(),
+            "pending_stimulus channel"
+        );
+        variants.push(("pending_stimulus", w));
         let mut w = base.clone();
         w.cursors.perception = 1;
         variants.push(("cursors.perception", w));

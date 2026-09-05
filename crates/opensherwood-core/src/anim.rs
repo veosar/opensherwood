@@ -146,6 +146,10 @@ pub struct AnimSet {
     /// Hit in the fighting stance, stumbles back a step (action 104; fallback `fight_idle`).
     #[serde(default)]
     pub flinch: [u32; 8],
+    /// Bends and picks something up (action 126, the stoop over a pick-up item or scroll,
+    /// `docs/formats/sprite-animations.md`; fallback idle for a profile without the block).
+    #[serde(default)]
+    pub pick_up: [u32; 8],
 }
 
 impl AnimSet {
@@ -176,6 +180,7 @@ impl AnimSet {
             strike: idle,
             powerful_blow: idle,
             flinch: idle,
+            pick_up: idle,
         }
     }
 

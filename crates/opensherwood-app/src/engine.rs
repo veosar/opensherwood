@@ -49,13 +49,22 @@ impl SpriteSource for Sprites {
     }
 }
 
-/// The pictures of the pick-up items: the first frame of each of the five bonus blocks
-/// (action ids 190..=194, one per stack size) of the arrow and purse banks, with the anchor
-/// relative to the sequence origin like the characters' frames. A bank or block that is missing
-/// leaves the placeholder disc for that item.
+/// The pictures of the pick-up items: every frame of each of the five bonus blocks (action
+/// ids 190..=194, one per stack size; the sixteen animations of a block, one per direction,
+/// carry the same frames, so the first is read) of the arrow, purse and pouch banks, with
+/// the anchor relative to the sequence origin like the characters' frames and each frame's
+/// duration in table ticks (the timing word's tick half plus one, `docs/formats/sprite-animations.md`
+/// "Reading rules"); the renderer cycles them on the animation clock (the sparkle). The
+/// pouch (`ZORG` kind 8, `docs/formats/rhm.md`) draws the `BONUS_MoneyBag` bank like the
+/// purse: of the thirteen `BONUS_*` banks it is the one small tied pouch (the observed
+/// picture, `docs/original/h01-measurements-2.md` 1.5; `BONUS_GoldBagsRansom` is the large
+/// ransom sack, the others foodstuffs, plants, nets, stones, a shield, a wasps' nest, the
+/// clover and a parchment). A bank or block that is missing leaves the placeholder disc for
+/// that item.
 fn load_item_art(game: &GameDir) -> opensherwood_render::ItemArt {
-    use opensherwood_formats::anim_table::{ActionId, AnimationTable};
-    let pictures = |name: &str| -> Vec<Option<opensherwood_render::ItemFrame>> {
+    use opensherwood_formats::anim_table::{ActionId, AnimationTable, split_duration};
+    use opensherwood_render::{ItemAnimation, ItemFrame};
+    let pictures = |name: &str| -> Vec<Option<ItemAnimation>> {
         let Ok(profile) = SpriteBank::load_profile(game, name) else {
             eprintln!("opensherwood: item pictures {name}: not loaded; placeholder discs");
             return Vec::new();
@@ -63,24 +72,27 @@ fn load_item_art(game: &GameDir) -> opensherwood_render::ItemArt {
         let Some(table) = AnimationTable::from_profile(&profile) else {
             return Vec::new();
         };
-        let frames: Vec<opensherwood_render::ItemFrame> = profile
+        let animations: Vec<ItemAnimation> = profile
             .sequences
             .iter()
             .flat_map(|s| {
                 let (ox, oy) = (s.origin_x as i32, s.origin_y as i32);
-                s.animations.iter().map(move |a| {
-                    a.frames.first().map_or(
-                        opensherwood_render::ItemFrame {
-                            frame: 0,
-                            offset_x: 0,
-                            offset_y: 0,
-                        },
-                        |f| opensherwood_render::ItemFrame {
-                            frame: f.frame,
-                            offset_x: i32::from(f.anchor_x) - ox,
-                            offset_y: i32::from(f.anchor_y) - oy,
-                        },
-                    )
+                s.animations.iter().map(move |a| ItemAnimation {
+                    frames: a
+                        .frames
+                        .iter()
+                        .map(|f| {
+                            let (ticks, _) = split_duration(f.duration);
+                            (
+                                ItemFrame {
+                                    frame: f.frame,
+                                    offset_x: i32::from(f.anchor_x) - ox,
+                                    offset_y: i32::from(f.anchor_y) - oy,
+                                },
+                                u32::from(ticks) + 1,
+                            )
+                        })
+                        .collect(),
                 })
             })
             .collect();
@@ -88,23 +100,27 @@ fn load_item_art(game: &GameDir) -> opensherwood_render::ItemArt {
             .map(|stack| {
                 table
                     .block_start(ActionId(190 + stack))
-                    .and_then(|a| frames.get(a).copied())
+                    .and_then(|a| animations.get(a).cloned())
+                    .filter(|a| !a.frames.is_empty())
             })
             .collect()
     };
+    let purse = pictures("BONUS_MoneyBag");
     opensherwood_render::ItemArt {
         arrows: pictures("BONUS_Arrows"),
-        purse: pictures("BONUS_MoneyBag"),
+        pouch: purse.clone(),
+        purse,
     }
 }
 
 /// Build the core's animation set from a parsed profile using the documented block layout
 /// (`docs/formats/sprite-animations.md`): 16-direction blocks per action; idle = action 0,
 /// walk = action 6, run = action 7, crouched idle = 14, crouched walk (sneak) = 16, the alert
-/// set 140 / 141 / 142 / 143 / 151, the fall set 41 / 44 / 47 / 48 / 49 and the knock-out blow
-/// 123 (`docs/original/stealth-and-combat.md`). A profile without a block names the fallback
-/// `AnimSet` documents (soldiers and civilians have no crouch set, civilians and heroes no
-/// alert set, only Robin and the big man the blow). Falls back to the first animations when the
+/// set 140 / 141 / 142 / 143 / 151, the fall set 41 / 44 / 47 / 48 / 49, the knock-out blow
+/// 123 (`docs/original/stealth-and-combat.md`) and the pick-up stoop 126. A profile without a
+/// block names the fallback `AnimSet` documents (soldiers and civilians have no crouch set,
+/// civilians and heroes no alert set, only Robin and the big man the blow, the stoop is per
+/// hero). Falls back to the first animations when the
 /// profile has no table. Frame timing follows `docs/formats/sprite-animations.md` "Reading
 /// rules" on the measured animation clock (`opensherwood_core::anim`): the timing word's tick
 /// half plus one is the frame's duration in table ticks, its signed high half the advance in
@@ -124,6 +140,7 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
     const STRIKE: ActionId = ActionId(59);
     const POWERFUL_BLOW: ActionId = ActionId(75);
     const FLINCH: ActionId = ActionId(104);
+    const PICK_UP: ActionId = ActionId(126);
     // Frame anchors are relative to a canvas whose origin (the entity position) is the sequence's
     // `origin_x/origin_y` (150,150 for characters); see docs/formats/sprites.md.
     let animations: Vec<Vec<FrameSpec>> = profile
@@ -169,6 +186,7 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
     let mut strike = [0u32; 8];
     let mut powerful_blow = [0u32; 8];
     let mut flinch = [0u32; 8];
+    let mut pick_up = [0u32; 8];
     let table = AnimationTable::from_profile(profile);
     for o in 0..8 {
         let dir = Direction::from_octant(o);
@@ -201,6 +219,7 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
         strike[o] = action(STRIKE).unwrap_or(fight_idle[o]);
         powerful_blow[o] = action(POWERFUL_BLOW).unwrap_or(strike[o]);
         flinch[o] = action(FLINCH).unwrap_or(fight_idle[o]);
+        pick_up[o] = action(PICK_UP).unwrap_or(idle[o]);
     }
     AnimSet {
         animations,
@@ -225,6 +244,7 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
         strike,
         powerful_blow,
         flinch,
+        pick_up,
     }
 }
 

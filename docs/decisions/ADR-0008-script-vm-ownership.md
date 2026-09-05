@@ -77,7 +77,13 @@ settled before any interpreter is written: a VM living above core cannot be snap
   `IsTaken` fires from `World::resolve_pickups`), the view cone is the measured sector of 80 degrees
   with the elliptical reach 270 x 194 px bound to the facing plus the rear radius hypothesis; `SightCone`
   narrowed to the rear radius and the crouch divisor, `ScrollPickup` to the take-on-non-zero rule,
-  `ItemPickup` to a purse's amount and an unknown kind's effect).
+  `ItemPickup` to a purse's amount and an unknown kind's effect); ruleset 18, snapshot schema 21 and hash
+  schema 20 (2026-09-06, Codex review 11, findings 2 / 3 / 4 / 5: every callback runs as a transaction
+  and an aborted one is rolled back whole (below, "Action changes"), `Entity::pending_stimulus` (the
+  stimulus of an unpaid transition, consumed by the retry: `ai::PendingStimulus`), reciprocity as an
+  invariant of every living, active fighter and the second attacker's unconditional wait,
+  `ItemKind::Pouch` for the `ZORG` kind 8 (taken tainted by `ItemPickup` like an unknown kind), the
+  pick-up block 126 in `AnimSet::pick_up`).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
 - **What is authoritative and what is not.** `VmState::counters` (instructions, callbacks, budget aborts,
   faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
@@ -120,7 +126,13 @@ settled before any interpreter is written: a VM living above core cannot be snap
   it ran out on the first entity of a walk that had the whole quota the cursor moves past it (one entity
   too expensive for a quota blocks nobody). The quotas rather than a persisted global phase cursor
   because the stimuli perception hands the transitions are not state: resuming a tick mid-sequence would
-  have to persist them. Path searches the simulation issues (an alert run, a return, an attack
+  have to persist them. The one stimulus that outlives its tick is the one of a transition the grant
+  could not pay (Codex review 11, finding 3): it is kept on the soldier as `Entity::pending_stimulus`
+  (position and channel; snapshotted, hashed under `actors`, validated to a living enemy soldier
+  within the coordinate bounds) and the retry next tick consumes it when the perception yields
+  nothing new (a run that completed or was cancelled right after the underfunded charge still
+  alerts him); a fresh stimulus takes precedence and the pending one is dropped once the transition
+  applies. Path searches the simulation issues (an alert run, a return, an attack
   approach, a program's walk) are capped per search at `world::SIM_SEARCH_WORK` (2^20, below every
   search-issuing quota): a search that fails with the full cap is unreachable under this budget (a
   definite answer: the order is dropped, the instruction skipped, the soldier patrols where he stands),
@@ -165,8 +177,12 @@ settled before any interpreter is written: a VM living above core cannot be snap
   (`counters.arity_mismatches`), so a required argument never defaults to 0. `World::validate` also requires
   the gameplay and `script` RNG streams to derive from the world seed with their assigned ids (1 and 2), and
   the stealth layer's invariants (`Dead` and `alive` agree, timed states carry their timer, attack orders go
-  from a player character to an enemy soldier, alert states belong to enemy soldiers, two living fighters
-  name each other, a held figure target names an enemy soldier while the left button is down).
+  from a player character to an enemy soldier, alert states belong to enemy soldiers, the opponent of
+  every living, active fighter fights him back with the reciprocal id while he lives (Codex review 11,
+  finding 5: a patrolling or returning opponent is refused; a dead one is the stale reference the next
+  tick ends, and an inactive fighter, hidden mid-fight by native 113, is left to the tick that ends his
+  fight from the other side), a pending stimulus sits on a living enemy soldier, a held figure target
+  names an enemy soldier while the left button is down).
 - **Hypotheses and taint.** The retail scripts run over recorded stubs and over engine hypotheses; the
   movement speeds, the animation clock and the noise channel (a running character heard from 330 px and
   more, the soldiers charging at once) are measured (`docs/original/stealth-and-combat.md` 8) and record
@@ -210,7 +226,9 @@ settled before any interpreter is written: a VM living above core cannot be snap
   a roll (the soldier's two in three, the powerful blow's one in three from 2 of 6 strokes), `PostBound`
   when a soldier's foe left him alive and he stood his ground (measured for the halberdier only),
   `MultiParty` when a player character in reach waited because his victim was engaged with another (a
-  soldier fights one at a time; the measurements were one-on-one: Codex review 10, finding 7);
+  soldier fights one at a time and every second attacker waits, an approach from behind with the
+  knock-out blow included, until a multi-attacker model is measured; the measurements were
+  one-on-one: Codex review 10, finding 7, Codex review 11, finding 5);
   `KnockOut` when the blow's effect (the fall, the timer and its scaling, the immunity threshold)
   changed the victim's state, and when native 90 reported a knock-out, 128 refused one or a knock-out
   action id was delivered to `ActionChange`; `ProfileStats` when a blow consulted the knock-out
@@ -247,14 +265,24 @@ settled before any interpreter is written: a VM living above core cannot be snap
   action id is queued in `VmState::pending_action_changes` (snapshotted, hashed under `scheduler`,
   validated) and delivered to the class bound to the actor within what the tick's budget left; a change
   whose class has no handler is dropped as undeliverable, one whose handler returned (or trapped: it
-  would fail the same way again) is removed. A queued handler runs as a transaction (`vm::Transaction`,
-  Codex review 8, finding 3): before it starts, the VM's mutable state (class and mission variables,
+  would fail the same way again) is removed. Every callback runs as a transaction (`vm::Transaction`,
+  Codex review 8, finding 3, widened from the queued handlers to every callback by Codex review 11,
+  finding 2: `Initialize` / `PostInitialize`, `Hourglass`, `CheckVictoryCondition`, the message, zone,
+  scroll and action handlers): before it starts, the VM's mutable state (class and mission variables,
   objectives, queues, sequences, texts, money, patches, attributes, states, the script RNG) is captured
-  at one work unit per value copied, and the entities its natives touch (`World::vm_touch_entity`), the
-  selection and the camera are captured as they are touched; one the budget cut short
-  (`CallOutcome::Exhausted`) is rolled back to that capture and stays at the front to be delivered at
-  the start of the next tick, after the messages and before `Hourglass`, running whole from the state it
-  saw the first time. A capture that does not fit the budget waits like an exhausted handler. A full
+  at one work unit per value copied (`VmState::capture_cost`, charged to the tick's budget; a capture
+  that does not fit is a budget abort and the callback does not run), and the entities its natives
+  touch (`World::vm_touch_entity`), the selection and the camera are captured as they are touched. A
+  callback that aborts (a trap, a fault, the frame-limit overflow) is rolled back to that capture
+  whichever callback it is, so an `Hourglass` that sets a variable, teleports an actor and recurses to
+  the limit leaves nothing for the same tick's `CheckVictoryCondition` or any later tick to read
+  (`an_overflowing_hourglass_is_rolled_back_and_never_wins`: the same tick, later ticks, through a
+  snapshot / restore, an `Initialize` at load; the fault stays sticky and the assumptions recorded
+  stay). A queued handler the budget cut short (`CallOutcome::Exhausted`) is rolled back too and stays
+  at the front to be delivered at the start of the next tick, after the messages and before
+  `Hourglass`, running whole from the state it saw the first time; an ordinary callback the budget
+  cuts short keeps what it did (the tick stops there, as before). A capture that does not fit the
+  budget waits like an exhausted handler. A full
   queue is a deterministic fault (`VmState::fault = ActionQueueOverflow`, sticky, hashed; `faulted` is
   now derived from `fault`, which also names an unknown native, an arity mismatch or the frame-limit
   overflow `CallStackOverflow` of Codex review 10, finding 3: a script call that would exceed

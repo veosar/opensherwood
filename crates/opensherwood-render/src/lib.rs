@@ -14,6 +14,7 @@ pub mod text;
 
 use std::sync::Arc;
 
+use opensherwood_core::anim::{UNITS_PER_TABLE_TICK, UNITS_PER_WORLD_TICK};
 use opensherwood_core::vm::ItemKind;
 use opensherwood_core::{EntityKind, Fixed, World};
 
@@ -668,9 +669,6 @@ pub fn draw_figure_target_outline(fb: &mut Framebuffer, world: &World) {
     );
 }
 
-/// Render a world into a new framebuffer at its logical viewport size, with an optional background
-/// and sprites from `sprites` for entities that carry animation state.
-#[must_use]
 /// One picture of a pick-up item: a bank frame and its anchor relative to the item's position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemFrame {
@@ -682,35 +680,83 @@ pub struct ItemFrame {
     pub offset_y: i32,
 }
 
+/// One bonus animation block of an item bank (`docs/formats/sprite-animations.md`: the blocks
+/// 190..=194, one per stack size; sixteen frames of two table ticks each, timing word 1, on
+/// the arrow, purse and parchment banks): its frames in order with their durations, cycled by
+/// the renderer on the animation clock of `opensherwood_core::anim` from world tick 0 (the
+/// sparkle over every pick-up of `docs/original/h01-measurements-2.md` 1.5: a repeating cycle
+/// of about 1.5 s; sixteen frames of two table ticks are 32 table ticks = 1.5 s). Presentation only: the
+/// world tick is the clock, so a frame is a pure function of the world.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ItemAnimation {
+    /// The frames in order, each with its duration in table ticks (at least 1).
+    pub frames: Vec<(ItemFrame, u32)>,
+}
+
+impl ItemAnimation {
+    /// Length of one cycle in table ticks (every frame at least 1).
+    #[must_use]
+    pub fn length(&self) -> u32 {
+        self.frames
+            .iter()
+            .fold(0u32, |acc, (_, d)| acc.saturating_add((*d).max(1)))
+    }
+
+    /// The frame shown at world tick `tick` (`None` for an empty block): the cycle runs from
+    /// tick 0 in clock units, [`UNITS_PER_WORLD_TICK`] per world tick and
+    /// [`UNITS_PER_TABLE_TICK`] per table tick of a frame's duration.
+    #[must_use]
+    pub fn frame_at(&self, tick: u64) -> Option<ItemFrame> {
+        let length = u64::from(self.length()) * u64::from(UNITS_PER_TABLE_TICK);
+        if length == 0 {
+            return None;
+        }
+        let mut phase = (tick % length) * u64::from(UNITS_PER_WORLD_TICK) % length;
+        for (frame, d) in &self.frames {
+            let span = u64::from((*d).max(1)) * u64::from(UNITS_PER_TABLE_TICK);
+            if phase < span {
+                return Some(*frame);
+            }
+            phase -= span;
+        }
+        None
+    }
+}
+
 /// The pictures of the pick-up items by kind and stack (the five bonus animation blocks 190..=194 of
 /// the `BONUS_*` sprite banks, `docs/formats/sprite-animations.md`), loaded by the app; a missing
 /// picture falls back to the placeholder disc.
 #[derive(Debug, Clone, Default)]
 pub struct ItemArt {
     /// Arrow piles by stack (index = stack - 1).
-    pub arrows: Vec<Option<ItemFrame>>,
+    pub arrows: Vec<Option<ItemAnimation>>,
     /// Purses by stack.
-    pub purse: Vec<Option<ItemFrame>>,
+    pub purse: Vec<Option<ItemAnimation>>,
+    /// Pouches (`ItemKind::Pouch`, kind 8) by stack.
+    pub pouch: Vec<Option<ItemAnimation>>,
 }
 
 impl ItemArt {
-    /// The picture of an item of `kind` with `stack` pieces, if loaded.
+    /// The animation of an item of `kind` with `stack` pieces, if loaded (a stack beyond the
+    /// loaded blocks uses the last one).
     #[must_use]
-    pub fn for_item(&self, kind: ItemKind, stack: u32) -> Option<ItemFrame> {
+    pub fn for_item(&self, kind: ItemKind, stack: u32) -> Option<&ItemAnimation> {
         let list = match kind {
             ItemKind::Arrows => &self.arrows,
             ItemKind::Purse => &self.purse,
+            ItemKind::Pouch => &self.pouch,
             ItemKind::Unknown(_) => return None,
         };
         if list.is_empty() {
             return None;
         }
         let i = usize::try_from(stack.saturating_sub(1)).unwrap_or(0);
-        list[i.min(list.len() - 1)]
+        list[i.min(list.len() - 1)].as_ref()
     }
 }
 
 /// Draw the scene without item pictures (synthetic scenarios and tests).
+#[must_use]
 pub fn render(
     world: &World,
     background: Option<&Background>,
@@ -719,7 +765,9 @@ pub fn render(
     render_with_items(world, background, sprites, None)
 }
 
-/// Draw the scene; active pick-up items use `items` when it holds their picture.
+/// Draw the scene; active pick-up items use `items` when it holds their picture, the frame
+/// of the block's cycle at the world tick ([`ItemAnimation::frame_at`]).
+#[must_use]
 pub fn render_with_items(
     world: &World,
     background: Option<&Background>,
@@ -756,6 +804,7 @@ pub fn render_with_items(
             );
             if let Some((art, frame)) = items
                 .and_then(|a| a.for_item(item.kind, u32::from(item.stack)))
+                .and_then(|anim| anim.frame_at(world.tick))
                 .and_then(|art| sprites.frame(art.frame).map(|f| (art, f)))
             {
                 let fx = to_i32(i64::from(x) + i64::from(art.offset_x));
@@ -764,7 +813,7 @@ pub fn render_with_items(
                 continue;
             }
             let fill = match item.kind {
-                ItemKind::Purse => palette::ITEM_PURSE,
+                ItemKind::Purse | ItemKind::Pouch => palette::ITEM_PURSE,
                 ItemKind::Arrows => palette::ITEM_ARROWS,
                 ItemKind::Unknown(_) => palette::ITEM_UNKNOWN,
             };
@@ -952,6 +1001,44 @@ pub fn render_with_items(
 mod tests {
     use super::*;
     use opensherwood_core::Scenario;
+
+    /// The sparkle: every frame of an item block is shown in turn on the animation clock
+    /// (16 units per world tick, 45 per table tick), the cycle restarting from world tick 0;
+    /// a stack beyond the loaded blocks uses the last block, an empty block nothing.
+    #[test]
+    fn item_animations_cycle_every_frame_on_the_animation_clock() {
+        let pic = |frame: u32| ItemFrame {
+            frame,
+            offset_x: 0,
+            offset_y: 0,
+        };
+        let anim = ItemAnimation {
+            frames: vec![(pic(1), 1), (pic(2), 2)],
+        };
+        assert_eq!(anim.length(), 3);
+        // 135 units per cycle: frame 1 for the first 45, frame 2 for the next 90.
+        for (tick, frame) in [(0, 1), (2, 1), (3, 2), (8, 2), (9, 1), (11, 1), (12, 2)] {
+            assert_eq!(
+                anim.frame_at(tick).map(|f| f.frame),
+                Some(frame),
+                "tick {tick}"
+            );
+        }
+        // The largest tick: 2^64 - 1 = 105 (mod 135), 105 x 16 = 60 (mod 135): the second frame.
+        assert_eq!(anim.frame_at(u64::MAX).map(|f| f.frame), Some(2));
+        assert_eq!(ItemAnimation::default().frame_at(0), None);
+        let art = ItemArt {
+            arrows: vec![Some(anim.clone()), None],
+            purse: Vec::new(),
+            pouch: vec![Some(anim.clone())],
+        };
+        assert_eq!(art.for_item(ItemKind::Arrows, 1), Some(&anim));
+        assert_eq!(art.for_item(ItemKind::Arrows, 2), None);
+        assert_eq!(art.for_item(ItemKind::Arrows, 9), None, "the last block");
+        assert_eq!(art.for_item(ItemKind::Pouch, 5), Some(&anim));
+        assert_eq!(art.for_item(ItemKind::Purse, 1), None);
+        assert_eq!(art.for_item(ItemKind::Unknown(10), 1), None);
+    }
 
     #[test]
     fn rendering_is_deterministic_and_png_encodes() {

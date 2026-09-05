@@ -24,7 +24,7 @@ Example session:
 
 ```
 -> {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"pytest"}}
-<- {"jsonrpc":"2.0","id":1,"result":{"protocol":6,"build":"0.1.0","ruleset":14,"capabilities":["synthetic","capture","snapshot","map_view","mission","replay","menu","script"],"content_fingerprint":null}}
+<- {"jsonrpc":"2.0","id":1,"result":{"protocol":6,"build":"0.1.0","ruleset":18,"capabilities":["synthetic","capture","snapshot","map_view","mission","replay","menu","script"],"content_fingerprint":null}}
 -> {"jsonrpc":"2.0","id":2,"method":"reset","params":{"scenario":{"synthetic":"corridor"},"seed":42}}
 -> {"jsonrpc":"2.0","id":3,"method":"step","params":{"ticks":10,"events":[{"tick_offset":0,"sequence":0,"kind":"pointer_move","x256":25600,"y256":19200},{"tick_offset":0,"sequence":1,"kind":"pointer_down","button":"left"},{"tick_offset":0,"sequence":2,"kind":"pointer_up","button":"left"}]}}
 <- {"jsonrpc":"2.0","id":3,"result":{"tick":10,"hashes":{"total":"...","actors":"..."}}}
@@ -46,7 +46,7 @@ else deselects. A left click on the sprite of an active **pick-up item** or **sc
 order stands and `pickup_ticks` = the ticks left of the pause after the arrival, 0 while walking): an item is
 taken when the walk arrived within 8 px of it and the stoop of 40 ticks ran (arrows add their stack to the
 entity's `arrows`: measured; a purse adds 25 per stack unit to the script's money and one to the entity's
-`purses`, an unknown kind only disappears: hypotheses, `item_pickup` in `observe.script.assumptions`); the item
+`purses`, a pouch (kind 8) or an unknown kind only disappears: hypotheses, `item_pickup` in `observe.script.assumptions`); the item
 deactivates and native 235 reads it as taken. A scroll is read when the walk arrived about 18 px short of it and
 the pause of 42 ticks ran: its class's `IsTaken` fires and the page it shows follows (`ui.screen` `briefing`); a
 non-zero result deactivates the scroll (`scroll_pickup`). The take is bound to the order: a walk that passes an
@@ -83,7 +83,11 @@ action id the entity reports: a change fires the script's `ActionChange(previous
 `energy` / `energy_ticks` (0..20 and the ticks to the next regained unit), `foe`, `pose`, `pose_ticks`,
 `swing_ticks`, `figure` and `in_combat` (see "Melee"), `knockout_resistance` (profile `p4`), `npc_gait` (the
 gait of the NPC's program walks, script native 140), `fell_backward` and `heard` (the current alert came
-from a run heard, the measured channel, rather than from the view cone). The `ai_state` values `fighting`
+from a run heard, the measured channel, rather than from the view cone) and `pending_stimulus` (`{x, y, channel}` with `channel` = `{"sight":
+{"hypothetical": bool}}` or `{"noise": {"beyond_measured": bool}}`: the stimulus of a state transition the
+tick's budget could not pay, kept on the soldier and consumed by the retry next tick when the perception
+yields nothing new, so a run that ended right after an underfunded charge still alerts him; `null`
+otherwise; Codex review 11, finding 3). The `ai_state` values `fighting`
 (in a melee), `dying` (killed, the fall playing) and `dead` (lying for good) belong to the melee. Enemy soldiers that are alive, active, unlocked
 and on their feet perceive: a player character inside their view cone (half angle 45 degrees, range 250 px,
 125 px when crouched; occluders ignored) starts the noticed -> alarm -> alerted sequence; a running player
@@ -124,7 +128,11 @@ victim's feet and the **fight** begins: both are `ai_state` = `fighting` with `f
 `in_combat` true in `observe`; the soldier turns to the attacker and fights where he stands. A soldier
 fights one player character at a time: a second attacker in reach waits with his order until the soldier
 is free (the `{"attack_policy": "multi_party"}` assumption; two living fighters always name each other,
-`validate` refuses a soldier fought by two). The soldier
+`validate` refuses a soldier fought by two and, since ruleset 18, any living, active fighter whose opponent
+does not fight him back with the reciprocal id; the second attacker waits whatever his approach, from behind
+with the knock-out blow included, until a multi-attacker model is measured: Codex review 11, finding 5;
+`test_a_reciprocal_fight_replays_with_equal_hashes` records such a fight as a `ReplayV1` with checkpoints
+inside it and plays it back to the same hashes). The soldier
 swings every ~5.3 s (318 ticks with the gameplay RNG's jitter, `swing_ticks`), two swings in three land for
 5 hp (`hp` falls, never regenerates) and cost him one unit of `energy` (0..20, regained after ~4 s); the
 hero's automatic strikes never land against a soldier (hypothesis: the pole arm's reach or a block, recorded
@@ -218,7 +226,7 @@ shown), `mission_won`, `mission_lost` (`CheckVictoryCondition` returned 1 / 2; b
 `actor_elements` (the script element handle of every entity by entity index, -1 for entities the script
 cannot address: the handle native 3 returns, so a test can aim at the actor a script polls), `items` (the
 pick-up items of the element table: `[{element, kind, stack, x, y, active, taken}]` with `kind` = `"arrows"`,
-`"purse"` or `{"unknown_a": n}`; `active` = shown and pickable, `taken` = picked up by a player character,
+`"purse"`, `"pouch"` (kind 8, the pick-up tutorial's item) or `{"unknown_a": n}`; `active` = shown and pickable, `taken` = picked up by a player character,
 what native 235 reads), and the taint of
 ADR-0008 ("Hypotheses and taint"): `tainted` (the script executed over a hypothesis source, so `mission_won`
 / `mission_lost` are not authoritative) with `assumptions`, the recorded entries in canonical order
@@ -272,8 +280,11 @@ script runs as written); `counters` holds `instructions`, `callbacks`, `budget_a
 `traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives`,
 `objective_done_before_added`, `out_of_action_true` (native 90 calls that reported an actor knocked out or
 dead), `arity_mismatches` (`{id: count}` of native calls trapped because their argument count differed from the
-signature table) and `transactions_rolled_back` (queued `ActionChange` handlers the budget cut short, rolled
-back and retried whole next tick; a full queue is the `action_queue_overflow` fault, never a drop). It has no mutation: the end-of-mission flows (the won page and the campaign successor, the lost page and its
+signature table) and `transactions_rolled_back` (callbacks rolled back: every callback runs as a transaction
+and one that aborts by a trap, a fault or the frame-limit overflow is rolled back whole, `Hourglass` and
+`CheckVictoryCondition` included, so nothing an aborted callback wrote is read by a later one; queued
+`ActionChange` handlers the budget cut short are rolled back and retried whole next tick; a full queue is the
+`action_queue_overflow` fault, never a drop). It has no mutation: the end-of-mission flows (the won page and the campaign successor, the lost page and its
 seals) are driven through play in `test_win.py` (the first mission is won by a walk and lost in a fight, both
 tainted as `docs/original/h01-win-path.md` and ADR-0008 describe).
 

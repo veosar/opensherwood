@@ -643,6 +643,9 @@ pub fn wanted_animation(e: &Entity, set: &AnimSet) -> u32 {
         },
         AiState::Patrol => match (e.posture, moving, e.gait) {
             (Posture::Crouched, true, _) => set.crouch_walk[dir],
+            // The stoop over a pick-up (`Entity::pickup_ticks`, the pause after the arrival):
+            // the profile's pick-up block 126, the idle pose without one.
+            (_, false, _) if e.pickup_ticks > 0 => set.pick_up[dir],
             (Posture::Crouched, false, _) => set.crouch_idle[dir],
             (Posture::Standing, true, Gait::Run) => set.run[dir],
             (Posture::Standing, true, Gait::Walk) => set.walk[dir],
@@ -687,8 +690,9 @@ fn state_ticks(world: &World, e: &Entity, block: fn(&AnimSet) -> &[u32; 8], fall
 }
 
 /// How a soldier perceived a player character.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Channel {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Channel {
     /// Seen: inside the view cone (measured geometry, `h01-measurements-2.md` 6: records
     /// nothing for a standing character) or within the rear radius ([`REAR_SIGHT_RADIUS`]);
     /// `hypothetical` marks a sighting the engine's hypotheses decided (the rear radius, or
@@ -704,6 +708,41 @@ enum Channel {
         /// Heard from beyond the measured bound.
         beyond_measured: bool,
     },
+}
+
+impl Channel {
+    /// Hash tag.
+    #[must_use]
+    pub fn tag(self) -> u8 {
+        match self {
+            Channel::Sight {
+                hypothetical: false,
+            } => 1,
+            Channel::Sight { hypothetical: true } => 2,
+            Channel::Noise {
+                beyond_measured: false,
+            } => 3,
+            Channel::Noise {
+                beyond_measured: true,
+            } => 4,
+        }
+    }
+}
+
+/// The stimulus of a transition the tick's budget could not pay (Codex review 11, finding 3):
+/// where the soldier perceived the player character and through which channel, kept on the
+/// soldier ([`Entity::pending_stimulus`], snapshotted, hashed, validated) so that the retry
+/// on the next tick consumes it even when the perception no longer yields it (a run that
+/// completed or was cancelled right after the underfunded charge). A fresh stimulus of the
+/// retrying tick takes precedence; the pending one is dropped once the transition applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingStimulus {
+    /// Map x of the perceived character (24.8).
+    pub x: Fixed,
+    /// Map y (24.8).
+    pub y: Fixed,
+    /// How he was perceived.
+    pub channel: Channel,
 }
 
 /// Whether the entity's profile has the knock-out blow: a set without action 123 cannot punch;
@@ -1014,9 +1053,12 @@ impl World {
     /// The state machine of every human (one unit each) from `cursors.states`, round robin;
     /// a human the grant does not reach keeps its state and timer for this tick, and so does
     /// one whose transition needs a path search the grant could not pay
-    /// ([`Walk::Exhausted`]): the walk stops on him with the cursor resting there, so the next
-    /// tick, where he comes first, retries the transition with the full search cap (Codex
-    /// review 10, finding 4: a transition and the path it plans are one step).
+    /// ([`Walk::Exhausted`]): the walk stops on him with the cursor resting there and the
+    /// stimulus that drove the transition is kept as his [`PendingStimulus`], so the next
+    /// tick, where he comes first, retries the transition with the full search cap on the
+    /// fresh stimulus if there is one, else on the pending one (Codex review 10, finding 4: a
+    /// transition and the path it plans are one step; Codex review 11, finding 3: a one-tick
+    /// stimulus is not lost to the retry).
     fn transitions(
         &mut self,
         index: &SimIndex,
@@ -1034,7 +1076,17 @@ impl World {
             if !stepped(&self.entities[i]) {
                 continue;
             }
-            if !self.advance_state(i, index, stimuli.get(i).copied().flatten(), budget) {
+            let fresh = stimuli.get(i).copied().flatten();
+            let stimulus = fresh.or_else(|| {
+                self.entities[i]
+                    .pending_stimulus
+                    .map(|p| ((p.x, p.y), p.channel))
+            });
+            if self.advance_state(i, index, stimulus, budget) {
+                self.entities[i].pending_stimulus = None;
+            } else {
+                self.entities[i].pending_stimulus =
+                    stimulus.map(|((x, y), channel)| PendingStimulus { x, y, channel });
                 cursor = resume_at(&order, k, full);
                 break;
             }
@@ -1400,16 +1452,15 @@ impl World {
                 continue;
             }
             // In reach. A victim engaged with another player character fights one at a
-            // time: this attacker waits at reach with his order until the victim is free
-            // (the multi-party policy, a hypothesis: the measurements were one-on-one); a
-            // blow from behind on an engaged victim rests on the same policy.
+            // time: this attacker waits at reach with his order until the victim is free,
+            // whatever his approach (the multi-party policy, a hypothesis: the measurements
+            // were one-on-one; Codex review 11, finding 5: a blow from behind on an engaged
+            // victim waits too, until a multi-attacker model is measured).
             let attacker_id = self.entities[i].id;
             if self.engaged_with_another(t, attacker_id, index) {
                 self.record_assumption(Assumption::AttackPolicy(AttackRule::MultiParty));
-                if !punching {
-                    stop(&mut self.entities[i]);
-                    continue;
-                }
+                stop(&mut self.entities[i]);
+                continue;
             }
             // Stop, face the victim, then the blow from behind or the fight. The frontal
             // fight at the fighting distance is measured; what an approach from behind ends
@@ -1488,6 +1539,7 @@ impl World {
         v.state_ticks = 0;
         v.heard = false;
         v.last_seen = None;
+        v.pending_stimulus = None;
         v.foe = Some(attacker_id);
         v.pose = FightPose::Idle;
         v.pose_ticks = 0;
@@ -1687,6 +1739,7 @@ impl World {
         v.heard = false;
         v.last_seen = None;
         v.alert_origin = None;
+        v.pending_stimulus = None;
         self.enter_timed(t, AiState::Dying, block, KNOCKED_DOWN_TICKS);
         if self.entities[t].kind == EntityKind::Player {
             self.hero_dead = true;
@@ -1781,6 +1834,7 @@ impl World {
         e.attack_target = None;
         e.fell_backward = backward;
         e.heard = false;
+        e.pending_stimulus = None;
         // A victim struck in a fight leaves it (his foe notices on the next tick).
         e.foe = None;
         e.pose = FightPose::Idle;
@@ -3228,6 +3282,218 @@ mod tests {
             r.vm.as_ref().unwrap().assumptions,
             w.vm.as_ref().unwrap().assumptions
         );
+    }
+
+    /// Finding 3 of Codex review 11: a one-tick stimulus survives an unpaid transition. The
+    /// hero's run is heard on a tick whose grant cannot pay the charge's search, so the
+    /// soldier keeps the noise as his pending stimulus; the run ends before the retry (the
+    /// target is dropped by hand, as the movement phase does at the end of a run), so the
+    /// next tick's perception yields nothing, and he still charges from the pending stimulus
+    /// to the position of the noise; through a JSON snapshot restored into another world; a
+    /// pending stimulus on anyone but a living enemy soldier, or out of range, is refused.
+    #[test]
+    fn a_one_tick_stimulus_survives_an_unpaid_transition() {
+        use crate::world::{MAX_ENTITY_COORD, Snapshot};
+        let noise = PendingStimulus {
+            x: f(520),
+            y: f(400),
+            channel: Channel::Noise {
+                beyond_measured: false,
+            },
+        };
+        let mut w = crowd(1, 1);
+        let h = &mut w.entities[0];
+        h.x = f(520);
+        h.y = f(400);
+        h.target = Some((f(700), f(400)));
+        h.gait = Gait::Run;
+        let g = &mut w.entities[1];
+        g.x = f(450);
+        g.y = f(400);
+        g.facing256 = 128;
+        w.validate().unwrap();
+        let spent = w.ai_tick_with(2 + 2 + 2 + 50);
+        assert_eq!(spent, 56);
+        let g = &w.entities[1];
+        assert_eq!(g.ai_state, AiState::Patrol);
+        assert!(g.target.is_none() && g.alert_origin.is_none() && !g.heard);
+        assert_eq!(g.pending_stimulus, Some(noise), "the stimulus is kept");
+        assert_eq!(w.cursors.states, 1);
+        // The run ends before the retry: nothing to hear next tick.
+        let h = &mut w.entities[0];
+        h.target = None;
+        h.path.clear();
+        h.gait = Gait::Walk;
+        w.validate().unwrap();
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
+        assert!(
+            json.contains("\"pending_stimulus\":{") && json.contains("\"beyond_measured\":false"),
+            "{json}"
+        );
+        let snap: Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = crowd(0, 0);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.hashes(), w.hashes());
+        for world in [&mut w, &mut w2] {
+            world.step(&[]);
+            let g = &world.entities[1];
+            assert_eq!(
+                g.ai_state,
+                AiState::Alerted,
+                "charges from the pending stimulus"
+            );
+            assert!(g.heard && g.gait == Gait::Run && g.target.is_some());
+            assert_eq!(g.last_seen, Some((f(520), f(400))));
+            assert_eq!(g.alert_origin, Some((f(450), f(400))));
+            assert!(g.pending_stimulus.is_none(), "consumed");
+            assert_eq!(world.cursors.states, 0);
+            world.validate().unwrap();
+        }
+        assert_eq!(w.hashes(), w2.hashes());
+        // Scope: a living enemy soldier, within the coordinate bounds.
+        let mut bad = w.snapshot(None);
+        bad.world.entities[0].pending_stimulus = Some(noise);
+        assert!(w2.restore(&bad).unwrap_err().contains("pending stimulus"));
+        let mut bad = w.snapshot(None);
+        bad.world.entities[1].pending_stimulus = Some(PendingStimulus {
+            x: f(MAX_ENTITY_COORD + 1),
+            ..noise
+        });
+        assert!(w2.restore(&bad).unwrap_err().contains("pending stimulus"));
+    }
+
+    /// Finding 5 of Codex review 11: the second attacker waits whatever his approach. Hero B
+    /// starts east of the soldier, so once A (from the west) fights him B arrives behind him
+    /// with the knock-out blow available: he waits at his reach with his order, the soldier
+    /// is never knocked down and keeps fighting A. Reciprocity is an invariant of the
+    /// snapshot: a living, active fighter whose opponent patrols or returns is refused, an
+    /// inactive fighter's stale opponent is left to the tick.
+    #[test]
+    fn a_second_attacker_from_behind_waits_while_the_victim_is_engaged() {
+        let mut w = two_heroes_one_guard();
+        w.entities[1].x = f(560);
+        w.entities[1].y = f(150);
+        let (a, b, g) = (w.entities[0].id, w.entities[1].id, w.entities[2].id);
+        let click_at = |x: i32, y: i32| {
+            vec![
+                InputEvent::PointerMove {
+                    x256: x * 256,
+                    y256: y * 256,
+                },
+                InputEvent::PointerDown {
+                    button: Button::Left,
+                },
+                InputEvent::PointerUp {
+                    button: Button::Left,
+                },
+            ]
+        };
+        w.step(&click_at(100, 100));
+        assert_eq!(w.selected, Some(a));
+        w.step(&click_at(300, 150));
+        w.step(&click_at(560, 150));
+        assert_eq!(w.selected, Some(b));
+        w.step(&click_at(300, 150));
+        assert_eq!(w.entities[1].attack_target, Some(g));
+        let mut ticks = 0;
+        while w.entities[0].ai_state != AiState::Fighting {
+            w.step(&[]);
+            ticks += 1;
+            assert!(ticks < 400, "{:?}", w.entities[0].ai_state);
+        }
+        assert_eq!(w.entities[2].foe, Some(a));
+        // B walks the rest of his way behind the soldier and stops at his reach; over the
+        // whole approach and a while after it the soldier fights A and is never felled.
+        let mut waited = 0;
+        for _ in 0..400 {
+            w.step(&[]);
+            let (eb, eg) = (&w.entities[1], &w.entities[2]);
+            assert_eq!(
+                (eg.ai_state, eg.foe, eg.hp),
+                (AiState::Fighting, Some(a), 80)
+            );
+            assert_eq!(eb.ai_state, AiState::Patrol, "B never punches");
+            if eb.target.is_none() {
+                waited += 1;
+                if waited > 30 {
+                    break;
+                }
+            }
+        }
+        assert!(waited > 30, "B never came to rest");
+        let (eb, eg) = (&w.entities[1], &w.entities[2]);
+        assert_eq!(eb.attack_target, Some(g), "with his order");
+        assert!(eb.foe.is_none() && eb.figure.is_none());
+        assert!(
+            is_behind((eg.x, eg.y), eg.facing256, (eb.x, eb.y)),
+            "behind the soldier: the knock-out reach"
+        );
+        assert!(
+            Fixed::length(eb.x - eg.x, eb.y - eg.y) <= f(PUNCH_REACH + 2),
+            "at the punch reach"
+        );
+        assert!(
+            w.vm.as_ref()
+                .unwrap()
+                .assumptions
+                .contains(&Assumption::AttackPolicy(AttackRule::MultiParty))
+        );
+        w.validate().unwrap();
+        let mut w2 = two_heroes_one_guard();
+        w2.restore(&w.snapshot(None)).unwrap();
+        assert_eq!(w2.hashes(), w.hashes());
+        // Hostile snapshots: A fights a soldier who patrols, or who is returning.
+        let detach = |s: &mut crate::world::Snapshot, state: AiState| {
+            let v = &mut s.world.entities[2];
+            v.ai_state = state;
+            v.foe = None;
+            v.pose = FightPose::Idle;
+            v.pose_ticks = 0;
+            v.swing_ticks = 0;
+            v.last_seen = None;
+            if state == AiState::Patrol {
+                v.alert_origin = None;
+            }
+        };
+        for state in [AiState::Patrol, AiState::Returning] {
+            let mut bad = w.snapshot(None);
+            detach(&mut bad, state);
+            let err = w2.restore(&bad).unwrap_err();
+            assert!(err.contains("reciprocal"), "{state:?}: {err}");
+        }
+        // An inactive fighter (hidden by native 113 mid-fight) may still name a soldier who
+        // went back to his patrol: the tick ends that fight from his side.
+        let mut stale = w.snapshot(None);
+        detach(&mut stale, AiState::Patrol);
+        stale.world.entities[0].active = false;
+        stale.world.selected = None;
+        w2.restore(&stale).unwrap();
+    }
+
+    /// The stoop over a pick-up plays the profile's pick-up block (126) and, for a profile
+    /// without it, the idle pose (`Entity::pickup_ticks` is the pause after the arrival).
+    #[test]
+    fn the_stoop_plays_the_pick_up_block_or_the_idle_pose() {
+        let mut e = scene((400, 240), 0, (250, 240)).entities[0].clone();
+        let with = AnimSet {
+            pick_up: [9; 8],
+            ..AnimSet::standing_only(vec![vec![]; 10], [0; 8], [1; 8])
+        };
+        let without = AnimSet::standing_only(vec![vec![]; 10], [0; 8], [1; 8]);
+        assert_eq!(wanted_animation(&e, &with), 0);
+        e.pickup = Some(0);
+        e.pickup_ticks = 5;
+        assert_eq!(wanted_animation(&e, &with), 9, "the pick-up block");
+        assert_eq!(wanted_animation(&e, &without), 0, "the idle pose");
+        assert_eq!(
+            action_id(&e),
+            actions::IDLE,
+            "the reported id is not measured"
+        );
+        e.posture = Posture::Crouched;
+        assert_eq!(wanted_animation(&e, &with), 9);
+        e.target = Some((f(1), f(1)));
+        assert_eq!(wanted_animation(&e, &with), 1, "walking, not stooping");
     }
 
     /// Finding 8 of Codex review 10: the drawn figure locks the nearest enemy soldier at the

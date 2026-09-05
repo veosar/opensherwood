@@ -5,7 +5,17 @@ Date: 2026-09-02. Status: accepted.
 Versions in force (2026-09-05, Codex review 7): protocol 6 (`reset.starting_money` and `ReplayHeader.starting_money`: the mission's starting money is a canonical input recorded in the header, playback resets with it; `UiItem.selected`; `observe.persistence_error`; replay time is the session tick: header `time:
 "session"`, checkpoints carry `world_tick`, a `session` digest and the `frame` hash, the tick-0 and terminal
 checkpoints are required and compared; `ui` observation,
-`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 17
+`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 18
+(2026-09-06, Codex review 11, findings 2 / 3 / 4 / 5 / 6: every script callback runs as a transaction and one
+that aborts (a trap, a fault, the frame-limit overflow) is rolled back whole, its capture charged to the tick's
+budget, so `Hourglass` cannot leave a variable or a teleport behind for the same tick's `CheckVictoryCondition`; a
+soldier keeps the stimulus of a state transition the budget could not pay as `pending_stimulus` (position and
+channel, in `observe`, snapshotted, hashed under `actors`, validated) and the retry next tick consumes it; every
+living, active fighter's opponent must fight him back with the reciprocal id (`validate` refuses a patrolling or
+returning opponent) and a second attacker in reach waits whatever his approach, from behind with the knock-out
+blow included; `ZORG` kind 8 is the `pouch` item kind (`observe.script.items[].kind` = `"pouch"`, drawn from the
+purse bank, taken tainted like an unknown kind), the item pictures cycle every frame of their bonus block on the
+animation clock and the stoop plays the profile's pick-up block 126; snapshot schema 21, hash schema 20), ruleset 17
 (2026-09-06, the second H01 oracle session: pick-ups and scrolls are order-bound with the measured arrival (8 px),
 stoop (40 ticks) and scroll stop (18 px) / pause (42 ticks) in `Entity::pickup_ticks` (in `observe`, snapshotted and
 hashed; `pickup` may name a scroll, the VM's `scroll_presence` is gone), the hit area is the sprite (12 x 14 px above
