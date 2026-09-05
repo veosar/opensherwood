@@ -64,6 +64,20 @@ pub enum MenuAction {
     Delete,
     /// Cancel / back.
     Cancel,
+    /// Options sub-screens and their buttons.
+    Graphics,
+    Sounds,
+    Shortcuts,
+    Back,
+    Ok,
+    /// Shortcut sets (display only).
+    DefaultSet1,
+    DefaultSet2,
+    UserSet,
+    /// Select player screen.
+    Select,
+    New,
+    Rename,
 }
 
 impl MenuAction {
@@ -99,18 +113,25 @@ impl MenuAction {
             MenuAction::Options => 12,
             MenuAction::Restart => 13,
             MenuAction::Quit => 14,
-            MenuAction::Yes => 15,
+            MenuAction::Yes | MenuAction::Ok => 15,
             MenuAction::No | MenuAction::Cancel => 16,
             MenuAction::Delete => 8,
+            MenuAction::Graphics => 18,
+            MenuAction::Sounds => 19,
+            MenuAction::Shortcuts => 20,
+            MenuAction::Back => 17,
+            MenuAction::DefaultSet1 => 21,
+            MenuAction::DefaultSet2 => 22,
+            MenuAction::UserSet => 23,
+            MenuAction::Select => 5,
+            MenuAction::New => 6,
+            MenuAction::Rename => 7,
         }
     }
 
     /// Entries that do something in this build; the others are drawn on the disabled plate.
     fn implemented(self) -> bool {
-        !matches!(
-            self,
-            MenuAction::SelectPlayer | MenuAction::Options | MenuAction::ShowMovies
-        )
+        !matches!(self, MenuAction::ShowMovies)
     }
 
     /// Protocol identifier (`snake_case` of the variant).
@@ -139,6 +160,17 @@ impl MenuAction {
             MenuAction::No => "no",
             MenuAction::Delete => "delete",
             MenuAction::Cancel => "cancel",
+            MenuAction::Graphics => "graphics",
+            MenuAction::Sounds => "sounds",
+            MenuAction::Shortcuts => "shortcuts",
+            MenuAction::Back => "back",
+            MenuAction::Ok => "ok",
+            MenuAction::DefaultSet1 => "default set 1",
+            MenuAction::DefaultSet2 => "default set 2",
+            MenuAction::UserSet => "user defined",
+            MenuAction::Select => "select",
+            MenuAction::New => "new",
+            MenuAction::Rename => "rename",
         }
     }
 }
@@ -192,6 +224,10 @@ pub struct UiAssets {
     pub credits_strip: Option<SpriteFrame>,
     /// Dungeon background of the load / save screens (`PIC` 189, 1024x512).
     pub dungeon_background: Option<SpriteFrame>,
+    /// Forest background of the options screen (`PIC` 186) and the sunlit forest of the graphics /
+    /// sound options (`PIC` 188).
+    pub forest_background: Option<SpriteFrame>,
+    pub sunlit_background: Option<SpriteFrame>,
     /// HUD pictures, see `HudAssets`.
     pub hud: HudAssets,
     /// Fonts.
@@ -248,8 +284,9 @@ fn text<'a>(strings: &'a [String], index: usize, fallback: &'a str) -> &'a str {
     strings.get(index).map_or(fallback, String::as_str)
 }
 
-/// Profile summary shown left of the buttons.
-#[derive(Debug, Clone, Serialize)]
+/// Profile summary shown left of the buttons; also the persisted profile record (`profiles.json`
+/// under the artifact directory, a modern replacement for the original's `Profiles` file).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct ProfileSummary {
     /// Name.
     pub name: String,
@@ -702,6 +739,783 @@ impl PauseMenu {
             .map_or(self.column.pointer, |c| c.pointer);
         draw_pointer(scene, pointer, assets.and_then(|a| a.cursor.as_ref()));
     }
+}
+
+/// The select player screen (`ui-flow.md` 5): ten rows at x = 227..639, y = 225 + 41 k, 23 px high, with
+/// the profile name at x = 236 and `<difficulty> / <progress> %` right-aligned to x = 628; the selected row
+/// is orange. Buttons Select (row 3) / New (row 4) / Rename (row 5) / Delete (row 6). New and Rename open
+/// the vertical parchment with a name field and three difficulty seals.
+#[derive(Debug)]
+pub struct SelectPlayerScreen {
+    column: ButtonColumn,
+    /// Profiles in stored order.
+    pub profiles: Vec<ProfileSummary>,
+    /// Selected row.
+    pub selected: Option<usize>,
+    /// The parchment editor (new or rename), if open.
+    pub editor: Option<ProfileEditor>,
+    strings: Vec<String>,
+    pointer: (i32, i32),
+}
+
+/// The new / rename parchment.
+#[derive(Debug, Clone)]
+pub struct ProfileEditor {
+    /// Editing an existing row, or creating a new profile.
+    pub rename_of: Option<usize>,
+    /// Name being typed.
+    pub name: String,
+    /// Difficulty 0..=2.
+    pub difficulty: u8,
+}
+
+const PROFILE_ROWS: usize = 10;
+const PROFILE_ROW_Y0: i32 = 225;
+const PROFILE_ROW_PITCH: i32 = 41;
+const PROFILE_ROW_H: i32 = 23;
+const PROFILE_LIST_X: (i32, i32) = (227, 639);
+/// Difficulty seals of the parchment (centres, 41x44 plates).
+const SEAL_EASY: (i32, i32, i32, i32) = (424, 406, 41, 44);
+const SEAL_MEDIUM: (i32, i32, i32, i32) = (484, 406, 41, 44);
+const SEAL_HARD: (i32, i32, i32, i32) = (560, 406, 41, 44);
+const SEAL_EDIT_OK: (i32, i32, i32, i32) = (460, 520, 41, 44);
+const SEAL_EDIT_CANCEL: (i32, i32, i32, i32) = (520, 520, 41, 44);
+/// Name field of the parchment.
+const PROFILE_NAME_FIELD: (i32, i32, i32, i32) = (316, 290, 400, 22);
+
+/// Outcome of the select player screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectOutcome {
+    /// Use the profile at this index.
+    Select(usize),
+    /// The profile list changed (create / rename / delete): persist it.
+    Changed,
+    /// Leave (Escape does not leave this screen in the original; `Select` is the way out, but a
+    /// harness or a player with no profiles needs an exit, so Escape leaves when nothing is edited).
+    Leave,
+}
+
+impl SelectPlayerScreen {
+    /// New screen over the stored profiles, with `selected` preselected.
+    #[must_use]
+    pub fn new(profiles: Vec<ProfileSummary>, selected: Option<usize>, strings: &[String]) -> Self {
+        Self {
+            column: ButtonColumn::new(
+                &[
+                    MenuAction::Select,
+                    MenuAction::New,
+                    MenuAction::Rename,
+                    MenuAction::Delete,
+                ],
+                3,
+                strings,
+            ),
+            profiles,
+            selected,
+            editor: None,
+            strings: strings.to_vec(),
+            pointer: (0, 0),
+        }
+    }
+
+    fn row_rect(i: usize) -> (i32, i32, i32, i32) {
+        (
+            PROFILE_LIST_X.0,
+            PROFILE_ROW_Y0 + i as i32 * PROFILE_ROW_PITCH,
+            PROFILE_LIST_X.1 - PROFILE_LIST_X.0,
+            PROFILE_ROW_H,
+        )
+    }
+
+    fn handle_editor(&mut self, event: InputEvent) -> Option<SelectOutcome> {
+        let ed = self.editor.as_mut()?;
+        match event {
+            InputEvent::KeyDown {
+                key: Key::Letter(c),
+            } if ed.name.len() < 16 => ed.name.push(c),
+            InputEvent::KeyDown { key: Key::Digit(d) } if ed.name.len() < 16 => {
+                ed.name.push(char::from(b'0' + d.min(9)));
+            }
+            InputEvent::KeyDown {
+                key: Key::Backspace,
+            } => {
+                ed.name.pop();
+            }
+            // Escape and Enter only end the edit through the seals, as observed (`ui-flow.md` 2.2).
+            InputEvent::PointerMove { x256, y256 } => {
+                self.pointer = (Fixed::from_raw(x256).round(), Fixed::from_raw(y256).round());
+            }
+            InputEvent::PointerDown {
+                button: Button::Left,
+            } => {
+                let (px, py) = self.pointer;
+                if hit(SEAL_EASY, px, py) {
+                    ed.difficulty = 0;
+                } else if hit(SEAL_MEDIUM, px, py) {
+                    ed.difficulty = 1;
+                } else if hit(SEAL_HARD, px, py) {
+                    ed.difficulty = 2;
+                } else if hit(SEAL_EDIT_CANCEL, px, py) {
+                    self.editor = None;
+                } else if hit(SEAL_EDIT_OK, px, py) {
+                    let name: String = ed.name.trim().chars().take(16).collect();
+                    if name.is_empty() {
+                        return None;
+                    }
+                    let ed = self.editor.take()?;
+                    match ed.rename_of {
+                        Some(i) => {
+                            if let Some(p) = self.profiles.get_mut(i) {
+                                p.name = name;
+                                p.difficulty = ed.difficulty;
+                            }
+                        }
+                        None => {
+                            if self.profiles.len() < PROFILE_ROWS {
+                                self.profiles.push(ProfileSummary {
+                                    name,
+                                    difficulty: ed.difficulty,
+                                    ..ProfileSummary::default()
+                                });
+                                self.selected = Some(self.profiles.len() - 1);
+                            }
+                        }
+                    }
+                    return Some(SelectOutcome::Changed);
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Apply input.
+    pub fn handle(&mut self, event: InputEvent) -> Option<SelectOutcome> {
+        if self.editor.is_some() {
+            return self.handle_editor(event);
+        }
+        match event {
+            InputEvent::KeyDown { key: Key::Escape } => return Some(SelectOutcome::Leave),
+            InputEvent::PointerMove { x256, y256 } => {
+                self.pointer = (Fixed::from_raw(x256).round(), Fixed::from_raw(y256).round());
+            }
+            InputEvent::PointerDown {
+                button: Button::Left,
+            } => {
+                let (px, py) = self.pointer;
+                if let Some(i) = (0..self.profiles.len().min(PROFILE_ROWS))
+                    .find(|&i| hit(Self::row_rect(i), px, py))
+                {
+                    self.selected = Some(i);
+                }
+            }
+            _ => {}
+        }
+        let chosen = self.column.handle(event)?;
+        match chosen {
+            MenuAction::Select => self.selected.map(SelectOutcome::Select),
+            MenuAction::New => {
+                if self.profiles.len() < PROFILE_ROWS {
+                    self.editor = Some(ProfileEditor {
+                        rename_of: None,
+                        name: String::new(),
+                        difficulty: 1,
+                    });
+                }
+                None
+            }
+            MenuAction::Rename => {
+                let i = self.selected?;
+                let p = self.profiles.get(i)?;
+                self.editor = Some(ProfileEditor {
+                    rename_of: Some(i),
+                    name: p.name.clone(),
+                    difficulty: p.difficulty,
+                });
+                None
+            }
+            MenuAction::Delete => {
+                let i = self.selected?;
+                if i < self.profiles.len() {
+                    self.profiles.remove(i);
+                    self.selected = if self.profiles.is_empty() {
+                        None
+                    } else {
+                        Some(i.min(self.profiles.len() - 1))
+                    };
+                    return Some(SelectOutcome::Changed);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// State for `observe`: buttons, rows (`row:<name>`), and the editor's seals when open.
+    #[must_use]
+    pub fn state(&self) -> MenuState {
+        let mut items = items_to_protocol(&self.column.items);
+        for (i, p) in self.profiles.iter().take(PROFILE_ROWS).enumerate() {
+            let r = Self::row_rect(i);
+            items.push(UiItem {
+                action: format!("row:{}", p.name),
+                label: p.name.clone(),
+                rect: [r.0, r.1, r.2, r.3],
+                enabled: self.selected == Some(i),
+            });
+        }
+        if let Some(ed) = &self.editor {
+            for (name, r) in [
+                ("easy", SEAL_EASY),
+                ("medium", SEAL_MEDIUM),
+                ("hard", SEAL_HARD),
+                ("yes", SEAL_EDIT_OK),
+                ("no", SEAL_EDIT_CANCEL),
+            ] {
+                items.push(UiItem {
+                    action: name.into(),
+                    label: ed.name.clone(),
+                    rect: [r.0, r.1, r.2, r.3],
+                    enabled: true,
+                });
+            }
+        }
+        MenuState {
+            screen: if self.editor.is_some() {
+                "new_player".into()
+            } else {
+                "select_player".into()
+            },
+            items,
+            hovered: self.selected,
+            page: None,
+        }
+    }
+
+    /// Render the frame.
+    #[must_use]
+    pub fn render(&self, assets: Option<&UiAssets>) -> Framebuffer {
+        let mut fb = Framebuffer::new(MENU_FRAME.0, MENU_FRAME.1);
+        fb.clear([0, 0, 0, 255]);
+        if let Some(bg) = assets.and_then(|a| a.menu_background.as_ref()) {
+            fb.blit_rgba(0, BG_Y, bg.width, bg.height, &bg.rgba);
+        }
+        let font = assets.and_then(|a| a.font_text.as_ref());
+        let s = &self.strings;
+        for (i, p) in self.profiles.iter().take(PROFILE_ROWS).enumerate() {
+            let (x, y, w, h) = Self::row_rect(i);
+            let colour = if self.selected == Some(i) {
+                ORANGE
+            } else {
+                [90, 90, 90, 255]
+            };
+            fb.fill_rect(x, y, x + w, y + h, colour);
+            if let Some(f) = font {
+                f.draw(&mut fb, &p.name, 236, y + 4);
+                let d = usize::from(p.difficulty.min(2));
+                let right = format!(
+                    "{} / {} %",
+                    text(s, t::DIFFICULTY_NAMES + d, ["easy", "medium", "hard"][d]),
+                    p.progress
+                );
+                let tw = f.measure(&right);
+                f.draw(&mut fb, &right, 628 - tw, y + 4);
+            }
+        }
+        self.column.draw(&mut fb, assets);
+        if let (Some(ed), Some(a)) = (&self.editor, assets) {
+            if let Some(p) = &a.parchment {
+                fb.blit_rgba(264, 148, p.width, p.height, &p.rgba);
+            }
+            if let Some(f) = a.font_title.as_ref() {
+                f.draw_centered(&mut fb, text(s, 30, "new player"), 512, 200);
+            }
+            if let Some(f) = a.font_debrief.as_ref().or(font) {
+                f.draw(&mut fb, text(s, 61, "name"), 316, 262);
+                let (x, y, w, h) = PROFILE_NAME_FIELD;
+                fb.fill_rect(x, y, x + w, y + h, [60, 40, 20, 255]);
+                fb.fill_rect(x + 1, y + 1, x + w - 1, y + h - 1, [240, 225, 190, 255]);
+                f.draw(&mut fb, &format!("{}_", ed.name), x + 6, y + 3);
+                f.draw(&mut fb, text(s, t::DIFFICULTY, "difficulty"), 316, 370);
+                for (d, r) in [SEAL_EASY, SEAL_MEDIUM, SEAL_HARD].into_iter().enumerate() {
+                    let seal = if ed.difficulty == d as u8 {
+                        a.seal_ok.get(2).or(a.seal_ok.first())
+                    } else {
+                        a.seal_ok.first()
+                    };
+                    if let Some(sl) = seal {
+                        fb.blit_rgba(r.0, r.1, sl.width, sl.height, &sl.rgba);
+                    }
+                    f.draw_centered(
+                        &mut fb,
+                        text(s, t::DIFFICULTY_NAMES + d, ["easy", "medium", "hard"][d]),
+                        r.0 + r.2 / 2,
+                        r.1 + r.3 + 2,
+                    );
+                }
+                if let Some(sl) = a.seal_ok.get(1).or(a.seal_ok.first()) {
+                    fb.blit_rgba(
+                        SEAL_EDIT_OK.0,
+                        SEAL_EDIT_OK.1,
+                        sl.width,
+                        sl.height,
+                        &sl.rgba,
+                    );
+                }
+                if let Some(sl) = a.seal_cancel.get(1).or(a.seal_cancel.first()) {
+                    fb.blit_rgba(
+                        SEAL_EDIT_CANCEL.0,
+                        SEAL_EDIT_CANCEL.1,
+                        sl.width,
+                        sl.height,
+                        &sl.rgba,
+                    );
+                }
+            }
+        }
+        draw_pointer(
+            &mut fb,
+            self.pointer,
+            assets.and_then(|a| a.cursor.as_ref()),
+        );
+        fb
+    }
+}
+
+/// Player settings (modern additions kept in the session's artifact directory; the original stores
+/// them in the profile and `Configuration/`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct Settings {
+    /// Aspect ratio choice: 0 = 4:3, 1 = 16:9, 2 = 16:10 (the patched build's graphics options).
+    pub aspect: u8,
+    /// The four effect toggles (alpha view cones, transparent shadows, effect animations,
+    /// background animations).
+    pub effects: [bool; 4],
+    /// Sound mode 0 stereo / 1 three-dimensional (unavailable), quality 0 high / 1 low.
+    pub sound_mode: u8,
+    pub sound_quality: u8,
+    /// Volumes 0..=10: effects, dialogue, music, comments; comment frequency 0..=10.
+    pub volumes: [u8; 4],
+    pub comment_frequency: u8,
+    /// Shortcut set: 0 default 1, 1 default 2, 2 user defined (display only).
+    pub shortcut_set: u8,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            aspect: 0,
+            effects: [true; 4],
+            sound_mode: 0,
+            sound_quality: 0,
+            volumes: [10; 4],
+            comment_frequency: 6,
+            shortcut_set: 0,
+        }
+    }
+}
+
+/// Which options screen is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionsPage {
+    /// The options menu (graphics / sounds / shortcuts / back).
+    Main,
+    /// Graphical options.
+    Graphics,
+    /// Sound options.
+    Sounds,
+    /// Shortcuts table.
+    Shortcuts,
+}
+
+/// Outcome of the options screens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OptionsOutcome {
+    /// Leave the options (back to the caller).
+    Back,
+    /// Apply the edited settings.
+    Apply(Settings),
+}
+
+/// An option bar: rectangle, label string index, selected.
+type Bar = ((i32, i32, i32, i32), usize, bool);
+
+/// Bar geometry of the options pages (`ui-flow.md` 4.1 / 4.2): x = 227..640, 26 px high.
+const OPT_BAR_X: i32 = 227;
+const OPT_BAR_W: i32 = 413;
+const OPT_BAR_H: i32 = 26;
+/// Slider cells: 10 cells of 27 px at x = 226 + 42 * i, 14 px high.
+const SLIDER_X: i32 = 226;
+const SLIDER_PITCH: i32 = 42;
+const SLIDER_CELL_W: i32 = 27;
+const SLIDER_H: i32 = 14;
+const ORANGE: [u8; 4] = [214, 120, 30, 255];
+const TEAL: [u8; 4] = [40, 110, 110, 255];
+const TEAL_DIM: [u8; 4] = [60, 80, 80, 255];
+
+/// The options screens (`ui-flow.md` 4): a button column per page, option bars and sliders edited in
+/// place; OK applies, Cancel / Escape discards the page's edits.
+#[derive(Debug)]
+pub struct OptionsScreen {
+    /// Current page.
+    pub page: OptionsPage,
+    column: ButtonColumn,
+    /// Settings as applied so far.
+    pub applied: Settings,
+    /// Settings being edited on the current page.
+    pub edit: Settings,
+    strings: Vec<String>,
+    pointer: (i32, i32),
+}
+
+impl OptionsScreen {
+    /// New options screen over the current settings.
+    #[must_use]
+    pub fn new(settings: Settings, strings: &[String]) -> Self {
+        let mut s = Self {
+            page: OptionsPage::Main,
+            column: ButtonColumn::new(&[], 0, strings),
+            applied: settings.clone(),
+            edit: settings,
+            strings: strings.to_vec(),
+            pointer: (0, 0),
+        };
+        s.open(OptionsPage::Main);
+        s
+    }
+
+    fn open(&mut self, page: OptionsPage) {
+        self.page = page;
+        self.edit = self.applied.clone();
+        self.column = match page {
+            OptionsPage::Main => ButtonColumn::new(
+                &[
+                    MenuAction::Graphics,
+                    MenuAction::Sounds,
+                    MenuAction::Shortcuts,
+                    MenuAction::Back,
+                ],
+                3,
+                &self.strings,
+            ),
+            OptionsPage::Graphics | OptionsPage::Sounds => {
+                ButtonColumn::new(&[MenuAction::Ok, MenuAction::Cancel], 5, &self.strings)
+            }
+            OptionsPage::Shortcuts => ButtonColumn::new(
+                &[
+                    MenuAction::Ok,
+                    MenuAction::DefaultSet1,
+                    MenuAction::DefaultSet2,
+                    MenuAction::UserSet,
+                    MenuAction::Cancel,
+                ],
+                2,
+                &self.strings,
+            ),
+        };
+    }
+
+    /// Option bars of the current page: (rect, label string index, selected).
+    fn bars(&self) -> Vec<Bar> {
+        let bar = |y: i32| (OPT_BAR_X, y, OPT_BAR_W, OPT_BAR_H);
+        match self.page {
+            OptionsPage::Graphics => {
+                let mut v = vec![
+                    (bar(249), 43, self.edit.aspect == 0),
+                    (bar(290), 44, self.edit.aspect == 1),
+                    (bar(331), 45, self.edit.aspect == 2),
+                ];
+                for (i, y) in [400, 441, 482, 523].into_iter().enumerate() {
+                    v.push((bar(y), 47 + i, self.edit.effects[i]));
+                }
+                v
+            }
+            OptionsPage::Sounds => vec![
+                (bar(220), 51, self.edit.sound_mode == 0),
+                (bar(261), 53, self.edit.sound_mode == 1),
+                (bar(320), 54, self.edit.sound_quality == 0),
+                (bar(361), 55, self.edit.sound_quality == 1),
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Sliders of the sound page: (track y, label string index, value).
+    fn sliders(&self) -> Vec<(i32, usize, u8)> {
+        if self.page != OptionsPage::Sounds {
+            return Vec::new();
+        }
+        vec![
+            (433, 56, self.edit.volumes[0]),
+            (473, 57, self.edit.volumes[1]),
+            (513, 58, self.edit.volumes[2]),
+            (553, 59, self.edit.volumes[3]),
+            (593, 60, self.edit.comment_frequency),
+        ]
+    }
+
+    fn click_bar(&mut self, index: usize) {
+        match self.page {
+            OptionsPage::Graphics => match index {
+                0..=2 => self.edit.aspect = index as u8,
+                3..=6 => self.edit.effects[index - 3] = !self.edit.effects[index - 3],
+                _ => {}
+            },
+            // Bar 1 (three-dimensional sound) is unavailable, greyed out as observed.
+            OptionsPage::Sounds => match index {
+                0 => self.edit.sound_mode = 0,
+                2 => self.edit.sound_quality = 0,
+                3 => self.edit.sound_quality = 1,
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn click_slider(&mut self, index: usize, cell: u8) {
+        let v = cell.min(10);
+        match index {
+            0..=3 => self.edit.volumes[index] = v,
+            4 => self.edit.comment_frequency = v,
+            _ => {}
+        }
+    }
+
+    /// Apply input.
+    pub fn handle(&mut self, event: InputEvent) -> Option<OptionsOutcome> {
+        match event {
+            InputEvent::KeyDown { key: Key::Escape } => {
+                // Escape leaves the graphics page (= Cancel) and the options menu; the sound and
+                // shortcut pages need their buttons (`ui-flow.md` 2.2).
+                return match self.page {
+                    OptionsPage::Main => Some(OptionsOutcome::Back),
+                    OptionsPage::Graphics => {
+                        self.open(OptionsPage::Main);
+                        None
+                    }
+                    _ => None,
+                };
+            }
+            InputEvent::PointerMove { x256, y256 } => {
+                self.pointer = (Fixed::from_raw(x256).round(), Fixed::from_raw(y256).round());
+            }
+            InputEvent::PointerDown {
+                button: Button::Left,
+            } => {
+                let (px, py) = self.pointer;
+                if let Some(i) = self.bars().iter().position(|(r, _, _)| hit(*r, px, py)) {
+                    self.click_bar(i);
+                    return None;
+                }
+                for (i, (y, _, _)) in self.sliders().iter().enumerate() {
+                    for cell in 0..10 {
+                        let r = (SLIDER_X + SLIDER_PITCH * cell, *y, SLIDER_CELL_W, SLIDER_H);
+                        if hit(r, px, py) {
+                            self.click_slider(i, cell as u8 + 1);
+                            return None;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        let chosen = self.column.handle(event)?;
+        match (self.page, chosen) {
+            (OptionsPage::Main, MenuAction::Graphics) => self.open(OptionsPage::Graphics),
+            (OptionsPage::Main, MenuAction::Sounds) => self.open(OptionsPage::Sounds),
+            (OptionsPage::Main, MenuAction::Shortcuts) => self.open(OptionsPage::Shortcuts),
+            (OptionsPage::Main, MenuAction::Back) => return Some(OptionsOutcome::Back),
+            (_, MenuAction::Ok) => {
+                self.applied = self.edit.clone();
+                let applied = self.applied.clone();
+                self.open(OptionsPage::Main);
+                return Some(OptionsOutcome::Apply(applied));
+            }
+            (_, MenuAction::Cancel) => self.open(OptionsPage::Main),
+            (OptionsPage::Shortcuts, MenuAction::DefaultSet1) => self.edit.shortcut_set = 0,
+            (OptionsPage::Shortcuts, MenuAction::DefaultSet2) => self.edit.shortcut_set = 1,
+            (OptionsPage::Shortcuts, MenuAction::UserSet) => self.edit.shortcut_set = 2,
+            _ => {}
+        }
+        None
+    }
+
+    /// State for `observe`: the buttons, then the bars (`bar:<n>`, enabled = selected) and slider
+    /// cells (`slider:<n>:<cell>`).
+    #[must_use]
+    pub fn state(&self) -> MenuState {
+        let mut items = items_to_protocol(&self.column.items);
+        for (i, (r, label, on)) in self.bars().iter().enumerate() {
+            items.push(UiItem {
+                action: format!("bar:{i}"),
+                label: text(&self.strings, *label, "option").to_string(),
+                rect: [r.0, r.1, r.2, r.3],
+                enabled: *on,
+            });
+        }
+        for (i, (y, label, value)) in self.sliders().iter().enumerate() {
+            items.push(UiItem {
+                action: format!("slider:{i}"),
+                label: format!("{} {value}", text(&self.strings, *label, "volume")),
+                rect: [SLIDER_X, *y, SLIDER_PITCH * 10, SLIDER_H],
+                enabled: true,
+            });
+        }
+        MenuState {
+            screen: match self.page {
+                OptionsPage::Main => "options",
+                OptionsPage::Graphics => "options_graphics",
+                OptionsPage::Sounds => "options_sounds",
+                OptionsPage::Shortcuts => "options_shortcuts",
+            }
+            .into(),
+            items,
+            hovered: self.column.hovered,
+            page: None,
+        }
+    }
+
+    /// Render the frame.
+    #[must_use]
+    pub fn render(&self, assets: Option<&UiAssets>) -> Framebuffer {
+        let mut fb = Framebuffer::new(MENU_FRAME.0, MENU_FRAME.1);
+        fb.clear([0, 0, 0, 255]);
+        let bg = assets.and_then(|a| match self.page {
+            OptionsPage::Main => a.forest_background.as_ref(),
+            OptionsPage::Shortcuts => a.dungeon_background.as_ref(),
+            _ => a.sunlit_background.as_ref(),
+        });
+        if let Some(bg) = bg {
+            fb.blit_rgba(0, BG_Y, bg.width, bg.height, &bg.rgba);
+        }
+        let title_font = assets.and_then(|a| a.font_title.as_ref());
+        let font = assets.and_then(|a| a.font_text.as_ref());
+        let s = &self.strings;
+        let title = match self.page {
+            OptionsPage::Main => text(s, 27, "options"),
+            OptionsPage::Graphics => text(s, 28, "graphics"),
+            OptionsPage::Sounds => text(s, 29, "sounds"),
+            OptionsPage::Shortcuts => text(s, 20, "shortcuts"),
+        };
+        if let Some(f) = title_font {
+            f.draw_centered(&mut fb, title, 442, 158 - f.height() as i32 / 2);
+        }
+        if let Some(f) = font {
+            match self.page {
+                OptionsPage::Main => {
+                    // The original prints the processor and memory here; the engine prints its own.
+                    f.draw_centered(&mut fb, "OpenSherwood", 442, 254 - f.height() as i32 / 2);
+                    f.draw_centered(
+                        &mut fb,
+                        concat!("v", env!("CARGO_PKG_VERSION")),
+                        442,
+                        274 - f.height() as i32 / 2,
+                    );
+                }
+                OptionsPage::Graphics => {
+                    f.draw(
+                        &mut fb,
+                        text(s, 42, "resolution"),
+                        OPT_BAR_X,
+                        233 - f.height() as i32,
+                    );
+                    f.draw(
+                        &mut fb,
+                        text(s, 46, "effects"),
+                        OPT_BAR_X,
+                        383 - f.height() as i32,
+                    );
+                }
+                OptionsPage::Shortcuts => {
+                    let mut y = 161;
+                    for (i, (name, key)) in
+                        shortcut_lines(self.edit.shortcut_set).iter().enumerate()
+                    {
+                        let _ = i;
+                        f.draw(&mut fb, name, 226, y);
+                        let w = f.measure(key);
+                        f.draw(&mut fb, key, 590 - w, y);
+                        y += 15;
+                    }
+                }
+                OptionsPage::Sounds => {}
+            }
+            for (r, label, on) in self.bars() {
+                fb.fill_rect(
+                    r.0,
+                    r.1,
+                    r.0 + r.2,
+                    r.1 + r.3,
+                    if on { ORANGE } else { TEAL },
+                );
+                f.draw_centered(&mut fb, text(s, label, "option"), r.0 + r.2 / 2, r.1 + 5);
+            }
+            for (y, label, value) in self.sliders() {
+                f.draw(
+                    &mut fb,
+                    text(s, label, "volume"),
+                    SLIDER_X,
+                    y - 9 - f.height() as i32 + 4,
+                );
+                for cell in 0..10 {
+                    let x = SLIDER_X + SLIDER_PITCH * cell;
+                    let filled = (cell as u8) < value;
+                    fb.fill_rect(
+                        x,
+                        y,
+                        x + SLIDER_CELL_W,
+                        y + SLIDER_H,
+                        if filled { ORANGE } else { TEAL_DIM },
+                    );
+                }
+            }
+        }
+        self.column.draw(&mut fb, assets);
+        draw_pointer(
+            &mut fb,
+            self.pointer,
+            assets.and_then(|a| a.cursor.as_ref()),
+        );
+        fb
+    }
+}
+
+/// The shortcut table by function (the action names are the engine's words; `ui-flow.md` 4.3).
+fn shortcut_lines(set: u8) -> Vec<(String, String)> {
+    let default2 = set == 1;
+    let k = |a: &str, b: &str| if default2 { b } else { a }.to_string();
+    vec![
+        (
+            "zoom in / out".to_string(),
+            k("num + / num -", "num + / num -"),
+        ),
+        ("scroll".to_string(), "arrow keys".to_string()),
+        ("minimap".to_string(), k(";", "num *")),
+        ("select character 1..5".to_string(), k("1..5", "num 1..5")),
+        ("select all / none".to_string(), k("q / d", "num 6 / num 0")),
+        (
+            "crouch / stand".to_string(),
+            k("c / s", "page down / page up"),
+        ),
+        (
+            "go behind (modifier)".to_string(),
+            k("left shift", "right shift"),
+        ),
+        ("outlines".to_string(), "caps lock".to_string()),
+        (
+            "action 1 / 2 / 3".to_string(),
+            k("g / h / j", "num 7 / 8 / 9"),
+        ),
+        (
+            "move during action (modifier)".to_string(),
+            k("left ctrl", "right ctrl"),
+        ),
+        ("save quick action".to_string(), k("a", "return")),
+        ("start quick actions".to_string(), "space".to_string()),
+        ("clear quick actions".to_string(), "backspace".to_string()),
+        ("field of vision".to_string(), k("alt", "alt gr")),
+        ("quick save / quick load".to_string(), "F1 / F5".to_string()),
+    ]
 }
 
 /// One entry of the load / save list.

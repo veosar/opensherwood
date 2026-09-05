@@ -4,11 +4,14 @@
 //! sprite of every non-player actor comes from `Configuration/profile.cpf`
 //! (`docs/formats/profile.md`): `BORG.profile` indexes the SD table, `OILE.profile` the CV table
 //! and `TOTO.profile` the PC table, each record naming `Characters/<sprite>.rhs`. A missing or
-//! malformed table, or a referenced sprite whose profile cannot be loaded from the bank, fails
-//! the mission load ([`load`]); only with `OPENSHERWOOD_LENIENT_ASSETS=1` do they, like an index
-//! outside its table, fall back to a default of the actor's kind with a logged warning. `SCOT`
-//! records carry no profile: which hero stands in a slot is campaign state, so the heroes are
-//! still assigned in file order
+//! malformed table, a profile index outside its table ([`check_profile_indices`]), or a
+//! referenced sprite whose profile cannot be loaded from the bank, fails the mission load
+//! ([`load`], and [`build_spec_checked`] refuses any actor left on a default sprite); only with
+//! `OPENSHERWOOD_LENIENT_ASSETS=1` do they fall back to a default of the actor's kind (default
+//! sprite, 100 hit points, no knock-out resistance) with a logged warning, and then the spec
+//! carries `Assumption::LenientAssets` so the mission's outcome is marked as not authoritative.
+//! `SCOT` records carry no profile: which hero stands in a slot is campaign state, so the heroes
+//! are still assigned in file order
 //! (Robin first; correct for `H01_Lin_VL` and `S01_Not_VL`, where Robin is alone). Whether the
 //! original honours `SCOT.unknown_0x16` for that choice is an open question of the spec.
 //!
@@ -28,6 +31,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use opensherwood_assets::{GameDir, SpriteBank};
 use opensherwood_core::ai::DEFAULT_HIT_POINTS;
 use opensherwood_core::natives::{NativeStatus, native_status};
+use opensherwood_core::vm::Assumption;
+use opensherwood_core::world::DEFAULT_STARTING_MONEY;
 use opensherwood_core::{ActorSpec, Geometry, Instruction, MapInfo, MissionSpec, Team};
 use opensherwood_formats::cpf::{self, ProfileTable, SoldierProfile};
 use opensherwood_formats::rhm::{self, ActorGroup, Command, CommandTable, Mission, RailPoint};
@@ -249,6 +254,17 @@ pub fn load(game: &GameDir, name: &str, lenient: bool) -> Result<(LoadedMission,
     };
     let mut available_sprites = BTreeSet::new();
     if let Some(table) = &profiles {
+        // Every BORG / OILE / TOTO profile index must address its table: strict loading
+        // refuses the mission otherwise, lenient loading logs and falls back per actor.
+        for problem in check_profile_indices(&mission, table) {
+            if lenient {
+                eprintln!(
+                    "opensherwood: {logical}: {problem}; OPENSHERWOOD_LENIENT_ASSETS: default sprite and stats"
+                );
+            } else {
+                return Err(format!("{logical}: {problem}"));
+            }
+        }
         for sprite in referenced_sprites(&mission, table) {
             match SpriteBank::load_profile(game, &sprite) {
                 Ok(_) => {
@@ -310,6 +326,42 @@ fn index<T>(table: &[T], i: u32) -> Option<&T> {
     usize::try_from(i).ok().and_then(|i| table.get(i))
 }
 
+/// Every `BORG`, `OILE` and `TOTO` record whose profile index lies outside its table (SD, CV,
+/// PC), one line each: strict loading refuses a mission with any.
+#[must_use]
+pub fn check_profile_indices(mission: &Mission, table: &ProfileTable) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut check = |group: &str, k: usize, i: u32, len: usize| {
+        if usize::try_from(i).is_ok_and(|i| i < len) {
+            return;
+        }
+        out.push(format!(
+            "{group} record {k} profile index {i} outside its table of {len} entries"
+        ));
+    };
+    for group in &mission.actor_groups {
+        match group {
+            ActorGroup::Npcs { records, .. } => {
+                for (k, r) in records.iter().enumerate() {
+                    check("BORG", k, r.profile, table.soldiers.len());
+                }
+            }
+            ActorGroup::Civilians { records, .. } => {
+                for (k, r) in records.iter().enumerate() {
+                    check("OILE", k, r.profile, table.civilians.len());
+                }
+            }
+            ActorGroup::Vips { records, .. } => {
+                for (k, r) in records.iter().enumerate() {
+                    check("TOTO", k, r.profile, table.player_characters.len());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// `(hit points, knock-out resistance)` of an SD record: `unknown_pre` read as `u16 p0 .. p4,
 /// u8 pole, u16 q0 .. q4` with `p0` = hit points and `p4` = knock-out resistance
 /// (`docs/formats/profile.md`, "Stat field hypotheses"; both hypotheses). A record with `p0 = 0`
@@ -349,24 +401,37 @@ fn npc_sprite<'a>(
 /// Build the spec from a loaded mission and the background size (one log line with the rail and
 /// script translation summary). Refuses a mission whose script exists but cannot be translated or bound (unknown
 /// map index space, element table mismatch, invalid program) unless `lenient`; a mission file that has
-/// no script at all is accepted only when `lenient` let `load` skip it.
+/// no script at all is accepted only when `lenient` let `load` skip it. Refuses, unless `lenient`, a
+/// mission with any actor on a default sprite (a profile index outside its table, an unavailable
+/// sprite or no table): a fallback substitutes the default sprite, hit points and knock-out
+/// resistance, which lenient mode records as `Assumption::LenientAssets` on the spec.
 ///
 /// # Errors
 ///
-/// The script's translation or binding error, unless `lenient`.
+/// The script's translation or binding error, or the profile fallback, unless `lenient`.
 pub fn build_spec_checked(
     loaded: &LoadedMission,
     map: MapInfo,
     geometry: Geometry,
     lenient: bool,
 ) -> Result<(MissionSpec, Vec<String>), String> {
-    let (spec, profiles, stats) = build_spec_with_stats(loaded, map, geometry);
+    let (mut spec, profiles, stats) = build_spec_with_stats(loaded, map, geometry);
     eprintln!(
         "opensherwood: mission {} on {}: {}",
         loaded.mission.header.mission_id,
         loaded.mission.header.map,
         stats.summary()
     );
+    if stats.profile_fallbacks > 0 {
+        if lenient {
+            spec.assumptions.insert(Assumption::LenientAssets);
+        } else {
+            return Err(format!(
+                "mission actors: {} on a default sprite (profile index outside its table, sprite unavailable or no profile table); strict loading refuses the fallback",
+                stats.profile_fallbacks
+            ));
+        }
+    }
     if let Some(err) = &stats.script_error
         && !lenient
     {
@@ -511,6 +576,8 @@ pub fn build_spec_with_stats(
             script,
             rails,
             lenient_natives: false,
+            starting_money: DEFAULT_STARTING_MONEY,
+            assumptions: BTreeSet::new(),
         },
         profiles,
         stats,
@@ -1208,5 +1275,60 @@ mod tests {
         );
         assert_eq!(profiles, [NPC_PROFILE, CIVILIAN_PROFILE]);
         assert_eq!(stats.profile_fallbacks, 5);
+    }
+
+    /// A profile index outside its table is a load error in strict mode
+    /// (`check_profile_indices` names the record, `build_spec_checked` refuses the fallback);
+    /// lenient mode substitutes the default and records `Assumption::LenientAssets` on the
+    /// spec. A mission whose indices all resolve is accepted strictly with no assumption and
+    /// the default starting money.
+    #[test]
+    fn strict_loading_refuses_out_of_range_profile_indices_and_lenient_records_the_fallback() {
+        let mission = synthetic_mission();
+        let table = synthetic_table();
+        let problems = check_profile_indices(&mission, &table);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("BORG record 2") && problems[0].contains("index 99"),
+            "{}",
+            problems[0]
+        );
+        let loaded = LoadedMission {
+            mission: mission.clone(),
+            profiles: Some(table.clone()),
+            available_sprites: referenced_sprites(&mission, &table),
+            script: None,
+        };
+        let map = MapInfo {
+            width: 100,
+            height: 100,
+        };
+        let err = build_spec_checked(&loaded, map, Geometry::default(), false).unwrap_err();
+        assert!(err.contains("1 on a default sprite"), "{err}");
+        let (spec, _) = build_spec_checked(&loaded, map, Geometry::default(), true).unwrap();
+        assert!(spec.assumptions.contains(&Assumption::LenientAssets));
+        assert_eq!(spec.actors[2].profile, NPC_PROFILE);
+        assert_eq!(spec.starting_money, DEFAULT_STARTING_MONEY);
+        // Without the offending record everything resolves: strict, clean.
+        let mut clean = mission;
+        if let ActorGroup::Npcs { records, .. } = &mut clean.actor_groups[0] {
+            records.truncate(2);
+        }
+        assert!(check_profile_indices(&clean, &table).is_empty());
+        let loaded = LoadedMission {
+            mission: clean.clone(),
+            profiles: Some(table.clone()),
+            available_sprites: referenced_sprites(&clean, &table),
+            script: None,
+        };
+        let (spec, _) = build_spec_checked(&loaded, map, Geometry::default(), false).unwrap();
+        assert!(spec.assumptions.is_empty());
+        assert_eq!(spec.actors.len(), 4);
+        // A sprite the bank could not load is the same fallback (strict `load` fails earlier).
+        let mut partial = loaded;
+        partial.available_sprites.remove("Guard A01");
+        assert!(build_spec_checked(&partial, map, Geometry::default(), false).is_err());
+        let (spec, _) = build_spec_checked(&partial, map, Geometry::default(), true).unwrap();
+        assert!(spec.assumptions.contains(&Assumption::LenientAssets));
     }
 }

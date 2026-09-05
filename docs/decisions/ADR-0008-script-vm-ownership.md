@@ -46,7 +46,8 @@ settled before any interpreter is written: a VM living above core cannot be snap
   queue, sequences with their completion tokens, pending texts, camera target, patches, attributes, states,
   the `script` RNG stream) and entities gain `active` / `ai_locked` flags; ruleset 6, snapshot schema 9 and
   hash schema 8 (2026-09-02, Codex review 5); ruleset 7 for the budget scope and charges below (Codex review 6,
-  canonical bytes unchanged).
+  canonical bytes unchanged); ruleset 10, snapshot schema 13 and hash schema 12 (2026-09-05, Codex review 7:
+  the native signature table, the action-change queue, the assumption set and the stealth layer's cursor).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
 - **What is authoritative and what is not.** `VmState::counters` (instructions, callbacks, budget aborts,
   faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
@@ -76,9 +77,41 @@ settled before any interpreter is written: a VM living above core cannot be snap
   way to rebuild a missing grid and every caller handles its error.
 - **Trust boundary.** `Program::validate` in core is self-sufficient (functions in table order from address 0
   with their prologue, jumps inside their function, parameter reads and call arities against the table,
-  arities within the stack limit, aggregate code / vertex bounds, element and location coordinates within
-  `+-2^20`); the translator's checks are earlier diagnostics. `World::validate` also requires the gameplay and
-  `script` RNG streams to derive from the world seed with their assigned ids (1 and 2).
+  arities within the stack limit, every native call site of a known id with the argument count of the one
+  signature table `natives::NATIVE_SIGNATURES` (`id -> arity, has_result`, derived from the arity column of the
+  spec's rows) and every native result read directly after a call that leaves one, aggregate code / vertex
+  bounds, element and location coordinates within `+-2^20`); the translator's checks are earlier diagnostics.
+  The dispatcher checks the signature again: a call whose argument count differs traps like an unknown native
+  (`counters.arity_mismatches`), so a required argument never defaults to 0. `World::validate` also requires
+  the gameplay and `script` RNG streams to derive from the world seed with their assigned ids (1 and 2), and
+  the stealth layer's invariants (`Dead` and `alive` agree, timed states carry their timer, attack orders go
+  from a player character to an enemy soldier, alert states belong to enemy soldiers).
+- **Hypotheses and taint.** The retail scripts run over recorded stubs and over engine hypotheses (the
+  stealth constants, the profile stats `p0` / `p4`, the 25-versus-60 tick reading, the campaign graph, the
+  lenient asset fallbacks). Whenever a script-visible value depends on one, the VM records an
+  `vm::Assumption` in `VmState::assumptions` (a `BTreeSet`, snapshotted, hashed under `scripts`, validated:
+  a `StubResult` must name a stub): `StubResult(id)` when the script consumes a stub's result
+  (`GetNativeResult` after a policy-valued or zero-valued stub) or calls a never-win stub
+  (`natives::NEVER_WIN_STUBS`); `Perception` / `KnockOut` when the stealth layer changed script-visible state
+  (an alert or knock-out action id delivered to `ActionChange`, native 90 reporting a knock-out, 128 refusing
+  one); `ProfileStats` when a blow consulted the knock-out resistance; `TickRate` when a native-56 wait ran
+  or `Hourglass` read its time; `CampaignGraph` when the app's successor rule picked the next mission
+  (`World::record_assumption`); `LenientAssets` when the app built the spec with a fallback
+  (`MissionSpec::assumptions`). `mission_won` / `mission_lost` stay recorded, but `ScriptObservation::tainted`
+  (the set is non-empty) marks the outcome as **not authoritative**: it proves consistency with the
+  hypotheses, not the original's behaviour, until the oracle captures of `stealth-and-combat.md` section 7
+  settle them. Strict mode keeps trapping unknown ids; the taint is what strict mode says about the known
+  ones. In a normal run of the first mission the set holds `StubResult(235)` (the purse object's "taken"
+  predicate the steward objective polls) and `TickRate` from the first tick after the briefing.
+- **Action changes are delivered exactly once.** Every change of an actor's reported action id is queued in
+  `VmState::pending_action_changes` (snapshotted, hashed under `scheduler`, validated) and delivered to the
+  class bound to the actor within what the tick's budget left; a change whose class has no handler is
+  dropped as undeliverable, one whose handler returned (or trapped: it would fail the same way again) is
+  removed, one the budget cut short (`CallOutcome::Exhausted`) stays at the front and is delivered at the
+  start of the next tick, after the messages and before `Hourglass`.
+- **Campaign money.** `MissionSpec::starting_money` (100 by default) is applied to `VmState::money` before
+  `Initialize` runs, so a script that sets it (H10's native 237) wins and nothing overwrites it afterwards;
+  the app seeds it from the player's profile at load, never at install.
 - **Sequences.** Native 32 is a barrier: walks (45 / 48 / 64) and animations (49..=53, stubs) issue completion
   tokens, the barrier holds the sequence until every token issued since the previous barrier completed (a
   walk completes when the entity arrived, gave up, was ordered elsewhere, deactivated or died: hypothesis,

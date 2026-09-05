@@ -416,7 +416,10 @@ harness reads it through `observe` (`docs/harness.md`, "Stealth layer").
 
 - **Perception** (item 2). Every enemy soldier (`BORG` actor) that is alive, active, not AI-locked (natives
   134 / 135: a locked AI perceives nothing, section 2.5) and on his feet tests every player character each
-  tick, in entity order, within a bound of 65536 pairs per tick: a **view cone** of half angle
+  tick, in entity order from a round-robin cursor (`World::ai_cursor`, snapshotted) and within the layer's
+  per-tick work budget (`AI_WORK_PER_TICK` = 2^24, shared with the path searches the alert states issue: one
+  unit per entity pre-indexed, one per entity inspected, one per soldier / player character pair tested; a
+  scan the budget cuts short resumes next tick where it stopped): a **view cone** of half angle
   `VIEW_CONE_HALF_ANGLE_256` = 32 (45 degrees) and range `VIEW_RANGE` = 200 map px, the range over
   `CROUCH_VIEW_DIVISOR` = 2 for a crouched character; and a **noise radius** `RUN_NOISE_RADIUS` = 150 px
   around the soldier within which a running character is heard whatever he faces. Occluders and walls do not
@@ -452,7 +455,10 @@ harness reads it through `observe` (`docs/harness.md`, "Stealth layer").
   the level script polls with native 90).
 - **Hit points**: `p0` of the SD record per entity (`hypothesis`, section 2.3); 100 for player characters and
   civilians (no field read yet). No damage model: nothing loses them yet.
-- **Script predicates** (item 3): 85 = dead or deactivated, 87 = dead, 90 = knocked down / lying / dead
+- **Script predicates** (item 3; all five read one state function, `ai::ActorStatus`, and `validate` holds
+  the layer's invariants: `Dead` exactly when `alive` is false, a timer exactly in the timed states, alert
+  states on enemy soldiers only, attack orders from a player character to an enemy soldier): 85 = dead or
+  deactivated, 87 = dead, 90 = knocked down / lying / dead
   (getting up counts as back in action: hypothesis), 128 = alive, active and on his feet, 240 = active;
   88 / 89 stay stubs returning 0 (no tied / netted state exists); 140 (actor, 0 / 1 / 2) sets the gait of the
   actor's program walks (0 walk, else run; section 2.5, `hypothesis`); `FilterAIEvent` is never called.
@@ -461,6 +467,13 @@ harness reads it through `observe` (`docs/harness.md`, "Stealth layer").
   per second, so the spec's 25 Hz reading makes these 2.4 times too fast until the oracle settles item 7.1);
   without the block (or a catalog) the spec's counts apply (`NOTICED_TICKS` 6, `ALARM_TICKS` 11,
   `KNOCKED_DOWN_TICKS` 13, `GET_UP_TICKS` 16, `PUNCH_TICKS` 12).
+
+- **Taint** (ADR-0008, "Hypotheses and taint"): since every constant above is a hypothesis, the VM records
+  an assumption whenever the layer changes script-visible state: `perception` when an alert action id reaches
+  an `ActionChange` handler, `knock_out` when native 90 reports a knocked-out actor, 128 refuses one or a
+  knock-out action id reaches a handler, `profile_stats` when a blow consults `p4`; `observe.script.tainted`
+  then marks the mission's outcome as not authoritative until the oracle captures of section 7 settle the
+  values.
 
 Not implemented from section 6: the rails' check-for scans, silhouettes, the fighting posture, strikes and
 parries, the bow, damage and death, tying / carrying / reviving, the stimuli of section 5.

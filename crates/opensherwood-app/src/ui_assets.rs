@@ -46,6 +46,9 @@ pub mod ids {
     pub const CURSOR: u32 = 284;
     /// Load / save screens' dungeon background.
     pub const DUNGEON_BACKGROUND: u32 = 189;
+    /// Options menu forest and the graphics / sound options' sunlit forest.
+    pub const FOREST_BACKGROUND: u32 = 186;
+    pub const SUNLIT_BACKGROUND: u32 = 188;
     /// Credits background (full frame) and scrolling text strip.
     pub const CREDITS_BACKGROUND: u32 = 309;
     pub const CREDITS_STRIP: u32 = 308;
@@ -182,6 +185,8 @@ pub fn load(game: &GameDir) -> UiAssets {
         credits_background: pic_with(ids::CREDITS_BACKGROUND, false),
         credits_strip: pic(ids::CREDITS_STRIP),
         dungeon_background: pic_with(ids::DUNGEON_BACKGROUND, false),
+        forest_background: pic_with(ids::FOREST_BACKGROUND, false),
+        sunlit_background: pic_with(ids::SUNLIT_BACKGROUND, false),
         hud,
         font_button: load_font(game, "MenuButtonEnabled.bfn"),
         font_button_disabled: load_font(game, "MenuButtonDisabled.bfn"),

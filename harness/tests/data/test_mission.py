@@ -295,6 +295,15 @@ def test_running_past_a_soldier_is_noticed_then_the_alarm(binary, game_dir):
         assert g["action"] in (140, 143, 151), g["action"]
         vm = e.call("debug.vm")
         assert not vm["faulted"] and vm["counters"]["traps"] == 0
+        # The taint (ADR-0008, "Hypotheses and taint"): the run's first tick already recorded the
+        # steward objective's stub and the tick rate; `perception` is recorded only when an alert
+        # action id reaches an `ActionChange` handler, and the class of this soldier (the last
+        # element of the soldier range, not one of the archery-training classes) has none, so the
+        # script never saw the alert and no `perception` / `knock_out` entry appears.
+        sc = e.observe(entities=False)["script"]
+        assert sc["tainted"], sc
+        assert {"stub_result": 235} in sc["assumptions"] and "tick_rate" in sc["assumptions"]
+        assert "perception" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
 
 
 def test_a_crouched_approach_from_behind_is_not_noticed(binary, game_dir):
@@ -385,6 +394,10 @@ def test_knock_out_from_behind_puts_the_soldier_out_of_action(binary, game_dir):
         vm = e.call("debug.vm")
         assert vm["counters"]["out_of_action_true"] > 0, "the script's Hourglass polls native 90 on him"
         assert not vm["faulted"] and vm["counters"]["traps"] == 0
+        # Native 90 reported the knock-out and the blow consulted `p4`: both hypotheses taint the outcome.
+        sc = e.observe(entities=False)["script"]
+        assert sc["tainted"], sc
+        assert "knock_out" in sc["assumptions"] and "profile_stats" in sc["assumptions"], sc["assumptions"]
         # The script reacts: the girl gets a path and the running gait (natives 132 / 140).
         girl = next(x for x in e.observe()["entities"] if x["npc_gait"] == "run")
         assert girl["kind"] == "guard"

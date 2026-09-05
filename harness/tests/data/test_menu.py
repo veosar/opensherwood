@@ -38,6 +38,8 @@ def test_menu_renders_and_hover_changes_the_frame(binary, game_dir, tmp_path):
         e.step(1, [key("escape")])
         assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
         e.step(1, pointer_click(748, 440, "left"))
+        assert e.observe(entities=False)["ui"]["screen"] == "select_player"
+        e.step(1, [key("escape")])
         assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
 
 
@@ -158,3 +160,72 @@ def test_hud_kneel_and_stand_icons_change_the_posture(binary, game_dir):
         e.step(2, pointer_click(960, 60, "left"))  # map scroll: consumed, no walk order
         p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
         assert p["target"] is None and e.observe(entities=False)["selected"] is not None
+
+
+def test_options_sound_sliders_apply_and_persist(binary, game_dir, tmp_path):
+    """Options -> Sounds: a click on a slider cell sets the value, OK applies and writes settings.json,
+    Back returns to the main menu; Cancel discards."""
+    import json
+
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path) as e:
+        e.reset({"menu": "main"}, seed=0)
+        e.step(1, pointer_click(748, 481, "left"))  # Options (row 3)
+        assert e.observe(entities=False)["ui"]["screen"] == "options"
+        e.step(1, pointer_click(748, 522, "left"))  # Sounds (row 4)
+        ui = e.observe(entities=False)["ui"]
+        assert ui["screen"] == "options_sounds"
+        assert any(it["action"] == "slider:2" and it["label"].endswith(" 10") for it in ui["items"])
+        e.step(1, pointer_click(226 + 42 * 4 + 10, 520, "left"))  # music slider, fifth cell
+        ui = e.observe(entities=False)["ui"]
+        assert any(it["action"] == "slider:2" and it["label"].endswith(" 5") for it in ui["items"]), ui
+        e.step(1, pointer_click(748, 563, "left"))  # OK (row 5)
+        assert e.observe(entities=False)["ui"]["screen"] == "options"
+        assert json.loads((tmp_path / "settings.json").read_text())["volumes"] == [10, 10, 5, 10]
+        # Cancel discards an edit.
+        e.step(1, pointer_click(748, 522, "left"))
+        e.step(1, pointer_click(226 + 10, 520, "left"))  # music to 1
+        e.step(1, pointer_click(748, 604, "left"))  # Cancel (row 6)
+        e.step(1, pointer_click(748, 522, "left"))
+        ui = e.observe(entities=False)["ui"]
+        assert any(it["action"] == "slider:2" and it["label"].endswith(" 5") for it in ui["items"]), ui
+        e.step(1, pointer_click(748, 604, "left"))
+        e.step(1, pointer_click(748, 604, "left"))  # Back (row 6)
+        assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
+
+
+def letters(word: str) -> list[dict]:
+    events = []
+    for i, ch in enumerate(word):
+        events.append({"tick_offset": 0, "sequence": 2 * i, "kind": "key_down", "key": {"letter": ch}})
+        events.append({"tick_offset": 0, "sequence": 2 * i + 1, "kind": "key_up", "key": {"letter": ch}})
+    return events
+
+
+def test_select_player_new_profile_and_selection(binary, game_dir, tmp_path):
+    """Select player -> New -> type a name, pick Hard, V seal -> the row appears selected; Select returns to
+    the menu showing that profile; the list persists in profiles.json."""
+    import json
+
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path) as e:
+        e.reset({"menu": "main"}, seed=0)
+        e.step(1, pointer_click(748, 440, "left"))  # Select player (row 2)
+        ui = e.observe(entities=False)["ui"]
+        assert ui["screen"] == "select_player"
+        assert [it["action"] for it in ui["items"] if it["action"].startswith("row:")] == ["row:Player"]
+        e.step(1, pointer_click(748, 522, "left"))  # New (row 4)
+        assert e.observe(entities=False)["ui"]["screen"] == "new_player"
+        e.step(1, letters("marian"))
+        e.step(1, pointer_click(580, 428, "left"))  # Hard seal
+        e.step(1, pointer_click(480, 542, "left"))  # V seal
+        ui = e.observe(entities=False)["ui"]
+        assert ui["screen"] == "select_player"
+        rows = [it for it in ui["items"] if it["action"].startswith("row:")]
+        assert [r["action"] for r in rows] == ["row:Player", "row:marian"]
+        assert rows[1]["enabled"], "the new profile is selected"
+        e.step(1, pointer_click(748, 481, "left"))  # Select (row 3)
+        assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
+        doc = json.loads((tmp_path / "profiles.json").read_text())
+        assert doc["selected"] == 1 and doc["profiles"][1]["name"] == "marian"
+        assert doc["profiles"][1]["difficulty"] == 2
+        # The menu now shows the selected profile: its name changes the frame.
+        e.capture(path="menu_marian.png")

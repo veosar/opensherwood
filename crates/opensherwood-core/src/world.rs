@@ -17,7 +17,7 @@ use crate::hash::{Encoder, HASH_SCHEMA_VERSION, Hashes, total};
 use crate::input::{Button, InputEvent, Key, button_tag, encode_key};
 use crate::nav::{DEFAULT_SEARCH_WORK, NavError, NavGrid};
 use crate::rng::Rng;
-use crate::vm::{Program, SCRIPT_RNG_STREAM, ScriptObservation, VmState};
+use crate::vm::{Assumption, Program, SCRIPT_RNG_STREAM, ScriptObservation, VmState};
 
 /// Stable entity identifier (index + generation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -407,6 +407,22 @@ pub struct MissionSpec {
     /// (`opensherwood_core::natives`).
     #[serde(default)]
     pub lenient_natives: bool,
+    /// The player's money when the mission starts (natives 236 / 237): campaign state the app
+    /// seeds ([`DEFAULT_STARTING_MONEY`] by default), applied to the VM before `Initialize`
+    /// runs so a script that sets it (H10's 100000) wins and nothing overwrites it afterwards.
+    #[serde(default = "default_starting_money")]
+    pub starting_money: i32,
+    /// Assumptions the app recorded while building the spec (`Assumption::LenientAssets` when
+    /// an actor fell back to a default profile), seeded into the VM's set at load.
+    #[serde(default)]
+    pub assumptions: BTreeSet<Assumption>,
+}
+
+/// The player's money at the start of a mission when the campaign supplies none.
+pub const DEFAULT_STARTING_MONEY: i32 = 100;
+
+fn default_starting_money() -> i32 {
+    DEFAULT_STARTING_MONEY
 }
 
 /// Serialisable snapshot of the whole authoritative state, with the versions it was made under
@@ -607,6 +623,10 @@ pub struct World {
     /// `None` for worlds without a script.
     #[serde(default)]
     pub vm: Option<VmState>,
+    /// Entity index the stealth layer's perception scan resumes from (`ai.rs`: round robin
+    /// when the tick's AI budget ran out mid-scan; 0 after a completed scan).
+    #[serde(default)]
+    pub ai_cursor: u32,
     /// Navigation grid derived from `geometry` and `map_size`: not serialised, built by every
     /// constructor, `set_geometry` and `restore` before the world is committed (a world the core
     /// hands out always has it; movement orders are refused, never unbounded, without it).
@@ -622,8 +642,9 @@ pub struct World {
 /// `last_ground_click`; 12: the stealth layer: entity `team`, `ai_state`, `state_ticks`,
 /// `last_seen`, `alert_origin`, `attack_target`, `action`, `hit_points`,
 /// `knockout_resistance`, `npc_gait`, `fell_backward`; actor specs carry `hit_points` and
-/// `knockout_resistance`).
-pub const SNAPSHOT_VERSION: u32 = 12;
+/// `knockout_resistance`; 13: the VM's `assumptions` and `pending_action_changes`, the
+/// world's `ai_cursor`, mission specs carry `starting_money` and `assumptions`).
+pub const SNAPSHOT_VERSION: u32 = 13;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -759,7 +780,13 @@ impl World {
         }
         world.validate()?;
         if let Some(program) = &spec.script {
-            world.attach_script(program.clone(), paths, spec.lenient_natives)?;
+            world.attach_script(
+                program.clone(),
+                paths,
+                spec.lenient_natives,
+                spec.starting_money,
+                &spec.assumptions,
+            )?;
             world.validate()?;
         }
         Ok(world)
@@ -1053,6 +1080,7 @@ impl World {
             geometry,
             programs: Vec::new(),
             vm: None,
+            ai_cursor: 0,
             nav: Some(nav),
             catalog: Catalog::default(),
         })
@@ -1252,13 +1280,78 @@ impl World {
                     return Err(format!("entity {:?} {name} position out of range", e.id));
                 }
             }
+            // The stealth layer's invariants (`ai.rs`): dead is one state, a timed state
+            // carries its timer and an untimed one none, the alert states belong to enemy
+            // soldiers and the blow to player characters, a returning soldier knows where to,
+            // a patrolling one remembers nothing.
+            if (e.ai_state == AiState::Dead) == e.alive {
+                return Err(format!(
+                    "entity {:?} dead state {:?} disagrees with alive = {}",
+                    e.id, e.ai_state, e.alive
+                ));
+            }
+            if e.ai_state.timed() != (e.state_ticks > 0) {
+                return Err(format!(
+                    "entity {:?} state ticks {} inconsistent with the {} state {:?}",
+                    e.id,
+                    e.state_ticks,
+                    if e.ai_state.timed() {
+                        "timed"
+                    } else {
+                        "untimed"
+                    },
+                    e.ai_state
+                ));
+            }
+            if e.ai_state.alert() && !(e.kind == EntityKind::Guard && e.team == Team::Enemy) {
+                return Err(format!(
+                    "entity {:?} in the alert state {:?} is not an enemy soldier",
+                    e.id, e.ai_state
+                ));
+            }
+            if e.ai_state == AiState::Punching && e.kind != EntityKind::Player {
+                return Err(format!(
+                    "entity {:?} delivers the punch but is not a player character",
+                    e.id
+                ));
+            }
+            if e.ai_state == AiState::Returning && e.alert_origin.is_none() {
+                return Err(format!(
+                    "entity {:?} is returning without an alert origin",
+                    e.id
+                ));
+            }
+            if e.ai_state == AiState::Patrol && (e.last_seen.is_some() || e.alert_origin.is_some())
+            {
+                return Err(format!(
+                    "entity {:?} patrols with a last seen position or an alert origin",
+                    e.id
+                ));
+            }
         }
         for e in &self.entities {
-            if let Some(t) = e.attack_target
-                && (!ids.contains(&t) || t == e.id)
-            {
-                return Err(format!("entity {:?} attack target {t:?} is invalid", e.id));
+            if let Some(t) = e.attack_target {
+                let victim = self.entities.iter().find(|v| v.id == t);
+                let ok = e.kind == EntityKind::Player
+                    && t != e.id
+                    && victim.is_some_and(|v| v.kind == EntityKind::Guard && v.team == Team::Enemy);
+                if !ok {
+                    return Err(format!(
+                        "entity {:?} attack target {t:?} is invalid: the order goes from a player character to an enemy soldier",
+                        e.id
+                    ));
+                }
             }
+        }
+        if !self.entities.is_empty() && self.ai_cursor as usize >= self.entities.len() {
+            return Err(format!(
+                "ai cursor {} beyond the {} entities",
+                self.ai_cursor,
+                self.entities.len()
+            ));
+        }
+        if self.entities.is_empty() && self.ai_cursor != 0 {
+            return Err("ai cursor without entities".into());
         }
         if let Some(sel) = self.selected
             && !ids.contains(&sel)
@@ -1615,10 +1708,11 @@ impl World {
                 anim.advance(&self.catalog, wanted);
             }
         }
-        // The action id every human reports (`ai::action_id`); a change reaches the script's
-        // `ActionChange` of the class bound to the actor with `(previous, new)` (hypothesis on
-        // the parameter order: the actor classes compare the second parameter with 141,
-        // `docs/formats/scb.md`), within what the tick's budget left.
+        // The action id every human reports (`ai::action_id`); a change is queued for the
+        // script's `ActionChange` of the class bound to the actor with `(previous, new)`
+        // (hypothesis on the parameter order: the actor classes compare the second parameter
+        // with 141, `docs/formats/scb.md`) and delivered within what the tick's budget left;
+        // what it cannot deliver waits for the next tick (`vm.rs`, "Action changes").
         let mut changes: Vec<(u32, i32, i32)> = Vec::new();
         for (i, e) in self.entities.iter_mut().enumerate() {
             if !e.active || e.kind == EntityKind::Obstacle {
@@ -1644,8 +1738,9 @@ impl World {
             }
         }
         for (class, previous, now) in changes {
-            self.vm_action_change(class, previous, now);
+            self.vm_queue_action_change(class, previous, now);
         }
+        self.vm_deliver_action_changes();
         if let Some(p) = self.entities.iter().find(|e| e.kind == EntityKind::Player)
             && Fixed::length(p.x - self.goal.0, p.y - self.goal.1) <= Fixed::from_int(16)
         {
@@ -1760,6 +1855,7 @@ impl World {
             encode_key(*k, &mut keys);
         }
         w.u32(self.keys_down.len() as u32).bytes(&keys);
+        w.u32(self.ai_cursor);
         parts.insert("world".into(), w.finish());
 
         let mut a = Encoder::new("actors");
@@ -2077,7 +2173,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "39857808207a23fb4632c64a85682f9a34b7eaef064541ac60ff128df4380374";
+        "a16217d3aefd5a2c892d1f1603928e65d7c409bc0bdb6c3a651e0a90bf32ed47";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -2155,6 +2251,9 @@ mod tests {
         let mut w = base.clone();
         w.entities[1].fell_backward = true;
         variants.push(("fell_backward", w));
+        let mut w = base.clone();
+        w.ai_cursor = 1;
+        variants.push(("ai_cursor", w));
         let mut w = base.clone();
         w.programs.push(vec![Instruction::Stop]);
         variants.push(("programs", w));
@@ -2484,6 +2583,8 @@ mod tests {
             script: None,
             rails: Vec::new(),
             lenient_natives: false,
+            starting_money: DEFAULT_STARTING_MONEY,
+            assumptions: BTreeSet::new(),
         };
         let w = World::new_mission(Scenario::Mission("EmbTut".into()), 1, &spec).unwrap();
         assert_eq!(w.entities.len(), 2);
@@ -2555,6 +2656,8 @@ mod tests {
             script: None,
             rails: Vec::new(),
             lenient_natives: false,
+            starting_money: DEFAULT_STARTING_MONEY,
+            assumptions: BTreeSet::new(),
         };
         World::new_mission(Scenario::Mission("T".into()), 9, &spec).unwrap()
     }

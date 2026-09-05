@@ -32,6 +32,18 @@
 //! holds the sequence until every token issued since the previous barrier completed. Text pages
 //! (native 203) and waits (native 56) hold the sequence directly. Camera moves (33 / 34) are
 //! instant. Native 202 texts are never blocking.
+//!
+//! Action changes. Every change of an actor's reported action id is queued
+//! (`VmState::pending_action_changes`, snapshotted and hashed) and delivered to the class bound
+//! to the actor as `ActionChange(previous, new)` exactly once: a change whose class has no
+//! handler is dropped as undeliverable, one whose handler returned (or trapped) is removed, and
+//! one the budget cut short stays at the front of the queue for the next tick.
+//!
+//! Hypotheses and taint (ADR-0008). The engine runs the retail scripts over stubs and over
+//! hypotheses about the original; whenever a script-visible value depends on one, the VM records
+//! an [`Assumption`] in `VmState::assumptions` (snapshotted, hashed, validated, exposed as
+//! `ScriptObservation::assumptions` / `tainted`). `mission_won` / `mission_lost` are still
+//! recorded, but an outcome reached with a non-empty set is documented as not authoritative.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -483,10 +495,13 @@ impl Program {
     /// table sizes (per class and aggregate), functions laid out in table order from address 0
     /// each starting with the `Enter` of its frame sizes, jumps inside their function, parameter
     /// reads and call arities against the function table, slot indices inside their blocks,
-    /// native / call arities within [`MAX_STACK`], balanced parameter and argument stacks in
-    /// every function ([`check_stack_balance`]), bindings inside the tables, and element and
-    /// location coordinates within `+-MAX_LOCATION_COORD`. The translator performs the same
-    /// checks earlier for diagnostics; this is the trust boundary (a snapshot embeds the program).
+    /// native / call arities within [`MAX_STACK`], every native call of a known id with the
+    /// argument count of its signature and every native result read directly after a call
+    /// that leaves one (`natives::NATIVE_SIGNATURES`; an unknown id is unconstrained, it traps
+    /// or is recorded at run time), balanced parameter and argument stacks in every function
+    /// ([`check_stack_balance`]), bindings inside the tables, and element and location
+    /// coordinates within `+-MAX_LOCATION_COORD`. The translator performs the same checks
+    /// earlier for diagnostics; this is the trust boundary (a snapshot embeds the program).
     pub fn validate(&self) -> Result<(), String> {
         if self.classes.is_empty() {
             return Err("program has no classes".into());
@@ -583,8 +598,33 @@ impl Program {
                     | Instr::PushParam { src }
                     | Instr::PushArg { src } => slot_ok(src),
                     Instr::LoadParam { dst, index } => slot_ok(dst) && index < f.param_count,
+                    Instr::GetNativeResult { dst } => {
+                        let after =
+                            pc.checked_sub(1)
+                                .and_then(|p| c.code.get(p))
+                                .and_then(|prev| match *prev {
+                                    Instr::Native { id, .. } => Some(id),
+                                    _ => None,
+                                });
+                        match after {
+                            Some(id) => {
+                                if crate::natives::native_signature(id)
+                                    .is_some_and(|sig| !sig.has_result)
+                                {
+                                    return Err(format!(
+                                        "class {ci} instruction {pc} reads the result of native {id}, which has none"
+                                    ));
+                                }
+                            }
+                            None => {
+                                return Err(format!(
+                                    "class {ci} instruction {pc} reads a native result without a native call before it"
+                                ));
+                            }
+                        }
+                        slot_ok(dst)
+                    }
                     Instr::GetCallResult { dst }
-                    | Instr::GetNativeResult { dst }
                     | Instr::LoadInt { dst, .. }
                     | Instr::LoadFixed { dst, .. } => slot_ok(dst),
                     Instr::Call { function, argc } => {
@@ -593,7 +633,17 @@ impl Program {
                                 .get(function as usize)
                                 .is_some_and(|callee| callee.param_count == argc)
                     }
-                    Instr::Native { argc, .. } => argc as usize <= MAX_STACK,
+                    Instr::Native { id, argc } => {
+                        if let Some(sig) = crate::natives::native_signature(id)
+                            && sig.arity != argc
+                        {
+                            return Err(format!(
+                                "class {ci} instruction {pc} calls native {id} with {argc} arguments; its signature takes {}",
+                                sig.arity
+                            ));
+                        }
+                        argc as usize <= MAX_STACK
+                    }
                     Instr::Jump { target } => target_ok(target),
                     Instr::JumpIf { cond, target } => slot_ok(cond) && target_ok(target),
                     Instr::Move { dst, src }
@@ -860,6 +910,9 @@ pub struct Frame {
     pub call_result: i32,
     /// Result of the last native call made from this frame.
     pub native_result: i32,
+    /// Id of the native that produced `native_result` (0 before any call).
+    #[serde(default)]
+    pub last_native: u32,
 }
 
 /// A queued `ProcessMessage` (natives 43 / 44 / 109 / 110), delivered on the next tick.
@@ -1016,6 +1069,64 @@ pub struct UnknownCall {
     pub args: Vec<i32>,
 }
 
+/// A hypothesis or a stub value a script-visible outcome depended on (module documentation,
+/// "Hypotheses and taint"; ADR-0008). Recorded once per kind in `VmState::assumptions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Assumption {
+    /// The script consumed the result of a recorded stub (policy value or 0), or called one of
+    /// the never-win stubs (`natives::NEVER_WIN_STUBS`).
+    StubResult(u32),
+    /// The stealth layer's perception hypotheses (view cone, noise radius, alert states) changed
+    /// script-visible state: an alert action id reached an `ActionChange` handler.
+    Perception,
+    /// The knock-out hypotheses changed script-visible state: native 90 reported a knocked-out
+    /// actor, native 128 refused one, or a knock-out action id reached an `ActionChange`.
+    KnockOut,
+    /// The profile stat hypotheses (`p0` hit points, `p4` knock-out resistance) were consulted.
+    ProfileStats,
+    /// A script wait or the `Hourglass` time was consumed under the 25-versus-60 tick reading.
+    TickRate,
+    /// The campaign graph hypothesis chose a successor mission (recorded by the app).
+    CampaignGraph,
+    /// A profile index or sprite fell back to a default under `OPENSHERWOOD_LENIENT_ASSETS`
+    /// (recorded by the app through `MissionSpec::assumptions`).
+    LenientAssets,
+}
+
+impl Assumption {
+    fn encode(self, e: &mut Encoder) {
+        match self {
+            Assumption::StubResult(id) => e.u8(1).u32(id),
+            Assumption::Perception => e.u8(2),
+            Assumption::KnockOut => e.u8(3),
+            Assumption::ProfileStats => e.u8(4),
+            Assumption::TickRate => e.u8(5),
+            Assumption::CampaignGraph => e.u8(6),
+            Assumption::LenientAssets => e.u8(7),
+        };
+    }
+}
+
+/// A queued `ActionChange(previous, new)` for the class bound to an actor (module
+/// documentation, "Action changes").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionChange {
+    /// Class bound to the actor.
+    pub class: u32,
+    /// The action id reported before the change.
+    pub previous: i32,
+    /// The action id reported now.
+    pub new: i32,
+}
+
+/// Action ids of the alert states (`crate::ai::actions`) whose delivery records
+/// [`Assumption::Perception`].
+const ALERT_ACTIONS: [u32; 5] = [140, 141, 142, 143, 151];
+/// Action ids of the knock-out (`crate::ai::actions`) whose delivery records
+/// [`Assumption::KnockOut`].
+const KNOCK_OUT_ACTIONS: [u32; 6] = [41, 44, 47, 48, 49, 123];
+
 /// Diagnostic counters: neither in the snapshot nor in the hash (a restored world counts afresh;
 /// ADR-0008). Every counter saturates.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1044,6 +1155,10 @@ pub struct Counters {
     pub objective_done_before_added: u64,
     /// Calls of native 90 that reported an actor out of action (knocked out or dead).
     pub out_of_action_true: u64,
+    /// Native calls whose argument count differed from the signature (a trap), by id.
+    pub arity_mismatches: BTreeMap<u32, u64>,
+    /// Action changes dropped because the queue was full.
+    pub action_changes_dropped: u64,
 }
 
 /// Run-time state of the VM (part of [`World`], of the snapshot and of the hash).
@@ -1106,6 +1221,14 @@ pub struct VmState {
     pub faulted: bool,
     /// Unknown native calls in lenient mode, in order, with their arguments (bounded).
     pub unknown_calls: Vec<UnknownCall>,
+    /// The hypotheses and stub values the script-visible state depended on so far (module
+    /// documentation, "Hypotheses and taint"); non-empty = tainted.
+    #[serde(default)]
+    pub assumptions: BTreeSet<Assumption>,
+    /// Action changes not yet delivered to their `ActionChange` handler, in order (module
+    /// documentation, "Action changes").
+    #[serde(default)]
+    pub pending_action_changes: Vec<ActionChange>,
     /// The `script` RNG stream (native 161).
     pub rng: Rng,
     /// Call stack (empty between callbacks; a snapshot must be quiescent).
@@ -1160,6 +1283,8 @@ impl VmState {
             lenient,
             faulted: false,
             unknown_calls: Vec::new(),
+            assumptions: BTreeSet::new(),
+            pending_action_changes: Vec::new(),
             rng: Rng::new(seed, SCRIPT_RNG_STREAM),
             frames: Vec::new(),
             arg_stack: Vec::new(),
@@ -1319,7 +1444,36 @@ impl VmState {
         if !self.lenient && !self.unknown_calls.is_empty() {
             return Err("vm unknown call log without lenient mode".into());
         }
+        if self.assumptions.len() > MAX_QUEUE {
+            return Err("vm assumption set too large".into());
+        }
+        for a in &self.assumptions {
+            if let Assumption::StubResult(id) = a
+                && crate::natives::native_status(*id) != crate::natives::NativeStatus::Stub
+            {
+                return Err(format!(
+                    "vm assumption names native {id}, which is not a stub"
+                ));
+            }
+        }
+        if self.pending_action_changes.len() > MAX_QUEUE {
+            return Err("vm action change queue too long".into());
+        }
+        if self
+            .pending_action_changes
+            .iter()
+            .any(|c| c.class as usize >= self.program.classes.len())
+        {
+            return Err("vm action change names a class that does not exist".into());
+        }
         self.rng.validate()
+    }
+
+    /// Whether any script-visible outcome depended on a hypothesis or a stub value: a won or
+    /// lost mission of a tainted VM is not authoritative (ADR-0008).
+    #[must_use]
+    pub fn tainted(&self) -> bool {
+        !self.assumptions.is_empty()
     }
 
     /// Encode the `scripts` hash part (program identity and script-visible state).
@@ -1381,6 +1535,10 @@ impl VmState {
                 e.i32(*a);
             }
         }
+        e.u32(self.assumptions.len() as u32);
+        for a in &self.assumptions {
+            a.encode(e);
+        }
     }
 
     /// Encode the `scheduler` hash part (queues, sequences with their tokens, texts, presence).
@@ -1439,6 +1597,10 @@ impl VmState {
         e.u32(self.scroll_presence.len() as u32);
         for (c, en) in &self.scroll_presence {
             e.u32(*c).u32(*en);
+        }
+        e.u32(self.pending_action_changes.len() as u32);
+        for c in &self.pending_action_changes {
+            e.u32(c.class).i32(c.previous).i32(c.new);
         }
     }
 
@@ -1628,6 +1790,13 @@ pub struct ScriptObservation {
     /// script polls.
     #[serde(default)]
     pub actor_elements: Vec<i32>,
+    /// A script-visible outcome depended on a hypothesis or a stub value: `mission_won` /
+    /// `mission_lost` are not authoritative (ADR-0008, "Hypotheses and taint").
+    #[serde(default)]
+    pub tainted: bool,
+    /// The assumptions recorded so far, in canonical order.
+    #[serde(default)]
+    pub assumptions: Vec<Assumption>,
 }
 
 /// Outcome of one callback invocation.
@@ -1635,8 +1804,12 @@ pub struct ScriptObservation {
 pub enum CallOutcome {
     /// Ran to completion with this return value.
     Returned(i32),
-    /// Aborted (budget, fault); the frames were discarded.
+    /// Aborted by a fault or a trap: the callback ran and failed deterministically (it would
+    /// fail the same way again); the frames were discarded.
     Aborted,
+    /// Cut short by the tick's work budget; the frames were discarded and the callback did not
+    /// run to its end.
+    Exhausted,
 }
 
 /// Names of the engine callbacks the core invokes (`docs/formats/scb.md`, "Calling convention").
@@ -1667,15 +1840,22 @@ impl World {
     /// Attach a translated script to a freshly built mission world and run its load-time
     /// callbacks: `Initialize` on every class (level first, then elements in table order),
     /// `PostInitialize` on the level, then the first sequence elements. `lenient` selects the
-    /// unknown-native policy (see `natives.rs`).
+    /// unknown-native policy (see `natives.rs`); `starting_money` seeds natives 236 / 237
+    /// before `Initialize` runs (a script that sets it, e.g. H10's 100000, wins; nothing
+    /// overwrites it afterwards); `assumptions` are the app's load-time assumptions
+    /// (`Assumption::LenientAssets`).
     pub fn attach_script(
         &mut self,
         program: Program,
         paths: Vec<Option<u32>>,
         lenient: bool,
+        starting_money: i32,
+        assumptions: &BTreeSet<Assumption>,
     ) -> Result<(), String> {
         program.validate()?;
-        let vm = VmState::new(program, paths, self.seed, lenient);
+        let mut vm = VmState::new(program, paths, self.seed, lenient);
+        vm.money = starting_money;
+        vm.assumptions.clone_from(assumptions);
         vm.validate(self.programs.len(), self.entities.len())?;
         self.vm = Some(vm);
         self.vm_grant_budget(WORK_BUDGET_AT_LOAD);
@@ -1726,7 +1906,18 @@ impl World {
             actor_elements: (0..self.entities.len() as u32)
                 .map(|i| vm.program.element_of_entity(i))
                 .collect(),
+            tainted: vm.tainted(),
+            assumptions: vm.assumptions.iter().copied().collect(),
         })
+    }
+
+    /// Record that a script-visible outcome depends on a hypothesis (module documentation,
+    /// "Hypotheses and taint"); the app records `Assumption::CampaignGraph` when its campaign
+    /// graph picks the next mission. A world without a script has no outcome to taint.
+    pub fn record_assumption(&mut self, assumption: Assumption) {
+        if let Some(vm) = self.vm.as_mut() {
+            vm.assumptions.insert(assumption);
+        }
     }
 
     /// Hook: a scroll bound to a class was taken by `actor` (element handle). Not triggered by
@@ -1756,11 +1947,67 @@ impl World {
         self.vm_event(class, handler, &[actor])
     }
 
-    /// Hook: the actor of `class` changed its action state: `(previous, new)` sprite action ids
+    /// Queue an action change of the actor of `class`: `(previous, new)` sprite action ids
     /// (`crate::ai::action_id`; the parameter order is a hypothesis, `docs/formats/scb.md`).
-    /// Triggered by `World::simulate` after the animations advanced.
-    pub fn vm_action_change(&mut self, class: u32, a: i32, b: i32) -> Option<i32> {
-        self.vm_event(class, callbacks::ACTION_CHANGE, &[a, b])
+    /// `World::simulate` queues every change it detects, then calls
+    /// [`World::vm_deliver_action_changes`]; a full queue drops the change (counted).
+    pub(crate) fn vm_queue_action_change(&mut self, class: u32, previous: i32, new: i32) {
+        if let Some(vm) = self.vm.as_mut() {
+            if vm.pending_action_changes.len() < MAX_QUEUE {
+                vm.pending_action_changes.push(ActionChange {
+                    class,
+                    previous,
+                    new,
+                });
+            } else {
+                inc(&mut vm.counters.action_changes_dropped);
+            }
+        }
+    }
+
+    /// Deliver the queued action changes in order within what the tick's budget has left, each
+    /// exactly once: a change whose class has no `ActionChange` is dropped as undeliverable,
+    /// one whose handler returned or trapped is removed, and one the budget cut short stays at
+    /// the front for the next tick (`vm_tick` delivers the leftovers before `Hourglass`). An
+    /// alert or knock-out action reaching a handler records the corresponding assumption.
+    pub(crate) fn vm_deliver_action_changes(&mut self) {
+        let mut done = 0usize;
+        loop {
+            let Some(vm) = self.vm.as_ref() else {
+                return;
+            };
+            let Some(change) = vm.pending_action_changes.get(done).copied() else {
+                break;
+            };
+            let handler = vm
+                .program
+                .classes
+                .get(change.class as usize)
+                .and_then(|c| c.function(callbacks::ACTION_CHANGE));
+            let Some(function) = handler else {
+                done += 1;
+                continue;
+            };
+            if self.vm_out_of_work() {
+                break;
+            }
+            if let Some(vm) = self.vm.as_mut() {
+                let ids = [change.previous, change.new];
+                if ids.iter().any(|&a| ALERT_ACTIONS.contains(&(a as u32))) {
+                    vm.assumptions.insert(Assumption::Perception);
+                }
+                if ids.iter().any(|&a| KNOCK_OUT_ACTIONS.contains(&(a as u32))) {
+                    vm.assumptions.insert(Assumption::KnockOut);
+                }
+            }
+            match self.vm_invoke(change.class, function, &[change.previous, change.new]) {
+                CallOutcome::Exhausted => break,
+                CallOutcome::Returned(_) | CallOutcome::Aborted => done += 1,
+            }
+        }
+        if let Some(vm) = self.vm.as_mut() {
+            vm.pending_action_changes.drain(..done);
+        }
     }
 
     /// An event hook: runs the callback within what the current tick's budget has left (an
@@ -1795,9 +2042,9 @@ impl World {
     }
 
     /// One tick of the script scheduler (called by `step` before the entities move): deliver
-    /// the messages queued before this tick, `Hourglass(tick)` on every class, zone transitions
-    /// of the player characters, scroll pickups, the active sequences, then
-    /// `CheckVictoryCondition`. The tick's work budget is granted here and nowhere else; every
+    /// the messages queued before this tick, the action changes left over from the previous
+    /// tick, `Hourglass(tick)` on every class, zone transitions of the player characters,
+    /// scroll pickups, the active sequences, then `CheckVictoryCondition`. The tick's work budget is granted here and nowhere else; every
     /// phase stops when it is spent; undelivered messages stay queued (ahead of those sent this
     /// tick) for the next tick.
     pub(crate) fn vm_tick(&mut self) {
@@ -1828,6 +2075,8 @@ impl World {
             }
             self.vm_deliver(m);
         }
+        // Action changes a previous tick could not deliver (its budget ran out) come first.
+        self.vm_deliver_action_changes();
         let time = self.tick as i32;
         let n = self.vm.as_ref().map_or(0, |v| v.program.classes.len());
         for class in 0..n as u32 {
@@ -2113,8 +2362,12 @@ impl World {
                 }
                 SeqElement::Wait(n) => {
                     if n > 0 {
-                        if let Some(seq) = self.vm.as_mut().and_then(|vm| vm.sequences.get_mut(i)) {
-                            seq.wait = SeqWait::Ticks(n);
+                        // The wait's length is the 25-versus-60 reading of native 56.
+                        if let Some(vm) = self.vm.as_mut() {
+                            vm.assumptions.insert(Assumption::TickRate);
+                            if let Some(seq) = vm.sequences.get_mut(i) {
+                                seq.wait = SeqWait::Ticks(n);
+                            }
                         }
                         return false;
                     }
@@ -2223,7 +2476,7 @@ impl World {
             };
             if !charge(vm, cost) {
                 inc(&mut vm.counters.budget_aborts);
-                return CallOutcome::Aborted;
+                return CallOutcome::Exhausted;
             }
             inc(&mut vm.counters.instructions);
             let Some(ins) = ins else {
@@ -2256,6 +2509,11 @@ impl World {
                         inc(&mut vm.counters.faults);
                         0
                     });
+                    // The `Hourglass` time parameter is the world tick (hypothesis: the
+                    // scripts compare differences of it, in their own tick unit).
+                    if vm.frames.len() == 1 && frame_is(vm, callbacks::HOURGLASS) {
+                        vm.assumptions.insert(Assumption::TickRate);
+                    }
                     write(vm, dst, v);
                     advance(vm);
                 }
@@ -2300,10 +2558,19 @@ impl World {
                     };
                     if let Some(f) = self.vm.as_mut().and_then(|vm| vm.frames.last_mut()) {
                         f.native_result = r;
+                        f.last_native = id;
                     }
                 }
                 Instr::GetNativeResult { dst } => {
-                    let v = vm.frames.last().map_or(0, |f| f.native_result);
+                    let (v, id) = vm
+                        .frames
+                        .last()
+                        .map_or((0, 0), |f| (f.native_result, f.last_native));
+                    // A stub's value (0 or a policy value) consumed by the script taints the
+                    // outcome.
+                    if crate::natives::native_status(id) == crate::natives::NativeStatus::Stub {
+                        vm.assumptions.insert(Assumption::StubResult(id));
+                    }
                     write(vm, dst, v);
                     advance(vm);
                 }
@@ -2354,6 +2621,17 @@ fn advance(vm: &mut VmState) {
     }
 }
 
+/// Whether the innermost frame runs the function named `name`.
+fn frame_is(vm: &VmState, name: &str) -> bool {
+    vm.frames.last().is_some_and(|f| {
+        vm.program
+            .classes
+            .get(f.class as usize)
+            .and_then(|c| c.functions.get(f.function as usize))
+            .is_some_and(|func| func.name == name)
+    })
+}
+
 fn jump(vm: &mut VmState, target: u32) {
     if let Some(f) = vm.frames.last_mut() {
         f.pc = target;
@@ -2396,6 +2674,7 @@ fn push_frame(vm: &mut VmState, class: u32, function: u32, params: Vec<i32>) -> 
         result: 0,
         call_result: 0,
         native_result: 0,
+        last_native: 0,
     });
     true
 }
@@ -2578,6 +2857,8 @@ pub(crate) mod tests {
                 Instruction::Jump { pc: 0 },
             ]],
             lenient_natives: lenient,
+            starting_money: 0,
+            assumptions: BTreeSet::new(),
         };
         World::new_mission(Scenario::Mission("T".into()), 9, &spec).unwrap()
     }
@@ -3151,6 +3432,22 @@ pub(crate) mod tests {
         v.vm.as_mut().unwrap().mission_lost = true;
         assert_ne!(v.hashes().get("scripts"), h0.get("scripts"));
         let mut v = w.clone();
+        v.vm.as_mut()
+            .unwrap()
+            .assumptions
+            .insert(Assumption::TickRate);
+        assert_ne!(v.hashes().get("scripts"), h0.get("scripts"));
+        let mut v = w.clone();
+        v.vm.as_mut()
+            .unwrap()
+            .pending_action_changes
+            .push(ActionChange {
+                class: 0,
+                previous: 0,
+                new: 6,
+            });
+        assert_ne!(v.hashes().get("scheduler"), h0.get("scheduler"));
+        let mut v = w.clone();
         v.vm.as_mut().unwrap().send(Message {
             target: 0,
             id: 1,
@@ -3649,7 +3946,7 @@ pub(crate) mod tests {
         reject(
             |p| {
                 p.classes[0].code[1] = Instr::Native {
-                    id: 1,
+                    id: 999,
                     argc: MAX_STACK as u32 + 1,
                 }
             },
@@ -3701,6 +3998,7 @@ pub(crate) mod tests {
                     result: 0,
                     call_result: 0,
                     native_result: 0,
+                    last_native: 0,
                 });
             },
             "quiescent",
@@ -4032,7 +4330,7 @@ pub(crate) mod tests {
         vm.budget = edges;
         assert_eq!(
             w.vm_callback(0, callbacks::HOURGLASS, &[1]),
-            Some(CallOutcome::Aborted)
+            Some(CallOutcome::Exhausted)
         );
         let vm = w.vm.as_ref().unwrap();
         assert_eq!(vm.budget, 0);
@@ -4045,7 +4343,7 @@ pub(crate) mod tests {
         vm.budget = 8 + edges + 5;
         assert_eq!(
             w.vm_callback(0, callbacks::HOURGLASS, &[1]),
-            Some(CallOutcome::Aborted)
+            Some(CallOutcome::Exhausted)
         );
         let vm = w.vm.as_ref().unwrap();
         assert_eq!(vm.class_vars[0], vec![1, 5]);
@@ -4074,7 +4372,7 @@ pub(crate) mod tests {
         assert_quiescent(&w);
         assert_round_trips(&w);
         // (b) Trap with values pending and a sequence being collected: Initialize: n30; three
-        // arguments pushed; n999 takes one and traps; n3 would take the other two; n31.
+        // arguments pushed; n999 takes one and traps; n86 would take the other two; n31.
         let mut init = native(30, &[], None, 0);
         init.push(Instr::LoadInt {
             dst: tv(0),
@@ -4082,7 +4380,7 @@ pub(crate) mod tests {
         });
         init.extend([Instr::PushArg { src: tv(0) }; 3]);
         init.push(Instr::Native { id: 999, argc: 1 });
-        init.push(Instr::Native { id: 3, argc: 2 });
+        init.push(Instr::Native { id: 86, argc: 2 });
         init.extend(native(31, &[], None, 0));
         let level = class("StartUp", 0, &[("Initialize", 0, false, 0, 1, init)]);
         let w = mission_world(0, Some(program(vec![level], 0)));
@@ -4309,19 +4607,29 @@ pub(crate) mod tests {
         );
         w.entities[1].ai_state = AiState::GettingUp;
         assert_eq!((read(&mut w, 90, 1), read(&mut w, 128, 1)), (0, 0));
+        // The knock-out reached the script through 90 / 128: the outcome is tainted.
+        assert!(
+            w.vm.as_ref()
+                .unwrap()
+                .assumptions
+                .contains(&Assumption::KnockOut),
+            "{:?}",
+            w.vm.as_ref().unwrap().assumptions
+        );
+        // Dead is one state (`Dead` with `alive` cleared, the only form `validate` accepts):
+        // removed, dead, out of action and unable to act, all from one reading.
         w.entities[1].ai_state = AiState::Dead;
-        assert_eq!((read(&mut w, 87, 1), read(&mut w, 90, 1)), (1, 1));
-        assert_eq!(read(&mut w, 85, 1), 0, "dead by state is not 'removed'");
-        w.entities[1].ai_state = AiState::Patrol;
         w.entities[1].alive = false;
         assert_eq!(
             (
                 read(&mut w, 85, 1),
                 read(&mut w, 87, 1),
-                read(&mut w, 90, 1)
+                read(&mut w, 90, 1),
+                read(&mut w, 128, 1)
             ),
-            (1, 1, 1)
+            (1, 1, 1, 0)
         );
+        w.entities[1].ai_state = AiState::Patrol;
         w.entities[1].alive = true;
         w.entities[1].active = false;
         assert_eq!(
@@ -4333,7 +4641,7 @@ pub(crate) mod tests {
             (1, 0, 0)
         );
         w.entities[1].active = true;
-        assert_eq!(w.vm.as_ref().unwrap().counters.out_of_action_true, 4);
+        assert_eq!(w.vm.as_ref().unwrap().counters.out_of_action_true, 3);
         // A deactivated scroll is not present.
         w.native_call(113, &[2]);
         assert_eq!(read(&mut w, 240, 2), 0);
@@ -4544,6 +4852,315 @@ pub(crate) mod tests {
             vm.mission_won,
             "1 = won is recorded independently and stays"
         );
+        w.validate().unwrap();
+    }
+
+    /// The taint model (ADR-0008, "Hypotheses and taint"): a stub's result consumed by the
+    /// script, a never-win stub called, a wait executed and the `Hourglass` time read each
+    /// record an assumption; the set is observable, hashed, snapshotted and validated, and a
+    /// won mission stays recorded but tainted.
+    #[test]
+    fn stub_results_and_hypotheses_taint_the_outcome() {
+        // Initialize: n235(3) (result ignored); cv0 = n221(1); n178(3); cv1 = n253(27);
+        // n20(0) (a stub without a result). Hourglass(t): cv2 = t. CheckVictoryCondition: 1.
+        // PostInitialize: n30; n56(2); n31.
+        let mut init = native(235, &[3], None, 0);
+        init.extend(native(221, &[1], Some(cv(0)), 0));
+        init.extend(native(178, &[3], None, 0));
+        init.extend(native(253, &[27], Some(cv(1)), 0));
+        init.extend(native(20, &[0], None, 0));
+        let hourglass = vec![Instr::LoadParam {
+            dst: cv(2),
+            index: 0,
+        }];
+        let victory = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::SetResult { src: tv(0) },
+        ];
+        let mut post = native(30, &[], None, 0);
+        post.extend(native(56, &[2], None, 0));
+        post.extend(native(31, &[], None, 0));
+        let level = class(
+            "StartUp",
+            3,
+            &[
+                ("Initialize", 0, false, 0, 4, init),
+                ("Hourglass", 1, false, 0, 4, hourglass.clone()),
+                ("CheckVictoryCondition", 0, true, 0, 4, victory),
+                ("PostInitialize", 0, false, 0, 4, post),
+            ],
+        );
+        let mut w = mission_world(1, Some(program(vec![level], 1)));
+        let vm = w.vm.as_ref().unwrap();
+        assert!(!vm.faulted && vm.counters.traps == 0);
+        assert_eq!(vm.class_vars[0], vec![0, 1, 0]);
+        // After load: 221 and 253 were consumed, 178 is a never-win stub, 235 and 20 were not
+        // consumed; the wait of PostInitialize ran at load under the tick-rate reading.
+        assert_eq!(
+            vm.assumptions.iter().copied().collect::<Vec<_>>(),
+            vec![
+                Assumption::StubResult(178),
+                Assumption::StubResult(221),
+                Assumption::StubResult(253),
+                Assumption::TickRate
+            ]
+        );
+        let obs = w.script_observation().unwrap();
+        assert!(obs.tainted);
+        assert_eq!(obs.assumptions.len(), 4);
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert!(vm.mission_won && vm.tainted(), "won, but not authoritative");
+        // Hashed, snapshotted, validated; the app's own assumptions go through the world.
+        let h = w.hashes();
+        let mut v = w.clone();
+        v.record_assumption(Assumption::CampaignGraph);
+        assert!(
+            v.vm.as_ref()
+                .unwrap()
+                .assumptions
+                .contains(&Assumption::CampaignGraph)
+        );
+        assert_ne!(v.hashes().get("scripts"), h.get("scripts"));
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
+        assert!(
+            json.contains("\"assumptions\":[{\"stub_result\":178},"),
+            "{json}"
+        );
+        assert!(json.contains("\"tick_rate\""));
+        let snap: crate::world::Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = mission_world(1, None);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.hashes(), h);
+        assert!(w2.script_observation().unwrap().tainted);
+        for id in [3, 999] {
+            let mut bad = w.snapshot(None);
+            bad.world
+                .vm
+                .as_mut()
+                .unwrap()
+                .assumptions
+                .insert(Assumption::StubResult(id));
+            assert!(w2.restore(&bad).unwrap_err().contains("not a stub"));
+        }
+        // The Hourglass time alone taints, on the first tick that reads it; a script that reads
+        // nothing of the kind stays clean.
+        let level = class("StartUp", 3, &[("Hourglass", 1, false, 0, 4, hourglass)]);
+        let mut w = mission_world(0, Some(program(vec![level], 0)));
+        assert!(!w.script_observation().unwrap().tainted);
+        w.step(&[]);
+        assert_eq!(
+            w.script_observation().unwrap().assumptions,
+            vec![Assumption::TickRate]
+        );
+        let level = class(
+            "StartUp",
+            1,
+            &[("Hourglass", 1, false, 0, 4, native(2, &[0], Some(cv(0)), 0))],
+        );
+        let mut w = mission_world(0, Some(program(vec![level], 0)));
+        for _ in 0..5 {
+            w.step(&[]);
+        }
+        assert!(!w.script_observation().unwrap().tainted);
+        // A world without a script has nothing to taint.
+        let mut plain = mission_world(0, None);
+        plain.record_assumption(Assumption::CampaignGraph);
+        assert!(plain.vm.is_none());
+        plain.validate().unwrap();
+    }
+
+    /// Native signatures (`natives::NATIVE_SIGNATURES`): the trust boundary refuses a call
+    /// site with the wrong argument count and a result read after a native without one, and
+    /// the dispatcher traps a mismatch instead of defaulting the missing argument.
+    #[test]
+    fn native_arity_is_validated_and_never_defaults() {
+        let with = |body: Vec<Instr>| {
+            program(
+                vec![class("StartUp", 1, &[("Initialize", 0, false, 0, 4, body)])],
+                0,
+            )
+        };
+        with(native(237, &[5], None, 0)).validate().unwrap();
+        let err = with(vec![Instr::Native { id: 237, argc: 0 }])
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.contains("native 237") && err.contains("takes 1"),
+            "{err}"
+        );
+        let err = with(native(3, &[1, 2], Some(cv(0)), 0))
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("native 3 with 2"), "{err}");
+        let err = with(native(237, &[5], Some(cv(0)), 0))
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("237") && err.contains("has none"), "{err}");
+        with(native(236, &[], Some(cv(0)), 0)).validate().unwrap();
+        let err = with(vec![Instr::GetNativeResult { dst: cv(0) }])
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("without a native call"), "{err}");
+        // Unknown ids carry no signature: any count passes validation (they trap or are
+        // recorded at run time).
+        with(native(999, &[1, 2, 3], Some(cv(0)), 0))
+            .validate()
+            .unwrap();
+        // Dispatch: a mismatch traps and changes nothing; the right count acts.
+        let mut w = mission_world(0, Some(with(native(237, &[5], None, 0))));
+        assert_eq!(w.vm.as_ref().unwrap().money, 5);
+        assert_eq!(w.native_call(237, &[]), None);
+        assert_eq!(w.native_call(237, &[1, 2]), None);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.money, 5, "the missing argument did not default to 0");
+        assert!(vm.faulted);
+        assert_eq!(vm.counters.arity_mismatches.get(&237), Some(&2));
+        assert_eq!(w.native_call(237, &[7]), Some(0));
+        assert_eq!(w.vm.as_ref().unwrap().money, 7);
+        // Injected past validation, the mismatch traps the callback where it stands.
+        let mut w = mission_world(0, None);
+        w.vm = Some(VmState::new(
+            with(vec![
+                Instr::Native { id: 237, argc: 0 },
+                Instr::LoadInt {
+                    dst: cv(0),
+                    value: 1,
+                },
+            ]),
+            vec![],
+            9,
+            false,
+        ));
+        assert_eq!(
+            w.vm_callback(0, callbacks::INITIALIZE, &[]),
+            Some(CallOutcome::Aborted)
+        );
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[0], vec![0]);
+        assert_eq!(vm.counters.traps, 1);
+        assert_eq!(vm.money, 0);
+        assert_quiescent(&w);
+    }
+
+    /// An action change is delivered exactly once even when the tick that produced it had no
+    /// budget left: it waits in the queue (snapshotted, hashed, validated) and reaches the
+    /// handler on the next tick, before `Hourglass`; a class without a handler drops its
+    /// changes as undeliverable.
+    #[test]
+    fn action_changes_survive_an_exhausted_tick_and_are_delivered_once() {
+        use crate::ai::{AiState, actions};
+        // Level Hourglass: spins on its first call only (cv0 marks it).
+        let hourglass = vec![
+            Instr::JumpIf {
+                cond: cv(0),
+                target: 4,
+            },
+            Instr::LoadInt {
+                dst: cv(0),
+                value: 1,
+            },
+            Instr::Jump { target: 3 },
+        ];
+        let level = class("StartUp", 1, &[("Hourglass", 1, false, 0, 1, hourglass)]);
+        // Guard ActionChange(a, b): cv0 = b, cv1 = a, cv2 += 1.
+        let body = vec![
+            Instr::LoadParam {
+                dst: cv(0),
+                index: 1,
+            },
+            Instr::LoadParam {
+                dst: cv(1),
+                index: 0,
+            },
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::Binary {
+                op: BinOp::Add,
+                dst: cv(2),
+                a: cv(2),
+                b: tv(0),
+            },
+        ];
+        let mut guard = class("Guard", 3, &[("ActionChange", 2, false, 0, 4, body)]);
+        guard.element = Some(1);
+        let mut w = mission_world(1, Some(program(vec![level, guard], 1)));
+        // The hero stands in the guard's cone (guard at (300, 300) facing +x).
+        w.entities[0].x = Fixed::from_int(420);
+        w.entities[0].y = Fixed::from_int(300);
+        // Tick 0: Hourglass spins the budget away; the guard notices the hero in the
+        // simulation and the change is queued, not delivered.
+        w.step(&[]);
+        assert_eq!(w.entities[1].ai_state, AiState::Noticed);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.budget, 0);
+        assert_eq!(
+            vm.pending_action_changes,
+            vec![ActionChange {
+                class: 1,
+                previous: actions::IDLE as i32,
+                new: actions::NOTICED as i32
+            }]
+        );
+        assert_eq!(vm.class_vars[1], vec![0, 0, 0]);
+        assert!(
+            !vm.assumptions.contains(&Assumption::Perception),
+            "nothing reached the script yet"
+        );
+        w.validate().unwrap();
+        // The queue is state: hashed, restored, validated.
+        let h = w.hashes();
+        let mut v = w.clone();
+        v.vm.as_mut().unwrap().pending_action_changes.clear();
+        assert_ne!(v.hashes().get("scheduler"), h.get("scheduler"));
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
+        let snap: crate::world::Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = mission_world(1, None);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.hashes(), h);
+        let mut bad = w.snapshot(None);
+        bad.world.vm.as_mut().unwrap().pending_action_changes[0].class = 7;
+        assert!(w2.restore(&bad).unwrap_err().contains("action change"));
+        // Tick 1: delivered once, before Hourglass, in both worlds.
+        for world in [&mut w, &mut w2] {
+            world.step(&[]);
+            let vm = world.vm.as_ref().unwrap();
+            assert_eq!(
+                vm.class_vars[1],
+                vec![actions::NOTICED as i32, actions::IDLE as i32, 1]
+            );
+            assert!(vm.pending_action_changes.is_empty());
+            assert!(vm.assumptions.contains(&Assumption::Perception));
+        }
+        assert_eq!(w.hashes(), w2.hashes());
+        // The alarm follows: one more delivery, never a repeat of the first.
+        for _ in 0..crate::ai::NOTICED_TICKS {
+            w.step(&[]);
+        }
+        assert_eq!(w.entities[1].ai_state, AiState::Alarm);
+        assert_eq!(
+            w.vm.as_ref().unwrap().class_vars[1],
+            vec![actions::ALARM as i32, actions::NOTICED as i32, 2]
+        );
+        w.validate().unwrap();
+        // A class without a handler: its changes are dropped as undeliverable and nothing
+        // reaches the script.
+        let level = class("StartUp", 0, &[]);
+        let mut guard = class("Guard", 0, &[]);
+        guard.element = Some(1);
+        let mut w = mission_world(1, Some(program(vec![level, guard], 1)));
+        w.entities[0].x = Fixed::from_int(420);
+        w.entities[0].y = Fixed::from_int(300);
+        w.step(&[]);
+        assert_eq!(w.entities[1].ai_state, AiState::Noticed);
+        let vm = w.vm.as_ref().unwrap();
+        assert!(vm.pending_action_changes.is_empty());
+        assert!(vm.assumptions.is_empty());
         w.validate().unwrap();
     }
 }

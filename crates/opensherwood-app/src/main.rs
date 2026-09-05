@@ -70,6 +70,7 @@ fn main() -> anyhow::Result<()> {
         Some(other) => anyhow::bail!("unsupported --rpc transport '{other}' (only 'stdio')"),
     };
     let mut session = engine::Session::new(game, artifacts);
+    session.load_settings();
     session.set_lenient_natives(args.lenient_natives);
     if args.headless {
         if !rpc {

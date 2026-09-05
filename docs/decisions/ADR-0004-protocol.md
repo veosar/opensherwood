@@ -2,10 +2,17 @@
 
 Date: 2026-09-02. Status: accepted.
 
-Versions in force (2026-09-03, stealth layer): protocol 5 (replay time is the session tick: header `time:
+Versions in force (2026-09-05, Codex review 7): protocol 5 (replay time is the session tick: header `time:
 "session"`, checkpoints carry `world_tick`, a `session` digest and the `frame` hash, the tick-0 and terminal
 checkpoints are required and compared; `ui` observation,
-`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 9 (stealth layer:
+`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 10 (Codex
+review 7: native call sites must match the signature table (a wrong argument count refuses the program at load and
+traps at dispatch; a required argument never defaults), action changes are queued and delivered to `ActionChange`
+exactly once (an exhausted tick delivers them next tick), the stealth layer charges every entity its perception
+inspects and every path search it issues to one per-tick budget walked from a round-robin cursor, `Dead` and
+`alive` must agree and the five status natives read one state function, the starting money is seeded before
+`Initialize` and never overwritten, and every outcome that depends on a stub value or a hypothesis records an
+assumption (`observe.script.tainted`); ruleset 9 (stealth layer:
 soldiers perceive the player characters through a view cone and a noise radius and cycle through the alert
 states, a left click on an enemy is an attack order and the knock-out blow from behind puts the victim out of
 action for a timer scaled by his resistance, natives 85 / 87 / 90 / 128 / 240 read these states and 140 sets
@@ -19,13 +26,16 @@ text dismissals draw from what the tick left) and charging instructions, argumen
 zone / scroll scan or native 204 looks at, every polygon edge tested (zones, natives 97 / 204), sequence
 elements and every stage of the path searches the script issues (initialisation, expansions, unwinding,
 smoothing, conversion); programs must have balanced parameter / argument stacks; AI locking halts an NPC's
-walk, native 160 and camera centring are computed in `i64`), hash schema 11 (entity `team`, `ai_state`, `state_ticks`,
+walk, native 160 and camera centring are computed in `i64`), hash schema 12 (the VM's `assumptions` under `scripts`,
+its `pending_action_changes` under `scheduler`, the `ai_cursor` under `world`; schema 11: entity `team`, `ai_state`, `state_ticks`,
 `action`, `hit_points`, `knockout_resistance`, `npc_gait`, `fell_backward`, `last_seen`, `alert_origin` and
 `attack_target` under `actors`; schema 10: entity `gait` / `posture` tags under `actors`,
 the `last_ground_click` under `world`; schema 9: `scripts` and `scheduler` parts carry the VM state including sequence tokens and the
 barrier wait; frames and stacks are no longer encoded because a snapshot must be quiescent; entity `active` /
 `ai_locked` flags under `actors`, the `script` RNG stream under `rng`; schema 9 adds the player's `money`
-(natives 236 / 237) and `mission_lost` (`CheckVictoryCondition` = 2) to `scripts`), snapshot schema 12 (the stealth
+(natives 236 / 237) and `mission_lost` (`CheckVictoryCondition` = 2) to `scripts`), snapshot schema 13 (the VM's
+`assumptions` and `pending_action_changes`, the world's `ai_cursor`, mission specs' `starting_money` and
+`assumptions`; schema 12: the stealth
 layer's entity fields and the actor specs' `hit_points` / `knockout_resistance`; schema 11: entity `gait` /
 `posture`, the world's `last_ground_click`; schema 10: `vm`
 state without its diagnostic `counters` and per-tick `budget`, sequence `tokens`, entity flags, `money` and
