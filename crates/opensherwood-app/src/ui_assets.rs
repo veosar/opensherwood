@@ -21,6 +21,10 @@ pub mod ids {
     pub const SEAL_OK: u32 = 145;
     /// Red X seal.
     pub const SEAL_CANCEL: u32 = 146;
+    /// Gold seal with a folder: load (the lost page).
+    pub const SEAL_LOAD: u32 = 277;
+    /// Gold seal with a double chevron: restart (the lost page).
+    pub const SEAL_RESTART: u32 = 278;
     /// Horizontal dialog scroll.
     pub const DIALOG: u32 = 38;
     /// HUD: foliage (bottom-left bush, bottom-right bush, bottom strips, top corners).
@@ -188,6 +192,8 @@ pub fn load(game: &GameDir) -> UiAssets {
         dialog: pic(ids::DIALOG),
         seal_ok: widget(ids::SEAL_OK),
         seal_cancel: widget(ids::SEAL_CANCEL),
+        seal_load: widget(ids::SEAL_LOAD),
+        seal_restart: widget(ids::SEAL_RESTART),
         cursor: pic(ids::CURSOR),
         credits_background: pic_with(ids::CREDITS_BACKGROUND, false),
         credits_strip: pic(ids::CREDITS_STRIP),
