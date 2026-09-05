@@ -2322,6 +2322,69 @@ pub const MINIMAP_SCROLL_POS: (i32, i32) = (718, 92);
 /// The map picture inside the scroll (x, y, w, h).
 pub const MINIMAP_AREA: (i32, i32, i32, i32) = (728, 112, 204, 155);
 
+/// The field-of-vision overlay (`h01-measurements-2.md` 6): while Alt is held and the pointer rests
+/// on a soldier, his view cone is drawn from his feet: the sector of the core's cone (half-angle
+/// `VIEW_CONE_HALF_ANGLE_256`, reach `VIEW_RANGE` along x compressed by `VIEW_Y_COMPRESSION` along y,
+/// the exact region the perception tests), as a yellow outline. The original's fill and line style
+/// are not measured (one frame showed the sector's extent), so the outline is the engine's choice;
+/// the pointer's yellow shape under Alt is not drawn.
+pub fn draw_view_cone(scene: &mut Framebuffer, world: &opensherwood_core::World) {
+    use opensherwood_core::ai::{
+        VIEW_CONE_HALF_ANGLE_256, VIEW_RANGE, VIEW_Y_COMPRESSION, cos256, sin256,
+    };
+    use opensherwood_core::{EntityKind, Key};
+    if !world.keys_down.contains(&Key::Alt) {
+        return;
+    }
+    let Some(id) = world.actor_at_pointer() else {
+        return;
+    };
+    let Some(e) = world
+        .entities
+        .iter()
+        .find(|e| e.id == id && e.alive && e.active && e.kind == EntityKind::Guard)
+    else {
+        return;
+    };
+    let (cx, cy) = world.camera;
+    let (fx, fy) = (e.x.round() - cx, e.y.round() - cy);
+    let colour = [255, 230, 90, 255];
+    let (rx, ry) = (
+        f64::from(VIEW_RANGE),
+        f64::from(VIEW_RANGE) * f64::from(VIEW_Y_COMPRESSION.0) / f64::from(VIEW_Y_COMPRESSION.1),
+    );
+    // A point of the boundary at cone angle `a` (256 units): the ray from the apex until it leaves
+    // the ellipse.
+    let boundary = |a: i32| -> (i32, i32) {
+        let (c, s) = (f64::from(cos256(a)) / 256.0, f64::from(sin256(a)) / 256.0);
+        let r = 1.0 / ((c / rx).powi(2) + (s / ry).powi(2)).sqrt();
+        (fx + (c * r).round() as i32, fy + (s * r).round() as i32)
+    };
+    let mut plot = |x: i32, y: i32| {
+        if x >= 0 && y >= 0 && x < MENU_FRAME.0 as i32 && y < MENU_FRAME.1 as i32 {
+            scene.fill_rect(x, y, x + 1, y + 1, colour);
+        }
+    };
+    let mut line = |(x0, y0): (i32, i32), (x1, y1): (i32, i32)| {
+        let steps = (x1 - x0).abs().max((y1 - y0).abs()).max(1);
+        for i in 0..=steps {
+            plot(x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps);
+        }
+    };
+    let (lo, hi) = (
+        e.facing256 - VIEW_CONE_HALF_ANGLE_256,
+        e.facing256 + VIEW_CONE_HALF_ANGLE_256,
+    );
+    line((fx, fy), boundary(lo));
+    line((fx, fy), boundary(hi));
+    let mut prev = boundary(lo);
+    for a in lo + 1..=hi {
+        let p = boundary(a);
+        line(prev, p);
+        prev = p;
+    }
+}
+
 /// Marker colours of the mini-map (`h01-measurements-2.md` 5).
 mod minimap_palette {
     /// The player characters' oval.
