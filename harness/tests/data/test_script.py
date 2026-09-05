@@ -420,19 +420,31 @@ def test_mission_won_shows_the_debriefing_then_the_menu(binary, game_dir, tmp_pa
         assert vm["money"] == money_at_win
 
 
-def test_mission_lost_shows_the_lost_debriefing_then_the_menu(binary, game_dir, tmp_path):
-    """A loss shows the lost parchment (a different text than the won one) and leads back to the
-    main menu instead of the next mission. `debug.vm {lose}` is the same documented shortcut."""
+def test_mission_lost_shows_the_lost_page_with_restart_load_and_ok(binary, game_dir, tmp_path):
+    """A loss shows the lost page (combat-measurements.md 4: parchment, three seals) over the paused
+    world: OK leads to the main menu, restart to the mission's briefing; a different picture than the
+    won parchment. `debug.vm {lose}` is the same documented shortcut."""
     with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
         e.reset({"mission": "H01_Lin_VL"}, seed=0)
         e.skip_briefing()
         e.step(5)
+        tick = e.observe(entities=False)["tick"]
         e.call("debug.vm", {"lose": True})
         e.step(1)
         ui = e.observe(entities=False)["ui"]
-        assert ui["screen"] == "debriefing", ui
+        assert ui["screen"] == "lost", ui
+        assert [it["action"] for it in ui["items"]] == ["restart", "load", "ok"]
+        e.step(3)
+        assert e.observe(entities=False)["tick"] == tick + 1, "the world is paused under the page"
         e.capture("lost.png")
-        e.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": "enter"}])
+        e.step(1, pointer_click(333, 556, "left"))  # restart seal
+        ui = e.observe(entities=False)["ui"]
+        assert ui["screen"] == "briefing", ui
+        e.skip_briefing()
+        e.step(5)
+        e.call("debug.vm", {"lose": True})
+        e.step(1)
+        e.step(1, pointer_click(517, 547, "left"))  # OK seal
         obs = e.observe(entities=False)
         assert obs["ui"]["screen"] == "main_menu", obs.get("ui")
         # The won flow shows a different parchment.
