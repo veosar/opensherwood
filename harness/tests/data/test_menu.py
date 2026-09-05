@@ -391,3 +391,36 @@ def test_reset_starting_money_overrides_the_profile(binary, game_dir, tmp_path):
         # after the reset passes and the money is the recorded one.
         e.call("replay.play", {"jsonl": out["jsonl"]})
         assert e.call("debug.vm", {})["money"] == 777
+
+
+def test_alt_over_a_soldier_draws_his_view_cone(binary, game_dir, tmp_path):
+    """h01-measurements-2.md 6: with Alt held and the pointer on a soldier, his field of vision is
+    drawn from his feet (the core's cone: the measured ellipse and half-angle); nothing without Alt."""
+    from PIL import Image
+
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
+        e.reset({"mission": "H01_Lin_VL"}, seed=0)
+        e.skip_briefing()
+        obs = e.observe()
+        cam = obs["camera"]
+        guard = next(
+            x
+            for x in obs["entities"]
+            if x["kind"] == "guard" and x["alive"] and x["active"]
+            and 100 < x["x"] // 256 - cam[0] < 900 and 100 < x["y"] // 256 - cam[1] < 600
+        )
+        sx, sy = guard["x"] // 256 - cam[0], guard["y"] // 256 - cam[1]
+        e.step(1, [pointer_move(sx, sy)])  # the hit test is a 12 px circle at the feet today
+        e.capture("no_alt.png")
+        e.step(1, [key("alt")])
+        e.capture("alt.png")
+        e.step(1, [key("alt", "key_up")])
+
+        def yellow(path):
+            with Image.open(path) as im:
+                rgb = im.convert("RGB")
+                box = (max(0, sx - 300), max(0, sy - 220), min(1024, sx + 300), min(768, sy + 220))
+                return sum(1 for p in rgb.crop(box).getdata() if p == (255, 230, 90))
+
+        assert yellow(tmp_path / "no_alt.png") == 0
+        assert yellow(tmp_path / "alt.png") > 200, "the cone's outline"

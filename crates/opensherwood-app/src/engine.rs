@@ -2171,6 +2171,10 @@ impl Session {
                         ),
                         None => render(world, self.background.as_ref(), &mut NoSprites),
                     };
+                    // The field-of-vision overlay lies on the scene, under the HUD.
+                    if matches!(self.screen, Screen::World) {
+                        crate::ui::draw_view_cone(&mut frame, world);
+                    }
                     if in_mission && let Some(a) = self.ui_assets.as_ref() {
                         // The money counter follows the script's player money (natives 236 / 237,
                         // initialised by the mission script); the profile default only stands in
