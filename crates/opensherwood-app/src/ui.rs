@@ -2322,27 +2322,114 @@ pub const MINIMAP_SCROLL_POS: (i32, i32) = (718, 92);
 /// The map picture inside the scroll (x, y, w, h).
 pub const MINIMAP_AREA: (i32, i32, i32, i32) = (728, 112, 204, 155);
 
-/// The mini-map overlay (`ui-flow.md` 9.3 element 2 and `combat-measurements.md` 5): the map scroll
-/// widget or the `;` key toggles it, a right click does not close it; the world keeps running
-/// underneath. The picture is a parchment scroll with the map painted inside (its corners hold the
-/// UI colour key), drawn at the observed position; the camera's view is a yellow rectangle in map
-/// proportion over the map area (the original's markers for characters and pickups are not drawn
-/// yet).
-pub fn draw_minimap(
-    scene: &mut Framebuffer,
-    m: &Minimap,
-    camera: (i32, i32),
-    view: (u32, u32),
-    map: (u32, u32),
-) {
+/// Marker colours of the mini-map (`h01-measurements-2.md` 5).
+mod minimap_palette {
+    /// The player characters' oval.
+    pub const PLAYER: [u8; 4] = [164, 251, 82, 255];
+    /// An identified enemy's oval.
+    pub const ENEMY: [u8; 4] = [255, 0, 0, 255];
+    /// An unidentified character's oval.
+    pub const UNKNOWN: [u8; 4] = [176, 176, 176, 255];
+    /// The outline of the ovals and of the camera rectangle.
+    pub const OUTLINE: [u8; 4] = [0, 0, 0, 255];
+    /// A pick-up cross.
+    pub const CROSS: [u8; 4] = [255, 220, 40, 255];
+    /// The cross's centre.
+    pub const CROSS_CENTRE: [u8; 4] = [255, 255, 255, 255];
+}
+
+/// Distance (map px) within which a soldier counts as identified on the mini-map: the original
+/// shows the guards near the hero in red once he was close (`h01-measurements-2.md` 5); the exact
+/// rule (a sighting, a distance, memory) is not measured, so this is the engine's reading.
+const MINIMAP_IDENTIFY_RANGE: i32 = 400;
+
+/// The mini-map overlay (`ui-flow.md` 9.3 element 2, `combat-measurements.md` 5 and
+/// `h01-measurements-2.md` 5): the map scroll widget or the `;` key toggles it, a right click does
+/// not close it; the world keeps running underneath. The picture is a parchment scroll with the map
+/// painted inside (its corners hold the UI colour key), drawn at the observed position; over its
+/// map area (15 map px per picture px on the first mission's map, the map's size over the area's in
+/// general) the camera's view is a black-outlined rectangle, every living character a 2x4 oval
+/// with a black outline (green for the player characters, red for identified enemies, grey for the
+/// rest), and every active pick-up (scroll or item) a 5x5 yellow cross with a white centre.
+pub fn draw_minimap(scene: &mut Framebuffer, m: &Minimap, world: &opensherwood_core::World) {
+    use opensherwood_core::EntityKind;
     let (x, y) = MINIMAP_SCROLL_POS;
     scene.blit_rgba(x, y, m.width, m.height, &m.rgba);
+    let map = world.map_size;
     if map.0 == 0 || map.1 == 0 {
         return;
     }
     let (ax, ay, aw, ah) = MINIMAP_AREA;
     let sx = |v: i32| ax + (i64::from(v) * i64::from(aw) / i64::from(map.0)) as i32;
     let sy = |v: i32| ay + (i64::from(v) * i64::from(ah) / i64::from(map.1)) as i32;
+    let inside = |px: i32, py: i32| px >= ax && px < ax + aw && py >= ay && py < ay + ah;
+    // Pick-ups first (under the characters): active scrolls and items.
+    if let Some(vm) = world.vm.as_ref() {
+        let mut crosses: Vec<(i32, i32)> = vm
+            .items()
+            .into_iter()
+            .filter(|it| it.active)
+            .map(|it| (it.x, it.y))
+            .collect();
+        crosses.extend(
+            vm.program
+                .elements
+                .iter()
+                .enumerate()
+                .filter_map(|(i, el)| match el {
+                    opensherwood_core::vm::Element::Scroll { x, y }
+                        if i32::try_from(i).is_ok_and(|h| vm.element_active(h)) =>
+                    {
+                        Some((*x, *y))
+                    }
+                    _ => None,
+                }),
+        );
+        for (mx, my) in crosses {
+            let (cx, cy) = (sx(mx), sy(my));
+            if !inside(cx, cy) {
+                continue;
+            }
+            scene.fill_rect(cx - 2, cy, cx + 3, cy + 1, minimap_palette::CROSS);
+            scene.fill_rect(cx, cy - 2, cx + 1, cy + 3, minimap_palette::CROSS);
+            scene.fill_rect(cx, cy, cx + 1, cy + 1, minimap_palette::CROSS_CENTRE);
+        }
+    }
+    let players: Vec<(i32, i32)> = world
+        .entities
+        .iter()
+        .filter(|e| e.active && e.alive && e.kind == EntityKind::Player)
+        .map(|e| (e.x.round(), e.y.round()))
+        .collect();
+    for e in world
+        .entities
+        .iter()
+        .filter(|e| e.active && e.alive && e.kind != EntityKind::Obstacle)
+    {
+        let (mx, my) = (e.x.round(), e.y.round());
+        let (cx, cy) = (sx(mx), sy(my));
+        if !inside(cx, cy) {
+            continue;
+        }
+        let fill = match e.kind {
+            EntityKind::Player => minimap_palette::PLAYER,
+            EntityKind::Guard
+                if e.team == opensherwood_core::Team::Enemy
+                    && players.iter().any(|&(px, py)| {
+                        let (dx, dy) = (i64::from(px - mx), i64::from(py - my));
+                        dx * dx + dy * dy <= i64::from(MINIMAP_IDENTIFY_RANGE).pow(2)
+                    }) =>
+            {
+                minimap_palette::ENEMY
+            }
+            _ => minimap_palette::UNKNOWN,
+        };
+        // A 2x4 oval with a 1 px outline (4x6 with the outline).
+        scene.fill_rect(cx - 2, cy - 3, cx + 2, cy + 3, minimap_palette::OUTLINE);
+        scene.fill_rect(cx - 1, cy - 2, cx + 1, cy + 2, fill);
+    }
+    let camera = world.camera;
+    let view = world.viewport;
     let (x0, y0) = (sx(camera.0).max(ax), sy(camera.1).max(ay));
     let (x1, y1) = (
         sx(camera.0.saturating_add(view.0 as i32)).min(ax + aw),
@@ -2351,7 +2438,7 @@ pub fn draw_minimap(
     if x1 <= x0 || y1 <= y0 {
         return;
     }
-    let c = [255, 230, 90, 255];
+    let c = minimap_palette::OUTLINE;
     scene.fill_rect(x0, y0, x1, y0 + 1, c);
     scene.fill_rect(x0, y1 - 1, x1, y1, c);
     scene.fill_rect(x0, y0, x0 + 1, y1, c);

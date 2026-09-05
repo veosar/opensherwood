@@ -2199,13 +2199,7 @@ impl Session {
                             && matches!(self.screen, Screen::World)
                             && let Some(m) = self.minimap.as_ref()
                         {
-                            crate::ui::draw_minimap(
-                                &mut frame,
-                                m,
-                                world.camera,
-                                crate::ui::MENU_FRAME,
-                                world.map_size,
-                            );
+                            crate::ui::draw_minimap(&mut frame, m, world);
                         }
                     }
                     match &self.screen {
