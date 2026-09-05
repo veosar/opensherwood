@@ -562,8 +562,9 @@ impl Session {
         }
     }
 
-    /// When the script reports the mission won, show the debriefing parchment once; dismissing it
-    /// returns to the main menu (campaign progression comes later).
+    /// When the script reports the mission won or lost, show the won parchment or the lost page
+    /// once; dismissing the won page launches the campaign successor (or the main menu without
+    /// one), the lost page's seals restart, load or leave.
     fn sync_mission_end(&mut self) {
         if self.ended || !matches!(self.screen, Screen::World) {
             return;

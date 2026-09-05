@@ -28,7 +28,7 @@ what was learned about them anyway.
 | a scroll (parchment) | an **open hand**, no badge; the arrow disappears entirely | `ptr_scroll3`, `r1_hover_ko`, `s111_hover` (three scrolls) |
 | a `ZORG` item | the same **hand with a round black badge carrying a digit**: `1` over item 107 at (301,1226) (`unknown_a` 8, `unknown_b` 1), `5` over the arrow pile 103 at (192,1078) (kind 0, `unknown_b` 5), `2` over the arrow pile 100 at (2199,1092) (kind 0, `unknown_b` 2) | `rd_hover_purse`, `rd_hover_arrows`, `k1_hover_arrows` |
 | Robin | the walk arrow (the selection ring under him) | `ptr_robin` |
-| a wall face / unreachable spot | a white-and-red **cross** ("cannot go") | `a1_hover_scroll`, `a2_end` |
+| a wall face / unreachable spot | a white-and-red **cross** (the blocked-path sign) | `a1_hover_scroll`, `a2_end` |
 | an enemy while a fight is on | arrow with a red tail | `p2_end` |
 | any spot with Left Alt held | a yellow curved pointer (section 6) | `alt_held` |
 
@@ -53,7 +53,7 @@ Scrolls behave the same way: hand, click, walk, stop, a pause, then the page (1.
 ### 1.3 Counters
 
 - The HUD counters sit under the portrait: the left digit under the bow icon (arrows), the right digit
-  under the pouch icon (purses); both `0` at the start; the money line `Money: £100` and `Clover: 0`
+  under the pouch icon (purses); both `0` at the start; the money and clover lines (100 and 0)
   at the top-left (the profile's money, as on the main menu).
 - Arrow pile 100 (`unknown_b` 2): the left counter went **0 -> 2** at t = 12.76 s after the click (the
   30 Hz colour crop of the counters changed from 0 to 320 differing pixels in one frame); nothing else
@@ -142,7 +142,7 @@ yard by climbing the ivy east of the gate (Robin does it by himself on a walk or
 ## 4. The bow (`observed`, partial)
 
 - The bow icon is the left of the three icons under the portrait (about (95,718)); a click turns it green
-  and shows a "use bow" tooltip; the pointer becomes a **grey ring with four arrowheads around a red
+  and shows a tooltip naming the bow; the pointer becomes a **grey ring with four arrowheads around a red
   disc**, with the walk arrow drawn inside it (the hotspot stays the arrow's tip).
 - The arrow's tail turns **green** when the tip rests on a character: over the sergeant at 126 px (his
   red ring and health bars appear). Over the straw target at 186 px (tip on the straw, six offsets
