@@ -4,8 +4,8 @@
 `PostInitialize` adds the primary objective 0 and plays one sequence: text pages 0, 1, 2, then the camera
 returns to the hero. Every player action here is canonical input: pages are dismissed with Enter through
 the briefing screen (`Engine.skip_briefing`), walks are left clicks on the ground, the pause menu is Escape. `debug.vm`
-only inspects (`{"element": i}` describes one entry of the element table), except `{"win": true}`, the
-documented shortcut of the end-of-mission test (docs/harness.md).
+only inspects (`{"element": i}` describes one entry of the element table); the end-of-mission flows are
+driven through play in `test_win.py`.
 """
 
 from __future__ import annotations
@@ -461,75 +461,3 @@ def test_walking_onto_a_scroll_shows_its_text(binary, game_dir, tmp_path):
                 print("scroll", s["element"], "showed a text page; visited:", taken)
                 return
         raise AssertionError(f"no text page after visiting scrolls {taken}")
-
-
-def test_mission_won_shows_the_debriefing_then_the_menu(binary, game_dir, tmp_path):
-    """The end of a mission: the won debriefing parchment, then the main menu. `debug.vm {win}` is
-    the documented harness shortcut for this flow only (no mission can be won through play yet)."""
-    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
-        e.reset({"mission": "H01_Lin_VL"}, seed=0)
-        e.skip_briefing()
-        e.step(5)
-        assert not e.call("debug.vm", {})["mission_won"]
-        money_at_win = e.call("debug.vm", {})["money"]
-        e.call("debug.vm", {"win": True})
-        e.step(1)
-        ui = e.observe(entities=False)["ui"]
-        assert ui["screen"] == "debriefing", ui
-        e.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": "enter"}])
-        # The campaign graph names a successor of the first mission (the first secondary mission),
-        # which launches automatically behind its own briefing.
-        obs = e.observe(entities=False)
-        assert obs["scenario"]["mission"].lower() != "h01_lin_vl", obs["scenario"]
-        # Its script runs its load-time callbacks without a trap; the load itself and the transition
-        # are what this test proves (whether its first sequence opens a page is the script's business).
-        vm = e.call("debug.vm", {})
-        assert vm["present"] and not vm["faulted"] and vm["counters"]["traps"] == 0
-        assert obs.get("ui") is None or obs["ui"]["screen"] == "briefing"
-        # The successor rule is a hypothesis (ADR-0008): the new world is tainted from tick 0.
-        assert vm["tainted"] and any("ampaign" in str(x) for x in vm["assumptions"]), vm["assumptions"]
-        # Campaign money: the won mission's money became the profile's, and seeds the successor.
-        import json
-
-        doc = json.loads((tmp_path / "profiles.json").read_text())
-        assert doc["profiles"][doc["selected"]]["money"] == money_at_win
-        assert vm["money"] == money_at_win
-
-
-def test_mission_lost_shows_the_lost_page_with_restart_load_and_ok(binary, game_dir, tmp_path):
-    """A loss shows the lost page (combat-measurements.md 4: parchment, three seals) over the paused
-    world: OK leads to the main menu, restart to the mission's briefing; a different picture than the
-    won parchment. `debug.vm {lose}` is the same documented shortcut."""
-    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
-        e.reset({"mission": "H01_Lin_VL"}, seed=0)
-        e.skip_briefing()
-        e.step(5)
-        tick = e.observe(entities=False)["tick"]
-        e.call("debug.vm", {"lose": True})
-        e.step(1)
-        ui = e.observe(entities=False)["ui"]
-        assert ui["screen"] == "lost", ui
-        assert [it["action"] for it in ui["items"]] == ["restart", "load", "ok"]
-        e.step(3)
-        assert e.observe(entities=False)["tick"] == tick + 1, "the world is paused under the page"
-        e.capture("lost.png")
-        e.step(1, pointer_click(333, 556, "left"))  # restart seal
-        ui = e.observe(entities=False)["ui"]
-        assert ui["screen"] == "briefing", ui
-        e.skip_briefing()
-        e.step(5)
-        e.call("debug.vm", {"lose": True})
-        e.step(1)
-        e.step(1, pointer_click(517, 547, "left"))  # OK seal
-        obs = e.observe(entities=False)
-        assert obs["ui"]["screen"] == "main_menu", obs.get("ui")
-        # The won flow shows a different parchment.
-        e.reset({"mission": "H01_Lin_VL"}, seed=0)
-        e.skip_briefing()
-        e.step(5)
-        e.call("debug.vm", {"win": True})
-        e.step(1)
-        won = e.observe(entities=False)["ui"]
-        assert won["screen"] == "debriefing", won
-        e.capture("won.png")
-        assert (tmp_path / "lost.png").read_bytes() != (tmp_path / "won.png").read_bytes()

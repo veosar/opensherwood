@@ -246,9 +246,9 @@ sticky reason behind `faulted`: `{"unknown_native": id}`, `{"arity_mismatch": id
 `objective_done_before_added`, `out_of_action_true` (native 90 calls that reported an actor knocked out or
 dead), `arity_mismatches` (`{id: count}` of native calls trapped because their argument count differed from the
 signature table) and `transactions_rolled_back` (queued `ActionChange` handlers the budget cut short, rolled
-back and retried whole next tick; a full queue is the `action_queue_overflow` fault, never a drop). Its only mutations, `debug.vm {"win": true}` and `{"lose": true}`, mark the mission won or lost: a documented
-harness shortcut used only by the end-of-mission flow tests (`test_mission_won_shows_the_debriefing_then_the_menu`, `test_mission_lost_shows_the_lost_debriefing_then_the_menu`),
-because the flow tests must not depend on the long walk of `test_win.py` (the first mission is won through play there, tainted: `docs/original/h01-win-path.md`); it is not a player action and no other test may use it.
+back and retried whole next tick; a full queue is the `action_queue_overflow` fault, never a drop). It has no mutation: the end-of-mission flows (the won page and the campaign successor, the lost page and its
+seals) are driven through play in `test_win.py` (the first mission is won by a walk and lost in a fight, both
+tainted as `docs/original/h01-win-path.md` and ADR-0008 describe).
 
 Unknown natives (no row of `docs/formats/scb.md` with an effect) are a deterministic trap by default: the
 callback stops there, `faulted` becomes true, and the id is counted. `opensherwood --lenient-natives` selects
