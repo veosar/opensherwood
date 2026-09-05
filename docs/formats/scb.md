@@ -416,7 +416,7 @@ not, and what a first implementation would be where the row is confident enough.
   `crates/opensherwood-script`, `MissionBinding::from_mission`):
 
   ```
-  [ map FLIM ] [ map TUPO ] [ POUF ] [ OILE ] [ TOTO ] [ BORG ] [ BOOM ] [ SKRO ] [ ZORG ] [ TING ] [ SCOT ] [ GULP polygons ]
+  [ map FLIM ] [ map TUPO ] [ POUF ] [ OILE ] [ TOTO ] [ BORG ] [ BOOM ] [ ZORG ] [ SKRO ] [ TING ] [ SCOT ] [ GULP polygons ]
   ```
 
   The map's `FLIM` animated elements occupy indices 0..FLIM-1 (confirmed in H01: indices 19..=32 are Lincoln's
@@ -426,14 +426,17 @@ not, and what a first implementation would be where the row is confident enough.
   computed from the parsed `.rhp` (`map_element_count`): 19 Croisement01, 24 Croisement02 and Croisement03,
   20 Derby, 59 Nottingham, 63 Leicester, 50 Lincoln, 70 York, 20 Sherwood (`known_map_element_count` keeps
   the nine values as a cross-check, `crates/opensherwood-script/tests/gamedata.rs`). The mission's records
-  follow in the chunk order above; the player-character slots (`SCOT`) sit at the *tail*, after the inert
-  `ZORG` and `TING` entries: four named `SCOT` classes address their own slot (Tac01 107, Emb03 107, Emb04 93,
+  follow in the chunk order above (the `ZORG` pick-up items before the `SKRO` scrolls, the file's own chunk
+  order: `docs/original/h01-win-path.md` section 2, high: all 102 scroll-state calls 193 / 194 of the 18
+  missions with both blocks land in the scroll range only with `ZORG` first, 27 otherwise, and the oracle
+  shows two tutorial scrolls active at H01's start that the other order deactivated); the player-character
+  slots (`SCOT`) sit at the *tail*, after the inert `TING` entries: four named `SCOT` classes address their own slot (Tac01 107, Emb03 107, Emb04 93,
   the outro 70, exact) and no mission's self-references fit `SCOT` in front (high). The position of the
   script polygons is not observable (no polygon class references itself by index); the engine puts them
   last. Under the earlier model (`SCOT` first, `K` read off one mission per map) eleven missions were bound
   with their records shifted by 1..=4: H02, H09, H12, H05, Str01, H03, S04, Str02, H10, S05, Str03. For H01:
-  map elements 0..=49 (38 animated, 12 patches), civilians 50..=56, soldiers 57..=94, objects 95..=99, scrolls
-  100..=114, `ZORG` 115..=125 (inert), the hero's slot 126 (the element whose two attributes the level's
+  map elements 0..=49 (38 animated, 12 patches), civilians 50..=56, soldiers 57..=94, objects 95..=99, `ZORG`
+  items 100..=110 (inert), scrolls 111..=125, the hero's slot 126 (the element whose two attributes the level's
   `Initialize` zeroes), polygons 127..=138.
 - **Locations (native 6)**: `GULP` points then polygons (exact bound in 11 files).
 - **Paths (native 9)**: `RAIL` index.
@@ -469,8 +472,8 @@ and bound, an `Actor` scratch variable, a "going away" flag).
 - `Initialize` [L]: disables five player actions (`n196(6..9, 0)`, `n196(3, 0)`; 196 is low); deactivates
   map elements 19..=32 [M] - in `lincoln.rhp` these `FLIM` entries are the two chimney fires, five torches and
   seven candles, i.e. the interior lights of a day mission (the room-entry messages below switch them on
-  again room by room) - and several scrolls (102, 104..=106, 108..=110 = the scrolls that appear only after
-  earlier steps) [M]; zeroes the variables [H]; stores the player character (`n111()`) [M]; declares mission
+  again room by room) - and seven `ZORG` pick-up items (102, 104..=106, 108..=110: the purses and arrows the
+  tutorial scrolls hand out later; `docs/original/h01-win-path.md` section 2) [M]; zeroes the variables [H]; stores the player character (`n111()`) [M]; declares mission
   variables 1, 2, 3 [M]; locks doors 20 and 28 and closes doors 8, 20, 21, 37, 25, 23 [L: natives 4, 186,
   191]; deactivates, AI-locks and hides four actors (50, 79, 53, 92: the girl, a soldier, the servant, a
   soldier) that are activated by later events [L: 113 high, 134 medium, 197 / 198 low]; sets two attributes
@@ -691,9 +694,11 @@ as transactions: the VM's mutable state is captured (charged one unit per value 
 the handler's natives touch, the selection and the camera are captured as touched; a handler the budget
 cuts short is rolled back and retried whole next tick, a full queue faults the script
 (`fault = "action_queue_overflow"`; `faulted` is derived from `fault`, which also names an unknown native or
-an arity mismatch). The stealth layer and the waypoint programs share one simulation budget per tick
-(`world::SIM_WORK_PER_TICK`, 2^24) with a persisted cursor per phase (`World::cursors`: perception, states,
-attacks, programs); a search the budget cannot pay changes nothing and is planned first next tick. The
+an arity mismatch). The stealth layer, the waypoint programs, the movement, the animation advance and the action-change scan
+share one simulation budget per tick (`world::SIM_WORK_PER_TICK`, 2^24) handed out on per-phase quotas
+(ADR-0008) with a persisted cursor per phase (`World::cursors`: perception, states, attacks, programs,
+movement, animation, actions); a search cut short with less than its cap changes nothing and is planned
+first next tick, one that fails with the full cap is unreachable under the budget. The
 signature table gained a column: `returns_value` (the row's `-> result`, the contract the dispatcher honours
 and `Program::validate` checks) is kept apart from `read_in_corpus` (a 0x0d follows the call in the retail
 scripts; equal for every id today). A 0x0c and the 0x0d after it are one IR instruction (`Instr::Native {

@@ -47,6 +47,45 @@ impl Geometry {
             .any(|o| o.len() >= 3 && point_in_polygon(x, y, o))
     }
 
+    /// [`Geometry::is_walkable`] charged to a work budget: one unit per edge of every polygon
+    /// tested, charged before the polygon is tested (the boundary, then the areas until one
+    /// contains the point, then every obstacle). `None` when the budget ran out before the
+    /// answer was known (nothing was decided; the caller retries with a fresh budget).
+    #[must_use]
+    pub fn is_walkable_within(&self, x: i32, y: i32, budget: &mut u64) -> Option<bool> {
+        let mut test = |poly: &[(i32, i32)]| -> Option<bool> {
+            let edges = poly.len() as u64;
+            if *budget < edges {
+                *budget = 0;
+                return None;
+            }
+            *budget -= edges;
+            Some(poly.len() >= 3 && point_in_polygon(x, y, poly))
+        };
+        let bounded = self.boundary.len() >= 3 || !self.areas.is_empty();
+        let mut inside = !bounded;
+        if !inside && self.boundary.len() >= 3 {
+            inside = test(&self.boundary)?;
+        }
+        if !inside {
+            for a in &self.areas {
+                if test(a)? {
+                    inside = true;
+                    break;
+                }
+            }
+        }
+        if !inside {
+            return Some(false);
+        }
+        for o in &self.obstacles {
+            if test(o)? {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+
     /// Number of vertices over all polygons (for hashing / limits).
     #[must_use]
     pub fn vertex_count(&self) -> usize {
@@ -150,6 +189,23 @@ mod tests {
         assert!(!g.is_walkable(50, 50));
         assert!(!g.is_walkable(150, 50));
         assert!(Geometry::default().is_walkable(-5, 7));
+        // The charged form agrees with the plain one and charges one unit per edge tested:
+        // the boundary (4) and the obstacle (4) for a walkable point, the boundary alone for
+        // a point outside it; a budget short of the next polygon decides nothing.
+        let mut b = 100;
+        assert_eq!(g.is_walkable_within(10, 10, &mut b), Some(true));
+        assert_eq!(b, 92);
+        let mut b = 100;
+        assert_eq!(g.is_walkable_within(150, 50, &mut b), Some(false));
+        assert_eq!(b, 96);
+        let mut b = 7;
+        assert_eq!(g.is_walkable_within(10, 10, &mut b), None);
+        assert_eq!(b, 0);
+        let mut b = 0;
+        assert_eq!(
+            Geometry::default().is_walkable_within(-5, 7, &mut b),
+            Some(true)
+        );
     }
 
     #[test]

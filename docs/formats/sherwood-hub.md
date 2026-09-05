@@ -100,7 +100,7 @@ zone and the recruit.
 The flat table addressed by native 3 is, for **every** level:
 
 ```
-[ map FLIM entries ]  [ map TUPO entries ]  [ POUF ]  [ OILE ]  [ TOTO ]  [ BORG ]  [ BOOM ]  [ SKRO ]  [ ZORG ]  [ TING ]  [ SCOT ]  [ GULP polygons ? ]
+[ map FLIM entries ]  [ map TUPO entries ]  [ POUF ]  [ OILE ]  [ TOTO ]  [ BORG ]  [ BOOM ]  [ ZORG ]  [ SKRO ]  [ TING ]  [ SCOT ]  [ GULP polygons ? ]
    0 .. F-1             F .. F+T-1
 ```
 
@@ -176,9 +176,12 @@ The outro's level class confirms it independently: its `Initialize` flags elemen
 element 70 as the hero (messages 2000..=2002, handled by the hero's class), 71 as the second slot. In H01 the
 new tail puts the single `SCOT` slot at 126, which is the element whose two attributes the level's `Initialize`
 zeroes (`n117(126, ..)`, previously read as "a polygon or the CAVE list"), and the block 115..=125 is exactly
-its 11 `ZORG` entries. Confidence: **high** for the order `.. SKRO, ZORG, TING, SCOT` (four exact matches over
-counts 2 / 6 / 10 / 7 and 0 / 1 / 1 / 0); the `ZORG` and `TING` entries are addressed by no script (they are
-inert `Unmodelled` slots for the engine).
+its 11 `ZORG` entries. Confidence: **high** for `SCOT` after both `SKRO` and `ZORG` and after `TING` (four
+exact matches over counts 2 / 6 / 10 / 7 and 0 / 1 / 1 / 0); the order *between* `SKRO` and `ZORG` is not
+observable here (only their sum places `SCOT`) and is fixed by `docs/original/h01-win-path.md` section 2 as
+`.. BOOM, ZORG, SKRO, TING, SCOT` (the file's chunk order; the corpus-wide scroll-state calls and the oracle
+agree), so in H01 the block 100..=110 is the `ZORG` items and 111..=125 the scrolls; the `ZORG` and `TING`
+entries are addressed by no class of their own (they are inert `Unmodelled` slots for the engine).
 
 ### 4.4 The hub under the model
 
@@ -287,7 +290,8 @@ get / set pair of campaign bit words here, which refines the "availability of pl
    (add `Map::tupo_count()` or a typed count to `opensherwood-formats::rhp`; the engine already parses the
    `.rhp` in `Engine::load_map`, so pass the two counts, or the `Map`, into `mission::build_spec_checked` ->
    `translate_script`). Keep a table of the nine expected values as a data-backed test. Half a day.
-2. **Done (2026-09-05).** **Reorder `MissionBinding::from_mission`**: `[map F+T] [POUF] [OILE] [TOTO] [BORG] [BOOM] [SKRO] [ZORG]
+2. **Done (2026-09-05; `ZORG` moved before `SKRO` the same day, `h01-win-path.md` 2).** **Reorder
+   `MissionBinding::from_mission`**: `[map F+T] [POUF] [OILE] [TOTO] [BORG] [BOOM] [ZORG] [SKRO]
    [TING] [SCOT] [polygons]`. Entity numbering must stay the app's (`SCOT` entities first, then `OILE`, `TOTO`,
    `BORG` in file order): compute each group's first entity id from the counts instead of numbering in table
    order. `ZORG` and `TING` entries become `Element::Unmodelled`. Half a day including the unit tests

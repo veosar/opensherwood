@@ -433,9 +433,11 @@ divisor), the noticed -> alarm sequence a sighting starts, the alert timeout, th
 timer, the punch's arc, the profile's `p4`, the hero's click attacks never landing against a soldier, the
 powerful blow's one-in-three chance, the post-bound behaviour of every soldier kind but the halberdier,
 the melee action ids and the loss when another player character survives stay **hypotheses**. The
-script VM records `Assumption::Perception` only for the hypothesised part (an alert an actor reached by
-sight), never for a run heard, and `MeleeReach` / `PowerfulBlowChance` / `PostBound` / `CombatActions`
-/ `HeroDeathLoss` for the melee's hypotheses (ADR-0008, "Hypotheses and taint").
+script VM records each hypothesis where it first changes the state (ADR-0008, "Hypotheses and taint";
+Codex review 9): `Assumption::SightCone` for a sighting, `NoiseRadius` for a run heard from beyond the
+measured 330 px (never within it), `AlertPolicy` for the alert sequence, timeout, re-plan and return,
+`AttackPolicy(Reach | Block | HitChance | PostBound)` and `KnockOut` for the melee's and the blow's
+hypotheses, `CombatActions` / `HeroDeathLoss` as before.
 
 - **Speeds** (item 5). Every moving entity covers per world tick the speed of the cycle it plays
   (`Entity::effective_speed`, `AnimSet::cycle_speed`): the cycle's summed `advance` over its duration
@@ -453,10 +455,12 @@ sight), never for a run heard, and `MeleeReach` / `PowerfulBlowChance` / `PostBo
 - **Perception** (item 2). Every enemy soldier (`BORG` actor) that is alive, active, not AI-locked (natives
   134 / 135: a locked AI perceives nothing, section 2.5), on his feet and not fighting tests every player
   character each tick, in entity order from a round-robin cursor (`World::cursors.perception`,
-  snapshotted) and within the world's per-tick simulation budget (`SIM_WORK_PER_TICK` = 2^24, shared
-  with the state transitions, the attack orders, the waypoint programs and every path search they issue:
-  one unit per entity pre-indexed, one per soldier inspected, one per soldier / player character pair
-  tested; a scan the budget cuts short resumes next tick where it stopped): a **view cone** of half angle
+  snapshotted) and within perception's quota of the world's per-tick simulation budget
+  (`SIM_WORK_PER_TICK` = 2^24 handed out on per-phase quotas to perception, the state transitions, the
+  attack orders, the waypoint programs, the movement, the animation and the action scan, every path
+  search drawing from its phase's grant: one unit per entity pre-indexed, one per soldier inspected, one
+  per soldier / player character pair tested; a scan the grant cuts short resumes next tick where it
+  stopped, and no phase can starve another): a **view cone** of half angle
   `VIEW_CONE_HALF_ANGLE_256` = 32 (45 degrees) and range `VIEW_RANGE` = 250 map px, the range over
   `CROUCH_VIEW_DIVISOR` = 2 for a crouched character; and a **noise radius** `RUN_NOISE_RADIUS` = 350 px
   around the soldier within which a running character is heard whatever he faces. Occluders and walls do not
@@ -520,16 +524,17 @@ sight), never for a run heard, and `MeleeReach` / `PowerfulBlowChance` / `PostBo
   hero's click attacks** (a strike every `HERO_SWING_TICKS` = 90, presentation) never land against a
   soldier: `inferred` from 225 s against a pole arm at 52 px (the pole arm's reach band or a block); the
   engine has no data path for the weapon class yet, so the rule applies to every soldier and every
-  resolution records `Assumption::MeleeReach`. **The forward stroke** (the powerful blow): the left
+  strike's start and resolution records `Assumption::AttackPolicy(Block)`. **The forward stroke** (the powerful blow): the left
   button held, the pointer moved at least `FIGURE_MIN_STROKE` px to the right within 45 degrees of
   horizontal, released; the figure locks onto the nearest enemy soldier (`Entity::figure`), the
   character walks up if need be, and the blow resolves `POWERFUL_BLOW_TICKS` = 57 after it starts
   (0.9-1.0 s measured), landing `POWERFUL_BLOW_CHANCE` = 1 in 3 (2 of 6 strokes: `hypothesis`,
-  `Assumption::PowerfulBlowChance` on every resolution) for `POWERFUL_BLOW_DAMAGE` = 50, so two landed
+  `Assumption::AttackPolicy(HitChance)` on every resolution, as on every soldier's jittered swing and
+  every hit roll of his) for `POWERFUL_BLOW_DAMAGE` = 50, so two landed
   blows kill an 80-hp soldier. Any other stroke orders nothing (the other eight figures are not
   modelled). A ground order or a right click leaves the fight; the soldier stands his ground and
-  returns to his post (`measured` for the halberdier over 5 min; `Assumption::PostBound` for every
-  soldier whose foe leaves alive). A fighter whose foe is gone (dead, absent, off his feet or beyond
+  returns to his post (`measured` for the halberdier over 5 min; `Assumption::AttackPolicy(PostBound)`
+  for every soldier whose foe leaves alive). A fighter whose foe is gone (dead, absent, off his feet or beyond
   `FIGHT_BREAK_RANGE` = 104 px by a script walk) leaves the fight the next tick. **Damage numbers**
   (`World::damage_numbers`, presentation: snapshotted so a restore draws the same picture, not
   hashed): cream digits at the victim's head rising `DAMAGE_NUMBER_RISE` = 50 px over
@@ -569,16 +574,20 @@ sight), never for a run heard, and `MeleeReach` / `PowerfulBlowChance` / `PostBo
   from 19, `KNOCKED_DOWN_TICKS` 60 from 21 (the death's fall too), `GET_UP_TICKS` 68 from 24,
   `PUNCH_TICKS` 54 from the hero's 19, `STRIKE_TICKS` 45 from 16, `FLINCH_TICKS` 34 from 12). The
   `+ 1` rule is `inferred` from the sneak cycle alone (8.4 note); no reaction animation was timed.
-- **Taint** (ADR-0008, "Hypotheses and taint"): the VM records an assumption whenever a *hypothesised*
-  part of the layer changes script-visible state: `perception` when an alert action id of an actor alerted
-  by sight reaches an `ActionChange` handler (an actor alerted by a run heard, `heard`, records nothing:
-  that channel is measured), `knock_out` when native 90 reports a knocked-out actor, 128 refuses one or a
-  knock-out action id of a living actor reaches a handler, `profile_stats` when a blow consults `p4`,
-  `melee_reach` when a hero's click attack is resolved, `powerful_blow_chance` when a powerful blow is
-  resolved, `post_bound` when a soldier's foe leaves him alive, `combat_actions` when a melee id or a
-  dead actor's fall reaches a handler, `hero_death_loss` when the loss is raised with another player
-  character alive; `observe.script.tainted` then marks the mission's outcome as not authoritative until
-  the oracle captures of section 7 and `combat-measurements.md` 7 settle the values.
+- **Taint** (ADR-0008, "Hypotheses and taint"; Codex review 9, finding 1): the VM records an assumption
+  where a *hypothesised* part of the layer first changes authoritative state, whether or not a script
+  handler exists: `sight_cone` when a sighting changes a soldier's state (an actor alerted by a run heard,
+  `heard`, records nothing: that channel is measured up to 330 px; from 330 to 350 px it is the engine's
+  choice and records `noise_radius`), `alert_policy` for the noticed -> alarm -> search sequence, the
+  timeout, the re-plan and the return to the post, `knock_out` when the blow fells (or fails to fell) a
+  victim, when native 90 reports a knocked-out actor, 128 refuses one or a knock-out action id of a
+  living actor reaches a handler, `profile_stats` when a blow consults `p4`, `attack_policy: reach` when
+  an attack order resolves from behind, `attack_policy: block` when a hero's click attack starts or
+  resolves, `attack_policy: hit_chance` when a swing is timed or a blow is rolled, `attack_policy:
+  post_bound` when a soldier's foe leaves him alive, `combat_actions` when a melee id or a dead actor's
+  fall reaches a handler, `hero_death_loss` when the loss is raised with another player character alive;
+  `observe.script.tainted` then marks the mission's outcome as not authoritative until the oracle
+  captures of section 7 and `combat-measurements.md` 7 settle the values.
 
 Not implemented from section 6: the rails' check-for scans, silhouettes, parries and the block, the
 other eight figures, soldiers starting fights or fighting several at once, the 25-hp blow, the bow,

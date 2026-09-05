@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::ai::{
-    AiState, DAMAGE_NUMBER_TICKS, ENERGY_MAX, FIGURE_MIN_STROKE, FightPose, Figure, action_id,
-    wanted_animation,
+    AiState, DAMAGE_NUMBER_TICKS, ENERGY_MAX, FIGURE_MIN_STROKE, FightPose, Figure, SimIndex,
+    action_id, resume_at, rotated, wanted_animation,
 };
 use crate::anim::{AnimState, Catalog, UNITS_PER_TABLE_TICK, direction_of};
 use crate::fixed::Fixed;
@@ -229,9 +229,9 @@ pub struct Entity {
     #[serde(default)]
     pub fell_backward: bool,
     /// The current alert came through the noise channel (a running character heard: measured,
-    /// `docs/original/stealth-and-combat.md` 8.6) rather than the view cone (hypothesis), so the
-    /// alert action ids it produces record no `Assumption::Perception` (`vm.rs`). Only set in
-    /// an alert state.
+    /// `docs/original/stealth-and-combat.md` 8.6) rather than the view cone (hypothesis,
+    /// `Assumption::SightCone`, recorded by the stealth layer when the sighting changed the
+    /// state). Only set in an alert state; `observe` reports it.
     #[serde(default)]
     pub heard: bool,
 }
@@ -638,9 +638,9 @@ pub const MAX_ENTITY_COORD: i32 = crate::geom::MAX_COORD;
 /// RNG stream id of the gameplay stream (the script stream is [`SCRIPT_RNG_STREAM`]).
 pub const GAMEPLAY_RNG_STREAM: u64 = 1;
 /// Work budget of one movement order issued by the player (A* node expansions and smoothing
-/// cells, `nav.rs`), and the cap of one search issued by the simulation (an NPC's waypoint
-/// program, the stealth layer), which otherwise draws from the tick's [`SIM_WORK_PER_TICK`];
-/// orders issued by the script are charged to the VM's per-tick budget instead.
+/// cells, `nav.rs`), one per click; orders issued by the script are charged to the VM's
+/// per-tick budget instead, and the simulation's own searches are capped at
+/// [`SIM_SEARCH_WORK`] within their phase's quota.
 pub const ORDER_SEARCH_WORK: u64 = DEFAULT_SEARCH_WORK;
 /// A second left click on the ground within this many ticks of the first (20 at 60 Hz, a third
 /// of a second) ...
@@ -728,8 +728,8 @@ pub struct World {
     /// `None` for worlds without a script.
     #[serde(default)]
     pub vm: Option<VmState>,
-    /// Where each phase of the simulation resumes when the tick's budget ran out (`ai.rs`,
-    /// "Work": round robin per phase; 0 after a completed walk).
+    /// Where each phase of the simulation resumes when its grant of the tick's budget ran out
+    /// (`ai.rs`, "Work": round robin per phase; 0 after a completed walk).
     #[serde(default)]
     pub cursors: SimCursors,
     /// Where the left button went down on the map (24.8), until it comes up: the release
@@ -748,14 +748,20 @@ pub struct World {
     /// hands out always has it; movement orders are refused, never unbounded, without it).
     #[serde(skip)]
     pub nav: Option<NavGrid>,
+    /// The spatial index of the obstacle entities (grid buckets keyed by cell,
+    /// [`ObstacleIndex`]), derived from `entities`: not serialised, rebuilt by the tick whose
+    /// pre-index finds the obstacles changed (`validate` bounds the rebuild through
+    /// [`MAX_OBSTACLE_INDEX_ENTRIES`]); movement queries it instead of scanning every obstacle.
+    #[serde(skip)]
+    pub obstacles: Option<ObstacleIndex>,
     /// Static animation data attached by the app (not part of the snapshot; re-attached on load).
     #[serde(skip)]
     pub catalog: Catalog,
 }
 
-/// The entity index each simulation phase resumes from when the tick's budget ran out
-/// (`ai.rs`, "Work"): authoritative (snapshot, `validate`: every cursor names an entity or is
-/// 0, the `world` hash).
+/// The entity index each simulation phase resumes from when its grant of the tick's budget
+/// ran out (`ai.rs`, "Work"): authoritative (snapshot, `validate`: every cursor names an entity
+/// or is 0, the `world` hash).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SimCursors {
     /// The perception walk over the soldiers.
@@ -766,21 +772,282 @@ pub struct SimCursors {
     pub attacks: u32,
     /// The waypoint programs and legacy patrols over the idle guards.
     pub programs: u32,
+    /// The movement over the living, active non-obstacles.
+    #[serde(default)]
+    pub movement: u32,
+    /// The animation advance over the active entities.
+    #[serde(default)]
+    pub animation: u32,
+    /// The action-change scan over the active non-obstacles.
+    #[serde(default)]
+    pub actions: u32,
 }
 
 impl SimCursors {
-    fn all(self) -> [u32; 4] {
-        [self.perception, self.states, self.attacks, self.programs]
+    fn all(self) -> [u32; 7] {
+        [
+            self.perception,
+            self.states,
+            self.attacks,
+            self.programs,
+            self.movement,
+            self.animation,
+            self.actions,
+        ]
     }
 }
 
 /// Work units the simulation may spend in one tick besides the script (`ai.rs`, "Work"): the
-/// pre-index pass, perception, the state transitions, the attack orders, the waypoint programs
-/// and every path search any of them issues (the units of `nav.rs`, capped per search at
-/// [`ORDER_SEARCH_WORK`]), granted at the start of `simulate` and nowhere else. 2^24: a
-/// `MAX_ENTITIES` world of idle soldiers costs 2^18 a tick before any search, and a search over
-/// the largest accepted grid (`nav::MAX_CELLS`) fits three times.
+/// pre-index pass (one unit per entity, at most [`MAX_ENTITIES`]), then the phases on their
+/// quotas ([`SIM_QUOTA_PERCEPTION`] and the rest, which sum to the budget less the pre-index):
+/// perception, the state transitions, the attack orders, the waypoint programs, the movement,
+/// the animation advance and the action-change scan, every path search any of them issues
+/// (the units of `nav.rs`, capped per search at [`SIM_SEARCH_WORK`]) drawing from its phase's
+/// grant; granted at the start of `simulate` and nowhere else. 2^24: a `MAX_ENTITIES` world of
+/// idle soldiers costs 2^18 a tick before any search.
 pub const SIM_WORK_PER_TICK: u64 = 1 << 24;
+/// Quota of the state transitions (one unit per human plus the searches an alert or a return
+/// issues): 2^21, above [`SIM_SEARCH_WORK`] plus the `MAX_ENTITIES` units of the walk.
+pub const SIM_QUOTA_STATES: u64 = 1 << 21;
+/// Quota of the attack orders (one unit per attacker plus the approach searches): 2^21.
+pub const SIM_QUOTA_ATTACKS: u64 = 1 << 21;
+/// Quota of the waypoint programs and legacy patrols (one unit per idle guard plus the walks
+/// they issue): 2^21.
+pub const SIM_QUOTA_PROGRAMS: u64 = 1 << 21;
+/// Quota of the movement (one unit per living, active non-obstacle, one per obstacle-index cell
+/// it looks at, one per obstacle candidate tested and one per polygon edge of the walkable
+/// geometry tested): 2^20.
+pub const SIM_QUOTA_MOVEMENT: u64 = 1 << 20;
+/// Quota of the animation advance (one unit per active entity): 2^20, above `MAX_ENTITIES`,
+/// so a full walk always fits.
+pub const SIM_QUOTA_ANIMATION: u64 = 1 << 20;
+/// Quota of the action-change scan (one unit per active non-obstacle, plus the script's
+/// element and class tables once when a script is attached): 2^20, above `MAX_ENTITIES` plus
+/// twice `vm::MAX_TABLE`, so a full walk always fits.
+pub const SIM_QUOTA_ACTIONS: u64 = 1 << 20;
+/// Quota of perception (one unit per soldier inspected, one per soldier / player character
+/// pair tested): what the budget leaves after the pre-index reserve and the other quotas
+/// (about 2^22 + 2^21: a hostile world of 2^15 soldiers and 2^15 player characters, 2^30
+/// pairs a round, completes a round in about 350 ticks while every other phase keeps its
+/// quota every tick).
+pub const SIM_QUOTA_PERCEPTION: u64 = SIM_WORK_PER_TICK
+    - MAX_ENTITIES as u64
+    - SIM_QUOTA_STATES
+    - SIM_QUOTA_ATTACKS
+    - SIM_QUOTA_PROGRAMS
+    - SIM_QUOTA_MOVEMENT
+    - SIM_QUOTA_ANIMATION
+    - SIM_QUOTA_ACTIONS;
+/// Cap of one path search issued by the simulation (an alert run, a return, an attack
+/// approach, a program's walk; the units of `nav.rs`): 2^20, which every search-issuing quota
+/// exceeds by more than `MAX_ENTITIES`, so an entity that comes first in its phase's walk is
+/// always granted the full cap. A search that fails with the full cap is unreachable under this
+/// budget (a definite answer: the order is dropped, the instruction skipped, the soldier
+/// patrols where he stands); one that fails with less is retried first next tick. A retail map
+/// (about 500 x 375 cells) fits with room to spare; the largest accepted grid does not, and
+/// such worlds walk by the player's own orders only.
+pub const SIM_SEARCH_WORK: u64 = 1 << 20;
+/// Cell size in map pixels of the obstacle index ([`ObstacleIndex`]).
+pub const OBSTACLE_CELL: i32 = 64;
+/// Largest number of (cell, obstacle) entries the obstacle index may hold: bounds its rebuild
+/// (`validate` refuses a world whose obstacles would need more; an obstacle covers as many
+/// entries as cells of the map its box spans, clamped to the map).
+pub const MAX_OBSTACLE_INDEX_ENTRIES: u64 = 1 << 22;
+
+/// The tick's simulation budget handed out phase by phase (`ai.rs`, "Work"; Codex review 9,
+/// finding 4): a phase is granted its quota plus what the phases before it left of theirs,
+/// never more than the budget has left, so every phase gets at least its quota every tick
+/// whatever an earlier phase wanted, and unused work is not wasted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimBudget {
+    left: u64,
+    carry: u64,
+    granted: u64,
+}
+
+impl SimBudget {
+    /// A budget of `left` units, nothing carried yet.
+    #[must_use]
+    pub fn new(left: u64) -> Self {
+        SimBudget {
+            left,
+            carry: 0,
+            granted: 0,
+        }
+    }
+
+    /// The grant of the next phase: `quota` plus the carry, within what is left. Must be
+    /// followed by [`SimBudget::settle`] with what the phase did not spend.
+    pub fn grant(&mut self, quota: u64) -> u64 {
+        self.granted = quota.saturating_add(self.carry).min(self.left);
+        self.granted
+    }
+
+    /// The phase spent its grant down to `unspent`: the difference leaves the budget, the rest
+    /// carries over to the next phase.
+    pub fn settle(&mut self, unspent: u64) {
+        let unspent = unspent.min(self.granted);
+        self.left -= self.granted - unspent;
+        self.carry = unspent;
+        self.granted = 0;
+    }
+
+    /// Units of the budget not spent yet.
+    #[must_use]
+    pub fn left(&self) -> u64 {
+        self.left
+    }
+}
+
+/// The spatial index of the obstacle entities (Codex review 9, finding 5): the map in cells
+/// of [`OBSTACLE_CELL`] pixels, each holding the obstacles whose box touches it (a CSR layout:
+/// `entries[cell_start[c]..cell_start[c + 1]]`, obstacles in slot order), so that a mover tests
+/// only the obstacles of the cells its own box touches. Coordinates outside the map fold into
+/// the edge cells (the clamp is monotone, so two boxes that touch always share a cell). Derived
+/// from the obstacle boxes (`boxes`, the key: the tick rebuilds the index when they differ),
+/// never serialised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObstacleIndex {
+    cols: i32,
+    rows: i32,
+    boxes: Vec<(Fixed, Fixed, Fixed, Fixed)>,
+    cell_start: Vec<u32>,
+    entries: Vec<u32>,
+}
+
+impl ObstacleIndex {
+    /// Grid dimensions for a map.
+    fn dims(map_size: (u32, u32)) -> (i32, i32) {
+        (
+            map_size.0.div_ceil(OBSTACLE_CELL as u32).max(1) as i32,
+            map_size.1.div_ceil(OBSTACLE_CELL as u32).max(1) as i32,
+        )
+    }
+
+    /// The inclusive cell range `[lo, hi]` covers on an axis of `n` cells (clamped: outside
+    /// the map folds into the edge cells).
+    fn span(lo: Fixed, hi: Fixed, n: i32) -> (i32, i32) {
+        let cell = |v: Fixed| {
+            i64::from(v.floor())
+                .div_euclid(i64::from(OBSTACLE_CELL))
+                .clamp(0, i64::from(n) - 1) as i32
+        };
+        let (a, b) = (cell(lo), cell(hi));
+        (a.min(b), a.max(b))
+    }
+
+    /// The cell ranges of a box centred on `(x, y)` with half extents `(hw, hh)`.
+    fn cells_of(
+        (cols, rows): (i32, i32),
+        (x, y, hw, hh): (Fixed, Fixed, Fixed, Fixed),
+    ) -> ((i32, i32), (i32, i32)) {
+        let (hw, hh) = (hw.abs(), hh.abs());
+        (
+            Self::span(x - hw, x + hw, cols),
+            Self::span(y - hh, y + hh, rows),
+        )
+    }
+
+    /// Entries the index of these boxes on this map holds (the rebuild's cost).
+    #[must_use]
+    pub fn entry_count(boxes: &[(Fixed, Fixed, Fixed, Fixed)], map_size: (u32, u32)) -> u64 {
+        let dims = Self::dims(map_size);
+        boxes
+            .iter()
+            .map(|&b| {
+                let ((x0, x1), (y0, y1)) = Self::cells_of(dims, b);
+                u64::from((x1 - x0 + 1) as u32) * u64::from((y1 - y0 + 1) as u32)
+            })
+            .sum()
+    }
+
+    /// Build the index; refused beyond [`MAX_OBSTACLE_INDEX_ENTRIES`] entries.
+    pub fn build(
+        boxes: Vec<(Fixed, Fixed, Fixed, Fixed)>,
+        map_size: (u32, u32),
+    ) -> Result<Self, String> {
+        let total = Self::entry_count(&boxes, map_size);
+        if total > MAX_OBSTACLE_INDEX_ENTRIES {
+            return Err(format!(
+                "obstacle index needs {total} entries (limit {MAX_OBSTACLE_INDEX_ENTRIES})"
+            ));
+        }
+        let dims = Self::dims(map_size);
+        let (cols, rows) = dims;
+        let cells = (cols as usize) * (rows as usize);
+        let mut counts = vec![0u32; cells + 1];
+        for &b in &boxes {
+            let ((x0, x1), (y0, y1)) = Self::cells_of(dims, b);
+            for cy in y0..=y1 {
+                for cx in x0..=x1 {
+                    counts[(cy * cols + cx) as usize + 1] += 1;
+                }
+            }
+        }
+        for c in 1..=cells {
+            counts[c] += counts[c - 1];
+        }
+        let cell_start = counts;
+        let mut fill = cell_start.clone();
+        let mut entries = vec![0u32; total as usize];
+        for (k, &b) in boxes.iter().enumerate() {
+            let ((x0, x1), (y0, y1)) = Self::cells_of(dims, b);
+            for cy in y0..=y1 {
+                for cx in x0..=x1 {
+                    let c = (cy * cols + cx) as usize;
+                    entries[fill[c] as usize] = k as u32;
+                    fill[c] += 1;
+                }
+            }
+        }
+        Ok(ObstacleIndex {
+            cols,
+            rows,
+            boxes,
+            cell_start,
+            entries,
+        })
+    }
+
+    /// The boxes the index was built from, in slot order.
+    #[must_use]
+    pub fn boxes(&self) -> &[(Fixed, Fixed, Fixed, Fixed)] {
+        &self.boxes
+    }
+
+    /// Number of (cell, obstacle) entries.
+    #[must_use]
+    pub fn entries(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether a box of half extent `size` centred on `(x, y)` touches an obstacle
+    /// (`|x - ox| <= hw + size` on both axes), charging one unit per cell looked at and one
+    /// per candidate tested; `None` when the budget ran out before the answer was known.
+    #[must_use]
+    pub fn blocked(&self, x: Fixed, y: Fixed, size: Fixed, budget: &mut u64) -> Option<bool> {
+        let ((x0, x1), (y0, y1)) = Self::cells_of((self.cols, self.rows), (x, y, size, size));
+        for cy in y0..=y1 {
+            for cx in x0..=x1 {
+                if !charge_budget(budget, 1) {
+                    return None;
+                }
+                let c = (cy * self.cols + cx) as usize;
+                let (from, to) = (self.cell_start[c] as usize, self.cell_start[c + 1] as usize);
+                for &k in &self.entries[from..to] {
+                    if !charge_budget(budget, 1) {
+                        return None;
+                    }
+                    let (ox, oy, hw, hh) = self.boxes[k as usize];
+                    if (x - ox).abs() <= hw + size && (y - oy).abs() <= hh + size {
+                        return Some(true);
+                    }
+                }
+            }
+        }
+        Some(false)
+    }
+}
 
 /// Snapshot schema version (9: sequence barrier tokens, VM counters and budget no longer
 /// serialised, snapshots must be quiescent; 11: entity `gait` / `posture`, the world's
@@ -795,8 +1062,12 @@ pub const SIM_WORK_PER_TICK: u64 = 1 << 24;
 /// result, the assumption registry grew; 16: the melee: entity `hp` / `hp_max` (replacing
 /// `hit_points`) / `energy` / `energy_ticks` / `foe` / `pose` / `pose_ticks` / `swing_ticks`
 /// / `figure`, the world's `press`, `hero_dead` and `damage_numbers`, the assumption
-/// registry grew).
-pub const SNAPSHOT_VERSION: u32 = 16;
+/// registry grew; 17: the world's `cursors` gained `movement`, `animation` and `actions`, the
+/// VM's `Call` carries its result slot (the standalone reader is gone) and frames hold no
+/// call result, the assumption registry was reshaped: `sight_cone`, `noise_radius`,
+/// `alert_policy` and `attack_policy: {reach, block, hit_chance, post_bound}` replace
+/// `perception`, `melee_reach`, `powerful_blow_chance` and `post_bound`).
+pub const SNAPSHOT_VERSION: u32 = 17;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -1273,6 +1544,7 @@ impl World {
             hero_dead: false,
             damage_numbers: Vec::new(),
             nav: Some(nav),
+            obstacles: None,
             catalog: Catalog::default(),
         })
     }
@@ -1370,9 +1642,11 @@ impl World {
                 }
             }
         }
-        let mut ids = BTreeSet::new();
+        // Every entity by id (the attack target and foe checks below look ids up here rather
+        // than scanning the table per entity).
+        let mut ids: BTreeMap<EntityId, (EntityKind, Team)> = BTreeMap::new();
         for e in &self.entities {
-            if !ids.insert(e.id) {
+            if ids.insert(e.id, (e.kind, e.team)).is_some() {
                 return Err(format!("duplicate entity id {:?}", e.id));
             }
             if !(0..256).contains(&e.facing256) {
@@ -1603,10 +1877,12 @@ impl World {
         }
         for e in &self.entities {
             if let Some(t) = e.attack_target {
-                let victim = self.entities.iter().find(|v| v.id == t);
+                let victim = ids.get(&t);
                 let ok = e.kind == EntityKind::Player
                     && t != e.id
-                    && victim.is_some_and(|v| v.kind == EntityKind::Guard && v.team == Team::Enemy);
+                    && victim.is_some_and(|&(kind, team)| {
+                        kind == EntityKind::Guard && team == Team::Enemy
+                    });
                 if !ok {
                     return Err(format!(
                         "entity {:?} attack target {t:?} is invalid: the order goes from a player character to an enemy soldier",
@@ -1615,11 +1891,11 @@ impl World {
                 }
             }
             if let Some(f) = e.foe {
-                let foe = self.entities.iter().find(|v| v.id == f);
+                let foe = ids.get(&f);
                 let ok = f != e.id
-                    && foe.is_some_and(|v| match e.kind {
-                        EntityKind::Player => v.kind == EntityKind::Guard && v.team == Team::Enemy,
-                        _ => v.kind == EntityKind::Player,
+                    && foe.is_some_and(|&(kind, team)| match e.kind {
+                        EntityKind::Player => kind == EntityKind::Guard && team == Team::Enemy,
+                        _ => kind == EntityKind::Player,
                     });
                 if !ok {
                     return Err(format!(
@@ -1628,6 +1904,20 @@ impl World {
                     ));
                 }
             }
+        }
+        // The obstacle index the tick would build must be bounded (its rebuild is not charged
+        // to the budget; the cap keeps it at the size of a fraction of one tick's work).
+        let boxes: Vec<(Fixed, Fixed, Fixed, Fixed)> = self
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Obstacle)
+            .filter_map(|e| e.patrol.first().map(|&(hw, hh)| (e.x, e.y, hw, hh)))
+            .collect();
+        let entries = ObstacleIndex::entry_count(&boxes, self.map_size);
+        if entries > MAX_OBSTACLE_INDEX_ENTRIES {
+            return Err(format!(
+                "obstacle index would need {entries} entries (limit {MAX_OBSTACLE_INDEX_ENTRIES})"
+            ));
         }
         if let Some((x, y)) = self.press {
             let bound = Fixed::from_int(MAX_ENTITY_COORD);
@@ -1660,7 +1950,7 @@ impl World {
             }
         }
         if let Some(sel) = self.selected
-            && !ids.contains(&sel)
+            && !ids.contains_key(&sel)
         {
             return Err(format!("selected entity {sel:?} does not exist"));
         }
@@ -1917,16 +2207,21 @@ impl World {
 
     /// Player character `i` leaves his fight on the player's order; his foe stands his ground
     /// (`ai::World::end_fight`, with a per-order search budget for the soldier's way back).
+    /// The foe is found by a scan: this is the player's click, not a tick's phase.
     fn leave_fight(&mut self, i: usize) {
         let foe = self.entities[i].foe;
+        let t = foe.and_then(|id| self.entities.iter().position(|e| e.id == id));
+        let foe_alive = t.is_some_and(|t| self.entities[t].alive && self.entities[t].active);
         let mut budget = ORDER_SEARCH_WORK;
-        self.end_fight(i, &mut budget);
-        if let Some(t) = foe.and_then(|id| self.entities.iter().position(|e| e.id == id))
+        self.end_fight(i, foe_alive, &mut budget);
+        if let Some(t) = t
             && self.entities[t].ai_state == AiState::Fighting
             && self.entities[t].foe == Some(self.entities[i].id)
         {
+            let me = &self.entities[i];
+            let alive = me.alive && me.active;
             let mut budget = ORDER_SEARCH_WORK;
-            self.end_fight(t, &mut budget);
+            self.end_fight(t, alive, &mut budget);
         }
     }
 
@@ -1965,26 +2260,104 @@ impl World {
         }
     }
 
+    /// One tick of the simulation besides the script: the phases of [`World::sim_run`] on the
+    /// tick's budget ([`SIM_WORK_PER_TICK`], granted here and nowhere else), then the
+    /// presentation-only damage numbers (bounded by [`MAX_DAMAGE_NUMBERS`]).
     fn simulate(&mut self) {
-        let obstacles: Vec<(Fixed, Fixed, Fixed, Fixed)> = self
-            .entities
-            .iter()
-            .filter(|e| e.kind == EntityKind::Obstacle)
-            .filter_map(|e| e.patrol.first().map(|&(hw, hh)| (e.x, e.y, hw, hh)))
-            .collect();
+        let mut left = SIM_WORK_PER_TICK;
+        self.sim_run(&mut left);
+        // The damage numbers rise and vanish (presentation).
+        for d in &mut self.damage_numbers {
+            d.age += 1;
+        }
+        self.damage_numbers.retain(|d| d.age < DAMAGE_NUMBER_TICKS);
+    }
+
+    /// The whole simulation of one tick with an explicit budget, as `simulate` runs it (tests
+    /// exercise the exhaustion paths); returns the units spent.
+    #[cfg(test)]
+    pub(crate) fn sim_tick_with(&mut self, budget: u64) -> u64 {
+        let mut left = budget;
+        self.sim_run(&mut left);
+        budget - left
+    }
+
+    /// The phases of one tick on `left` units (`ai.rs`, "Work"): the pre-index pass (one unit
+    /// per entity; nothing runs when it does not fit), the obstacle index refreshed when the
+    /// obstacles changed (bounded by [`MAX_OBSTACLE_INDEX_ENTRIES`], not charged), then on
+    /// their quotas ([`SimBudget`]) the stealth layer (perception, the state transitions, the
+    /// attack orders), the waypoint programs, the movement (skipped when the obstacle index
+    /// could not be built), the animation advance, the action-change scan and the delivery of
+    /// the changes to the script, and the synthetic objective.
+    pub(crate) fn sim_run(&mut self, left: &mut u64) {
+        let Some(index) = self.sim_index(left) else {
+            return;
+        };
+        let indexed = self.refresh_obstacle_index(&index.obstacles);
+        let mut sim = SimBudget::new(*left);
+        self.stealth_tick(&index, &mut sim);
+        let mut grant = sim.grant(SIM_QUOTA_PROGRAMS);
+        self.program_walks(&index.idle_guards, &mut grant);
+        sim.settle(grant);
+        if indexed {
+            let mut grant = sim.grant(SIM_QUOTA_MOVEMENT);
+            self.movement(&index, &mut grant);
+            sim.settle(grant);
+        }
+        let mut grant = sim.grant(SIM_QUOTA_ANIMATION);
+        self.animation(&index, &mut grant);
+        sim.settle(grant);
+        let mut grant = sim.grant(SIM_QUOTA_ACTIONS);
+        self.action_changes(&index, &mut grant);
+        sim.settle(grant);
+        *left = sim.left();
+        if let Some(p) = index.first_player.map(|i| &self.entities[i])
+            && Fixed::length(p.x - self.goal.0, p.y - self.goal.1) <= Fixed::from_int(16)
+        {
+            self.objective_reached = true;
+        }
+    }
+
+    /// Rebuild the obstacle index when the tick's pre-index found the obstacles' boxes differ
+    /// from the ones it was built from (or there is none yet); `false` when the boxes exceed
+    /// the cap (`validate` refuses such a world; a hand-edited one moves nothing).
+    fn refresh_obstacle_index(&mut self, boxes: &[(Fixed, Fixed, Fixed, Fixed)]) -> bool {
+        if self
+            .obstacles
+            .as_ref()
+            .is_some_and(|index| index.boxes() == boxes)
+        {
+            return true;
+        }
+        if let Ok(index) = ObstacleIndex::build(boxes.to_vec(), self.map_size) {
+            self.obstacles = Some(index);
+            true
+        } else {
+            self.obstacles = None;
+            false
+        }
+    }
+
+    /// The movement of every living, active non-obstacle with an order (`actors`, from
+    /// `cursors.movement`, round robin, one unit each): the next step towards the next
+    /// waypoint, blocked by an obstacle entity (the obstacle index, one unit per cell looked
+    /// at and per candidate tested) or by unwalkable ground (one unit per polygon edge
+    /// tested). A mover the grant does not reach, or whose tests it cannot pay, stays where
+    /// he is with his order for this tick and the cursor rests on him.
+    fn movement(&mut self, index: &SimIndex, budget: &mut u64) {
         let (w, h) = (
             Fixed::from_int(self.map_size.0 as i32),
             Fixed::from_int(self.map_size.1 as i32),
         );
-        // One simulation budget (`SIM_WORK_PER_TICK`) for the pre-index pass, the stealth
-        // layer (`ai.rs`: perception, alert and knock-out states, attack orders; an alerted
-        // or knocked-out guard does not run its program below) and the waypoint programs.
-        let mut left = SIM_WORK_PER_TICK;
-        if let Some(index) = self.sim_index(&mut left) {
-            self.stealth_tick(&index, &mut left);
-            self.program_walks(&index.idle_guards, &mut left);
-        }
-        for e in &mut self.entities {
+        let mut cursor = 0u32;
+        let full = *budget >= SIM_QUOTA_MOVEMENT;
+        let order = rotated(&index.actors, self.cursors.movement);
+        for (k, &i) in order.iter().enumerate() {
+            if !charge_budget(budget, 1) {
+                cursor = resume_at(&order, k, full);
+                break;
+            }
+            let e = &self.entities[i];
             if !e.alive || !e.active || e.kind == EntityKind::Obstacle {
                 continue;
             }
@@ -2000,9 +2373,28 @@ impl World {
             } else {
                 (e.x + dx * speed / dist, e.y + dy * speed / dist)
             };
-            let blocked = obstacles.iter().any(|&(ox, oy, hw, hh)| {
-                (nx - ox).abs() <= hw + e.size && (ny - oy).abs() <= hh + e.size
-            }) || !self.geometry.is_walkable(nx.round(), ny.round());
+            let size = e.size;
+            let Some(obstructed) = self
+                .obstacles
+                .as_ref()
+                .map_or(Some(false), |ix| ix.blocked(nx, ny, size, budget))
+            else {
+                cursor = resume_at(&order, k, full);
+                break;
+            };
+            let walkable = if obstructed {
+                Some(false)
+            } else {
+                self.geometry
+                    .is_walkable_within(nx.round(), ny.round(), budget)
+            };
+            let Some(walkable) = walkable else {
+                cursor = resume_at(&order, k, full);
+                break;
+            };
+            let blocked = obstructed || !walkable;
+            let rng = &mut self.rng;
+            let e = &mut self.entities[i];
             if dx.0 != 0 || dy.0 != 0 {
                 e.facing256 = facing_of(dx, dy);
             }
@@ -2034,31 +2426,93 @@ impl World {
                             e.pc = e.pc.saturating_add(1);
                         } else {
                             e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
-                            e.wait_ticks = 20 + self.rng.below(20);
+                            e.wait_ticks = 20 + rng.below(20);
                         }
                     }
                 }
             }
         }
-        for e in &mut self.entities {
+        self.cursors.movement = cursor;
+    }
+
+    /// The animation advance of every active entity with a sprite set (`active`, from
+    /// `cursors.animation`, round robin, one unit each); an entity the grant does not reach
+    /// keeps its frame for this tick.
+    fn animation(&mut self, index: &SimIndex, budget: &mut u64) {
+        let mut cursor = 0u32;
+        let full = *budget >= SIM_QUOTA_ANIMATION;
+        let order = rotated(&index.active, self.cursors.animation);
+        for (k, &i) in order.iter().enumerate() {
+            if !charge_budget(budget, 1) {
+                cursor = resume_at(&order, k, full);
+                break;
+            }
+            let catalog = &self.catalog;
+            let e = &mut self.entities[i];
             if !e.active {
                 continue;
             }
-            let Some(set) = e.anim.as_ref().and_then(|a| self.catalog.sets.get(&a.set)) else {
+            let Some(set) = e.anim.as_ref().and_then(|a| catalog.sets.get(&a.set)) else {
                 continue;
             };
             let wanted = wanted_animation(e, set);
             if let Some(anim) = e.anim.as_mut() {
-                anim.advance(&self.catalog, wanted);
+                anim.advance(catalog, wanted);
             }
         }
-        // The action id every human reports (`ai::action_id`); a change is queued for the
-        // script's `ActionChange` of the class bound to the actor with `(previous, new)`
-        // (hypothesis on the parameter order: the actor classes compare the second parameter
-        // with 141, `docs/formats/scb.md`) and delivered within what the tick's budget left;
-        // what it cannot deliver waits for the next tick (`vm.rs`, "Action changes").
+        self.cursors.animation = cursor;
+    }
+
+    /// The action id every active non-obstacle reports (`present`, from `cursors.actions`,
+    /// round robin, one unit each; `ai::action_id`): a change is queued for the script's
+    /// `ActionChange` of the class bound to the actor with `(previous, new)` (hypothesis on
+    /// the parameter order: the actor classes compare the second parameter with 141,
+    /// `docs/formats/scb.md`) and delivered within what the VM's tick budget left; what it
+    /// cannot deliver waits for the next tick (`vm.rs`, "Action changes"). With a script, the
+    /// entity-to-class lookup is built once from the element and class tables, charged one
+    /// unit per row before the scan (the scan waits when that does not fit). An entity the
+    /// grant does not reach keeps its reported id and is compared again next tick, so no
+    /// change is lost.
+    fn action_changes(&mut self, index: &SimIndex, budget: &mut u64) {
+        // The class bound to each entity (the first element naming the entity, the first
+        // class bound to that element: `Program::element_of_entity`).
+        let classes: Option<BTreeMap<u32, u32>> = match self.vm.as_ref() {
+            Some(vm) => {
+                let tables = vm.program.elements.len() + vm.program.classes.len();
+                if !charge_budget(budget, tables as u64) {
+                    return;
+                }
+                let mut handle_of: BTreeMap<u32, u32> = BTreeMap::new();
+                for (h, el) in vm.program.elements.iter().enumerate() {
+                    if let crate::vm::Element::Actor(i) = el {
+                        handle_of.entry(*i).or_insert(h as u32);
+                    }
+                }
+                let mut class_of_handle: BTreeMap<u32, u32> = BTreeMap::new();
+                for (ci, c) in vm.program.classes.iter().enumerate() {
+                    if let Some(h) = c.element {
+                        class_of_handle.entry(h).or_insert(ci as u32);
+                    }
+                }
+                Some(
+                    handle_of
+                        .into_iter()
+                        .filter_map(|(entity, h)| class_of_handle.get(&h).map(|&c| (entity, c)))
+                        .collect(),
+                )
+            }
+            None => None,
+        };
         let mut changes: Vec<(u32, i32, i32)> = Vec::new();
-        for (i, e) in self.entities.iter_mut().enumerate() {
+        let mut cursor = 0u32;
+        let full = *budget >= SIM_QUOTA_ACTIONS;
+        let order = rotated(&index.present, self.cursors.actions);
+        for (k, &i) in order.iter().enumerate() {
+            if !charge_budget(budget, 1) {
+                cursor = resume_at(&order, k, full);
+                break;
+            }
+            let e = &mut self.entities[i];
             if !e.active || e.kind == EntityKind::Obstacle {
                 continue;
             }
@@ -2066,54 +2520,32 @@ impl World {
             if now != e.action {
                 let previous = e.action;
                 e.action = now;
-                if let Some(class) = self.vm.as_ref().and_then(|vm| {
-                    let handle = vm.program.element_of_entity(i as u32);
-                    (handle >= 0)
-                        .then(|| {
-                            vm.program
-                                .classes
-                                .iter()
-                                .position(|c| c.element == Some(handle as u32))
-                        })
-                        .flatten()
-                }) {
-                    changes.push((class as u32, previous as i32, now as i32));
+                if let Some(class) = classes.as_ref().and_then(|c| c.get(&(i as u32))) {
+                    changes.push((*class, previous as i32, now as i32));
                 }
             }
         }
+        self.cursors.actions = cursor;
         for (class, previous, now) in changes {
             self.vm_queue_action_change(class, previous, now);
         }
         self.vm_deliver_action_changes();
-        // The damage numbers rise and vanish (presentation).
-        for d in &mut self.damage_numbers {
-            d.age += 1;
-        }
-        self.damage_numbers.retain(|d| d.age < DAMAGE_NUMBER_TICKS);
-        if let Some(p) = self.entities.iter().find(|e| e.kind == EntityKind::Player)
-            && Fixed::length(p.x - self.goal.0, p.y - self.goal.1) <= Fixed::from_int(16)
-        {
-            self.objective_reached = true;
-        }
     }
 
     /// The waypoint programs and legacy patrols of the idle guards (`idle`, from the tick's
     /// pre-index), one unit per guard from `cursors.programs`, round robin: a guard whose
-    /// program or patrol wants a walk gets a path search within what the budget has left,
-    /// capped at [`ORDER_SEARCH_WORK`]. An unreachable point is skipped after a pause; a search
-    /// the budget cut short leaves the guard where he is with his instruction unchanged, the
-    /// cursor on him, so the next tick plans him first.
+    /// program or patrol wants a walk gets a path search within what the grant has left,
+    /// capped at [`SIM_SEARCH_WORK`]. An unreachable point is skipped after a pause, and so
+    /// is one whose search failed with the full cap granted (unreachable under this budget);
+    /// a search cut short with less leaves the guard where he is with his instruction
+    /// unchanged, the cursor on him, so the next tick plans him first with the full cap.
     pub(crate) fn program_walks(&mut self, idle: &[usize], left: &mut u64) {
-        let start = idle.partition_point(|&i| i < self.cursors.programs as usize);
-        let order: Vec<usize> = idle[start..]
-            .iter()
-            .chain(&idle[..start])
-            .copied()
-            .collect();
+        let order = rotated(idle, self.cursors.programs);
         let mut cursor = 0u32;
-        for i in order {
+        let full = *left >= SIM_QUOTA_PROGRAMS;
+        for (k, &i) in order.iter().enumerate() {
             if !charge_budget(left, 1) {
-                cursor = i as u32;
+                cursor = resume_at(&order, k, full);
                 break;
             }
             let programs = &self.programs;
@@ -2145,13 +2577,13 @@ impl World {
             let Some(t) = target else {
                 continue;
             };
-            let granted = (*left).min(ORDER_SEARCH_WORK);
+            let granted = (*left).min(SIM_SEARCH_WORK);
             let mut search = granted;
             let planned = self.plan_path_with(i, t, &mut search);
             *left -= granted - search;
-            if planned == Err(NavError::WorkExhausted) {
+            if planned == Err(NavError::WorkExhausted) && granted < SIM_SEARCH_WORK {
                 // Not unreachable, unpaid: the same walk is planned first next tick.
-                cursor = i as u32;
+                cursor = resume_at(&order, k, full);
                 break;
             }
             let e = &mut self.entities[i];
@@ -2159,7 +2591,7 @@ impl World {
                 // Program walks use the gait the script set (native 140).
                 e.gait = e.npc_gait;
             } else {
-                // Unreachable point: skip it.
+                // Unreachable point (or unreachable under the budget): skip it.
                 if e.program.is_some() {
                     e.pc = e.pc.saturating_add(1);
                 } else {
@@ -2648,7 +3080,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "0f026ac0a3b668f6032272475dcfd35ae55f5ed0ebbee8ab1be2c4a742f5391a";
+        "5b219a178d50c352500722d92ddc7cd229dd6183ab65966e1e34c5c8789f7f22";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -2771,6 +3203,15 @@ mod tests {
         let mut w = base.clone();
         w.cursors.programs = 1;
         variants.push(("cursors.programs", w));
+        let mut w = base.clone();
+        w.cursors.movement = 1;
+        variants.push(("cursors.movement", w));
+        let mut w = base.clone();
+        w.cursors.animation = 1;
+        variants.push(("cursors.animation", w));
+        let mut w = base.clone();
+        w.cursors.actions = 1;
+        variants.push(("cursors.actions", w));
         let mut w = base.clone();
         w.programs.push(vec![Instruction::Stop]);
         variants.push(("programs", w));
@@ -2914,6 +3355,219 @@ mod tests {
         json.as_object_mut().unwrap().remove("content");
         let back: Snapshot = serde_json::from_value(json).unwrap();
         assert_eq!(back.content, None);
+    }
+
+    /// The obstacle index (finding 5 of Codex review 9): every box that touches a query is
+    /// found through the cells the query covers (an obstacle spanning several cells is in each
+    /// of them; positions outside the map fold into the edge cells), one unit is charged per
+    /// cell looked at and per candidate tested, a budget short of the answer decides nothing,
+    /// and the entry cap refuses a build and a snapshot alike.
+    #[test]
+    fn obstacle_index_finds_touching_boxes_and_bounds_its_size() {
+        let f = Fixed::from_int;
+        let boxes = vec![
+            (f(100), f(100), f(20), f(100)), // 0: x 80..120, y 0..200 (cells 1, rows 0..3)
+            (f(680), f(300), f(10), f(10)),  // 1: one cell
+            (f(-500), f(50), f(10), f(10)),  // 2: left of the map, folds into column 0
+            (f(2100), f(990), f(30), f(30)), // 3: past the map's corner
+        ];
+        assert_eq!(
+            ObstacleIndex::entry_count(&boxes, (2000, 1000)),
+            4 + 1 + 1 + 1
+        );
+        let ix = ObstacleIndex::build(boxes.clone(), (2000, 1000)).unwrap();
+        assert_eq!(ix.entries(), 7);
+        assert_eq!(ix.boxes(), &boxes[..]);
+        let query = |x: i32, y: i32, size: i32| {
+            let mut b = 1000;
+            let r = ix.blocked(f(x), f(y), f(size), &mut b);
+            (r, 1000 - b)
+        };
+        // Touching box 0 from the side (|dx| = 32 = 20 + 12) and just beyond it.
+        assert_eq!(query(132, 150, 12), (Some(true), 2));
+        assert_eq!(query(133, 150, 12).0, Some(false));
+        // Box 0 is found from every row it spans; the query cell holds nothing else.
+        assert_eq!(query(100, 190, 5), (Some(true), 2));
+        assert_eq!(query(680, 300, 1), (Some(true), 2));
+        // Far off the map: the edge cells hold the folded boxes and nothing blocks here.
+        assert_eq!(query(-450, 50, 12).0, Some(false));
+        assert_eq!(query(-505, 50, 12).0, Some(true), "folded into column 0");
+        assert_eq!(
+            query(2110, 1000, 12).0,
+            Some(true),
+            "folded into the corner"
+        );
+        assert_eq!(query(1500, 530, 12), (Some(false), 1));
+        // A budget short of the answer decides nothing and is spent.
+        let mut b = 1;
+        assert_eq!(ix.blocked(f(132), f(150), f(12), &mut b), None);
+        assert_eq!(b, 0);
+        // The cap: a box that spans the whole map costs every cell; enough of them are refused
+        // by the build and by `validate`.
+        let giant = (f(1000), f(500), f(MAX_ENTITY_COORD), f(MAX_ENTITY_COORD));
+        let cells = u64::from(2000u32.div_ceil(64)) * u64::from(1000u32.div_ceil(64));
+        assert_eq!(ObstacleIndex::entry_count(&[giant], (2000, 1000)), cells);
+        let too_many = vec![giant; (MAX_OBSTACLE_INDEX_ENTRIES / cells + 1) as usize];
+        assert!(
+            ObstacleIndex::build(too_many.clone(), (2000, 1000))
+                .unwrap_err()
+                .contains("obstacle index")
+        );
+        let mut w = World::new_map_view(
+            Scenario::MapView {
+                map: "test".into(),
+                ambiance: "Day".into(),
+            },
+            1,
+            MapInfo {
+                width: 2000,
+                height: 1000,
+            },
+        )
+        .unwrap();
+        let template = corridor(1).entities[2].clone();
+        let mut snap = w.snapshot(None);
+        for (k, &(x, y, hw, hh)) in too_many.iter().enumerate() {
+            let mut o = template.clone();
+            o.id = EntityId {
+                index: 100 + k as u32,
+                generation: 1,
+            };
+            o.x = x;
+            o.y = y;
+            o.patrol = vec![(hw, hh)];
+            snap.world.entities.push(o);
+        }
+        let err = w.restore(&snap).unwrap_err();
+        assert!(err.contains("obstacle index"), "{err}");
+        // One short of the cap is accepted, indexed on the next tick and moved against.
+        snap.world.entities.pop();
+        w.restore(&snap).unwrap();
+        w.entities[0].target = Some((f(500), f(240)));
+        w.step(&[]);
+        assert!(
+            w.obstacles
+                .as_ref()
+                .is_some_and(|ix| ix.entries() as u64 <= MAX_OBSTACLE_INDEX_ENTRIES)
+        );
+        assert!(w.entities[0].target.is_none(), "blocked by the giants");
+        w.validate().unwrap();
+    }
+
+    /// Finding 5 of Codex review 9: the largest accepted snapshot split between movers and
+    /// obstacles (2^15 each) moves every mover every tick through the obstacle index (no
+    /// mover tests every obstacle), within the movement quota, and a snapshot restored into a
+    /// fresh world (which rebuilds the index on its first tick) steps identically. A mover
+    /// heading into an obstacle stops at it; one whose own box spans the whole grid still
+    /// gets its turn without blocking the others (the cursor moves past an entity too
+    /// expensive for a quota).
+    #[test]
+    fn movement_in_the_largest_snapshot_is_indexed_and_bounded() {
+        let f = Fixed::from_int;
+        let mut w = World::new_map_view(
+            Scenario::MapView {
+                map: "test".into(),
+                ambiance: "Day".into(),
+            },
+            1,
+            MapInfo {
+                width: 16384,
+                height: 16384,
+            },
+        )
+        .unwrap();
+        let half = MAX_ENTITIES / 2;
+        let mover = w.entities[0].clone();
+        let obstacle = corridor(1).entities[2].clone();
+        w.entities.clear();
+        for k in 0..half {
+            let mut m = mover.clone();
+            m.id = EntityId {
+                index: k as u32,
+                generation: 1,
+            };
+            // Movers on a 256 x 128 lattice (inside the map with room to walk), each
+            // walking 40 px east.
+            m.x = f(64 + (k % 256) as i32 * 63);
+            m.y = f(64 + (k / 256) as i32 * 120);
+            m.target = Some((m.x + f(40), m.y));
+            m.path.clear();
+            w.entities.push(m);
+        }
+        for k in 0..half {
+            let mut o = obstacle.clone();
+            o.id = EntityId {
+                index: (half + k) as u32,
+                generation: 1,
+            };
+            // Obstacles on the lattice between the mover rows: 10 x 10 boxes, none in a
+            // mover's way except the first, placed 15 px ahead of mover 0 (his first step
+            // brings his box within reach of it).
+            o.x = f(64 + (k % 256) as i32 * 63);
+            o.y = f(124 + (k / 256) as i32 * 120);
+            o.patrol = vec![(f(5), f(5))];
+            if k == 0 {
+                o.x = f(64 + 15);
+                o.y = f(64);
+            }
+            w.entities.push(o);
+        }
+        w.validate().unwrap();
+        assert!(
+            ObstacleIndex::entry_count(
+                &w.entities[half..]
+                    .iter()
+                    .map(|e| (e.x, e.y, e.patrol[0].0, e.patrol[0].1))
+                    .collect::<Vec<_>>(),
+                w.map_size
+            ) <= MAX_OBSTACLE_INDEX_ENTRIES
+        );
+        let snap = w.snapshot(None);
+        let start: Vec<Fixed> = w.entities[..half].iter().map(|e| e.x).collect();
+        let spent = w.sim_tick_with(SIM_WORK_PER_TICK);
+        assert!(spent <= SIM_WORK_PER_TICK);
+        assert_eq!(w.cursors.movement, 0, "every mover was served");
+        assert!(
+            w.entities[1..half]
+                .iter()
+                .zip(&start[1..])
+                .all(|(e, &x)| e.x > x && e.target.is_some()),
+            "every unobstructed mover advanced"
+        );
+        assert!(
+            w.entities[0].target.is_none() && w.entities[0].x == f(64),
+            "mover 0 stopped at the obstacle in its way"
+        );
+        assert!(w.obstacles.as_ref().is_some_and(|ix| ix.entries() >= half));
+        // The movement work is bounded by its quota, and the index keeps the whole tick
+        // within a few units per entity: nothing like the 2^30 box tests of a scan per mover.
+        assert!(
+            spent <= SIM_QUOTA_MOVEMENT + 4 * MAX_ENTITIES as u64,
+            "{spent}"
+        );
+        // A restored world rebuilds the index on its first tick and steps the same.
+        let mut w2 = World::new_map_view(
+            Scenario::MapView {
+                map: "test".into(),
+                ambiance: "Day".into(),
+            },
+            1,
+            MapInfo {
+                width: 16384,
+                height: 16384,
+            },
+        )
+        .unwrap();
+        w2.restore(&snap).unwrap();
+        assert!(w2.obstacles.is_none());
+        w2.sim_tick_with(SIM_WORK_PER_TICK);
+        assert_eq!(w2.hashes(), w.hashes());
+        for _ in 0..3 {
+            w.step(&[]);
+            w2.step(&[]);
+        }
+        assert_eq!(w2.hashes(), w.hashes());
+        w.validate().unwrap();
     }
 
     #[test]

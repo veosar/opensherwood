@@ -17,8 +17,12 @@
 //! `Instr::Native` carrying the result slot, and the `0x0d` quad becomes a `Nop` so that the
 //! quad indices stay the instruction indices; a jump whose target is a `0x0d` quad is a
 //! translation error (the corpus never does it, and the fused instruction has no separate
-//! reader to land on: such a jump would skip the call). `Program::validate` repeats the
-//! signature checks in the core; here they name the class and quad.
+//! reader to land on: such a jump would skip the call). The ordinary call and its result read
+//! are fused the same way (Codex review 9, finding 3): a `0x05` followed by its `0x0a` becomes
+//! one `Instr::Call` carrying the destination, the `0x0a` quad becomes a `Nop`, a `0x0a` after
+//! anything but a `0x05` or after a call of a function that returns no value is an error, and a
+//! jump whose target is a `0x0a` quad is refused. `Program::validate` repeats the signature
+//! checks in the core; here they name the class and quad.
 
 use std::collections::BTreeMap;
 
@@ -123,11 +127,14 @@ pub fn known_map_element_count(map: &str) -> Option<u32> {
 
 impl MissionBinding {
     /// Build the binding from a decoded mission. The table order is the one the retail scripts'
-    /// self-references establish (`docs/formats/sherwood-hub.md`, 4.1 and 4.3): `map_elements`
-    /// map entries, then `POUF`, `OILE`, `TOTO`, `BORG` (actors), `BOOM` (objects), `SKRO`
-    /// (scrolls), `ZORG` and `TING` (inert, [`Element::Unmodelled`]), the `SCOT` player-character
-    /// slots at the tail, and the script polygons after them (their position is not observable;
-    /// no retail script addresses one through native 3). The entity numbering stays the app's
+    /// self-references establish (`docs/formats/sherwood-hub.md`, 4.1 and 4.3) with the order of
+    /// the `ZORG` and `SKRO` blocks fixed by `docs/original/h01-win-path.md` section 2 (the
+    /// file's chunk order; every scroll-state call of the corpus lands in the scroll range only
+    /// with `ZORG` first): `map_elements` map entries, then `POUF`, `OILE`, `TOTO`, `BORG`
+    /// (actors), `BOOM` (objects), `ZORG` (pick-up items, inert: [`Element::Unmodelled`]),
+    /// `SKRO` (scrolls), `TING` (inert), the `SCOT` player-character slots at the tail, and the
+    /// script polygons after them (their position is not observable; no retail script addresses
+    /// one through native 3). The entity numbering stays the app's
     /// actor list (actor groups in file order: `SCOT` first, then `OILE`, `TOTO`, `BORG`; objects
     /// skipped), so each group's entity ids are assigned in file order and the groups are then
     /// laid out in table order.
@@ -188,6 +195,9 @@ impl MissionBinding {
         elements.extend(vips);
         elements.extend(npcs);
         elements.extend(objects);
+        for _ in &mission.zorg {
+            unmodelled(&mut elements);
+        }
         elements.extend(mission.scrolls.iter().map(|s| {
             (
                 s.name.clone(),
@@ -197,9 +207,6 @@ impl MissionBinding {
                 },
             )
         }));
-        for _ in &mission.zorg {
-            unmodelled(&mut elements);
-        }
         for _ in &mission.mobiles {
             unmodelled(&mut elements);
         }
@@ -417,7 +424,8 @@ fn translate_class(
         });
     }
     // Jump targets, to check that no argument push straddles one and that none lands on a
-    // native result read (`0x0d`), which is fused into the call before it.
+    // result read (`0x0d` of a native, `0x0a` of a call), which is fused into the call before
+    // it.
     let mut targets = vec![false; c.quads.len()];
     for (pc, q) in c.quads.iter().enumerate() {
         let target = match q.opcode {
@@ -432,6 +440,14 @@ fn translate_class(
                     c,
                     pc,
                     format!("jump target {t} is a native result read"),
+                ));
+            }
+            if c.quads.get(t).is_some_and(|q| q.opcode == 0x0a) {
+                return Err(quad_err(
+                    ci,
+                    c,
+                    pc,
+                    format!("jump target {t} is a call result read"),
                 ));
             }
             if let Some(flag) = targets.get_mut(t) {
@@ -525,7 +541,9 @@ fn translate_class(
             // 0x04: end of function; 0x06: return (high).
             0x04 | 0x06 => Instr::Return,
             // 0x05: call function at address `a` of the same class (high); the pushes since the
-            // last call are its parameters and must match its table entry.
+            // last call are its parameters and must match its table entry. A 0x0a directly
+            // after it is fused into the call as its result slot; that function must return a
+            // value.
             0x05 => {
                 let Some(function) = functions.iter().position(|f| f.address == u32::from(q.a))
                 else {
@@ -550,9 +568,25 @@ fn translate_class(
                 }
                 let argc = pushed_params;
                 pushed_params = 0;
+                let read = c.quads.get(pc + 1).filter(|next| next.opcode == 0x0a);
+                let dst = match read {
+                    Some(next) => {
+                        if !callee.has_result {
+                            return Err(quad_err(
+                                ci,
+                                c,
+                                pc + 1,
+                                format!("reads the result of {}, which returns none", callee.name),
+                            ));
+                        }
+                        Some(slot(next.a)?)
+                    }
+                    None => None,
+                };
                 Instr::Call {
                     function: function as u32,
                     argc,
+                    dst,
                 }
             }
             // 0x07: set the return value (high).
@@ -581,8 +615,21 @@ fn translate_class(
                     index,
                 }
             }
-            // 0x0a: read the return value of the preceding call (high).
-            0x0a => Instr::GetCallResult { dst: slot(q.a)? },
+            // 0x0a: read the return value of the preceding call (high): fused into the 0x05
+            // before it, which must exist; the quad itself becomes a no-op (no jump targets it,
+            // checked above).
+            0x0a => {
+                let call = pc.checked_sub(1).and_then(|p| c.quads.get(p));
+                if call.is_none_or(|prev| prev.opcode != 0x05) {
+                    return Err(quad_err(
+                        ci,
+                        c,
+                        pc,
+                        "reads a call result without a call before it",
+                    ));
+                }
+                Instr::Nop
+            }
             // 0x0b: push native argument (high).
             0x0b => {
                 pushed_args += 1;
@@ -950,6 +997,19 @@ mod tests {
         assert_eq!(report.native_calls.get(&1), Some(&1));
         assert_eq!(program.classes[0].functions[1].param_count, 1);
         assert!(program.classes[0].functions[1].has_result);
+        // The call and its 0x0a are one instruction; the 0x0a quad is a no-op.
+        assert_eq!(
+            program.classes[0].code[8],
+            Instr::Call {
+                function: 1,
+                argc: 1,
+                dst: Some(Slot {
+                    space: Space::Temp,
+                    index: 2
+                })
+            }
+        );
+        assert_eq!(program.classes[0].code[9], Instr::Nop, "the fused 0x0a");
         let w = world(program);
         assert_eq!(w.vm.as_ref().unwrap().mission_vars[7], 20);
         assert_eq!(w.vm.as_ref().unwrap().counters.faults, 0);
@@ -1245,8 +1305,9 @@ mod tests {
         assert_eq!(known_map_element_count("nowhere"), None);
     }
 
-    /// The element table of `docs/formats/sherwood-hub.md` 4.1: map entries, `POUF`, `OILE`,
-    /// `TOTO`, `BORG`, `BOOM`, `SKRO`, `ZORG`, `TING`, then the `SCOT` slots and the polygons,
+    /// The element table of `docs/formats/sherwood-hub.md` 4.1 with the `ZORG` / `SKRO` order of
+    /// `docs/original/h01-win-path.md` 2: map entries, `POUF`, `OILE`, `TOTO`, `BORG`, `BOOM`,
+    /// `ZORG`, `SKRO`, `TING`, then the `SCOT` slots and the polygons,
     /// while the entity ids keep the app's file order (`SCOT` first).
     #[test]
     fn mission_binding_puts_the_player_slots_after_the_inert_entries() {
@@ -1422,8 +1483,8 @@ mod tests {
                 Element::Actor(4),      // BORG
                 Element::Actor(5),
                 Element::Object { x: 5, y: 6 },
+                Element::Unmodelled(8), // ZORG (before the scrolls: the file's chunk order)
                 Element::Scroll { x: 10, y: 20 },
-                Element::Unmodelled(9),  // ZORG
                 Element::Unmodelled(10), // TING
                 Element::Actor(0),       // SCOT
                 Element::Actor(1),
@@ -1441,7 +1502,7 @@ mod tests {
             vec![
                 (6, "guard_80000002"),
                 (7, "target_80000003"),
-                (8, "scroll_80000004"),
+                (9, "scroll_80000004"),
                 (11, "hero_80000001"),
                 (13, "zone_80000005"),
             ]
@@ -1522,6 +1583,100 @@ mod tests {
         let (_, report) =
             translate_with_report(&script_with(native(2, &[1], Some(TV))), &binding()).unwrap();
         assert!(report.unobserved_result_reads.is_empty());
+    }
+
+    /// A script call and its `0x0a` are one instruction (finding 3 of Codex review 9): a jump
+    /// whose target is the `0x0a` quad is refused (direct, from one arm of a branch whose other
+    /// arm runs the call, or as a loop's entry), a `0x0a` without a `0x05` before it or after a
+    /// call of a function that returns nothing is refused, and a jump to the `0x05` itself is
+    /// fine: the call carries the slot and the `0x0a` quad is a `Nop`.
+    #[test]
+    fn jumps_into_a_call_result_read_are_refused() {
+        // Initialize (quads 0..=7): t0 = 1; t1 = seven(t0); the call is quads 3 (push) 4 (0x05)
+        // 5 (0x0a); `seven` starts at quad 8. `zero(x)` returns nothing.
+        let body = |jump: Quad| {
+            vec![
+                q(0x13, TV, 0, 1),     // 1
+                jump,                  // 2
+                q(0x02, TV, 0, 0),     // 3
+                q(0x05, 8, 0, 0),      // 4
+                q(0x0a, TV + 4, 0, 0), // 5
+                q(0x01, 0, 0, 0),      // 6
+            ]
+        };
+        let seven = vec![q(0x13, TV, 0, 7), q(0x07, TV, 0, 0)];
+        let zero = vec![q(0x08, TV, 0, 0)];
+        let script = |init: Vec<Quad>| Script {
+            version: 1.5,
+            classes: vec![class(
+                "StartUp",
+                1,
+                &[
+                    ("Initialize", 0, 0, 0, 8, init),
+                    ("seven", 4, 4, 0, 4, seven.clone()),
+                    ("zero", 0, 4, 0, 4, zero.clone()),
+                ],
+            )],
+        };
+        assert_eq!(
+            script(body(q(0x01, 0, 0, 0))).classes[0].functions[1].address,
+            8
+        );
+        let refused = |init: Vec<Quad>, quad: usize, what: &str| {
+            let err = translate(&script(init), &binding()).unwrap_err();
+            assert!(
+                matches!(err, TranslateError::Quad { quad: q, .. } if q == quad)
+                    && err.to_string().contains(what),
+                "{err}"
+            );
+        };
+        // Direct jump into the reader; divergent predecessors.
+        refused(body(q(0x0e, 5, 0, 0)), 2, "call result read");
+        refused(body(q(0x0f, TV, 0, 5)), 2, "call result read");
+        // A jump to the call is fine; the read becomes a no-op, the call carries the slot.
+        let program = translate(&script(body(q(0x0e, 3, 0, 0))), &binding()).unwrap();
+        assert_eq!(
+            program.classes[0].code[4],
+            Instr::Call {
+                function: 1,
+                argc: 1,
+                dst: Some(Slot {
+                    space: Space::Temp,
+                    index: 1
+                })
+            }
+        );
+        assert_eq!(program.classes[0].code[5], Instr::Nop);
+        program.validate().unwrap();
+        // Loop entry: the back edge targets the read.
+        let looping = vec![
+            q(0x13, TV, 0, 1),     // 1
+            q(0x02, TV, 0, 0),     // 2
+            q(0x05, 8, 0, 0),      // 3
+            q(0x0a, TV + 4, 0, 0), // 4
+            q(0x0f, TV + 4, 0, 4), // 5: while (t1) goto 4
+            q(0x01, 0, 0, 0),      // 6
+        ];
+        refused(looping, 5, "call result read");
+        // A reader with no call before it, and a reader after a call of a void function.
+        let orphan = vec![
+            q(0x13, TV, 0, 1),     // 1
+            q(0x0a, TV + 4, 0, 0), // 2
+            q(0x01, 0, 0, 0),      // 3
+            q(0x01, 0, 0, 0),      // 4
+            q(0x01, 0, 0, 0),      // 5
+            q(0x01, 0, 0, 0),      // 6
+        ];
+        refused(orphan, 2, "without a call before it");
+        let void_read = vec![
+            q(0x13, TV, 0, 1),     // 1
+            q(0x02, TV, 0, 0),     // 2
+            q(0x05, 12, 0, 0),     // 3: zero(t0)
+            q(0x0a, TV + 4, 0, 0), // 4
+            q(0x01, 0, 0, 0),      // 5
+            q(0x01, 0, 0, 0),      // 6
+        ];
+        refused(void_read, 4, "returns none");
     }
 
     fn script_with(body: Vec<Quad>) -> Script {

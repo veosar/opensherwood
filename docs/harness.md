@@ -24,7 +24,7 @@ Example session:
 
 ```
 -> {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"pytest"}}
-<- {"jsonrpc":"2.0","id":1,"result":{"protocol":6,"build":"0.1.0","ruleset":12,"capabilities":["synthetic","capture","snapshot","map_view","mission","replay","menu","script"],"content_fingerprint":null}}
+<- {"jsonrpc":"2.0","id":1,"result":{"protocol":6,"build":"0.1.0","ruleset":14,"capabilities":["synthetic","capture","snapshot","map_view","mission","replay","menu","script"],"content_fingerprint":null}}
 -> {"jsonrpc":"2.0","id":2,"method":"reset","params":{"scenario":{"synthetic":"corridor"},"seed":42}}
 -> {"jsonrpc":"2.0","id":3,"method":"step","params":{"ticks":10,"events":[{"tick_offset":0,"sequence":0,"kind":"pointer_move","x256":25600,"y256":19200},{"tick_offset":0,"sequence":1,"kind":"pointer_down","button":"left"},{"tick_offset":0,"sequence":2,"kind":"pointer_up","button":"left"}]}}
 <- {"jsonrpc":"2.0","id":3,"result":{"tick":10,"hashes":{"total":"...","actors":"..."}}}
@@ -79,14 +79,21 @@ A knocked-out soldier is out of action for `KNOCK_OUT_BASE_TICKS` (600) scaled b
 100 makes the blow fail. All of it is in the snapshot, validated and hashed (`actors`); `validate` holds the
 layer's invariants (`dead` only with `alive` false, a timer exactly in the timed states, attack orders from a
 player character to an enemy soldier, alert states on enemy soldiers only). The whole simulation besides the
-script shares one per-tick work budget (`world::SIM_WORK_PER_TICK`, 2^24): a pre-index pass (one unit per
-entity), then perception (one per soldier inspected and per soldier / player character pair tested), the
-state transitions (one per human), the attack orders (one per attacker, the victim found in the index) and
-the guards' waypoint programs (one per idle guard), every path search any of them issues drawing from the
-same budget (its `nav.rs` units, capped per search at `world::ORDER_SEARCH_WORK`). Each phase walks its
-entities from its own cursor (the snapshot's `cursors: {perception, states, attacks, programs}`, in the
-`world` hash); when the budget runs out the cursor marks where the next tick resumes, and a search it
-could not pay changes nothing (the guard keeps his instruction, the attacker his order).
+script shares one per-tick work budget (`world::SIM_WORK_PER_TICK`, 2^24) handed out phase by phase on
+deterministic quotas (ADR-0008; Codex review 9): a pre-index pass (one unit per entity), then perception
+(one per soldier inspected and per soldier / player character pair tested; the remainder of the budget,
+about 2^22 + 2^21), the state transitions (one per human; 2^21), the attack orders (one per attacker, the
+victim found in the index; 2^21), the guards' waypoint programs (one per idle guard; 2^21), the movement
+(one per mover, per obstacle-index cell looked at, per obstacle candidate and per polygon edge of the
+walkable geometry tested; 2^20), the animation advance and the action-change scan (one per entity; 2^20
+each). A phase gets its quota plus what the phases before it left, so a hostile snapshot cannot starve a
+phase; every path search a phase issues draws from its grant, capped per search at `world::SIM_SEARCH_WORK`
+(2^20): a search that fails with the full cap is unreachable under this budget (the order dropped, the
+instruction skipped), one cut short with less is retried first next tick. Each phase walks its entities
+from its own cursor (the snapshot's `cursors: {perception, states, attacks, programs, movement, animation,
+actions}`, in the `world` hash); when its grant runs out the cursor marks where the next tick resumes (past
+an entity that alone exhausted a whole quota). Obstacle entities are queried through a 64 px grid index
+derived from the snapshot (`validate` refuses more than 2^22 cell entries).
 
 ## Melee
 
@@ -100,14 +107,15 @@ victim's feet and the **fight** begins: both are `ai_state` = `fighting` with `f
 swings every ~5.3 s (318 ticks with the gameplay RNG's jitter, `swing_ticks`), two swings in three land for
 5 hp (`hp` falls, never regenerates) and cost him one unit of `energy` (0..20, regained after ~4 s); the
 hero's automatic strikes never land against a soldier (hypothesis: the pole arm's reach or a block, recorded
-as the `melee_reach` assumption). The **forward stroke** (`pointer_down` on the ground, `pointer_move` at
+as the `{"attack_policy": "block"}` assumption). The **forward stroke** (`pointer_down` on the ground, `pointer_move` at
 least 32 px to the right within 45 degrees, `pointer_up`: the manual's figure, drawn 80 px right and 20 px up
 in the measurements) locks onto the nearest enemy soldier (`figure` = `forward_stroke` until delivered) and,
 in the fight, plays the **powerful blow** (`pose` = `powerful_blow`, action 75, `pose_ticks` = 57 to its
 resolution): two units of energy (regained one per 0.9 s), 50 hp when it lands (one in three: the
-`powerful_blow_chance` assumption). `pose` is otherwise `idle` (the stance, action 54), `strike` (59) or
+`{"attack_policy": "hit_chance"}` assumption, recorded on every roll and on the soldier's jittered
+swing timing too). `pose` is otherwise `idle` (the stance, action 54), `strike` (59) or
 `flinch` (104, when hit). A ground order or a right click leaves the fight; the soldier stands his ground and
-walks back to his post (the `post_bound` assumption for every kind but the halberdier). At 0 hp the entity is
+walks back to his post (the `{"attack_policy": "post_bound"}` assumption for every kind but the halberdier). At 0 hp the entity is
 dead: `alive` false and `ai_state` = `dying` (the fall, 44 from the front / 41 from behind) then `dead`
 (48 / 47 for good, the body stays drawn); natives 85 / 87 / 90 report it from the tick of the blow. A player
 character's death sets **`observe.hero_dead`** (sticky, hashed) and the app shows the lost page on that
@@ -194,8 +202,20 @@ reads a value there, so `tainted: false` means no known hypothesis was taken. Th
 the presentation-only stubs 62 / 69 / 149 / 150 / 243 record nothing on the call), `{"policy": id}` (an
 implemented native whose reading is a policy, `natives::NATIVE_TAINT`), `{"opcode": op}` (an instruction of
 a low-confidence opcode executed: 0x14, 0x24, 0x28, 0x2b), `"unresolved_jump"`, `{"unknown_native": id}`
-(lenient mode), `"perception"`, `"knock_out"`, `"profile_stats"`, `"tick_rate"`, `"scroll_pickup"`,
-`"zone_at_load"`, `"walk_completion"`, `"action_change_order"`, `"campaign_graph"`, `"lenient_assets"`.
+(lenient mode), and the engine's own rules, each recorded where it first changes authoritative state
+whether or not a script handler exists (Codex review 9): `"sight_cone"` (the view cone decided a sighting
+that changed a soldier's state), `"noise_radius"` (a run heard from beyond the measured 330 px bound and
+within the engine's 350 px; within the bound the noise channel is measured and records nothing),
+`"alert_policy"` (the noticed -> alarm -> search sequence, the alert timeout, the re-plan, the return to
+the post), `{"attack_policy": "reach" | "block" | "hit_chance" | "post_bound"}` (the attack order
+resolved from behind; the hero's strikes never landing; a chance rolled or a soldier's swing timed with
+the engine's jitter; a soldier standing his ground), `"knock_out"` (the blow felled or failed to fell a
+victim, native 90 / 128 reported it, or its action id reached a handler), `"profile_stats"`,
+`"tick_rate"`, `"scroll_pickup"`, `"zone_at_load"`, `"walk_completion"`, `"action_change_order"`,
+`"campaign_graph"`, `"lenient_assets"`. Every fight is therefore tainted from its first swing and every
+sighting from the tick it changed a state; a win reached over measured rules only (a run heard within the
+bound, the immediate charge) keeps `tainted: false`
+(`a_charge_from_the_unmeasured_noise_band_taints_a_win_read_from_native_97`).
 Under this model every retail mission is tainted from its load-time callbacks on (the first mission's
 `Initialize` calls effect stubs and policy natives: `test_first_mission_briefing_sequence_then_camera_on_the_hero`
 pins the exact set at load and after 600 ticks). The app dismisses

@@ -160,7 +160,7 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
             {"policy": 134}, {"policy": 193}, {"policy": 194}, {"policy": 196},
             "tick_rate", "walk_completion", "action_change_order",
         ], sc["assumptions"]
-        assert "perception" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
+        assert "sight_cone" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
         assert vm["fault"] is None and vm["counters"]["transactions_rolled_back"] == 0
 
 
@@ -337,8 +337,9 @@ def test_every_mission_script_translates_and_runs_300_ticks_strictly(binary, gam
 def test_first_mission_element_table_has_the_hero_at_its_tail(binary, game_dir, tmp_path):
     """The element index space of `docs/formats/scb.md` ("Index spaces"): in H01 the map's 50 entries
     (38 animated elements, 12 patches) come first, the mission's civilians from 50, the eleven `ZORG`
-    entries 115..=125 are inert, the single player slot is element 126 (the hero, entity 0: the element
-    the level's `Initialize` addresses with native 117) and the script polygons follow it."""
+    pick-up items 100..=110 are inert and precede the fifteen scrolls 111..=125 (the file's chunk order,
+    `docs/original/h01-win-path.md` 2), the single player slot is element 126 (the hero, entity 0: the
+    element the level's `Initialize` addresses with native 117) and the script polygons follow it."""
     with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
         e.reset({"mission": FIRST_MISSION}, seed=1)
         assert e.observe()["entities"][0]["kind"] == "player", "the hero is entity 0"
@@ -346,8 +347,10 @@ def test_first_mission_element_table_has_the_hero_at_its_tail(binary, game_dir, 
         assert vm["element"] == {"kind": "actor", "entity": 0}
         assert e.call("debug.vm", {"element": 49})["element"] == {"kind": "map", "index": 49}
         assert e.call("debug.vm", {"element": 50})["element"] == {"kind": "actor", "entity": 1}
-        for i in range(115, 126):
+        for i in range(100, 111):
             assert e.call("debug.vm", {"element": i})["element"]["kind"] == "unmodelled", i
+        for i in range(111, 126):
+            assert e.call("debug.vm", {"element": i})["element"]["kind"] == "scroll", i
         assert e.call("debug.vm", {"element": 127})["element"]["kind"] == "polygon"
         assert e.call("debug.vm", {"element": vm["elements"]})["element"] is None
 

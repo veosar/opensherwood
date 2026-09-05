@@ -302,13 +302,16 @@ def test_running_near_a_soldier_alerts_him_at_once_from_afar(binary, game_dir):
         vm = e.call("debug.vm")
         assert not vm["faulted"] and vm["counters"]["traps"] == 0
         # The taint (ADR-0008, "Hypotheses and taint"): the run's first tick already recorded the
-        # steward objective's stub and the tick rate; the alert action ids of a soldier alerted
-        # through the measured noise channel (`heard`) record no `perception`, whether or not
-        # his class handles `ActionChange`.
+        # steward objective's stub and the tick rate; a soldier alerted through the measured noise
+        # channel (`heard`, within the 330 px bound) records no `noise_radius`, whether or not his
+        # class handles `ActionChange` (the sources are recorded where the state changes, ADR-0008).
+        # Once the charging archer faces the hero inside the 250 px cone the sighting refreshes his
+        # alert under the cone hypothesis, so `sight_cone` may appear over the 120 ticks: that is
+        # the cone's own taint, not the noise channel's.
         sc = e.observe(entities=False)["script"]
         assert sc["tainted"], sc
         assert {"stub_result": 235} in sc["assumptions"] and "tick_rate" in sc["assumptions"]
-        assert "perception" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
+        assert "noise_radius" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
 
 
 def _path_length(e, index, ticks, every=10):
@@ -662,7 +665,7 @@ def test_the_soldiers_blows_wear_robin_down_to_the_lost_page(binary, game_dir, t
         e.step(3)
         assert e.observe(entities=False)["tick"] == tick, "paused under the lost page"
         sc = obs["script"]
-        assert "melee_reach" in sc["assumptions"], sc["assumptions"]
+        assert {"attack_policy": "block"} in sc["assumptions"], sc["assumptions"]
         assert "knock_out" not in sc["assumptions"]
         assert snapshot is not None and hashes_after_snapshot is not None
 
@@ -686,8 +689,8 @@ def test_two_powerful_blows_kill_the_soldier_the_script_polls(binary, game_dir, 
     him and charges (8.6), and is ordered onto him: they meet face to face and the fight starts
     (no knock-out from the front). Forward strokes are drawn until two land: the soldier falls
     (44), is dead for natives 85 / 87 / 90 (`out_of_action_true` grows) and lies for good (48);
-    the hero survives. The hypotheses taken are recorded (`powerful_blow_chance`,
-    `melee_reach`), the death is not a knock-out. A fight in flight survives a snapshot (restore
+    the hero survives. The hypotheses taken are recorded (`attack_policy: hit_chance` and
+    `block`), the death is not a knock-out. A fight in flight survives a snapshot (restore
     mid-fight, same hashes after the same ticks)."""
     with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=600) as e:
         e.reset({"mission": "H01_Lin_VL"}, seed=0)
@@ -772,7 +775,8 @@ def test_two_powerful_blows_kill_the_soldier_the_script_polls(binary, game_dir, 
         assert p["alive"] and not p["in_combat"] and p["ai_state"] == "patrol"
         assert not e.observe(entities=False)["hero_dead"]
         sc = e.observe(entities=False)["script"]
-        assert "powerful_blow_chance" in sc["assumptions"] and "melee_reach" in sc["assumptions"], sc["assumptions"]
+        assert {"attack_policy": "hit_chance"} in sc["assumptions"], sc["assumptions"]
+        assert {"attack_policy": "block"} in sc["assumptions"], sc["assumptions"]
         assert "knock_out" not in sc["assumptions"], "a death is measured, not a knock-out"
         # A fight in flight survives a snapshot: restore mid-fight and step the same ticks.
         e.reset({"mission": "H01_Lin_VL"}, seed=0)
