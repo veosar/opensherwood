@@ -409,12 +409,13 @@ Sprite reactions: 169 (goes and picks up the purse), 165 (drinks), 166 (eats), t
 5. Speeds from section 4.2 on the measured animation clock (section 8.4, sprite-animations.md "Reading
    rules").
 
-## Engine (implemented 2026-09-03; `crates/opensherwood-core/src/ai.rs`, ruleset 9; measured values of section 8 applied 2026-09-05, ruleset 11; the melee of `combat-measurements.md` 2026-09-05, ruleset 13)
+## Engine (implemented 2026-09-03; `crates/opensherwood-core/src/ai.rs`, ruleset 9; measured values of section 8 applied 2026-09-05, ruleset 11; the melee of `combat-measurements.md` 2026-09-05, ruleset 13; Codex review 10 2026-09-05, ruleset 16)
 
 What of section 6 exists, with the constants chosen and their status. Everything is fixed point, part of
 every entity (`team`, `ai_state`, `state_ticks`, `last_seen`, `alert_origin`, `attack_target`, `action`,
 `hp`, `hp_max`, `energy`, `energy_ticks`, `foe`, `pose`, `pose_ticks`, `swing_ticks`, `figure`,
-`knockout_resistance`, `npc_gait`, `fell_backward`, `heard`) or of the world (`press`, `hero_dead`),
+`knockout_resistance`, `npc_gait`, `fell_backward`, `heard`) or of the world (`press`, `figure_target`,
+`hero_dead`),
 snapshotted, validated and hashed; the harness reads it through `observe` (`docs/harness.md`, "Stealth
 layer" and "Melee").
 
@@ -435,9 +436,11 @@ powerful blow's one-in-three chance, the post-bound behaviour of every soldier k
 the melee action ids and the loss when another player character survives stay **hypotheses**. The
 script VM records each hypothesis where it first changes the state (ADR-0008, "Hypotheses and taint";
 Codex review 9): `Assumption::SightCone` for a sighting, `NoiseRadius` for a run heard from beyond the
-measured 330 px (never within it), `AlertPolicy` for the alert sequence, timeout, re-plan and return,
-`AttackPolicy(Reach | Block | HitChance | PostBound)` and `KnockOut` for the melee's and the blow's
-hypotheses, `CombatActions` / `HeroDeathLoss` as before.
+measured 330 px (never within it), `AlertPolicy` for the alert sequence a sighting starts and the
+re-plan, `AlertTimeout` for the timeout and the return (the charge on a heard run is measured and
+records nothing of its own; the timeout it stores is recorded before the state changes: Codex review
+10), `AttackPolicy(Reach | Block | HitChance | PostBound | MultiParty)` and `KnockOut` for the melee's
+and the blow's hypotheses, `CombatActions` / `HeroDeathLoss` as before.
 
 - **Speeds** (item 5). Every moving entity covers per world tick the speed of the cycle it plays
   (`Entity::effective_speed`, `AnimSet::cycle_speed`): the cycle's summed `advance` over its duration
@@ -481,7 +484,11 @@ hypotheses, `CombatActions` / `HeroDeathLoss` as before.
   -> `alarm` (142, 19 table ticks = 54 world ticks) -> `alerted`. Both then: `alerted` runs to the last
   seen position with 151, stands with 140, walks with 143; every new sighting or noise refreshes the
   position and the `ALERT_TIMEOUT_TICKS` = 300 timer (a hypothesis) -> `returning` (walks back to the
-  origin with 143) -> `patrol` (the program continues where it stood). The animation ids come from the
+  origin with 143) -> `patrol` (the program continues where it stood). A transition and the path it
+  plans are one step (Codex review 10, finding 4): a charge, an alarm's end or a return whose search the
+  tick's budget cannot pay keeps its state with the phase cursor on the soldier and is applied next
+  tick, first with the full cap; a fight that ends on an unpaid return is `return_pending` (standing
+  with 140, the way back searched again next tick), never a patrol where he stands. The animation ids come from the
   soldier / knight profiles (section 2.4); profiles without them fall back to idle / walk / run
   (`anim::AnimSet`). Every change of an actor's action id reaches its script class as
   `ActionChange(previous, new)` (the parameter order is a hypothesis: the H01 archer classes compare the
@@ -526,8 +533,10 @@ hypotheses, `CombatActions` / `HeroDeathLoss` as before.
   engine has no data path for the weapon class yet, so the rule applies to every soldier and every
   strike's start and resolution records `Assumption::AttackPolicy(Block)`. **The forward stroke** (the powerful blow): the left
   button held, the pointer moved at least `FIGURE_MIN_STROKE` px to the right within 45 degrees of
-  horizontal, released; the figure locks onto the nearest enemy soldier (`Entity::figure`), the
-  character walks up if need be, and the blow resolves `POWERFUL_BLOW_TICKS` = 57 after it starts
+  horizontal, released; the figure locks onto the nearest enemy soldier at the press
+  (`World::figure_target`, kept while the button is held and outlined in yellow: `measured`, 1.4; the
+  release strikes him wherever the other soldiers moved meanwhile; `Entity::figure` carries the
+  stroke until it is delivered), the character walks up if need be, and the blow resolves `POWERFUL_BLOW_TICKS` = 57 after it starts
   (0.9-1.0 s measured), landing `POWERFUL_BLOW_CHANCE` = 1 in 3 (2 of 6 strokes: `hypothesis`,
   `Assumption::AttackPolicy(HitChance)` on every resolution, as on every soldier's jittered swing and
   every hit roll of his) for `POWERFUL_BLOW_DAMAGE` = 50, so two landed
@@ -535,7 +544,11 @@ hypotheses, `CombatActions` / `HeroDeathLoss` as before.
   modelled). A ground order or a right click leaves the fight; the soldier stands his ground and
   returns to his post (`measured` for the halberdier over 5 min; `Assumption::AttackPolicy(PostBound)`
   for every soldier whose foe leaves alive). A fighter whose foe is gone (dead, absent, off his feet or beyond
-  `FIGHT_BREAK_RANGE` = 104 px by a script walk) leaves the fight the next tick. **Damage numbers**
+  `FIGHT_BREAK_RANGE` = 104 px by a script walk, or no longer fighting him back) leaves the fight the
+  next tick. A soldier fights one player character at a time: a second attacker in reach waits with
+  his order until the soldier is free (`Assumption::AttackPolicy(MultiParty)`, `hypothesis`: the
+  measurements were one-on-one), and two living fighters always name each other (`validate`;
+  `two_heroes_on_one_soldier_fight_him_one_at_a_time`). **Damage numbers**
   (`World::damage_numbers`, presentation: snapshotted so a restore draws the same picture, not
   hashed): cream digits at the victim's head rising `DAMAGE_NUMBER_RISE` = 50 px over
   `DAMAGE_NUMBER_TICKS` = 90. **Bars** (`opensherwood-render`): for every fighter and for the actor
@@ -578,19 +591,22 @@ hypotheses, `CombatActions` / `HeroDeathLoss` as before.
   where a *hypothesised* part of the layer first changes authoritative state, whether or not a script
   handler exists: `sight_cone` when a sighting changes a soldier's state (an actor alerted by a run heard,
   `heard`, records nothing: that channel is measured up to 330 px; from 330 to 350 px it is the engine's
-  choice and records `noise_radius`), `alert_policy` for the noticed -> alarm -> search sequence, the
-  timeout, the re-plan and the return to the post, `knock_out` when the blow fells (or fails to fell) a
+  choice and records `noise_radius`), `alert_policy` for the noticed -> alarm -> search sequence and
+  the re-plan, `alert_timeout` for the timeout and the return to the post (recorded before a heard
+  charge stores them: the charge itself is measured, what it stores is not), `knock_out` when the blow fells (or fails to fell) a
   victim, when native 90 reports a knocked-out actor, 128 refuses one or a knock-out action id of a
   living actor reaches a handler, `profile_stats` when a blow consults `p4`, `attack_policy: reach` when
   an attack order resolves from behind, `attack_policy: block` when a hero's click attack starts or
   resolves, `attack_policy: hit_chance` when a swing is timed or a blow is rolled, `attack_policy:
-  post_bound` when a soldier's foe leaves him alive, `combat_actions` when a melee id or a dead actor's
+  post_bound` when a soldier's foe leaves him alive, `attack_policy: multi_party` when a second
+  attacker waits at reach, `combat_actions` when a melee id or a dead actor's
   fall reaches a handler, `hero_death_loss` when the loss is raised with another player character alive;
   `observe.script.tainted` then marks the mission's outcome as not authoritative until the oracle
   captures of section 7 and `combat-measurements.md` 7 settle the values.
 
 Not implemented from section 6: the rails' check-for scans, silhouettes, parries and the block, the
-other eight figures, soldiers starting fights or fighting several at once, the 25-hp blow, the bow,
+other eight figures, soldiers starting fights (several attackers wait their turn: a policy, not a
+measurement), the 25-hp blow, the bow,
 tying / carrying / reviving, the stimuli of section 5.
 
 ## 7. Open questions and the oracle capture plan

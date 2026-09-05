@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ai::{
     AiState, DAMAGE_NUMBER_TICKS, ENERGY_MAX, FIGURE_MIN_STROKE, FightPose, Figure, SimIndex,
-    action_id, resume_at, rotated, wanted_animation,
+    action_id, fightable, resume_at, rotated, wanted_animation,
 };
 use crate::anim::{AnimState, Catalog, UNITS_PER_TABLE_TICK, direction_of};
 use crate::fixed::Fixed;
@@ -625,6 +625,9 @@ pub struct Observation {
     /// A player character died (`World::hero_dead`): the app shows the lost page.
     #[serde(default)]
     pub hero_dead: bool,
+    /// The enemy soldier the held left button locked a figure onto (`World::figure_target`).
+    #[serde(default)]
+    pub figure_target: Option<EntityId>,
     /// Script state (objectives, pending texts, victory, unknown natives), if the world runs a
     /// script.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -643,8 +646,37 @@ pub const MAX_VIEWPORT: u32 = 4096;
 pub const MAX_ENTITIES: usize = 1 << 16;
 /// Pointer coordinates (24.8) are clamped to this magnitude.
 pub const MAX_POINTER_RAW: i32 = 1 << 24;
-/// Largest total vertex count of the walkable geometry.
+/// Largest total vertex count of the walkable geometry (every edge of it may be tested by one
+/// movement query: part of [`MAX_MOVEMENT_QUERY_WORK`]).
 pub const MAX_GEOMETRY_VERTICES: usize = 1 << 20;
+/// Largest `Entity::size` (a mover's collision half extent, an actor's selection radius) a
+/// snapshot may carry, in map pixels: bounds the obstacle-index cells one movement query
+/// looks at ([`MAX_QUERY_CELLS`]; Codex review 10, finding 5). Retail actors are a few
+/// pixels wide, the synthetic obstacles 100.
+pub const MAX_ENTITY_SIZE: i32 = 256;
+/// Largest half extent of an obstacle entity's box (`Entity::patrol[0]`), in map pixels: the
+/// map's own size. Extents are validated within `0..=MAX_OBSTACLE_HALF_EXTENT` and
+/// normalised at construction ([`obstacle_extents`]): a negative extent would index the box
+/// by its magnitude and let movers through it (Codex review 10, finding 6).
+pub const MAX_OBSTACLE_HALF_EXTENT: i32 = MAX_MAP_SIZE as i32;
+/// Most obstacles one cell of the obstacle index may hold (`validate` refuses more): bounds
+/// the candidates one movement query tests per cell ([`MAX_MOVEMENT_QUERY_WORK`]).
+pub const MAX_OBSTACLE_CELL_OCCUPANCY: u32 = 1 << 11;
+/// Most cells of the obstacle index one movement query looks at: a box of half extent
+/// [`MAX_ENTITY_SIZE`] spans `2 * 256 / 64 + 1` = 9 cells per axis.
+pub const MAX_QUERY_CELLS: u64 = ((2 * MAX_ENTITY_SIZE / OBSTACLE_CELL) as u64 + 1).pow(2);
+/// Work of the costliest atomic movement query an accepted snapshot can pose: the mover's
+/// unit, every cell its box touches, a full cell of candidates in each, and every edge of
+/// the walkable geometry; strictly below [`SIM_QUOTA_MOVEMENT`], the least the movement
+/// phase is ever granted, so an accepted mover always finishes his query on his turn
+/// (Codex review 10, finding 5: no query can restart from zero forever).
+pub const MAX_MOVEMENT_QUERY_WORK: u64 = 1
+    + MAX_QUERY_CELLS
+    + MAX_QUERY_CELLS * MAX_OBSTACLE_CELL_OCCUPANCY as u64
+    + MAX_GEOMETRY_VERTICES as u64;
+// Below the quota, and above the 2^20 quota of ruleset 15 that a valid query could exceed.
+const _: () = assert!(MAX_MOVEMENT_QUERY_WORK < SIM_QUOTA_MOVEMENT);
+const _: () = assert!(MAX_MOVEMENT_QUERY_WORK > 1 << 20);
 /// Largest magnitude of a geometry vertex coordinate; see [`crate::geom::MAX_COORD`].
 pub const MAX_GEOMETRY_COORD: i32 = crate::geom::MAX_COORD;
 /// Largest magnitude of an entity position (map pixels); positions are clamped to the map when
@@ -687,6 +719,19 @@ pub const MAX_PICKUP_COUNT: i32 = 1 << 20;
 /// original's hit test is the item's sprite, `docs/original/ui-flow.md` 9.4 "click on it";
 /// the engine draws items as small discs of about this size).
 pub const ITEM_CLICK_RADIUS: i32 = 12;
+
+/// The half extents an obstacle entity stores: their magnitudes, clamped to
+/// [`MAX_OBSTACLE_HALF_EXTENT`] (the form `validate` accepts; the index and the collision
+/// test then agree on the box).
+#[must_use]
+pub fn obstacle_extents(hw: Fixed, hh: Fixed) -> (Fixed, Fixed) {
+    let max = Fixed::from_int(MAX_OBSTACLE_HALF_EXTENT);
+    let clamp = |v: Fixed| {
+        let v = v.abs();
+        if v > max { max } else { v }
+    };
+    (clamp(hw), clamp(hh))
+}
 
 /// Every check a walkable geometry must pass before it may drive movement: vertex budget and
 /// coordinate range (`-MAX_GEOMETRY_COORD..=MAX_GEOMETRY_COORD`).
@@ -758,6 +803,12 @@ pub struct World {
     /// decides between a click and a drawn figure (`combat-measurements.md` 1.4).
     #[serde(default)]
     pub press: Option<(Fixed, Fixed)>,
+    /// The enemy soldier the held left button locked onto at the press: the nearest one the
+    /// selected player character could fight, outlined while the button is down and struck
+    /// by the figure the release draws, whatever moved meanwhile (`combat-measurements.md` 1.4,
+    /// measured; Codex review 10, finding 8). Only while `press` is held.
+    #[serde(default)]
+    pub figure_target: Option<EntityId>,
     /// A player character died (`ai::World::kill`): the mission is lost (measured for a lone
     /// hero, `combat-measurements.md` 4); sticky, read by the app for the lost page.
     #[serde(default)]
@@ -838,8 +889,9 @@ pub const SIM_QUOTA_ATTACKS: u64 = 1 << 21;
 pub const SIM_QUOTA_PROGRAMS: u64 = 1 << 21;
 /// Quota of the movement (one unit per living, active non-obstacle, one per obstacle-index cell
 /// it looks at, one per obstacle candidate tested and one per polygon edge of the walkable
-/// geometry tested): 2^20.
-pub const SIM_QUOTA_MOVEMENT: u64 = 1 << 20;
+/// geometry tested): 2^21, above [`MAX_MOVEMENT_QUERY_WORK`] (the costliest query an
+/// accepted snapshot can pose), so the first mover of the walk always finishes his query.
+pub const SIM_QUOTA_MOVEMENT: u64 = 1 << 21;
 /// Quota of the animation advance (one unit per active entity): 2^20, above `MAX_ENTITIES`,
 /// so a full walk always fits.
 pub const SIM_QUOTA_ANIMATION: u64 = 1 << 20;
@@ -958,12 +1010,12 @@ impl ObstacleIndex {
         (a.min(b), a.max(b))
     }
 
-    /// The cell ranges of a box centred on `(x, y)` with half extents `(hw, hh)`.
+    /// The cell ranges of a box centred on `(x, y)` with half extents `(hw, hh)` (validated
+    /// non-negative: the same box the collision test uses, never its magnitude).
     fn cells_of(
         (cols, rows): (i32, i32),
         (x, y, hw, hh): (Fixed, Fixed, Fixed, Fixed),
     ) -> ((i32, i32), (i32, i32)) {
-        let (hw, hh) = (hw.abs(), hh.abs());
         (
             Self::span(x - hw, x + hw, cols),
             Self::span(y - hh, y + hh, rows),
@@ -981,6 +1033,25 @@ impl ObstacleIndex {
                 u64::from((x1 - x0 + 1) as u32) * u64::from((y1 - y0 + 1) as u32)
             })
             .sum()
+    }
+
+    /// Most obstacles any one cell of the index of these boxes holds (`validate` bounds it by
+    /// [`MAX_OBSTACLE_CELL_OCCUPANCY`]); one pass over the entries, so it is called after
+    /// [`ObstacleIndex::entry_count`] was checked.
+    #[must_use]
+    pub fn max_occupancy(boxes: &[(Fixed, Fixed, Fixed, Fixed)], map_size: (u32, u32)) -> u32 {
+        let dims = Self::dims(map_size);
+        let (cols, rows) = dims;
+        let mut counts = vec![0u32; (cols as usize) * (rows as usize)];
+        for &b in boxes {
+            let ((x0, x1), (y0, y1)) = Self::cells_of(dims, b);
+            for cy in y0..=y1 {
+                for cx in x0..=x1 {
+                    counts[(cy * cols + cx) as usize] += 1;
+                }
+            }
+        }
+        counts.into_iter().max().unwrap_or(0)
     }
 
     /// Build the index; refused beyond [`MAX_OBSTACLE_INDEX_ENTRIES`] entries.
@@ -1045,7 +1116,9 @@ impl ObstacleIndex {
 
     /// Whether a box of half extent `size` centred on `(x, y)` touches an obstacle
     /// (`|x - ox| <= hw + size` on both axes), charging one unit per cell looked at and one
-    /// per candidate tested; `None` when the budget ran out before the answer was known.
+    /// per candidate tested; `None` when the budget ran out before the answer was known. For
+    /// an accepted world the query costs at most [`MAX_QUERY_CELLS`] cells of
+    /// [`MAX_OBSTACLE_CELL_OCCUPANCY`] candidates each.
     #[must_use]
     pub fn blocked(&self, x: Fixed, y: Fixed, size: Fixed, budget: &mut u64) -> Option<bool> {
         let ((x0, x1), (y0, y1)) = Self::cells_of((self.cols, self.rows), (x, y, size, size));
@@ -1090,8 +1163,12 @@ impl ObstacleIndex {
 /// `alert_policy` and `attack_policy: {reach, block, hit_chance, post_bound}` replace
 /// `perception`, `melee_reach`, `powerful_blow_chance` and `post_bound`; 18: pick-up items:
 /// the element table's `item` entries, the VM's `taken_items`, entity `arrows`, `purses` and
-/// `pickup`, the assumption registry grew by `item_pickup`).
-pub const SNAPSHOT_VERSION: u32 = 18;
+/// `pickup`, the assumption registry grew by `item_pickup`; 19: the world's `figure_target`
+/// (the soldier a held left button locked a figure onto), the `return_pending` AI state, the
+/// assumption registry grew by `alert_timeout` and `attack_policy: multi_party`, the VM's
+/// `fault` by `call_stack_overflow`; obstacle half extents, entity sizes and the obstacle
+/// index's cell occupancy are bounded).
+pub const SNAPSHOT_VERSION: u32 = 19;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -1515,7 +1592,7 @@ impl World {
                 speed: Fixed::ZERO,
                 target: None,
                 path: Vec::new(),
-                patrol: vec![(f(w), f(h))],
+                patrol: vec![obstacle_extents(f(w), f(h))],
                 patrol_index: 0,
                 wait_ticks: 0,
                 facing256: 0,
@@ -1577,6 +1654,7 @@ impl World {
             vm: None,
             cursors: SimCursors::default(),
             press: None,
+            figure_target: None,
             hero_dead: false,
             damage_numbers: Vec::new(),
             nav: Some(nav),
@@ -1680,9 +1758,9 @@ impl World {
         }
         // Every entity by id (the attack target and foe checks below look ids up here rather
         // than scanning the table per entity).
-        let mut ids: BTreeMap<EntityId, (EntityKind, Team)> = BTreeMap::new();
-        for e in &self.entities {
-            if ids.insert(e.id, (e.kind, e.team)).is_some() {
+        let mut ids: BTreeMap<EntityId, (EntityKind, Team, usize)> = BTreeMap::new();
+        for (slot, e) in self.entities.iter().enumerate() {
+            if ids.insert(e.id, (e.kind, e.team, slot)).is_some() {
                 return Err(format!("duplicate entity id {:?}", e.id));
             }
             if !(0..256).contains(&e.facing256) {
@@ -1697,6 +1775,18 @@ impl World {
                         return Err(format!(
                             "obstacle {:?} needs exactly one extent entry",
                             e.id
+                        ));
+                    }
+                    // The box the index and the collision test share: non-negative and
+                    // bounded (a negative extent would index by magnitude and fail open).
+                    let (hw, hh) = e.patrol[0];
+                    let max = Fixed::from_int(MAX_OBSTACLE_HALF_EXTENT);
+                    if hw < Fixed::ZERO || hh < Fixed::ZERO || hw > max || hh > max {
+                        return Err(format!(
+                            "obstacle {:?} half extents ({}, {}) outside 0..={MAX_OBSTACLE_HALF_EXTENT}",
+                            e.id,
+                            hw.round(),
+                            hh.round()
                         ));
                     }
                 }
@@ -1761,6 +1851,13 @@ impl World {
             }
             if e.speed < Fixed::ZERO || e.size < Fixed::ZERO {
                 return Err(format!("entity {:?} has a negative speed or size", e.id));
+            }
+            if e.size > Fixed::from_int(MAX_ENTITY_SIZE) {
+                return Err(format!(
+                    "entity {:?} size {} exceeds {MAX_ENTITY_SIZE}",
+                    e.id,
+                    e.size.round()
+                ));
             }
             let bound = Fixed::from_int(MAX_ENTITY_COORD);
             if e.x.abs() > bound || e.y.abs() > bound {
@@ -1917,7 +2014,9 @@ impl World {
                     e.id
                 ));
             }
-            if e.ai_state == AiState::Returning && e.alert_origin.is_none() {
+            if matches!(e.ai_state, AiState::Returning | AiState::ReturnPending)
+                && e.alert_origin.is_none()
+            {
                 return Err(format!(
                     "entity {:?} is returning without an alert origin",
                     e.id
@@ -1936,7 +2035,7 @@ impl World {
                 let victim = ids.get(&t);
                 let ok = e.kind == EntityKind::Player
                     && t != e.id
-                    && victim.is_some_and(|&(kind, team)| {
+                    && victim.is_some_and(|&(kind, team, _)| {
                         kind == EntityKind::Guard && team == Team::Enemy
                     });
                 if !ok {
@@ -1949,7 +2048,7 @@ impl World {
             if let Some(f) = e.foe {
                 let foe = ids.get(&f);
                 let ok = f != e.id
-                    && foe.is_some_and(|&(kind, team)| match e.kind {
+                    && foe.is_some_and(|&(kind, team, _)| match e.kind {
                         EntityKind::Player => kind == EntityKind::Guard && team == Team::Enemy,
                         _ => kind == EntityKind::Player,
                     });
@@ -1958,6 +2057,21 @@ impl World {
                         "entity {:?} foe {f:?} is invalid: a fight is between a player character and an enemy soldier",
                         e.id
                     ));
+                }
+                // Two living fighters name each other (Codex review 10, finding 7): a foe
+                // who is alive and fights someone else is a fight the world cannot hold
+                // (a foe dead or out of the fight is the stale reference the next tick ends).
+                if let Some(&(_, _, fi)) = foe
+                    && e.alive
+                    && e.ai_state == AiState::Fighting
+                {
+                    let o = &self.entities[fi];
+                    if o.alive && o.ai_state == AiState::Fighting && o.foe != Some(e.id) {
+                        return Err(format!(
+                            "entity {:?} fights {f:?}, who fights {:?}: a fight between two living actors is reciprocal",
+                            e.id, o.foe
+                        ));
+                    }
                 }
             }
         }
@@ -1975,10 +2089,28 @@ impl World {
                 "obstacle index would need {entries} entries (limit {MAX_OBSTACLE_INDEX_ENTRIES})"
             ));
         }
+        // No cell may hold more candidates than one movement query can test on its turn
+        // (`MAX_MOVEMENT_QUERY_WORK`).
+        let occupancy = ObstacleIndex::max_occupancy(&boxes, self.map_size);
+        if occupancy > MAX_OBSTACLE_CELL_OCCUPANCY {
+            return Err(format!(
+                "an obstacle index cell would hold {occupancy} obstacles (limit {MAX_OBSTACLE_CELL_OCCUPANCY})"
+            ));
+        }
         if let Some((x, y)) = self.press {
             let bound = Fixed::from_int(MAX_ENTITY_COORD);
             if x.abs() > bound || y.abs() > bound {
                 return Err(format!("press position ({x:?}, {y:?}) out of range"));
+            }
+        }
+        if let Some(t) = self.figure_target {
+            let soldier = ids
+                .get(&t)
+                .is_some_and(|&(kind, team, _)| kind == EntityKind::Guard && team == Team::Enemy);
+            if self.press.is_none() || !soldier {
+                return Err(format!(
+                    "figure target {t:?} without a held left button or not an enemy soldier"
+                ));
             }
         }
         if self.damage_numbers.len() > MAX_DAMAGE_NUMBERS {
@@ -2162,8 +2294,19 @@ impl World {
                 match button {
                     // The left button acts on its release: a press and a release on the same
                     // spot is the click, a stroke between them a drawn figure
-                    // (`combat-measurements.md` 1.4).
-                    Button::Left => self.press = Some(self.pointer_in_map()),
+                    // (`combat-measurements.md` 1.4). The press locks the figure onto the
+                    // nearest enemy soldier the selected character can fight (outlined
+                    // while the button is held: measured, 1.4), whatever moves meanwhile.
+                    Button::Left => {
+                        self.press = Some(self.pointer_in_map());
+                        self.figure_target = self
+                            .commanded_player()
+                            .and_then(|i| {
+                                let e = &self.entities[i];
+                                self.nearest_fightable(e.x, e.y)
+                            })
+                            .map(|t| self.entities[t].id);
+                    }
                     Button::Right => self.right_click(),
                     Button::Middle => {}
                 }
@@ -2173,9 +2316,10 @@ impl World {
                 if button == Button::Left
                     && let Some(from) = self.press.take()
                 {
+                    let locked = self.figure_target.take();
                     let to = self.pointer_in_map();
                     match figure_of(from, to) {
-                        Ok(Some(figure)) => self.figure_order(figure),
+                        Ok(Some(figure)) => self.figure_order(figure, locked),
                         // A stroke the engine does not read as a figure orders nothing.
                         Ok(None) => {}
                         Err(()) => self.left_click(),
@@ -2395,11 +2539,14 @@ impl World {
         }
     }
 
-    /// A drawn figure (`combat-measurements.md` 1.4): the selected player character locks it
-    /// onto the nearest enemy soldier and, once he fights him, delivers the blow (the forward
-    /// stroke: the powerful blow). A figure while he already fights that soldier is delivered
-    /// in the fight; while he fights another, he leaves that fight.
-    fn figure_order(&mut self, figure: Figure) {
+    /// A drawn figure (`combat-measurements.md` 1.4): the selected player character strikes
+    /// the soldier the press locked onto (`locked`, [`World::figure_target`] at the press:
+    /// the nearest enemy then, kept through the gesture) and, once he fights him, delivers
+    /// the blow (the forward stroke: the powerful blow). A figure while he already fights
+    /// that soldier is delivered in the fight; while he fights another, he leaves that
+    /// fight. A locked soldier no longer fightable at the release (dead, down, absent)
+    /// orders nothing.
+    fn figure_order(&mut self, figure: Figure, locked: Option<EntityId>) {
         self.last_ground_click = None;
         let Some(i) = self.commanded_player() else {
             return;
@@ -2408,7 +2555,10 @@ impl World {
         if !matches!(e.ai_state, AiState::Patrol | AiState::Fighting) {
             return;
         }
-        let Some(t) = self.nearest_fightable(e.x, e.y) else {
+        let Some(t) = locked
+            .and_then(|id| self.entities.iter().position(|e| e.id == id))
+            .filter(|&t| fightable(&self.entities[t]))
+        else {
             return;
         };
         let target = self.entities[t].id;
@@ -2857,6 +3007,7 @@ impl World {
             rng_draws: self.rng.draws,
             objective_reached: self.objective_reached,
             hero_dead: self.hero_dead,
+            figure_target: self.figure_target,
             script: self.script_observation(),
         }
     }
@@ -2889,6 +3040,10 @@ impl World {
         };
         match self.press {
             Some((x, y)) => w.u8(1).i32(x.raw()).i32(y.raw()),
+            None => w.u8(0),
+        };
+        match self.figure_target {
+            Some(t) => w.u8(1).u32(t.index).u32(t.generation),
             None => w.u8(0),
         };
         match &self.scenario {
@@ -3256,7 +3411,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "3413b5f039d7ea32341154268a80f4aea6374934a4c4a70ded8f278e05817f80";
+        "9d7d8304430b9f0498d4acfe6e28c361db6adf21b6e3825c467a5557b29e6392";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -3352,6 +3507,17 @@ mod tests {
         let mut w = base.clone();
         w.press = Some((Fixed::ONE, Fixed::ONE));
         variants.push(("press", w));
+        let mut w = base.clone();
+        w.press = Some((Fixed::ONE, Fixed::ONE));
+        w.figure_target = Some(base.entities[1].id);
+        let mut pressed = base.clone();
+        pressed.press = Some((Fixed::ONE, Fixed::ONE));
+        assert_ne!(
+            w.hashes().total(),
+            pressed.hashes().total(),
+            "figure_target"
+        );
+        variants.push(("figure_target", w));
         let mut w = base.clone();
         w.hero_dead = true;
         variants.push(("hero_dead", w));
@@ -3580,12 +3746,23 @@ mod tests {
         assert_eq!(b, 0);
         // The cap: a box that spans the whole map costs every cell; enough of them are refused
         // by the build and by `validate`.
-        let giant = (f(1000), f(500), f(MAX_ENTITY_COORD), f(MAX_ENTITY_COORD));
-        let cells = u64::from(2000u32.div_ceil(64)) * u64::from(1000u32.div_ceil(64));
-        assert_eq!(ObstacleIndex::entry_count(&[giant], (2000, 1000)), cells);
+        let giant = (
+            f(1000),
+            f(500),
+            f(MAX_OBSTACLE_HALF_EXTENT),
+            f(MAX_OBSTACLE_HALF_EXTENT),
+        );
+        // On a 4096 x 2048 map (2048 cells) the entry cap is exactly the occupancy cap per
+        // cell, so one giant too many trips both.
+        let cells = u64::from(4096u32.div_ceil(64)) * u64::from(2048u32.div_ceil(64));
+        assert_eq!(
+            cells * u64::from(MAX_OBSTACLE_CELL_OCCUPANCY),
+            MAX_OBSTACLE_INDEX_ENTRIES
+        );
+        assert_eq!(ObstacleIndex::entry_count(&[giant], (4096, 2048)), cells);
         let too_many = vec![giant; (MAX_OBSTACLE_INDEX_ENTRIES / cells + 1) as usize];
         assert!(
-            ObstacleIndex::build(too_many.clone(), (2000, 1000))
+            ObstacleIndex::build(too_many.clone(), (4096, 2048))
                 .unwrap_err()
                 .contains("obstacle index")
         );
@@ -3596,8 +3773,8 @@ mod tests {
             },
             1,
             MapInfo {
-                width: 2000,
-                height: 1000,
+                width: 4096,
+                height: 2048,
             },
         )
         .unwrap();
@@ -3627,6 +3804,206 @@ mod tests {
                 .is_some_and(|ix| ix.entries() as u64 <= MAX_OBSTACLE_INDEX_ENTRIES)
         );
         assert!(w.entities[0].target.is_none(), "blocked by the giants");
+        w.validate().unwrap();
+    }
+
+    /// Finding 5 of Codex review 10: the costliest atomic movement query an accepted snapshot
+    /// can pose (a mover of the largest size whose box touches 81 cells, four of whose strips
+    /// hold a full cell of obstacles each, all just outside his box so that none blocks and
+    /// every candidate is tested, over a geometry of the largest vertex count that every step
+    /// tests in full) costs more than the old 2^20 quota but strictly less than the movement
+    /// quota, so the movement phase serves it on its turn with its bare quota and the mover
+    /// advances; with the old quota he never moved and the cursor rested on him for good.
+    #[test]
+    fn the_costliest_movement_query_fits_the_minimum_movement_grant() {
+        let f = Fixed::from_int;
+        assert_eq!(MAX_QUERY_CELLS, 81);
+        let mut w = World::new_map_view(
+            Scenario::MapView {
+                map: "test".into(),
+                ambiance: "Day".into(),
+            },
+            1,
+            MapInfo {
+                width: 2000,
+                height: 2000,
+            },
+        )
+        .unwrap();
+        // The geometry: the map's rectangle and one thin obstacle polygon of 2^20 - 4
+        // vertices far from the mover (one navigation row, so the grid stays cheap).
+        let n = MAX_GEOMETRY_VERTICES - 4;
+        let zigzag: Vec<(i32, i32)> = (0..n)
+            .map(|k| {
+                let x = (k as i64 * 1999 / (n as i64 - 1)) as i32;
+                (x, if k % 2 == 0 { 1900 } else { 1903 })
+            })
+            .collect();
+        let geometry = Geometry {
+            boundary: vec![(0, 0), (2000, 0), (2000, 2000), (0, 2000)],
+            obstacles: vec![zigzag],
+            areas: Vec::new(),
+        };
+        assert_eq!(geometry.vertex_count(), MAX_GEOMETRY_VERTICES);
+        w.set_geometry(geometry).unwrap();
+        let mut mover = w.entities[0].clone();
+        mover.x = f(513);
+        mover.y = f(513);
+        mover.size = f(MAX_ENTITY_SIZE);
+        mover.target = Some((f(553), f(513)));
+        mover.path.clear();
+        let mut obstacle = corridor(1).entities[2].clone();
+        obstacle.size = Fixed::ZERO;
+        obstacle.patrol = vec![(Fixed::ZERO, Fixed::ZERO)];
+        w.entities.clear();
+        let mut next = 0u32;
+        let mut push = |w: &mut World, e: &Entity, x: i32, y: i32| {
+            let mut e = e.clone();
+            e.id = EntityId {
+                index: next,
+                generation: 1,
+            };
+            next += 1;
+            e.x = f(x);
+            e.y = f(y);
+            w.entities.push(e);
+        };
+        // One obstacle first so the mover is not the first entity of the walk.
+        push(&mut w, &obstacle, 1500, 1500);
+        push(&mut w, &mover, 513, 513);
+        // The mover's box spans cells 4..=12 on both axes (his step is tested at x = 514.4).
+        // Full cells of obstacles at the free pixels of each edge cell: pixel 256 of column 4
+        // (|514.4 - 256| > 256), pixel 772 of column 12, and likewise for rows 4 and 12.
+        let per_cell = MAX_OBSTACLE_CELL_OCCUPANCY as usize;
+        let mut spots: Vec<(i32, i32)> = Vec::new();
+        for row in 4..=12 {
+            spots.push((256, row * 64 + 32));
+            spots.push((772, row * 64 + 32));
+        }
+        for col in 5..=11 {
+            spots.push((col * 64 + 32, 256));
+        }
+        for col in 5..=10 {
+            spots.push((col * 64 + 32, 770));
+        }
+        for &(x, y) in &spots {
+            for _ in 0..per_cell {
+                push(&mut w, &obstacle, x, y);
+            }
+        }
+        assert_eq!(w.entities.len(), 2 + spots.len() * per_cell);
+        assert!(w.entities.len() <= MAX_ENTITIES);
+        w.validate().unwrap();
+        let candidates = (spots.len() * per_cell) as u64;
+        let mut left = SIM_WORK_PER_TICK;
+        let index = w.sim_index(&mut left).unwrap();
+        assert!(w.refresh_obstacle_index(&index.obstacles));
+        // The bare quota: the query completes and the mover advances.
+        let mut grant = SIM_QUOTA_MOVEMENT;
+        w.movement(&index, &mut grant);
+        let spent = SIM_QUOTA_MOVEMENT - grant;
+        assert_eq!(
+            spent,
+            1 + 81 + candidates + MAX_GEOMETRY_VERTICES as u64,
+            "the mover, his cells, every candidate, every edge"
+        );
+        assert!(spent > 1 << 20 && spent <= MAX_MOVEMENT_QUERY_WORK);
+        assert!(w.entities[1].x > f(513) && w.entities[1].target.is_some());
+        assert_eq!(w.cursors.movement, 0);
+        // The old quota: the query never finishes and the cursor rests on the mover.
+        w.entities[1].x = f(513);
+        let mut grant = 1 << 20;
+        w.movement(&index, &mut grant);
+        assert_eq!(grant, 0);
+        assert_eq!(w.entities[1].x, f(513), "never moved");
+        assert_eq!(w.cursors.movement, 1, "and would restart from zero forever");
+        w.cursors.movement = 0;
+        // The whole tick with the real budget moves him too, and a snapshot of this world
+        // steps identically in a fresh one.
+        let snap = w.snapshot(None);
+        let spent = w.sim_tick_with(SIM_WORK_PER_TICK);
+        assert!(spent <= SIM_WORK_PER_TICK);
+        assert!(w.entities[1].x > f(513));
+        assert_eq!(w.cursors.movement, 0);
+        let mut w2 = corridor(1);
+        w2.restore(&snap).unwrap();
+        w2.sim_tick_with(SIM_WORK_PER_TICK);
+        assert_eq!(w2.hashes(), w.hashes());
+        // The bounds `validate` holds for the query: the size and the occupancy.
+        let mut bad = w.snapshot(None);
+        bad.world.entities[1].size = f(MAX_ENTITY_SIZE + 1);
+        assert!(w2.restore(&bad).unwrap_err().contains("size"));
+        let mut bad = w.snapshot(None);
+        let mut one_more = bad.world.entities[2].clone();
+        one_more.id = EntityId {
+            index: next,
+            generation: 1,
+        };
+        bad.world.entities.push(one_more);
+        assert!(
+            w2.restore(&bad)
+                .unwrap_err()
+                .contains("obstacle index cell")
+        );
+    }
+
+    /// Finding 6 of Codex review 10: an obstacle's half extents are validated non-negative
+    /// and bounded (a negative one indexed the box by its magnitude and let movers through
+    /// it), normalised at construction, and hostile JSON with negative, extreme or oversized
+    /// extents is refused while the largest accepted extent works.
+    #[test]
+    fn obstacle_extents_are_bounded_and_normalised() {
+        let f = Fixed::from_int;
+        assert_eq!(obstacle_extents(f(-20), f(100)), (f(20), f(100)));
+        assert_eq!(
+            obstacle_extents(Fixed::MIN, f(MAX_OBSTACLE_HALF_EXTENT + 1)),
+            (f(MAX_OBSTACLE_HALF_EXTENT), f(MAX_OBSTACLE_HALF_EXTENT))
+        );
+        let mut w = corridor(3);
+        let hostile = |edit: fn(&mut World)| -> String {
+            let mut snap = corridor(3).snapshot(None);
+            edit(&mut snap.world);
+            serde_json::to_string(&snap).unwrap()
+        };
+        let refuse = |w: &mut World, json: &str, needle: &str| {
+            let snap: Snapshot = serde_json::from_str(json).unwrap();
+            let err = w.restore(&snap).unwrap_err();
+            assert!(err.contains(needle), "{err} should mention {needle}");
+        };
+        let neg = hostile(|s| s.entities[2].patrol[0].0 = Fixed::from_int(-20));
+        assert!(
+            neg.contains("-5120"),
+            "the raw negative extent is in the JSON"
+        );
+        refuse(&mut w, &neg, "half extents");
+        refuse(
+            &mut w,
+            &hostile(|s| s.entities[2].patrol[0].1 = Fixed::MIN),
+            "half extents",
+        );
+        refuse(
+            &mut w,
+            &hostile(|s| s.entities[2].patrol[0].0 = Fixed::MAX),
+            "half extents",
+        );
+        refuse(
+            &mut w,
+            &hostile(|s| s.entities[2].patrol[0] = (Fixed::from_int(-1), Fixed::from_int(-1))),
+            "half extents",
+        );
+        // The maximum: accepted, indexed, and it blocks (the corridor's player walks into it).
+        let max = hostile(|s| {
+            s.entities[2].patrol[0] = (
+                Fixed::from_int(MAX_OBSTACLE_HALF_EXTENT),
+                Fixed::from_int(MAX_OBSTACLE_HALF_EXTENT),
+            );
+        });
+        let snap: Snapshot = serde_json::from_str(&max).unwrap();
+        w.restore(&snap).unwrap();
+        w.entities[0].target = Some((f(200), f(240)));
+        w.step(&[]);
+        assert!(w.entities[0].target.is_none(), "blocked by the giant");
+        assert_eq!(w.entities[0].x, f(80));
         w.validate().unwrap();
     }
 

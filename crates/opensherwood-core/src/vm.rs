@@ -42,8 +42,12 @@
 //! variables, queues, money, RNG; the entities a native touches; the selection and the camera)
 //! is captured before it runs, charged to the budget one unit per value copied, and put back
 //! when the budget cuts the handler short, so the retry on the next tick starts the handler
-//! from the state it saw the first time and no effect is applied twice. A full queue is a
-//! deterministic fault ([`Fault::ActionQueueOverflow`]), never a silent drop.
+//! from the state it saw the first time and no effect is applied twice; one that fails
+//! deterministically (a trap, a fault) is rolled back too and consumed, since it would fail
+//! the same way again. A full queue is a deterministic fault ([`Fault::ActionQueueOverflow`]),
+//! never a silent drop, and a call that would exceed [`MAX_FRAMES`] is the sticky
+//! [`Fault::CallStackOverflow`] that aborts the callback where it stands (Codex review 10,
+//! finding 3: the call's destination is never left untouched behind a fabricated value).
 //!
 //! Hypotheses and taint (ADR-0008, "Hypotheses and taint"). The engine runs the retail scripts
 //! over stubs and over hypotheses about the original. The taint is *dependency-closed by
@@ -57,8 +61,9 @@
 //! ([`Assumption::UnknownNative`]), and the engine's own hypotheses, each recorded by the rule
 //! itself at the point where it first mutates authoritative state, independent of any callback
 //! or later consumer (Codex review 9, finding 1): the view cone ([`Assumption::SightCone`]), the
-//! unmeasured part of the noise radius ([`Assumption::NoiseRadius`]), the alert policy
-//! ([`Assumption::AlertPolicy`]), the attack policy ([`Assumption::AttackPolicy`]), the knock-out
+//! unmeasured part of the noise radius ([`Assumption::NoiseRadius`]), the alert sequence a
+//! sighting starts ([`Assumption::AlertPolicy`]), the alert timeout and the return to the post
+//! ([`Assumption::AlertTimeout`]), the attack policy ([`Assumption::AttackPolicy`]), the knock-out
 //! policy ([`Assumption::KnockOut`]), the profile stats, the tick rate, the scroll pickup, the
 //! zone presence at load, a walk that completed without arriving, the `ActionChange` parameter
 //! order, the campaign graph, the lenient asset fallbacks. The set is snapshotted, hashed,
@@ -1233,10 +1238,19 @@ pub enum Assumption {
     /// far) and within the engine's chosen radius (`ai::RUN_NOISE_RADIUS`, 350 px), and the
     /// soldier's state changed on it. A run heard within the measured bound records nothing.
     NoiseRadius,
-    /// The alert policy (hypotheses: the noticed -> alarm -> search sequence a sighting starts,
-    /// the alert timeout `ai::ALERT_TIMEOUT_TICKS`, the re-plan distance while searching, the
-    /// return to the post afterwards or after a knock-out) mutated a soldier's state.
+    /// The alert sequence (hypotheses: the noticed -> alarm -> search sequence a sighting
+    /// starts, the re-plan distance while searching) mutated a soldier's state. The
+    /// immediate charge on a heard run is measured and records nothing of its own
+    /// (`docs/original/stealth-and-combat.md` 8.6); what it stores besides is the timeout
+    /// ([`Assumption::AlertTimeout`]).
     AlertPolicy,
+    /// The alert timeout and the return policy (hypotheses: the five seconds of
+    /// `ai::ALERT_TIMEOUT_TICKS` an alerted soldier keeps searching, the return to the post
+    /// afterwards or after a knock-out) mutated a soldier's state: recorded before the charge
+    /// on a heard run stores the timeout, when an alarm or a sighting (re)starts it and when
+    /// the return begins (Codex review 10, finding 1: the charge itself is measured, the
+    /// timeout it stores is not).
+    AlertTimeout,
     /// The attack policy mutated state; the rule names which part ([`AttackRule`]).
     AttackPolicy(AttackRule),
     /// The knock-out policy (hypotheses: the blow always fells a victim below the immune
@@ -1310,6 +1324,11 @@ pub enum AttackRule {
     /// chasing: measured for the halberdier (`combat-measurements.md` 3), a hypothesis for
     /// every other kind.
     PostBound,
+    /// Several player characters attack one soldier: the engine lets him fight one at a time
+    /// while the others wait at reach (Codex review 10, finding 7; the measurements of
+    /// `combat-measurements.md` were one-on-one). Recorded when an attacker in reach waits
+    /// because his victim is engaged with another.
+    MultiParty,
 }
 
 impl AttackRule {
@@ -1319,6 +1338,7 @@ impl AttackRule {
             AttackRule::Block => 2,
             AttackRule::HitChance => 3,
             AttackRule::PostBound => 4,
+            AttackRule::MultiParty => 5,
         }
     }
 }
@@ -1347,6 +1367,7 @@ impl Assumption {
             Assumption::CombatActions => e.u8(19),
             Assumption::HeroDeathLoss => e.u8(20),
             Assumption::ItemPickup => e.u8(21),
+            Assumption::AlertTimeout => e.u8(22),
         };
     }
 
@@ -1393,6 +1414,10 @@ pub enum Fault {
     /// The action change queue was full when a change arrived: the exactly-once delivery can
     /// no longer be honoured, so the script is faulted rather than the change dropped.
     ActionQueueOverflow,
+    /// A script call would have pushed the frame beyond [`MAX_FRAMES`] (unbounded recursion):
+    /// the callback stopped at the call, its destination untouched and its transaction, if
+    /// any, rolled back (Codex review 10, finding 3).
+    CallStackOverflow,
 }
 
 impl Fault {
@@ -1401,6 +1426,7 @@ impl Fault {
             Fault::UnknownNative(id) => e.u8(1).u32(id),
             Fault::ArityMismatch(id) => e.u8(2).u32(id),
             Fault::ActionQueueOverflow => e.u8(3),
+            Fault::CallStackOverflow => e.u8(4),
         };
     }
 }
@@ -2483,7 +2509,8 @@ impl World {
 
     /// Deliver the queued action changes in order within what the tick's budget has left, each
     /// exactly once: a change whose class has no `ActionChange` is dropped as undeliverable,
-    /// one whose handler returned or trapped is removed, and one the budget cut short is rolled
+    /// one whose handler returned is removed, one whose handler trapped or faulted is rolled
+    /// back and removed (it would fail the same way again), and one the budget cut short is rolled
     /// back ([`Transaction`]) and stays at the front for the next tick (`vm_tick` delivers the
     /// leftovers before `Hourglass`), where the handler runs again from the start over the
     /// state it saw the first time. A knock-out or melee action reaching a handler records the
@@ -2551,7 +2578,14 @@ impl World {
                     self.vm_roll_back();
                     break;
                 }
-                CallOutcome::Returned(_) | CallOutcome::Aborted => {
+                CallOutcome::Aborted => {
+                    // A deterministic failure (a trap, a fault such as the frame limit):
+                    // the handler's partial effects are put back and the change is
+                    // consumed, since it would fail the same way again.
+                    self.vm_roll_back();
+                    done += 1;
+                }
+                CallOutcome::Returned(_) => {
                     if let Some(vm) = self.vm.as_mut() {
                         vm.transaction = None;
                     }
@@ -3155,10 +3189,13 @@ impl World {
                 Instr::Call { function, argc, .. } => {
                     let params = pop_n(&mut vm.param_stack, argc as usize, &mut vm.counters);
                     // The caller stays on the `Call`; `pop_frame` writes the callee's result
-                    // to the call's destination and steps past it.
+                    // to the call's destination and steps past it. A frame that cannot be
+                    // pushed (the frame limit: `Fault::CallStackOverflow`) aborts the
+                    // callback here: the destination is never left untouched behind a
+                    // value the caller wrote before the call (Codex review 10, finding 3).
                     let class = vm.frames.last().map_or(0, |f| f.class);
                     if !push_frame(vm, class, function, params) {
-                        advance(vm);
+                        return CallOutcome::Aborted;
                     }
                 }
                 Instr::PushArg { src } => {
@@ -3282,6 +3319,7 @@ fn push_frame(vm: &mut VmState, class: u32, function: u32, params: Vec<i32>) -> 
     };
     if vm.frames.len() >= MAX_FRAMES {
         inc(&mut vm.counters.faults);
+        vm.set_fault(Fault::CallStackOverflow);
         return false;
     }
     vm.frames.push(Frame {
@@ -6039,10 +6077,14 @@ pub(crate) mod tests {
     /// class has no handler, so nothing of the stealth layer ever reaches a script callback,
     /// yet the win is tainted by `noise_radius` from the tick of the charge on, through a JSON
     /// snapshot restored into a fresh world and a checkpoint every 50 ticks. The same scene with
-    /// the soldier at 320 px (the measured band) wins untainted: a win over measured rules
-    /// only. In both the hero crouches after his first running tick (by hand: the posture is
-    /// state) so that the charging soldier neither hears him again nor sees him before the
-    /// win (the crouched range is 125 px, the win happens 199 px away).
+    /// the soldier at 320 px (the measured band) records the hearing and the charge as measured
+    /// and is tainted by `alert_timeout` alone: the five-second timeout and the return
+    /// destination the charge stores are the hypothesis, recorded before the state changes
+    /// (finding 1 of Codex review 10: the measured `NoiseCharge` and the hypothesised
+    /// `AlertTimeout` are separate sources; no charge wins untainted). In both the hero
+    /// crouches after his first running tick (by hand: the posture is state) so that the
+    /// charging soldier neither hears him again nor sees him before the win (the crouched
+    /// range is 125 px, the win happens 199 px away).
     #[test]
     fn a_charge_from_the_unmeasured_noise_band_taints_a_win_read_from_native_97() {
         use crate::ai::AiState;
@@ -6081,8 +6123,8 @@ pub(crate) mod tests {
         let vm = w.vm.as_ref().unwrap();
         assert_eq!(
             vm.assumptions.iter().copied().collect::<Vec<_>>(),
-            vec![Assumption::NoiseRadius],
-            "the charge itself is measured; hearing from 340 px is not"
+            vec![Assumption::NoiseRadius, Assumption::AlertTimeout],
+            "the charge itself is measured; hearing from 340 px and the timeout it stores are not"
         );
         assert!(
             vm.pending_action_changes.is_empty(),
@@ -6112,15 +6154,24 @@ pub(crate) mod tests {
         assert!(obs.mission_won && obs.tainted);
         assert_eq!(
             obs.assumptions,
-            vec![Assumption::NoiseRadius],
+            vec![Assumption::NoiseRadius, Assumption::AlertTimeout],
             "no handler ran, nothing else was taken"
         );
         assert_taint_round_trips(&w, &obs.assumptions);
-        // The measured band: the same charge, the same win, no hypothesis taken.
+        // The measured band: the same charge, the same win; the hearing records nothing, the
+        // timeout the charge stores is the only hypothesis taken.
         let mut w = scene(320);
         w.step(&[]);
         assert!(w.entities[1].heard);
-        assert!(w.vm.as_ref().unwrap().assumptions.is_empty());
+        assert_eq!(
+            w.vm.as_ref()
+                .unwrap()
+                .assumptions
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![Assumption::AlertTimeout]
+        );
         w.entities[0].posture = Posture::Crouched;
         let mut ticks = 0;
         while !w.vm.as_ref().unwrap().mission_won {
@@ -6130,8 +6181,8 @@ pub(crate) mod tests {
         }
         assert_eq!(w.entities[1].ai_state, AiState::Alerted);
         let obs = w.script_observation().unwrap();
-        assert!(obs.mission_won && !obs.tainted, "{:?}", obs.assumptions);
-        assert_taint_round_trips(&w, &[]);
+        assert!(obs.mission_won && obs.tainted, "{:?}", obs.assumptions);
+        assert_taint_round_trips(&w, &[Assumption::AlertTimeout]);
     }
 
     /// Finding 3 of Codex review 9: a script call and its result read are one instruction. The
@@ -6883,6 +6934,115 @@ pub(crate) mod tests {
             Some(Fault::UnknownNative(999))
         );
     }
+
+    /// Finding 3 of Codex review 10: a validated recursive `CheckVictoryCondition` that writes
+    /// 1 to a slot and then calls itself into that slot must not win through the frame limit.
+    /// The deepest call that cannot push its frame faults the script
+    /// (`Fault::CallStackOverflow`: sticky, hashed, restored from a snapshot) and aborts the
+    /// callback where it stands, so the slot never unwinds as a result; the same recursion in
+    /// a queued `ActionChange` handler is rolled back (its class variable untouched) and the
+    /// change consumed rather than retried.
+    #[test]
+    fn a_frame_limit_overflow_faults_the_script_and_never_fabricates_a_result() {
+        // f: t0 = 1; t0 = Recurse(); return t0.
+        let body = |callee: u32| {
+            vec![
+                Instr::LoadInt {
+                    dst: tv(0),
+                    value: 1,
+                },
+                Instr::Call {
+                    function: callee,
+                    argc: 0,
+                    dst: Some(tv(0)),
+                },
+                Instr::SetResult { src: tv(0) },
+            ]
+        };
+        let level = class(
+            "StartUp",
+            0,
+            &[
+                ("CheckVictoryCondition", 0, true, 0, 1, body(1)),
+                ("Recurse", 0, true, 0, 1, body(1)),
+            ],
+        );
+        let mut w = mission_world(0, Some(program(vec![level], 0)));
+        assert!(!w.vm.as_ref().unwrap().faulted());
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert!(
+            !vm.mission_won && !vm.mission_lost,
+            "no fabricated 1 unwound"
+        );
+        assert_eq!(vm.fault, Some(Fault::CallStackOverflow));
+        assert!(vm.faulted());
+        assert!(
+            vm.frames.is_empty() && vm.param_stack.is_empty(),
+            "quiescent"
+        );
+        assert_eq!(vm.counters.faults, 1);
+        let obs = w.script_observation().unwrap();
+        assert!(obs.faulted && !obs.mission_won);
+        // Hashed (under `scripts`), sticky across ticks and a later trap, restored intact.
+        let mut v = w.clone();
+        v.vm.as_mut().unwrap().fault = None;
+        assert_ne!(v.hashes().get("scripts"), w.hashes().get("scripts"));
+        w.validate().unwrap();
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
+        assert!(json.contains(CALL_STACK_OVERFLOW_JSON), "{json}");
+        let snap: crate::world::Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = mission_world(0, None);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.hashes(), w.hashes());
+        for _ in 0..5 {
+            w.step(&[]);
+            w2.step(&[]);
+        }
+        assert_eq!(w.hashes(), w2.hashes());
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.fault, Some(Fault::CallStackOverflow));
+        assert!(!vm.mission_won && !w2.vm.as_ref().unwrap().mission_won);
+        w.native_call(999, &[]);
+        assert_eq!(
+            w.vm.as_ref().unwrap().fault,
+            Some(Fault::CallStackOverflow),
+            "the first fault is kept"
+        );
+        // The same recursion in a queued handler: cv0 = 1 is rolled back with the rest of
+        // the handler's effects, the change is consumed (it would fail the same way again).
+        let level = class("StartUp", 0, &[]);
+        let mut handler = vec![Instr::LoadInt {
+            dst: cv(0),
+            value: 1,
+        }];
+        handler.extend(body(1));
+        let mut guard = class(
+            "Guard",
+            1,
+            &[
+                ("ActionChange", 2, false, 0, 1, handler),
+                ("Recurse", 0, true, 0, 1, body(1)),
+            ],
+        );
+        guard.element = Some(1);
+        let mut w = mission_world(1, Some(program(vec![level, guard], 1)));
+        w.vm_queue_action_change(1, 0, 6);
+        w.vm_deliver_action_changes();
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.fault, Some(Fault::CallStackOverflow));
+        assert_eq!(vm.class_vars[1], vec![0], "rolled back");
+        assert!(
+            vm.pending_action_changes.is_empty(),
+            "consumed, not retried"
+        );
+        assert_eq!(vm.counters.transactions_rolled_back, 1);
+        assert!(vm.transaction.is_none());
+        w.validate().unwrap();
+    }
+
+    /// The JSON form of `Fault::CallStackOverflow` in a snapshot.
+    const CALL_STACK_OVERFLOW_JSON: &str = "\"fault\":\"call_stack_overflow\"";
 
     /// Finding 6 of Codex review 8: the native call and its result read are one instruction,
     /// so no jump can reach a result read without its call: a jump that lands after a fused

@@ -641,6 +641,33 @@ fn draw_number(fb: &mut Framebuffer, mut value: i32, x: i32, y: i32, c: Color) {
     }
 }
 
+/// The outline of the soldier a held left button locked a figure onto (yellow: the original
+/// outlines the nearest enemy while the button is down, `combat-measurements.md` 1.4).
+pub const FIGURE_TARGET_OUTLINE: Color = [255, 255, 0, 255];
+/// Pixels the figure-target outline stands off the entity's selection radius.
+pub const FIGURE_TARGET_OUTLINE_GAP: i32 = 5;
+
+/// Draw the outline of `World::figure_target` (Codex review 10, finding 8): a
+/// [`FIGURE_TARGET_OUTLINE`] ring around the locked soldier's feet, [`FIGURE_TARGET_OUTLINE_GAP`]
+/// pixels outside his selection radius, over the sprites; nothing while no left button is held
+/// or the locked soldier is gone.
+pub fn draw_figure_target_outline(fb: &mut Framebuffer, world: &World) {
+    let Some(target) = world.figure_target else {
+        return;
+    };
+    let Some(e) = world.entities.iter().find(|e| e.id == target && e.active) else {
+        return;
+    };
+    let (cx, cy) = world.camera;
+    let px = |f: Fixed, c: i32| to_i32(i64::from(f.round()) - i64::from(c));
+    fb.circle(
+        px(e.x, cx),
+        px(e.y, cy),
+        e.size.round().saturating_add(FIGURE_TARGET_OUTLINE_GAP),
+        FIGURE_TARGET_OUTLINE,
+    );
+}
+
 /// Render a world into a new framebuffer at its logical viewport size, with an optional background
 /// and sprites from `sprites` for entities that carry animation state.
 #[must_use]
@@ -838,6 +865,7 @@ pub fn render_with_items(
             });
         }
     }
+    draw_figure_target_outline(&mut fb, world);
     // The bars of every fighter and of the actor under the pointer, then the damage numbers
     // (`combat-measurements.md` 1.2), over the sprites.
     let hovered = world.actor_at_pointer();
@@ -1131,6 +1159,54 @@ mod tests {
         w.validate().unwrap();
         let fb = render(&w, None, &mut NoSprites);
         assert_eq!(px(&fb, 400, 120), palette::GUARD);
+    }
+
+    /// The soldier a held left button locked a figure onto is outlined in yellow (Codex review
+    /// 10, finding 8: `combat-measurements.md` 1.4, the nearest enemy outlined while the button
+    /// is down) 5 px outside his selection radius; nothing is drawn without a lock, and a lock
+    /// on an inactive soldier draws nothing.
+    #[test]
+    fn the_locked_figure_target_is_outlined_while_the_button_is_held() {
+        let mut w = World::new(Scenario::Synthetic("corridor".into()), 1).unwrap();
+        let gid = w.entities[1].id;
+        w.entities[1].patrol.clear();
+        w.entities[1].target = None;
+        w.entities[1].x = Fixed::from_int(400);
+        w.entities[1].y = Fixed::from_int(120);
+        let px = |fb: &Framebuffer, x: i32, y: i32| {
+            let i = ((y as u32 * fb.width + x as u32) * 4) as usize;
+            [fb.rgba[i], fb.rgba[i + 1], fb.rgba[i + 2], 255]
+        };
+        let plain = render(&w, None, &mut NoSprites);
+        // Radius 12 + 5: the ring passes (417, 120) and (400, 103).
+        assert_eq!(px(&plain, 417, 120), palette::GROUND);
+        assert_eq!(px(&plain, 400, 103), palette::GROUND);
+        w.press = Some((Fixed::from_int(80), Fixed::from_int(240)));
+        w.figure_target = Some(gid);
+        w.validate().unwrap();
+        let locked = render(&w, None, &mut NoSprites);
+        assert_eq!(px(&locked, 417, 120), FIGURE_TARGET_OUTLINE);
+        assert_eq!(px(&locked, 383, 120), FIGURE_TARGET_OUTLINE);
+        assert_eq!(px(&locked, 400, 103), FIGURE_TARGET_OUTLINE);
+        assert_eq!(px(&locked, 400, 137), FIGURE_TARGET_OUTLINE);
+        assert_eq!(px(&locked, 400, 120), palette::GUARD, "the disc itself");
+        assert_ne!(locked.hash(), plain.hash());
+        // The same ring through the separate function on an empty frame.
+        let mut fb = Framebuffer::new(640, 480);
+        fb.clear(palette::GROUND);
+        draw_figure_target_outline(&mut fb, &w);
+        assert_eq!(px(&fb, 417, 120), FIGURE_TARGET_OUTLINE);
+        assert_eq!(px(&fb, 416, 120), palette::GROUND);
+        // An inactive locked soldier draws nothing; a released button draws nothing.
+        w.entities[1].active = false;
+        let mut fb = Framebuffer::new(640, 480);
+        fb.clear(palette::GROUND);
+        draw_figure_target_outline(&mut fb, &w);
+        assert_eq!(px(&fb, 417, 120), palette::GROUND);
+        w.entities[1].active = true;
+        w.figure_target = None;
+        w.press = None;
+        assert_eq!(render(&w, None, &mut NoSprites).hash(), plain.hash());
     }
 
     #[test]

@@ -312,6 +312,67 @@ def test_running_near_a_soldier_alerts_him_at_once_from_afar(binary, game_dir):
         assert sc["tainted"], sc
         assert {"policy": 235} in sc["assumptions"] and "tick_rate" in sc["assumptions"]
         assert "noise_radius" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
+        # The charge itself records nothing; the five-second timeout and the return destination it
+        # stores are the hypothesis (`alert_timeout`, Codex review 10, finding 1).
+        assert "alert_timeout" in sc["assumptions"], sc["assumptions"]
+
+
+def test_a_heard_charge_records_the_alert_timeout_and_replays_to_the_same_set(binary, game_dir, tmp_path):
+    """The taint regression of Codex review 10 (finding 9) at the harness level: the run of
+    `test_running_near_a_soldier_alerts_him_at_once_from_afar` recorded as a `ReplayV1` from the
+    first briefing page (`replay.start`), played back (`replay.play`) with no divergence at any
+    checkpoint, ending with the same hashes and the same assumption set, which holds
+    `alert_timeout` (the charge's stored timeout) and no `noise_radius` (the archer heard the run
+    within the measured 330 px). While the left button is held on the ground the nearest soldier
+    is the locked figure target (`observe.figure_target`, finding 8), released as a click."""
+    import math
+
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
+        e.reset({"mission": "H01_Lin_VL"}, seed=0)
+        e.replay_start(checkpoint_every=10)
+        e.skip_briefing()
+        obs = e.observe()
+        robin_index = next(i for i, x in enumerate(obs["entities"]) if x["kind"] == "player")
+        rx, ry = _pos(obs["entities"][robin_index])
+        gi, guard = _nearest_soldier(e)
+        assert guard["ai_state"] == "patrol"
+        gx, gy = _pos(guard)
+        assert 250 < math.hypot(gx - rx, gy - ry) < 300
+        _click_map(e, rx, ry)
+        assert e.observe(entities=False)["selected"] is not None
+        # The held button locks the figure onto the nearest soldier; the release on the same
+        # spot is a click (no stroke), so nothing is struck.
+        cam = e.observe(entities=False)["camera"]
+        from opensherwood_harness import pointer_move
+
+        down = {"tick_offset": 0, "sequence": 1, "kind": "pointer_down", "button": "left"}
+        up = {"tick_offset": 0, "sequence": 0, "kind": "pointer_up", "button": "left"}
+        e.step(1, [pointer_move(rx - 150 - cam[0], ry - cam[1], 0, 0), down])
+        held = e.observe(entities=False)
+        assert held["figure_target"] == guard["id"], held["figure_target"]
+        e.step(1, [up])
+        assert e.observe(entities=False)["figure_target"] is None
+        assert _entity(e, robin_index)["attack_target"] is None
+        # The run: the click above ordered the walk west; the second click makes it a run.
+        tx, ty = rx - 150, ry
+        e.step(1, pointer_click(tx - cam[0], ty - cam[1], "left"))
+        assert _entity(e, robin_index)["gait"] == "run"
+        g = _entity(e, gi)
+        assert g["ai_state"] == "alerted" and g["heard"] is True, g
+        e.step(120)
+        rec = e.replay_stop(path="replays/h01_heard_charge.jsonl")
+        final = e.observe(entities=False)
+        sc = final["script"]
+        assert "alert_timeout" in sc["assumptions"], sc["assumptions"]
+        assert "noise_radius" not in sc["assumptions"]
+        played = e.replay_play(jsonl=rec["jsonl"])
+        assert played["first_divergence"] is None, played
+        assert played["checkpoints_ok"] == rec["checkpoints"]
+        assert played["hashes"] == final["hashes"]
+        after = e.observe(entities=False)
+        assert after["tick"] == final["tick"]
+        assert after["script"]["assumptions"] == sc["assumptions"]
+        assert after["script"]["tainted"] is True
 
 
 def _path_length(e, index, ticks, every=10):
@@ -810,7 +871,6 @@ H01_ITEMS = {
 # The level's `Initialize` deactivates these seven (the scripts hand them out later).
 H01_ITEMS_HIDDEN_AT_LOAD = {102, 104, 105, 106, 108, 109, 110}
 # Placeholder discs of the renderer (`opensherwood-render`, `palette::ITEM_*`).
-ITEM_ARROWS_RGB = (150, 110, 60)
 ITEM_PURSE_RGB = (240, 190, 40)
 
 
@@ -884,10 +944,13 @@ def test_clicking_an_arrow_pile_walks_robin_there_and_takes_it(binary, game_dir,
         cam = _scroll_to(e, x, y)
         e.capture("item_before.png")
         before = tmp_path / "item_before.png"
-        assert _pixel(before, x - cam[0], y - cam[1]) == ITEM_ARROWS_RGB, "the pile's disc"
-        # The counter under the bow icon reads 0 (`ui-flow.md` 9.3 element 4): remember its crop.
+        # The pile's picture (the `BONUS_Arrows` bank, block 190 + stack - 1) is drawn at the item:
+        # remembered as a crop, compared after the take.
         from PIL import Image
 
+        with Image.open(before) as im:
+            pile_before = im.convert("RGB").crop((x - cam[0] - 24, y - cam[1] - 40, x - cam[0] + 24, y - cam[1] + 8)).tobytes()
+        # The counter under the bow icon reads 0 (`ui-flow.md` 9.3 element 4): remember its crop.
         with Image.open(before) as im:
             counter_before = im.convert("RGB").crop((90, 724, 130, 748)).tobytes()
         e.step(1, pointer_click(x - cam[0] + 3, y - cam[1] - 2, "left"))
@@ -909,7 +972,9 @@ def test_clicking_an_arrow_pile_walks_robin_there_and_takes_it(binary, game_dir,
         cam = e.observe(entities=False)["camera"]
         e.capture("item_after.png")
         after = tmp_path / "item_after.png"
-        assert _pixel(after, x - cam[0], y - cam[1]) != ITEM_ARROWS_RGB, "the disc is gone"
+        with Image.open(after) as im:
+            pile_after = im.convert("RGB").crop((x - cam[0] - 24, y - cam[1] - 40, x - cam[0] + 24, y - cam[1] + 8)).tobytes()
+        assert pile_after != pile_before, "the pile's picture is gone"
         with Image.open(after) as im:
             counter_after = im.convert("RGB").crop((90, 724, 130, 748)).tobytes()
         assert counter_after != counter_before, "the arrow counter changed"

@@ -64,7 +64,13 @@ settled before any interpreter is written: a VM living above core cannot be snap
   cursors for the movement, the animation advance and the action-change scan, the obstacle index);
   ruleset 15, snapshot schema 18 and hash schema 17 (2026-09-05, pick-up items: `Element::Item` for the
   `ZORG` records, `VmState::taken_items` read by native 235 (a policy row now), `Entity::arrows` / `purses`
-  / `pickup`, the pickup order and its resolution, the assumption source `ItemPickup`).
+  / `pickup`, the pickup order and its resolution, the assumption source `ItemPickup`);
+  ruleset 16, snapshot schema 19 and hash schema 18 (2026-09-05, Codex review 10, findings 1 / 3 / 4 /
+  5 / 6 / 7 / 8: the alert timeout and the return as their own source `AlertTimeout` (the measured
+  charge on a heard run records nothing of its own), `AttackPolicy(MultiParty)`, the
+  `CallStackOverflow` fault, `AiState::ReturnPending`, the movement quota of 2^21 above every atomic
+  movement query (entity sizes, obstacle half extents and the index's cell occupancy bounded and
+  validated), the world's `figure_target`).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
 - **What is authoritative and what is not.** `VmState::counters` (instructions, callbacks, budget aborts,
   faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
@@ -94,7 +100,7 @@ settled before any interpreter is written: a VM living above core cannot be snap
   finding 4; `world::SimBudget`): a pre-index pass charged one unit per entity (at most `MAX_ENTITIES`),
   then perception (`SIM_QUOTA_PERCEPTION`, the remainder: about 2^22 + 2^21), the state transitions, the
   attack orders and the waypoint programs (2^21 each), the movement against the obstacle index and the
-  walkable geometry (2^20: one unit per mover, per index cell looked at, per obstacle candidate tested and
+  walkable geometry (2^21: one unit per mover, per index cell looked at, per obstacle candidate tested and
   per polygon edge tested), the animation advance and the action-change scan (2^20 each, above
   `MAX_ENTITIES`, so they always complete). A phase is granted its quota plus what the phases before it
   left unused, never more than the budget has left, so no phase can starve another whatever the
@@ -111,13 +117,24 @@ settled before any interpreter is written: a VM living above core cannot be snap
   approach, a program's walk) are capped per search at `world::SIM_SEARCH_WORK` (2^20, below every
   search-issuing quota): a search that fails with the full cap is unreachable under this budget (a
   definite answer: the order is dropped, the instruction skipped, the soldier patrols where he stands),
-  one that fails with less is retried first next tick. Only the player's own click orders keep a
+  one that fails with less is retried first next tick. A transition and the path it plans are one step
+  (Codex review 10, finding 4): a search the grant cannot pay changes nothing (the charge, the alarm's
+  end, the timed return keep the state they had, the walk the soldier had included), the phase's
+  cursor stays on him and the next tick retries it with the full cap; a fight that ends on an unpaid
+  return leaves the soldier `AiState::ReturnPending`, searched again next tick, never a patrol where
+  he stands. Only the player's own click orders keep a
   per-order budget of `ORDER_SEARCH_WORK`, one per click. The obstacle entities are queried through a
   spatial index (`world::ObstacleIndex`: grid buckets of `OBSTACLE_CELL` = 64 px keyed by cell, a CSR
   layout, positions outside the map folded into the edge cells), derived from the entities, never
   serialised, rebuilt by the tick whose pre-index finds the obstacle boxes changed; its size is bounded
   by `MAX_OBSTACLE_INDEX_ENTRIES` (2^22), which `validate` enforces so the rebuild stays a bounded,
-  uncharged refresh like the navigation grid's. Navigation has no fail-open entry point:
+  uncharged refresh like the navigation grid's. One atomic movement query costs strictly less than
+  the movement quota (Codex review 10, finding 5: `world::MAX_MOVEMENT_QUERY_WORK`, a compile-time
+  bound): `validate` bounds an entity's `size` to `MAX_ENTITY_SIZE` (256 px: at most 81 cells per
+  query), an obstacle's half extents to `0..=MAX_OBSTACLE_HALF_EXTENT` (normalised at construction; a
+  negative extent indexed by magnitude and failed open, finding 6) and the index's cell occupancy to
+  `MAX_OBSTACLE_CELL_OCCUPANCY` (2048), so with the geometry's 2^20 edges a mover always finishes
+  his query on his turn instead of restarting it from zero forever. Navigation has no fail-open entry point:
   `World::try_ensure_nav` is the only way to rebuild a missing grid and every caller handles its error.
 - **Trust boundary.** `Program::validate` in core is self-sufficient (functions in table order from address 0
   with their prologue, jumps inside their function, parameter reads and call arities against the table,
@@ -141,7 +158,8 @@ settled before any interpreter is written: a VM living above core cannot be snap
   (`counters.arity_mismatches`), so a required argument never defaults to 0. `World::validate` also requires
   the gameplay and `script` RNG streams to derive from the world seed with their assigned ids (1 and 2), and
   the stealth layer's invariants (`Dead` and `alive` agree, timed states carry their timer, attack orders go
-  from a player character to an enemy soldier, alert states belong to enemy soldiers).
+  from a player character to an enemy soldier, alert states belong to enemy soldiers, two living fighters
+  name each other, a held figure target names an enemy soldier while the left button is down).
 - **Hypotheses and taint.** The retail scripts run over recorded stubs and over engine hypotheses; the
   movement speeds, the animation clock and the noise channel (a running character heard from 330 px and
   more, the soldiers charging at once) are measured (`docs/original/stealth-and-combat.md` 8) and record
@@ -169,15 +187,20 @@ settled before any interpreter is written: a VM living above core cannot be snap
   sighting and a soldier's state changed on it (he noticed, or his alert was refreshed), `NoiseRadius`
   when a run was heard from beyond the measured 330 px bound (`ai::NOISE_MEASURED_RADIUS`) and within the
   engine's 350 px (`RUN_NOISE_RADIUS`: an engine choice above the bound; a run heard within the bound is
-  measured and records nothing), `AlertPolicy` when the noticed -> alarm -> search sequence, the alert
-  timeout, the re-plan while searching or the return to the post (after an alert or a knock-out) mutated
-  a soldier's state, `AttackPolicy(rule)` for the attack policy: `Reach` when an attack order resolved
+  measured and records nothing), `AlertPolicy` when the noticed -> alarm -> search sequence a sighting starts or the
+  re-plan while searching mutated a soldier's state, `AlertTimeout` when the alert timeout or the return to
+  the post (after an alert or a knock-out) did (Codex review 10, finding 1: the immediate charge on a heard
+  run is measured and records nothing of its own, the five-second timeout and the return destination it
+  stores are not, recorded before the charge mutates the state, so no charge wins untainted),
+  `AttackPolicy(rule)` for the attack policy: `Reach` when an attack order resolved
   with the victim's back to the attacker (the reach bands and the arc deciding the knock-out blow or the
   fight; the frontal fight at the measured distance records nothing), `Block` when a player character's
   automatic strike started or resolved against a soldier (it never lands: inferred from one fighter
   pair), `HitChance` when a soldier's swing was timed with the engine's jitter or a blow was resolved by
   a roll (the soldier's two in three, the powerful blow's one in three from 2 of 6 strokes), `PostBound`
-  when a soldier's foe left him alive and he stood his ground (measured for the halberdier only);
+  when a soldier's foe left him alive and he stood his ground (measured for the halberdier only),
+  `MultiParty` when a player character in reach waited because his victim was engaged with another (a
+  soldier fights one at a time; the measurements were one-on-one: Codex review 10, finding 7);
   `KnockOut` when the blow's effect (the fall, the timer and its scaling, the immunity threshold)
   changed the victim's state, and when native 90 reported a knock-out, 128 refused one or a knock-out
   action id was delivered to `ActionChange`; `ProfileStats` when a blow consulted the knock-out
@@ -201,8 +224,8 @@ settled before any interpreter is written: a VM living above core cannot be snap
   proves consistency with the hypotheses, not the original's behaviour, until the oracle captures of
   `stealth-and-combat.md` section 7 settle them; an outcome with an empty set took no hypothesis the
   engine knows of (`a_charge_from_the_unmeasured_noise_band_taints_a_win_read_from_native_97`: the
-  same charge from 320 px wins untainted, from 340 px tainted by `NoiseRadius` alone, through a JSON
-  snapshot and checkpoints every 50 ticks). Strict mode keeps trapping unknown ids; the taint is what
+  same charge from 320 px wins tainted by `AlertTimeout` alone, from 340 px by `NoiseRadius` and
+  `AlertTimeout`, through a JSON snapshot and checkpoints every 50 ticks). Strict mode keeps trapping unknown ids; the taint is what
   strict mode says about the known ones. Under this model the retail missions are tainted from their load-time callbacks on (the
   first mission's `Initialize` locks doors and hides actors through effect stubs and sets action
   availability and AI locks through policy natives), which is the honest reading until those rows are
@@ -220,8 +243,12 @@ settled before any interpreter is written: a VM living above core cannot be snap
   the start of the next tick, after the messages and before `Hourglass`, running whole from the state it
   saw the first time. A capture that does not fit the budget waits like an exhausted handler. A full
   queue is a deterministic fault (`VmState::fault = ActionQueueOverflow`, sticky, hashed; `faulted` is
-  now derived from `fault`, which also names an unknown native or an arity mismatch), never a silent
-  drop.
+  now derived from `fault`, which also names an unknown native, an arity mismatch or the frame-limit
+  overflow `CallStackOverflow` of Codex review 10, finding 3: a script call that would exceed
+  `vm::MAX_FRAMES` aborts the callback at the call with its destination untouched and rolls its
+  transaction back, so a recursive `CheckVictoryCondition` cannot win through a slot it wrote before
+  the call; a queued handler that fails deterministically, by a trap or a fault, is rolled back and
+  consumed rather than retried), never a silent drop.
 - **Campaign money.** `MissionSpec::starting_money` (100 by default) is applied to `VmState::money` before
   `Initialize` runs, so a script that sets it (H10's native 237) wins and nothing overwrites it afterwards;
   the app seeds it from the player's profile at load, never at install.

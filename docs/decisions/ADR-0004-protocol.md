@@ -5,7 +5,18 @@ Date: 2026-09-02. Status: accepted.
 Versions in force (2026-09-05, Codex review 7): protocol 6 (`reset.starting_money` and `ReplayHeader.starting_money`: the mission's starting money is a canonical input recorded in the header, playback resets with it; `UiItem.selected`; `observe.persistence_error`; replay time is the session tick: header `time:
 "session"`, checkpoints carry `world_tick`, a `session` digest and the `frame` hash, the tick-0 and terminal
 checkpoints are required and compared; `ui` observation,
-`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 15
+`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 16
+(2026-09-05, Codex review 10: the alert timeout and the return to the post are their own source
+`alert_timeout`, recorded before a heard charge stores them (the hearing within 330 px and the charge itself
+record nothing, so no charge wins untainted); a soldier fights one player character at a time and a second
+attacker waits at reach (`{attack_policy: multi_party}`), two living fighters always name each other; a script
+call beyond the 64-frame limit is the sticky `call_stack_overflow` fault that aborts the callback at the call
+and rolls its transaction back; a transition whose path search the budget cannot pay changes nothing and is
+retried first next tick, a fight ending on an unpaid return leaves the soldier `return_pending`; the movement
+quota is 2^21 and every atomic movement query is bounded below it (entity sizes to 256 px, obstacle half
+extents to `0..=32768` and normalised, at most 2048 obstacles per index cell, all validated); the held left
+button locks the figure onto `figure_target` (in `observe`, snapshotted and hashed, outlined by `capture`) and
+the release strikes that soldier; snapshot schema 19, hash schema 18), ruleset 15
 (2026-09-05, pick-up items: the `ZORG` records are `item` elements with a kind and a stack, a left click on an
 active item orders the selected player character onto it and he takes it within the scroll radius (arrows,
 purses with a policy amount of money, unknown kinds), native 235 reads the taken flag, `Entity::arrows` /
