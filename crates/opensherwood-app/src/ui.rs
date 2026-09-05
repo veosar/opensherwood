@@ -195,6 +195,7 @@ impl MenuItem {
             label: self.label.clone(),
             rect: [self.rect.0, self.rect.1, self.rect.2, self.rect.3],
             enabled: self.enabled,
+            selected: false,
         }
     }
 }
@@ -292,8 +293,8 @@ pub struct ProfileSummary {
     pub name: String,
     /// Difficulty: 0 easy, 1 medium, 2 hard.
     pub difficulty: u8,
-    /// Money.
-    pub money: u32,
+    /// Money (signed: the scripts' money is an `i32`).
+    pub money: i32,
     /// Score.
     pub score: u32,
     /// Spared lives percentage.
@@ -769,7 +770,9 @@ pub struct ProfileEditor {
     pub difficulty: u8,
 }
 
-const PROFILE_ROWS: usize = 10;
+pub const PROFILE_ROWS: usize = 10;
+/// Longest profile name (the editor's limit).
+pub const PROFILE_NAME_MAX: usize = 16;
 const PROFILE_ROW_Y0: i32 = 225;
 const PROFILE_ROW_PITCH: i32 = 41;
 const PROFILE_ROW_H: i32 = 23;
@@ -841,13 +844,30 @@ impl SelectPlayerScreen {
             } => {
                 ed.name.pop();
             }
-            // Escape and Enter only end the edit through the seals, as observed (`ui-flow.md` 2.2).
+            // An inline rename (the row turned into an edit field, `ui-flow.md` 5) ends with
+            // Enter (commit) or Escape (cancel); which key the original commits with is not
+            // captured, so Enter is the engine's choice. The New player parchment ends only through
+            // its seals, as observed (`ui-flow.md` 2.2).
+            InputEvent::KeyDown { key: Key::Enter } if ed.rename_of.is_some() => {
+                let ed = self.editor.take()?;
+                let name: String = ed.name.trim().chars().take(PROFILE_NAME_MAX).collect();
+                if name.is_empty() {
+                    return None;
+                }
+                if let Some(p) = ed.rename_of.and_then(|i| self.profiles.get_mut(i)) {
+                    p.name = name;
+                }
+                return Some(SelectOutcome::Changed);
+            }
+            InputEvent::KeyDown { key: Key::Escape } if ed.rename_of.is_some() => {
+                self.editor = None;
+            }
             InputEvent::PointerMove { x256, y256 } => {
                 self.pointer = (Fixed::from_raw(x256).round(), Fixed::from_raw(y256).round());
             }
             InputEvent::PointerDown {
                 button: Button::Left,
-            } => {
+            } if ed.rename_of.is_none() => {
                 let (px, py) = self.pointer;
                 if hit(SEAL_EASY, px, py) {
                     ed.difficulty = 0;
@@ -955,16 +975,22 @@ impl SelectPlayerScreen {
     #[must_use]
     pub fn state(&self) -> MenuState {
         let mut items = items_to_protocol(&self.column.items);
+        let renaming = self.editor.as_ref().and_then(|e| e.rename_of);
         for (i, p) in self.profiles.iter().take(PROFILE_ROWS).enumerate() {
             let r = Self::row_rect(i);
+            // Rows are identified by index (names are not unique); every row reacts to a click.
             items.push(UiItem {
-                action: format!("row:{}", p.name),
-                label: p.name.clone(),
+                action: format!("row:{i}"),
+                label: match &self.editor {
+                    Some(ed) if renaming == Some(i) => ed.name.clone(),
+                    _ => p.name.clone(),
+                },
                 rect: [r.0, r.1, r.2, r.3],
-                enabled: self.selected == Some(i),
+                enabled: true,
+                selected: self.selected == Some(i),
             });
         }
-        if let Some(ed) = &self.editor {
+        if let Some(ed) = self.editor.as_ref().filter(|e| e.rename_of.is_none()) {
             for (name, r) in [
                 ("easy", SEAL_EASY),
                 ("medium", SEAL_MEDIUM),
@@ -977,14 +1003,15 @@ impl SelectPlayerScreen {
                     label: ed.name.clone(),
                     rect: [r.0, r.1, r.2, r.3],
                     enabled: true,
+                    selected: false,
                 });
             }
         }
         MenuState {
-            screen: if self.editor.is_some() {
-                "new_player".into()
-            } else {
-                "select_player".into()
+            screen: match &self.editor {
+                Some(ed) if ed.rename_of.is_some() => "rename_player".into(),
+                Some(_) => "new_player".into(),
+                None => "select_player".into(),
             },
             items,
             hovered: self.selected,
@@ -997,11 +1024,13 @@ impl SelectPlayerScreen {
     pub fn render(&self, assets: Option<&UiAssets>) -> Framebuffer {
         let mut fb = Framebuffer::new(MENU_FRAME.0, MENU_FRAME.1);
         fb.clear([0, 0, 0, 255]);
-        if let Some(bg) = assets.and_then(|a| a.menu_background.as_ref()) {
+        // The forest background (`PIC` 186) as observed for Select player (`ui-flow.md` 1).
+        if let Some(bg) = assets.and_then(|a| a.forest_background.as_ref()) {
             fb.blit_rgba(0, BG_Y, bg.width, bg.height, &bg.rgba);
         }
         let font = assets.and_then(|a| a.font_text.as_ref());
         let s = &self.strings;
+        let renaming = self.editor.as_ref().and_then(|e| e.rename_of);
         for (i, p) in self.profiles.iter().take(PROFILE_ROWS).enumerate() {
             let (x, y, w, h) = Self::row_rect(i);
             let colour = if self.selected == Some(i) {
@@ -1011,7 +1040,12 @@ impl SelectPlayerScreen {
             };
             fb.fill_rect(x, y, x + w, y + h, colour);
             if let Some(f) = font {
-                f.draw(&mut fb, &p.name, 236, y + 4);
+                // The row being renamed is an edit field with a caret.
+                let shown = match &self.editor {
+                    Some(ed) if renaming == Some(i) => format!("{}_", ed.name),
+                    _ => p.name.clone(),
+                };
+                f.draw(&mut fb, &shown, 236, y + 4);
                 let d = usize::from(p.difficulty.min(2));
                 let right = format!(
                     "{} / {} %",
@@ -1023,7 +1057,10 @@ impl SelectPlayerScreen {
             }
         }
         self.column.draw(&mut fb, assets);
-        if let (Some(ed), Some(a)) = (&self.editor, assets) {
+        if let (Some(ed), Some(a)) = (
+            self.editor.as_ref().filter(|e| e.rename_of.is_none()),
+            assets,
+        ) {
             if let Some(p) = &a.parchment {
                 fb.blit_rgba(264, 148, p.width, p.height, &p.rgba);
             }
@@ -1086,6 +1123,9 @@ impl SelectPlayerScreen {
 /// them in the profile and `Configuration/`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct Settings {
+    /// Document format of `settings.json` (1).
+    #[serde(default = "settings_format")]
+    pub format: u32,
     /// Aspect ratio choice: 0 = 4:3, 1 = 16:9, 2 = 16:10 (the patched build's graphics options).
     pub aspect: u8,
     /// The four effect toggles (alpha view cones, transparent shadows, effect animations,
@@ -1101,9 +1141,54 @@ pub struct Settings {
     pub shortcut_set: u8,
 }
 
+fn settings_format() -> u32 {
+    1
+}
+
+impl Settings {
+    /// Every field within its documented range (a read document is clamped, never trusted).
+    #[must_use]
+    pub fn sanitized(mut self) -> Self {
+        self.format = 1;
+        self.aspect = self.aspect.min(2);
+        self.sound_mode = self.sound_mode.min(1);
+        self.sound_quality = self.sound_quality.min(1);
+        for v in &mut self.volumes {
+            *v = (*v).min(10);
+        }
+        self.comment_frequency = self.comment_frequency.min(10);
+        self.shortcut_set = self.shortcut_set.min(2);
+        self
+    }
+}
+
+impl ProfileSummary {
+    /// A read profile within the documented ranges, or `None` when its name is unusable.
+    #[must_use]
+    pub fn sanitized(mut self) -> Option<Self> {
+        let name: String = self
+            .name
+            .trim()
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(PROFILE_NAME_MAX)
+            .collect();
+        if name.is_empty() {
+            return None;
+        }
+        self.name = name;
+        self.difficulty = self.difficulty.min(2);
+        self.spared_lives = self.spared_lives.min(100);
+        self.progress = self.progress.min(100);
+        self.game_length = self.game_length.chars().take(32).collect();
+        Some(self)
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            format: 1,
             aspect: 0,
             effects: [true; 4],
             sound_mode: 0,
@@ -1308,10 +1393,17 @@ impl OptionsScreen {
                     return None;
                 }
                 for (i, (y, _, _)) in self.sliders().iter().enumerate() {
-                    for cell in 0..10 {
-                        let r = (SLIDER_X + SLIDER_PITCH * cell, *y, SLIDER_CELL_W, SLIDER_H);
+                    // Cells 1..=10; the empty position left of the first cell is 0 (mute). Where
+                    // the original puts its zero is not captured yet.
+                    for cell in 0..=10 {
+                        let r = (
+                            SLIDER_X + SLIDER_PITCH * (cell - 1),
+                            *y,
+                            SLIDER_CELL_W,
+                            SLIDER_H,
+                        );
                         if hit(r, px, py) {
-                            self.click_slider(i, cell as u8 + 1);
+                            self.click_slider(i, cell as u8);
                             return None;
                         }
                     }
@@ -1351,6 +1443,7 @@ impl OptionsScreen {
                 label: text(&self.strings, *label, "option").to_string(),
                 rect: [r.0, r.1, r.2, r.3],
                 enabled: *on,
+                selected: false,
             });
         }
         for (i, (y, label, value)) in self.sliders().iter().enumerate() {
@@ -1359,6 +1452,7 @@ impl OptionsScreen {
                 label: format!("{} {value}", text(&self.strings, *label, "volume")),
                 rect: [SLIDER_X, *y, SLIDER_PITCH * 10, SLIDER_H],
                 enabled: true,
+                selected: false,
             });
         }
         MenuState {
@@ -1664,6 +1758,7 @@ impl SaveScreen {
                     SAVE_ROW_H,
                 ],
                 enabled: true,
+                selected: false,
             });
         }
         MenuState {

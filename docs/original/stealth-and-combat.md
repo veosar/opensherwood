@@ -349,11 +349,12 @@ advances with ticks 0 0 0 1 1 1. Two readings of the moving frames:
   2.3); the PC records end in two words 100 / 80 (Robin), 100 / 100, 50 / 100 (the friar, the lady),
   200 / 200 (the red-clad swordsman) that could be percentages of a base speed (`unknown`).
 
-Reading A is the working hypothesis (the earlier "distance-timed" note in sprite-animations.md is B);
-section 7 item 1 measures it. **Measured 2026-09-05 (section 8): the advance is pixels per displayed frame, a walking
+Reading A was the working hypothesis (the earlier "distance-timed" note in sprite-animations.md is B);
+section 7 item 1 measured it. **Measured 2026-09-05 (section 8): the advance is pixels per displayed frame, a walking
 frame lasts 46.9 ms (hero walk 85.3 px/s), the crouched cycle runs slower than one frame per walking tick
-(17.8 px/s).** Either way the *ratios* are data: hero : soldier walk = 2 : 1, run
-= 5 : 3, alert walk : patrol walk = 3 : 2.
+(17.8 px/s): the frame clock of sprite-animations.md "Reading rules" (a frame lasts its tick half plus one
+table ticks of 3 clocks at 64 Hz) gives every measured value.** Either way the *ratios* are data: hero :
+soldier walk = 2 : 1, run = 5 : 3, alert walk : patrol walk = 3 : 2.
 
 ### 4.3 Orders (manual p. 15-16, 26; ui-flow.md 9.4)
 
@@ -405,14 +406,72 @@ Sprite reactions: 169 (goes and picks up the purse), 165 (drinks), 166 (eats), t
    with table A rows as the ten attacks; parry 68 / 103; the bow 85 / 87 / 88 / 89 / 93 / 86 with the
    click-when-green aim; hit points (`pre[0]`: 80 for a blue halberdier or swordsman, 30 for a blue
    archer, 45 for a blue lancer) and Robin's PC values (profile.md).
-5. Speeds from section 4.2 under reading A until the oracle says otherwise.
+5. Speeds from section 4.2 on the measured animation clock (section 8.4, sprite-animations.md "Reading
+   rules").
 
-## Engine (implemented 2026-09-03; `crates/opensherwood-core/src/ai.rs`, ruleset 9)
+## Engine (implemented 2026-09-03; `crates/opensherwood-core/src/ai.rs`, ruleset 9; measured values of section 8 applied 2026-09-05, ruleset 11)
 
 What of section 6 exists, with the constants chosen and their status. Everything is fixed point, part of
 every entity (`team`, `ai_state`, `state_ticks`, `last_seen`, `alert_origin`, `attack_target`, `action`,
-`hit_points`, `knockout_resistance`, `npc_gait`, `fell_backward`), snapshotted, validated and hashed; the
+`hit_points`, `knockout_resistance`, `npc_gait`, `fell_backward`, `heard`), snapshotted, validated and hashed; the
 harness reads it through `observe` (`docs/harness.md`, "Stealth layer").
+
+**Measured versus assumed** (after section 8): the movement speeds (walk / run / sneak of the hero;
+the soldiers' walk, run, alert walk and alert run derived from the same clock), the animation clock
+(a table tick = 3 clocks of 1/64 s, a frame lasts its tick half plus one such ticks), the noise
+channel (a running character is heard from at least 330 px by soldiers not facing him, and they
+charge at once) and the silence of a walk at 290 px are **measured**; the view cone (angle, range,
+the crouch divisor), the noticed -> alarm sequence a sighting starts, the alert timeout, the return,
+the knock-out timer, the punch's arc and the profile stats stay **hypotheses**. The script VM
+records `Assumption::Perception` only for the hypothesised part (an alert an actor reached by sight),
+never for a run heard (ADR-0008, "Hypotheses and taint").
+
+- **Speeds** (item 5). Every moving entity covers per world tick the speed of the cycle it plays
+  (`Entity::effective_speed`, `AnimSet::cycle_speed`): the cycle's summed `advance` over its duration
+  on the animation clock (`crates/opensherwood-core/src/anim.rs`), i.e. `advance per frame x 64 / 3`
+  px/s for the one-tick frames of the walk / run cycles: hero walk 85.3 px/s (1.42 px per tick,
+  measured 85.3), run 106.7 (measured 101 +- 10; the double click plays action 7, `inferred`), sneak
+  18.0 (27 px per 32 table ticks; measured 17.8); soldier walk 42.7, run 64, alert walk 64, alert run
+  85.3 (derived). The entity moves at the constant cycle average, not in per-frame steps (`observed`
+  residual 2.5 px rms in 8.1 fits both). An entity whose profile has no forward-moving cycle for its
+  state (synthetic units, profiles without a table) walks at `Entity::speed` (364 / 256 px per tick
+  for a synthetic player, 182 / 256 for a synthetic guard: the hero's and the soldier's measured
+  values) times the hero table's ratios `FALLBACK_RUN_SPEED_RATIO` = 5 / 4 and
+  `FALLBACK_SNEAK_SPEED_RATIO` = 27 / 128. Pinned by `cycle_speeds_match_the_measured_hero_values`
+  (core) and `test_walk_run_and_sneak_speeds_match_the_measurements` (H01, within 5 % over 120 ticks).
+- **Perception** (item 2). Every enemy soldier (`BORG` actor) that is alive, active, not AI-locked (natives
+  134 / 135: a locked AI perceives nothing, section 2.5) and on his feet tests every player character each
+  tick, in entity order from a round-robin cursor (`World::ai_cursor`, snapshotted) and within the layer's
+  per-tick work budget (`AI_WORK_PER_TICK` = 2^24, shared with the path searches the alert states issue: one
+  unit per entity pre-indexed, one per entity inspected, one per soldier / player character pair tested; a
+  scan the budget cuts short resumes next tick where it stopped): a **view cone** of half angle
+  `VIEW_CONE_HALF_ANGLE_256` = 32 (45 degrees) and range `VIEW_RANGE` = 250 map px, the range over
+  `CROUCH_VIEW_DIVISOR` = 2 for a crouched character; and a **noise radius** `RUN_NOISE_RADIUS` = 350 px
+  around the soldier within which a running character is heard whatever he faces. Occluders and walls do not
+  block sight; walking and sneaking make no noise; civilians perceive nothing. The noise radius is
+  `measured` as a lower bound (8.6: heard at >= 330 px; 350 is the engine's choice above it), the
+  silence of a walk at 290 px is `observed`; the cone's angle, its range (below 290 px for a soldier not
+  facing the character, 8.6; 250 keeps it beyond the rails' check-for radii) and the crouch divisor are
+  `hypothesis` (item 7.2 measures them); the geometry (a sector test on a 4096-scaled sine table,
+  `ai::in_view_cone`) is pinned by `view_cone_geometry`.
+- **Alert states** (item 1 / 3). Two entries. **Heard** (`measured`, 8.6): a soldier who hears a running
+  character charges at once, `patrol` -> `alerted` on the same tick with the alert run 151 to the position
+  of the noise, no reaction animation (the entity's `heard` flag marks the alert as the measured channel;
+  whether the whole courtyard joined because each soldier heard the run or because the alarm propagates
+  is not separated by the measurement: the engine has no propagation, every soldier within the radius
+  hears for himself). **Seen** (`hypothesis`, the cone is not measured): `patrol` (the rail program, actions
+  0 / 6 / 7) -> `noticed` (141, plays for the animation's length: 11 table ticks = 31 world ticks on the
+  soldier profiles; the soldier stops and remembers where he perceived the character and where he stood)
+  -> `alarm` (142, 19 table ticks = 54 world ticks) -> `alerted`. Both then: `alerted` runs to the last
+  seen position with 151, stands with 140, walks with 143; every new sighting or noise refreshes the
+  position and the `ALERT_TIMEOUT_TICKS` = 300 timer (a hypothesis) -> `returning` (walks back to the
+  origin with 143) -> `patrol` (the program continues where it stood). The animation ids come from the
+  soldier / knight profiles (section 2.4); profiles without them fall back to idle / walk / run
+  (`anim::AnimSet`). Every change of an actor's action id reaches its script class as
+  `ActionChange(previous, new)` (the parameter order is a hypothesis: the H01 archer classes compare the
+  second parameter with 141; pinned by `action_changes_reach_the_actors_class`); a run near the
+  archery-training archers no longer ends the training through 141 (they charge instead), which is what
+  8.6 shows for the courtyard (`test_running_near_a_soldier_alerts_him_at_once_from_afar`).
 
 - **Perception** (item 2). Every enemy soldier (`BORG` actor) that is alive, active, not AI-locked (natives
   134 / 135: a locked AI perceives nothing, section 2.5) and on his feet tests every player character each
@@ -462,15 +521,20 @@ harness reads it through `observe` (`docs/harness.md`, "Stealth layer").
   (getting up counts as back in action: hypothesis), 128 = alive, active and on his feet, 240 = active;
   88 / 89 stay stubs returning 0 (no tied / netted state exists); 140 (actor, 0 / 1 / 2) sets the gait of the
   actor's program walks (0 walk, else run; section 2.5, `hypothesis`); `FilterAIEvent` is never called.
-- **Timing**: every timed state lasts one loop of its animation as the profile's tick halves give it (one
-  world tick per tick of the timing word, as the animation player already assumes: the engine runs 60 ticks
-  per second, so the spec's 25 Hz reading makes these 2.4 times too fast until the oracle settles item 7.1);
-  without the block (or a catalog) the spec's counts apply (`NOTICED_TICKS` 6, `ALARM_TICKS` 11,
-  `KNOCKED_DOWN_TICKS` 13, `GET_UP_TICKS` 16, `PUNCH_TICKS` 12).
+- **Timing**: every timed state lasts one loop of its animation on the measured animation clock
+  (`anim::world_ticks`: a frame lasts its tick half plus one table ticks of 3 clocks at 64 Hz, 2.8125
+  world ticks per table tick at 60 Hz; the animation player accumulates the clock in
+  `AnimState::elapsed`, 16 units per world tick against 45 per table tick, so the frame rate is exact in
+  the long run and a state ends on the tick its loop completes); without the block (or a catalog) the
+  soldier profiles' counts apply (`NOTICED_TICKS` 31 world ticks from 11 table ticks, `ALARM_TICKS` 54
+  from 19, `KNOCKED_DOWN_TICKS` 60 from 21, `GET_UP_TICKS` 68 from 24, `PUNCH_TICKS` 54 from the hero's
+  19). The `+ 1` rule is `inferred` from the sneak cycle alone (8.4 note); no reaction animation was
+  timed.
 
-- **Taint** (ADR-0008, "Hypotheses and taint"): since every constant above is a hypothesis, the VM records
-  an assumption whenever the layer changes script-visible state: `perception` when an alert action id reaches
-  an `ActionChange` handler, `knock_out` when native 90 reports a knocked-out actor, 128 refuses one or a
+- **Taint** (ADR-0008, "Hypotheses and taint"): the VM records an assumption whenever a *hypothesised*
+  part of the layer changes script-visible state: `perception` when an alert action id of an actor alerted
+  by sight reaches an `ActionChange` handler (an actor alerted by a run heard, `heard`, records nothing:
+  that channel is measured), `knock_out` when native 90 reports a knocked-out actor, 128 refuses one or a
   knock-out action id reaches a handler, `profile_stats` when a blow consults `p4`; `observe.script.tainted`
   then marks the mission's outcome as not authoritative until the oracle captures of section 7 settle the
   values.
@@ -591,7 +655,21 @@ frame), not the walking one.
 
 Note on the idle: the spec's "6 frames ping-pong" for action 0 would give 10 changes per cycle, the
 lancers show 16 per 1.5 s; either these guards play a different standing action (rail wait state) or
-the table reading is off. Open.
+the table reading is off. Open. Checked against the tables by the implementer (2026-09-05): the idle
+block 0 lists its six frames *with* the ping-pong (frame indices 0 1 2 3 2 1), so one loop is 6
+changes of uneven length (tick halves 6 3 3 15 4 4 on `Soldier A00`, 6 2 2 15 4 4 on the hero and
+on the alert idle 140), 35 table ticks = 1.64 s on the walking clock or 41 = 1.92 s with the
+`+ 1` rule below; no static block of `Guard A00` (127 blocks) or of the other soldier profiles has
+16 uniform changes per 1.5 s under either reading (the nearest, the crossbowman's bow set 87, is 16
+uneven frames of 34 ticks). Neither reading reproduces the observation; the courtyard lancers'
+standing action is not identified (the console's `AI` display, item 7.7, would name it). What
+*is* settled by the sneak measurement: the crouched cycle's 14 frames carry tick halves summing
+to 18 and last 1.50 s together, which is `18 + 14 = 32` table ticks of 46.875 ms exactly, so a
+frame lasts its **tick half plus one** table ticks (the walking frames' 0 = one tick, as
+already read); the plain "tick half, at least 1" reading would give 0.84 s and 32 px/s for the
+sneak, refuted by 8.2. The engine uses the `+ 1` rule for every frame (`inferred`, one
+measurement; it lengthens the timed reaction animations, e.g. 141 from 6 to 11 table ticks, which
+no measurement checks yet).
 
 ### 8.5 Screen versus map pixels (`observed`)
 
@@ -637,7 +715,7 @@ him at once and the whole courtyard joined (a mission-wide alarm, `inferred`).
 | hero run (double-click) | 107 px/s predicted, 101 +- 10 measured; gait = action 7 | observed / inferred |
 | hero sprint (action 10) | 149 px/s | inferred (clock) |
 | soldier walk / run / alert walk / alert run | 42.7 / 64 / 64 / 85.3 px/s | inferred (clock) |
-| displayed frame of a walking cycle | 46.9 ms (about 2.8 engine ticks at 60 Hz; the table's "1 tick" = 3 clocks of 1/64 s) | inferred |
+| displayed frame of a walking cycle | 46.9 ms (about 2.8 engine ticks at 60 Hz; the table's "1 tick" = 3 clocks of 1/64 s; a frame lasts its tick half plus one such ticks, from the sneak cycle) | inferred |
 | idle frame step | 93.75 ms | observed |
 | click -> first moving frame | 0.9-1.0 s (turn + walk-start animation) | observed (2 samples) |
 | running detected by standing soldiers | at >= 330 px; walking at 290 px not detected | observed |

@@ -4,8 +4,10 @@ Status: block structure, direction order and action-id tagging **verified** on a
 `DATA/Characters/*.rhs`; the roles of about a hundred action ids **verified by looking** at rendered
 strips (Robin, Soldier A, a poor civilian, the child, the corpse profile), a few dozen more named from
 their table pattern (twins and second copies of seen ids), the remaining ids only by their family. The
-per-frame "advance" and the per-animation displacement are **inferred** (consistent
-across all files, not checked against the running game). This document records ids, roles, presence
+per-frame "advance" is **measured** as pixels per displayed frame and the frame clock is
+**inferred** from the oracle measurements of 2026-09-05 (`docs/original/stealth-and-combat.md` 8); the
+per-animation displacement is **inferred** (consistent across all files, not checked against the running
+game). This document records ids, roles, presence
 and the rules for reading timing and displacement; it does not reproduce the per-block tables (see
 "Reading rules" and Provenance). Container layout: `docs/formats/sprites.md`. Helper:
 `crates/opensherwood-formats/src/anim_table.rs`. Tools: `harness/tools/probe/anim_sheet.py`,
@@ -62,13 +64,24 @@ generated tables stay in the analyst workspace (ADR-0003; see Provenance).
    animations carry `unknown_0x0c == id` is the action, and the animation for a facing is `block start
    + sprite index` (direction order above). A profile without the id has no such block; the engine
    substitutes a documented fallback (`crates/opensherwood-core/src/anim.rs`) and never invents one.
-2. **Duration** of an action = the sum over its frames of the low half of the timing word ("Per-frame
-   timing word"), in ticks of that word. A frame whose low half is 0 inside an otherwise timed
-   animation is held one tick minimum (`hypothesis`). The moving cycles (walk, run, sprint and their
-   alert twins) have a zero low half on every frame and are paced by the advance instead (reading A
-   below).
+2. **Duration**: a frame is displayed for `(low half of the timing word + 1)` **table ticks**, and a
+   table tick is 3 clocks of the animation clock of about 64 Hz (46.875 ms); the duration of an action
+   = the sum over its frames. The clock and the `+ 1` are the reading of the oracle measurements
+   (`docs/original/stealth-and-combat.md` 8.1-8.4): a walking frame (low half 0) lasts 46.9 ms
+   (`observed`: 22 frames per 1.044 s stride), and the crouched cycle 16, whose 14 frames carry low
+   halves summing to 18, lasts 1.50 s = `(18 + 14) x 46.875 ms` (`observed`), which the plain
+   "low half, at least 1" reading (0.84 s) does not give. The moving cycles (walk, run, sprint and
+   their alert twins) have a zero low half on every frame, one table tick each. Status: `inferred`
+   (two cycles measured; the timed reaction animations follow the same rule untested). The engine
+   (`crates/opensherwood-core/src/anim.rs`) runs this clock against its 60 Hz world tick in integer
+   units (16 per world tick, 45 per table tick).
 3. **Advance** of an action = the sum of the signed high halves, in screen pixels along the facing
-   (positive = forward). **Displacement** of a block = `(unknown_0x04 - origin_x, unknown_0x08 -
+   (positive = forward); per frame it is the distance the character moves while the frame is
+   displayed (`observed`: the hero's walk advances 4 px per 46.9 ms frame = 85.3 px/s, 8.1), so a
+   cycle's **speed** is its advance over its duration: hero walk 85.3 px/s, run 106.7 (measured
+   101 +- 10), sneak 18.0 (measured 17.8); every NPC walk 42.7, run 64, the soldiers' alert walk 64
+   and alert run 85.3 (derived). The engine moves the entity at the cycle's average
+   (`AnimSet::cycle_speed`). **Displacement** of a block = `(unknown_0x04 - origin_x, unknown_0x08 -
    origin_y)` of the animation, a 2:1 ellipse over the 16 directions ("Per-animation displacement"):
    the far point of the action (a climb's destination, the punch victim's spot, a lying body's extent).
 4. **Presence** is a property of the sprite file, not of the mission actor: the `.rhs` the profile
@@ -84,10 +97,12 @@ Every humanoid profile starts with the same fifteen ids in the same order (`obse
 | id | 0 | 1 | 2 | 4 | 3 | 5 | 8 | 6 | 7 | 50 | 51 | 12 | 9 | 11 | 10 |
 | role | idle | fidget | transition | transition | idle 2 | walk start | walk stop | **walk** | **run** | turn table | run start | sprint stop | sprint start | run stop | **sprint** |
 
-Illustrative values (direction 4): the idle 0 is six frames played ping-pong over 33..35 ticks; the
+Illustrative values (direction 4): the idle 0 is six frames whose indices already go 0 1 2 3 2 1
+(the ping-pong is in the list, not in the player) over 33..35 ticks of the low half; the
 walk 6 has 22 frames, the run 7 twelve, the sprint 10 sixteen (Robin) or 32 (soldiers); the frames of
 these cycles carry no ticks and an advance of 4 / 5 / 7 px for the hero against 2 / 3 / 5 for every NPC
-(the soldiers' alert twins 143 / 151: 3 / 4), so the hero moves faster (`inferred`); the run-stops 11 /
+(the soldiers' alert twins 143 / 151: 3 / 4), so the hero moves faster (`observed` for the hero's
+walk, run and sneak, rule 3); the run-stops 11 /
 12 decelerate (advances from 7 down to 2, the last frames held one tick); the two-frame transitions
 and the zero-duration id 50 are probably blend / turn tables (unknown).
 
@@ -213,10 +228,11 @@ and displacements for every id of a profile.
 
 #### Illustrative durations and displacements
 
-Unit: the low half of the timing word, summed over the frames (rule 2); one world tick per unit is the
-working reading (A below), 25 per second the `scb.md` hypothesis. The values are those of `Soldier
-A00`, direction 4, unless a hero value is given; the engine reads them from the profile and keeps only
-the first five as fallback constants for a profile without the block (`crates/opensherwood-core/src/ai.rs`).
+Unit: the low half of the timing word, summed over the frames; the displayed length is that sum plus
+the frame count, in table ticks of 46.875 ms (rule 2: e.g. 141 = 6 + 5 frames = 11 table ticks =
+0.52 s). The values are those of `Soldier A00`, direction 4, unless a hero value is given; the engine
+reads them from the profile and keeps only the first five as fallback constants for a profile without
+the block (`crates/opensherwood-core/src/ai.rs`, converted to world ticks).
 
 | id | ticks | id | ticks |
 |---|---|---|---|
@@ -240,15 +256,18 @@ ticks (1..15 on idle and static frames); **high** = a signed value, `0` for idle
 climb-up and `-3` on climb-down frames, `+6` / `-7` on the two falls, `-9`, `-10`, `10`, `15` on jumps.
 On every walk, run and sprint frame the tick half is **0** and only the high half is set (Robin walk
 `0x00040000` = ticks 0, advance 4; Soldier A walk `0x00020000`), while idle frames have ticks and a
-zero high half. Inferred: the high half is the **movement along the facing during the frame** (screen
-pixels). Two readings of the zero tick half on moving frames (2026-09-03, `docs/original/stealth-and-combat.md`
-4.2): (A) one frame per tick and the advance is the speed in pixels per tick (hero walk 4, run 5, sprint
-7; NPC walk 2, run 3, sprint 5; the soldiers' alert walk 3 and alert run 4; the run-stops decelerate
-7 6 5 4 3 2 with their last frames held one tick; the crouched walk 16 has both halves set, 27 px over 18
-ticks); (B) the cycles are distance-timed (the frame ends after `advance` pixels) and the speed lives
-elsewhere - but no profile field reads as a speed. A is the working hypothesis; the oracle plan in that
-document measures it. Not verified in the engine. Values such as `131072` (`0x20000`) in the
-`sprites.md` examples are this word. `anim_table::split_duration` separates the halves.
+zero high half. The high half is the **movement along the facing during the frame** (screen
+pixels; `observed` 2026-09-05 for the hero's walk, run and sneak, `docs/original/stealth-and-combat.md`
+8). Of the two readings of the zero tick half on moving frames (2026-09-03, that document's 4.2:
+(A) one frame per tick with the advance as the speed per tick; (B) distance-timed frames with the speed
+elsewhere) the measurement settled A's structure with a different clock: a frame lasts `low half + 1`
+table ticks of 46.875 ms (rule 2), the advance is per displayed frame (hero walk 4 px per 46.9 ms =
+85.3 px/s, run 5, sprint 7; NPC walk 2, run 3, sprint 5; the soldiers' alert walk 3 and alert run 4;
+the run-stops decelerate 7 6 5 4 3 2 with their last frames held one tick; the crouched walk 16 has
+both halves set, 27 px over `18 + 14` table ticks = 1.50 s). Values such as `131072` (`0x20000`) in the
+`sprites.md` examples are this word. `anim_table::split_duration` separates the halves; the engine
+applies the rule in `anim_set_from_profile` (`crates/opensherwood-app/src/engine.rs`) and
+`crates/opensherwood-core/src/anim.rs`.
 
 ## Per-animation displacement: `unknown_0x04` / `unknown_0x08`
 
@@ -275,9 +294,12 @@ of all placed frames (150 x 155); what it bounds is unknown.
 
 - What blocks with all-zero durations (id 50) and the two-frame transition ids (2, 4, 5, 8, 9, 51, 15,
   17, 34, 39) are used for; probably blend/turn tables.
-- Whether `run` (7) or `sprint` (10) is the double-click "run" of the game and which the AI uses. The engine
-  plays 7 for the double-click run and 14 / 16 for a crouched character (hypothesis, `docs/harness.md`
-  "Orders and movement modes").
+- Which cycle the AI uses when a script sets gait 2 (native 140): the double-click "run" is 7
+  (`inferred` from its speed, `docs/original/stealth-and-combat.md` 8.3); the engine plays 7 for the
+  double-click run and 14 / 16 for a crouched character (`docs/harness.md` "Orders and movement modes").
+- What the courtyard lancers of the first mission play while standing at a rail wait: the oracle saw 16
+  uniform frame changes per 1.50 s, which no static block of the soldier profiles gives under rule 2
+  (`docs/original/stealth-and-combat.md` 8.4 note).
 - `Animation::unknown_0x02` = `frames - 1` in 112,608 of 148,512 animations; the others are smaller
   (loop start? last key frame?).
 - The meaning of the displacement on Soldier A's idle blocks, and of ids not listed above.

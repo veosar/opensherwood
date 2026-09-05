@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::ai::{AiState, action_id, wanted_animation};
-use crate::anim::{AnimState, Catalog, direction_of};
+use crate::anim::{AnimState, Catalog, UNITS_PER_TABLE_TICK, direction_of};
 use crate::fixed::Fixed;
 use crate::geom::Geometry;
 use crate::hash::{Encoder, HASH_SCHEMA_VERSION, Hashes, total};
@@ -60,7 +60,9 @@ pub enum Gait {
     /// Walking (action 6 of the animation table).
     #[default]
     Walk,
-    /// Running (action 7): [`RUN_SPEED_FACTOR`] times the walking speed.
+    /// Running (action 7): the speed of the profile's run cycle (measured: hero 106.7 px/s
+    /// predicted, 101 +- 10 measured; `docs/original/stealth-and-combat.md` 8.3), or the
+    /// walking speed times [`FALLBACK_RUN_SPEED_RATIO`] without a cycle.
     Run,
 }
 
@@ -82,8 +84,9 @@ pub enum Posture {
     /// Upright.
     #[default]
     Standing,
-    /// Crouched: the sneak animation (action 16) and the crouched idle (14), moving at the walking
-    /// speed over [`CROUCH_SPEED_DIVISOR`] whatever the gait.
+    /// Crouched: the sneak animation (action 16) and the crouched idle (14), moving at the sneak
+    /// cycle's speed whatever the gait (measured: 17.8 px/s for the hero, 8.2), or the walking
+    /// speed times [`FALLBACK_SNEAK_SPEED_RATIO`] without a cycle.
     Crouched,
 }
 
@@ -111,7 +114,9 @@ pub struct Entity {
     pub y: Fixed,
     /// Half extents for obstacles; selection radius for actors.
     pub size: Fixed,
-    /// Movement speed per tick.
+    /// Walking speed in map pixels per world tick (24.8), used when the entity's profile has no
+    /// movement cycle to read the speed from (synthetic units, profiles without a table):
+    /// [`Entity::effective_speed`].
     pub speed: Fixed,
     /// Current movement target (the final destination).
     pub target: Option<(Fixed, Fixed)>,
@@ -189,19 +194,41 @@ pub struct Entity {
     /// Fell backward (struck from the front: actions 44 / 48) rather than forward (41 / 47).
     #[serde(default)]
     pub fell_backward: bool,
+    /// The current alert came through the noise channel (a running character heard: measured,
+    /// `docs/original/stealth-and-combat.md` 8.6) rather than the view cone (hypothesis), so the
+    /// alert action ids it produces record no `Assumption::Perception` (`vm.rs`). Only set in
+    /// an alert state.
+    #[serde(default)]
+    pub heard: bool,
 }
 
 impl Entity {
-    /// Distance covered per tick: the walking `speed`, times [`RUN_SPEED_FACTOR`] when running,
-    /// over [`CROUCH_SPEED_DIVISOR`] when crouched (a crouched actor never runs: the animation
-    /// table has one crouched movement, the sneak).
+    /// Distance covered per world tick: the speed of the movement cycle the entity plays in its
+    /// state, posture and gait (`ai::wanted_animation`: walk 6, run 7, sneak 16, the alert walk
+    /// 143 and run 151 of an alerted soldier, or the documented fallback block), read from the
+    /// catalog as the cycle's advance over its duration on the animation clock
+    /// (`AnimSet::cycle_speed`: hero walk 85.3 px/s, run 106.7, sneak 18.0; soldier walk 42.7,
+    /// run 64, alert walk 64, alert run 85.3; measured / derived, `docs/original/stealth-and-combat.md`
+    /// 8.8). Without a catalog, a set or a forward-moving cycle: the walking `speed`, times
+    /// [`FALLBACK_RUN_SPEED_RATIO`] when running, times [`FALLBACK_SNEAK_SPEED_RATIO`] when
+    /// crouched (a crouched actor never runs: the table has one crouched movement, the sneak).
     #[must_use]
-    pub fn effective_speed(&self) -> Fixed {
-        match (self.posture, self.gait) {
-            (Posture::Crouched, _) => Fixed::from_raw(self.speed.raw() / CROUCH_SPEED_DIVISOR),
-            (Posture::Standing, Gait::Run) => self.speed.mul_int(RUN_SPEED_FACTOR),
-            (Posture::Standing, Gait::Walk) => self.speed,
-        }
+    pub fn effective_speed(&self, catalog: &Catalog) -> Fixed {
+        let from_table = self
+            .anim
+            .as_ref()
+            .and_then(|a| catalog.sets.get(&a.set))
+            .and_then(|set| set.cycle_speed(wanted_animation(self, set)));
+        from_table.unwrap_or_else(|| {
+            let (num, den) = match (self.posture, self.gait) {
+                (Posture::Crouched, _) => FALLBACK_SNEAK_SPEED_RATIO,
+                (Posture::Standing, Gait::Run) => FALLBACK_RUN_SPEED_RATIO,
+                (Posture::Standing, Gait::Walk) => (1, 1),
+            };
+            let raw = (i64::from(self.speed.raw()) * i64::from(num) + i64::from(den) / 2)
+                / i64::from(den);
+            Fixed::from_raw(raw.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32)
+        })
     }
 }
 
@@ -550,14 +577,21 @@ pub const DOUBLE_CLICK_TICKS: u64 = 20;
 /// ... and within this many map pixels of it is a double click: the order becomes a run
 /// (`docs/original/ui-flow.md` 9.4).
 pub const DOUBLE_CLICK_DISTANCE: i32 = 8;
-/// Running speed as a multiple of the walking speed. Hypothesis: the manual only says a double
-/// click runs; the animation table's per-frame `advance` (Robin walk 4 / run 5 px per frame) is a
-/// distance per frame, not a speed per tick (`docs/formats/sprite-animations.md`, "Per-frame
-/// timing word"), so no speed can be read from the data yet.
-pub const RUN_SPEED_FACTOR: i32 = 2;
-/// Crouched (sneaking) speed as a divisor of the walking speed. Hypothesis, same status as
-/// [`RUN_SPEED_FACTOR`].
-pub const CROUCH_SPEED_DIVISOR: i32 = 2;
+/// Running speed over the walking speed, as a ratio, for an entity whose profile has no run
+/// cycle to read it from (synthetic units): the hero table's run over walk (60 px per 12 frames
+/// over 88 px per 22 frames = 5 / 4; measured 1.2, `docs/original/stealth-and-combat.md` 8.3).
+pub const FALLBACK_RUN_SPEED_RATIO: (i32, i32) = (5, 4);
+/// Crouched (sneaking) speed over the walking speed for an entity without a sneak cycle: the
+/// hero table's sneak (27 px per 32 table ticks) over its walk (88 px per 22) = 27 / 128 = 0.21
+/// (measured 0.21, `docs/original/stealth-and-combat.md` 8.2).
+pub const FALLBACK_SNEAK_SPEED_RATIO: (i32, i32) = (27, 128);
+/// Walking speed of a synthetic player character in map pixels per world tick (24.8): the
+/// hero's measured 85.3 px/s (`docs/original/stealth-and-combat.md` 8.1), 364 / 256 = 1.42 px
+/// per tick, the value the hero's walk cycle gives ([`crate::anim::AnimSet::cycle_speed`]).
+pub const SYNTHETIC_PLAYER_SPEED: Fixed = Fixed::from_raw(364);
+/// Walking speed of a synthetic guard: the soldier's 42.7 px/s derived from the same clock
+/// (182 / 256 = 0.71 px per tick).
+pub const SYNTHETIC_GUARD_SPEED: Fixed = Fixed::from_raw(182);
 /// Largest state timer a snapshot may carry (`Entity::state_ticks`).
 pub const MAX_STATE_TICKS: u32 = 1 << 24;
 
@@ -643,8 +677,9 @@ pub struct World {
 /// `last_seen`, `alert_origin`, `attack_target`, `action`, `hit_points`,
 /// `knockout_resistance`, `npc_gait`, `fell_backward`; actor specs carry `hit_points` and
 /// `knockout_resistance`; 13: the VM's `assumptions` and `pending_action_changes`, the
-/// world's `ai_cursor`, mission specs carry `starting_money` and `assumptions`).
-pub const SNAPSHOT_VERSION: u32 = 13;
+/// world's `ai_cursor`, mission specs carry `starting_money` and `assumptions`; 14: entity
+/// `heard`, animation `elapsed` in clock units of the measured animation clock).
+pub const SNAPSHOT_VERSION: u32 = 14;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -721,9 +756,9 @@ impl World {
                 y: f(a.y),
                 size: f(12),
                 speed: if kind == EntityKind::Player {
-                    Fixed::from_raw(3 * 256 / 2)
+                    SYNTHETIC_PLAYER_SPEED
                 } else {
-                    Fixed::from_int(1)
+                    SYNTHETIC_GUARD_SPEED
                 },
                 target: None,
                 path: Vec::new(),
@@ -750,6 +785,7 @@ impl World {
                 knockout_resistance: a.knockout_resistance,
                 npc_gait: Gait::Walk,
                 fell_backward: false,
+                heard: false,
             });
         }
         // The original opens a mission with the camera on the hero.
@@ -957,7 +993,7 @@ impl World {
             x: f(80),
             y: f(240),
             size: f(12),
-            speed: Fixed::from_raw(3 * 256 / 2),
+            speed: SYNTHETIC_PLAYER_SPEED,
             target: None,
             path: Vec::new(),
             patrol: Vec::new(),
@@ -983,6 +1019,7 @@ impl World {
             knockout_resistance: 0,
             npc_gait: Gait::Walk,
             fell_backward: false,
+            heard: false,
         });
         entities.push(Entity {
             id: id(1),
@@ -990,7 +1027,7 @@ impl World {
             x: f(400),
             y: f(120),
             size: f(12),
-            speed: Fixed::from_int(1),
+            speed: SYNTHETIC_GUARD_SPEED,
             target: None,
             path: Vec::new(),
             patrol: vec![(f(400), f(120)), (f(400), f(360))],
@@ -1016,6 +1053,7 @@ impl World {
             knockout_resistance: 0,
             npc_gait: Gait::Walk,
             fell_backward: false,
+            heard: false,
         });
         let obstacles: &[(i32, i32, i32, i32)] = if map.is_some() {
             &[]
@@ -1055,6 +1093,7 @@ impl World {
                 knockout_resistance: 0,
                 npc_gait: Gait::Walk,
                 fell_backward: false,
+                heard: false,
             });
         }
         let geometry = Geometry::default();
@@ -1246,12 +1285,13 @@ impl World {
                             e.id, a.frame, a.animation, a.set
                         ));
                     }
-                    let duration = frames
+                    let units = frames
                         .get(a.frame as usize)
-                        .map_or(1, |f| f.duration.max(1));
-                    if a.elapsed >= duration {
+                        .map_or(1, |f| f.duration.max(1))
+                        .saturating_mul(UNITS_PER_TABLE_TICK);
+                    if a.elapsed >= units {
                         return Err(format!(
-                            "entity {:?} animation elapsed {} exceeds the frame duration {duration}",
+                            "entity {:?} animation elapsed {} exceeds the frame's {units} clock units",
                             e.id, a.elapsed
                         ));
                     }
@@ -1306,6 +1346,12 @@ impl World {
             if e.ai_state.alert() && !(e.kind == EntityKind::Guard && e.team == Team::Enemy) {
                 return Err(format!(
                     "entity {:?} in the alert state {:?} is not an enemy soldier",
+                    e.id, e.ai_state
+                ));
+            }
+            if e.heard && !e.ai_state.alert() {
+                return Err(format!(
+                    "entity {:?} was heard but is in the {:?} state, not an alert state",
                     e.id, e.ai_state
                 ));
             }
@@ -1650,7 +1696,7 @@ impl World {
             let dx = tx - e.x;
             let dy = ty - e.y;
             let dist = Fixed::length(dx, dy);
-            let speed = e.effective_speed();
+            let speed = e.effective_speed(&self.catalog);
             let (nx, ny) = if dist <= speed {
                 (tx, ty)
             } else {
@@ -1880,6 +1926,7 @@ impl World {
                 .i32(e.knockout_resistance)
                 .u8(e.npc_gait.tag())
                 .u8(u8::from(e.fell_backward))
+                .u8(u8::from(e.heard))
                 .u32(e.wait_ticks)
                 .u32(e.patrol_index)
                 .u32(e.patrol.len() as u32);
@@ -2173,7 +2220,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "a16217d3aefd5a2c892d1f1603928e65d7c409bc0bdb6c3a651e0a90bf32ed47";
+        "9b77c737177ac9b39b208aa54f269ee7dd60eb71c9a173441f333151027cc3fa";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -2251,6 +2298,9 @@ mod tests {
         let mut w = base.clone();
         w.entities[1].fell_backward = true;
         variants.push(("fell_backward", w));
+        let mut w = base.clone();
+        w.entities[1].heard = true;
+        variants.push(("heard", w));
         let mut w = base.clone();
         w.ai_cursor = 1;
         variants.push(("ai_cursor", w));
@@ -2485,6 +2535,7 @@ mod tests {
         let frame = |frame, duration| FrameSpec {
             frame,
             duration,
+            advance: 0,
             offset_x: 0,
             offset_y: 0,
         };
@@ -2519,7 +2570,8 @@ mod tests {
         reject(&mut w, |a| a.set = "ghost".into(), "profile 'ghost'");
         reject(&mut w, |a| a.animation = 3, "animation 3 does not exist");
         reject(&mut w, |a| a.frame = 2, "frame 2 out of range");
-        reject(&mut w, |a| a.elapsed = 3, "elapsed 3 exceeds");
+        // Frame 1 of animation 0 lasts 3 table ticks = 135 clock units.
+        reject(&mut w, |a| a.elapsed = 135, "elapsed 135 exceeds");
         reject(
             &mut w,
             |a| {
@@ -2532,7 +2584,7 @@ mod tests {
         // In-range states, including the empty animation at frame 0, are accepted.
         let mut snap = good.clone();
         let a = snap.world.entities[0].anim.as_mut().unwrap();
-        (a.animation, a.frame, a.elapsed) = (0, 0, 2);
+        (a.animation, a.frame, a.elapsed) = (0, 0, 134);
         w.restore(&snap).unwrap();
         let mut snap = good.clone();
         let a = snap.world.entities[0].anim.as_mut().unwrap();
@@ -2686,22 +2738,28 @@ mod tests {
             w.step(&[]);
             assert_eq!(w.entities[1].y.round(), 300);
         }
-        // Tick 30: GoTo is issued; the guard walks 100 px south at 1 px/tick.
+        // Tick 30: GoTo is issued; the guard walks 100 px south at the synthetic guard speed
+        // (182 / 256 = 0.71 px per tick, the soldier's 42.7 px/s: 141 moves, the first on the
+        // issuing tick, one or two more for the raw units the fixed-point steps lose).
         w.step(&[]);
         let g = &w.entities[1];
         assert!(g.target.is_some());
         assert_eq!(g.pc, 2, "pc stays on the GoTo while walking");
-        for _ in 0..99 {
+        let mut moves = 1;
+        while w.entities[1].target.is_some() {
             w.step(&[]);
+            moves += 1;
+            assert!(moves < 200, "never arrived");
         }
+        assert!((141..=143).contains(&moves), "{moves} moves");
         let g = &w.entities[1];
         assert_eq!((g.x.round(), g.y.round()), (300, 400));
-        assert!(g.target.is_none());
         assert_eq!(g.facing256, 64, "walking south faces south");
-        // Next tick: Turn (64 - 32) and the 10-tick wait; then it walks back and loops.
+        // Next tick: Turn (64 - 32) and the 10-tick wait; then it walks back (another 141
+        // moves or so) and loops into the 30-tick wait of the Face at pc 0.
         w.step(&[]);
         assert_eq!(w.entities[1].facing256, 32);
-        for _ in 0..120 {
+        for _ in 0..165 {
             w.step(&[]);
         }
         let g = &w.entities[1];
@@ -3010,7 +3068,7 @@ mod tests {
     }
 
     #[test]
-    fn double_click_runs_at_twice_the_walking_speed() {
+    fn double_click_runs_at_the_running_speed() {
         let (walk, g) = ticks_to_arrive(|w| click(w, 200, 240, Button::Left));
         assert_eq!(g, Gait::Walk);
         // Two clicks in consecutive ticks, 3 px apart: a double click.
@@ -3019,12 +3077,19 @@ mod tests {
             click(w, 203, 240, Button::Left);
         });
         assert_eq!(g, Gait::Run);
-        // 120 px at 1.5 px/tick is 80 moves walking (the first one on the click's own tick), 40
-        // at 3 px/tick running (the walk of the first click's tick covered 1.5 px).
-        assert_eq!((walk, run), (79, 40));
+        // 120 px at the synthetic walking speed (364 / 256 = 1.42 px per tick, the hero's
+        // measured 85.3 px/s) is 85 moves walking (the first one on the click's own tick),
+        // at the running speed (5 / 4 of it, 455 / 256 = 1.78 px per tick) 67 more moves after
+        // the walk of the first click's tick, plus one for the raw units the fixed-point
+        // steps lose along the way.
+        assert_eq!((walk, run), (84, 68));
+        let mut runner = corridor(12).entities[0].clone();
+        runner.gait = Gait::Run;
+        assert_eq!(runner.effective_speed(&Catalog::default()).raw(), 455);
+        runner.gait = Gait::Walk;
         assert_eq!(
-            Fixed::from_raw(3 * 256 / 2).mul_int(RUN_SPEED_FACTOR),
-            Fixed::from_int(3)
+            runner.effective_speed(&Catalog::default()),
+            SYNTHETIC_PLAYER_SPEED
         );
         // Too late (21 ticks between the presses) or too far (9 px): two walks.
         let (late, g) = ticks_to_arrive(|w| {
@@ -3113,6 +3178,7 @@ mod tests {
         let frame = |frame| FrameSpec {
             frame,
             duration: 1,
+            advance: 0,
             offset_x: 0,
             offset_y: 0,
         };
@@ -3147,11 +3213,13 @@ mod tests {
         ]);
         assert_eq!(w.entities[0].posture, Posture::Crouched);
         assert_eq!(anim(&w), 3);
+        // The blocks of this set carry no advance, so the fallback ratios apply: sneaking at
+        // 27 / 128 of the walking speed (364 x 27 / 128 = 77 raw, 0.30 px per tick).
         assert_eq!(
-            w.entities[0].effective_speed(),
-            Fixed::from_raw(3 * 256 / 2 / CROUCH_SPEED_DIVISOR)
+            w.entities[0].effective_speed(&w.catalog),
+            Fixed::from_raw(77)
         );
-        // Sneaking: half speed, the crouched walk block; a double click does not make him run.
+        // Sneaking: the crouched walk block; a double click does not make him run.
         click(&mut w, 200, 240, Button::Left);
         click(&mut w, 200, 240, Button::Left);
         assert_eq!(w.entities[0].gait, Gait::Run);
@@ -3160,7 +3228,8 @@ mod tests {
         for _ in 0..20 {
             w.step(&[]);
         }
-        assert_eq!(w.entities[0].x - x0, Fixed::from_int(15));
+        let moved = (w.entities[0].x - x0).raw();
+        assert!((moved - 20 * 77).abs() <= 20, "{moved}");
         // Standing up mid-order: the run order resumes at the running speed and block.
         w.step(&[InputEvent::KeyDown {
             key: Key::Letter('s'),
@@ -3171,7 +3240,8 @@ mod tests {
         for _ in 0..10 {
             w.step(&[]);
         }
-        assert_eq!(w.entities[0].x - x1, Fixed::from_int(30));
+        let moved = (w.entities[0].x - x1).raw();
+        assert!((moved - 10 * 455).abs() <= 10, "{moved}");
         // Walking uses the walk block.
         click(&mut w, 300, 240, Button::Left);
         assert_eq!(anim(&w), 1);

@@ -42,30 +42,36 @@ second left click within 20 ticks and 8 map pixels of the first (`DOUBLE_CLICK_T
 makes that order a **run**; a **right click** on the selected character cancels his order, a right click anywhere
 else deselects. `c` crouches the selected player character, `s` stands him up. `observe` entities carry `gait`
 (`walk` / `run`: the mode of the current order, `walk` again once it ends) and `posture` (`standing` /
-`crouched`). Speeds: running is `RUN_SPEED_FACTOR` (2) times the walking speed, sneaking (any order while
-crouched) the walking speed over `CROUCH_SPEED_DIVISOR` (2); both are hypotheses documented in
-`crates/opensherwood-core/src/world.rs` (the animation table's per-frame `advance` is a distance per frame, not a
-speed). Running plays the run block (action 7), crouching the crouched idle / sneak blocks (14 / 16) of profiles
-that have them; the double-click memory (`last_ground_click`), gait and posture are in the snapshot and the
-`world` / `actors` hashes. A **left click on an enemy soldier** while a player character is selected is an
+`crouched`). Speeds: every entity moves at the speed of the animation cycle it plays, read from its profile's
+table on the measured animation clock (`docs/original/stealth-and-combat.md` 8, `docs/formats/sprite-animations.md`
+"Reading rules"): the hero walks at 85.3 px/s (1.42 px per tick), runs at 106.7 and sneaks at 18.0; soldiers walk at
+42.7, run at 64 and use 64 / 85.3 for their alert walk / run. Units without a cycle (synthetic worlds) use
+`Entity::speed` times the fallback ratios of `crates/opensherwood-core/src/world.rs` (run 5 / 4, sneak 27 / 128).
+Running plays the run block (action 7), crouching the crouched idle / sneak blocks (14 / 16) of profiles
+that have them; a frame lasts its tick half plus one table ticks of 46.875 ms (`observe` reports the animation's
+`elapsed` in clock units, 16 per world tick and 45 per table tick); the double-click memory (`last_ground_click`),
+gait and posture are in the snapshot and the `world` / `actors` hashes. A **left click on an enemy soldier** while a player character is selected is an
 **attack order** (hypothesis: the manual's fist icon is not drawn yet): the character walks into reach
 (`attack_target` names the victim), then delivers the knock-out blow when he stands behind the victim, else
 stops facing him; a ground order or a right click cancels it. See "Stealth layer" below.
 
 ## Stealth layer
 
-`docs/original/stealth-and-combat.md` "Engine" (`crates/opensherwood-core/src/ai.rs`; every constant a
-hypothesis pinned by tests). `observe` entities carry `team` (`player` / `enemy` / `civilian`), `ai_state`
+`docs/original/stealth-and-combat.md` "Engine" (`crates/opensherwood-core/src/ai.rs`; the noise channel and the
+timings are measured, the view cone and the timers hypotheses, every value pinned by tests). `observe` entities
+carry `team` (`player` / `enemy` / `civilian`), `ai_state`
 (`patrol` = normal, `noticed` (action 141), `alarm` (142), `alerted` (searching the last seen position with
 140 / 143 / 151), `returning` (walking back to the post), `punching` (123, player characters), `knocked_down`
 (41 / 44), `lying` (47 / 48, knocked out), `getting_up` (49), `dead`), `state_ticks` (ticks left in a timed
 state), `last_seen` and `alert_origin` (map points, 24.8), `attack_target` (entity id), `action` (the sprite
 action id the entity reports: a change fires the script's `ActionChange(previous, new)`), `hit_points`
 (profile `p0`; 100 without a profile value), `knockout_resistance` (profile `p4`), `npc_gait` (the gait of the
-NPC's program walks, script native 140) and `fell_backward`. Enemy soldiers that are alive, active, unlocked
-and on their feet perceive: a player character inside their view cone (half angle 45 degrees, range 200 px,
-100 px when crouched; occluders ignored) or a running player character within 150 px is a stimulus. A
-knocked-out soldier is out of action for `KNOCK_OUT_BASE_TICKS` (600) scaled by `(100 - p4) / 100`; `p4` >=
+NPC's program walks, script native 140), `fell_backward` and `heard` (the current alert came from a run heard,
+the measured channel, rather than from the view cone). Enemy soldiers that are alive, active, unlocked
+and on their feet perceive: a player character inside their view cone (half angle 45 degrees, range 250 px,
+125 px when crouched; occluders ignored) starts the noticed -> alarm -> alerted sequence; a running player
+character within 350 px is heard whatever the soldier faces and he charges at once (`alerted`, the alert run).
+A knocked-out soldier is out of action for `KNOCK_OUT_BASE_TICKS` (600) scaled by `(100 - p4) / 100`; `p4` >=
 100 makes the blow fail. All of it is in the snapshot, validated and hashed (`actors`); `validate` holds the
 layer's invariants (`dead` only with `alive` false, a timer exactly in the timed states, attack orders from a
 player character to an enemy soldier, alert states on enemy soldiers only). Perception and the path searches
@@ -122,12 +128,14 @@ expires), and `restore` while a replay is being recorded.
 
 ## Scenarios
 
+`reset` takes `scenario`, `seed` and, for missions, an optional `starting_money` (the selected profile's money by default; replays record the value used in their header and play back with it). `observe` carries `persistence_error` while the last profile / settings write failed.
+
 | `reset` scenario | Needs game data | What it is |
 |---|---|---|
 | `{"synthetic": "corridor"}` | no | 640x480 room, a player, a patrolling guard, three obstacles, a goal |
 | `{"map_view": {"map": "sherwood", "ambiance": "Day"}}` | yes | the retail background of that map with the synthetic units on it and a scrollable camera |
 | `{"mission": "<name>"}` | yes | the retail mission's background, walkable geometry, occluders and actors (NPC, civilian and `TOTO` sprites from the profile table `Configuration/profile.cpf`, see `docs/formats/profile.md`; a default sprite with a logged warning when an entry is unavailable; heroes still in file order; hidden player characters start inactive); NPCs follow their rail programs (walk the rail back and forth, face, wait, glance, loop; see `docs/formats/rhm.md` "Rail programs"), NPCs without a rail stand idle; the mission script (`Data/Levels/<name>.scb`) runs in the core VM (objectives, texts, sequences, messages, zones, activation, patrols; see below); enemy soldiers perceive the player characters and can be knocked out (see "Stealth layer"); viewport 1024x768 |
-| `{"menu": "main"}` | yes | the original main menu; `observe` returns a `ui` object (`screen` = `main_menu`, `briefing`, `pause_menu`, `dialog`, `debriefing`, `credits`, `load`, `save`, `options`, `options_graphics`, `options_sounds`, `options_shortcuts`, `select_player` or `new_player` (list rows appear as items with `action` = `row:<name>`, option bars as `bar:<n>` with `enabled` = selected, sliders as `slider:<n>` with the value in the label); `items` with actions and rectangles; `hovered`; briefing `page`; `credits` reports the scroll offset in `page[0]`) while a screen is shown; clicking Play! loads the first mission behind its briefing; Escape in a mission opens the pause menu (Continue / Restart / Quit with confirmation); menus never tick the world; left clicks on HUD widgets act on the interface (kneel / standing figures crouch / stand the selection, other widgets consume the click) and never reach the map |
+| `{"menu": "main"}` | yes | the original main menu; `observe` returns a `ui` object (`screen` = `main_menu`, `briefing`, `pause_menu`, `dialog`, `debriefing`, `credits`, `load`, `save`, `options`, `options_graphics`, `options_sounds`, `options_shortcuts`, `select_player`, `new_player` or `rename_player` (list rows appear as items with `action` = `row:<index>`, all enabled, the current one with `selected` = true; a rename edits the selected row inline, Enter commits and Escape cancels; option bars as `bar:<n>` with `enabled` = selected, sliders as `slider:<n>` with the value in the label, the position left of the first cell selecting 0; of the options only the effects and music volumes act, the others (aspect, effect toggles, sound mode / quality, dialogue and comment volumes, comment frequency, shortcut set) are stored in `settings.json` until their subsystems exist); `items` with actions and rectangles; `hovered`; briefing `page`; `credits` reports the scroll offset in `page[0]`) while a screen is shown; clicking Play! loads the first mission behind its briefing; Escape in a mission opens the pause menu (Continue / Restart / Quit with confirmation); menus never tick the world; left clicks on HUD widgets act on the interface (kneel / standing figures crouch / stand the selection, other widgets consume the click) and never reach the map |
 
 ## Scripts
 

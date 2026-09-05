@@ -1,7 +1,7 @@
 //! Engine session: world + assets + RPC method dispatch, shared by headless and window modes.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use std::sync::Arc;
 
@@ -56,9 +56,12 @@ impl SpriteSource for Sprites {
 /// 123 (`docs/original/stealth-and-combat.md`). A profile without a block names the fallback
 /// `AnimSet` documents (soldiers and civilians have no crouch set, civilians and heroes no
 /// alert set, only Robin and the big man the blow). Falls back to the first animations when the
-/// profile has no table.
+/// profile has no table. Frame timing follows `docs/formats/sprite-animations.md` "Reading
+/// rules" on the measured animation clock (`opensherwood_core::anim`): the timing word's tick
+/// half plus one is the frame's duration in table ticks, its signed high half the advance in
+/// map pixels, from which the core derives the movement speeds.
 fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSet {
-    use opensherwood_formats::anim_table::{ActionId, AnimationTable, Direction};
+    use opensherwood_formats::anim_table::{ActionId, AnimationTable, Direction, split_duration};
     // Action ids of the alert, fall and knock-out sets (`docs/formats/sprite-animations.md`,
     // "Combat, state and stealth ids").
     const ALERT_IDLE: ActionId = ActionId(140);
@@ -78,11 +81,15 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
             s.animations.iter().map(move |a| {
                 a.frames
                     .iter()
-                    .map(|f| FrameSpec {
-                        frame: f.frame,
-                        duration: (f.duration & 0xFFFF).max(1),
-                        offset_x: i32::from(f.anchor_x) - ox,
-                        offset_y: i32::from(f.anchor_y) - oy,
+                    .map(|f| {
+                        let (ticks, advance) = split_duration(f.duration);
+                        FrameSpec {
+                            frame: f.frame,
+                            duration: u32::from(ticks) + 1,
+                            advance: i32::from(advance),
+                            offset_x: i32::from(f.anchor_x) - ox,
+                            offset_y: i32::from(f.anchor_y) - oy,
+                        }
                     })
                     .collect()
             })
@@ -193,12 +200,19 @@ pub struct Session {
     debriefings_lost: Vec<String>,
     /// The mission's end has been shown (the debriefing parchment leads to the next mission or the menu).
     ended: bool,
+    /// Starting money to use for the next mission load instead of the profile's (a `reset`
+    /// parameter or a replay header); consumed by the load.
+    money_override: Option<i32>,
+    /// Starting money the current mission was loaded with (recorded in replay headers).
+    starting_money: Option<i32>,
     /// The level's mini-map picture, when the level has one.
     minimap: Option<crate::ui::Minimap>,
     /// The mini-map overlay is open (session presentation state; the world keeps running).
     minimap_open: bool,
     /// The mission ended with a loss: the debriefing leads back to the menu, not onward.
     ended_lost: bool,
+    /// The last failed profile / settings write (cleared by a successful one); in `observe`.
+    persistence_error: Option<String>,
     /// Mission file that follows the current one in the campaign graph (`profile.cpf` level table:
     /// the level whose only prerequisite is the current level), if any.
     next_mission: Option<String>,
@@ -368,9 +382,12 @@ impl Session {
             debriefings_won: Vec::new(),
             debriefings_lost: Vec::new(),
             ended: false,
+            money_override: None,
+            starting_money: None,
             minimap: None,
             minimap_open: false,
             ended_lost: false,
+            persistence_error: None,
             next_mission: None,
             notice: None,
             hud_press_pending: false,
@@ -508,6 +525,15 @@ impl Session {
             .unwrap_or_else(|| fallback.to_string());
         self.ended = true;
         self.ended_lost = lost;
+        // Campaign money: a won mission's money becomes the profile's (the loss keeps the
+        // profile's). Whether the original also keeps money from a lost mission is not observed.
+        if !lost {
+            let money = vm.money;
+            if let Some(p) = self.profiles.get_mut(self.profile_index) {
+                p.money = money;
+                self.save_profiles();
+            }
+        }
         let _ = self.ui_assets();
         self.screen = Screen::Debriefing(Briefing::new(vec![text]));
         self.frame = None;
@@ -735,38 +761,68 @@ impl Session {
         self.frame = None;
     }
 
-    /// Write `profiles.json`.
-    fn save_profiles(&self) {
+    /// Write `profiles.json` (`{"format": 1, "selected": i, "profiles": [...]}`).
+    fn save_profiles(&mut self) {
         let path = self.artifacts.join("profiles.json");
-        let doc = json!({ "selected": self.profile_index, "profiles": self.profiles });
-        match serde_json::to_string_pretty(&doc) {
-            Ok(text) => {
-                if let Err(e) = std::fs::write(&path, text) {
-                    eprintln!("opensherwood: profiles {}: {e}", path.display());
-                }
+        let doc = json!({ "format": 1, "selected": self.profile_index, "profiles": self.profiles });
+        let result = serde_json::to_string_pretty(&doc)
+            .map_err(|e| e.to_string())
+            .and_then(|text| write_atomic(&path, &text).map_err(|e| e.to_string()));
+        self.note_persistence("profiles", &path, result);
+    }
+
+    /// Log a persistence failure and keep it for `observe` (`persistence_error`), so a failed
+    /// write is visible to the player and the harness, not only in the log.
+    fn note_persistence(&mut self, what: &str, path: &Path, result: Result<(), String>) {
+        match result {
+            Ok(()) => self.persistence_error = None,
+            Err(e) => {
+                let msg = format!("{what} {}: {e}", path.display());
+                eprintln!("opensherwood: {msg}");
+                self.persistence_error = Some(msg);
             }
-            Err(e) => eprintln!("opensherwood: profiles: {e}"),
         }
     }
 
-    /// Read `profiles.json` if present (with `load_settings`, at startup).
+    /// Read `profiles.json` if present (with `load_settings`, at startup). A malformed or
+    /// oversized document is ignored (logged); each profile is clamped to its documented ranges,
+    /// unusable ones dropped, and at most `PROFILE_ROWS` are kept.
     fn load_profiles(&mut self) {
         let path = self.artifacts.join("profiles.json");
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = read_bounded(&path, PERSIST_MAX_BYTES) else {
             return;
         };
-        let Ok(doc) = serde_json::from_str::<Value>(&text) else {
-            return;
+        let doc = match serde_json::from_str::<Value>(&text) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("opensherwood: profiles {}: {e}; ignored", path.display());
+                return;
+            }
         };
-        if let Ok(list) = serde_json::from_value::<Vec<ProfileSummary>>(doc["profiles"].clone())
-            && !list.is_empty()
-        {
-            self.profile_index = doc["selected"]
-                .as_u64()
-                .map_or(0, |v| v as usize)
-                .min(list.len() - 1);
-            self.profiles = list;
+        if doc["format"].as_u64().unwrap_or(1) != 1 {
+            eprintln!(
+                "opensherwood: profiles {}: unknown format; ignored",
+                path.display()
+            );
+            return;
         }
+        let list: Vec<ProfileSummary> = doc["profiles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(crate::ui::PROFILE_ROWS)
+            .filter_map(|v| serde_json::from_value::<ProfileSummary>(v.clone()).ok())
+            .filter_map(ProfileSummary::sanitized)
+            .collect();
+        if list.is_empty() {
+            return;
+        }
+        self.profile_index = doc["selected"]
+            .as_u64()
+            .and_then(|v| usize::try_from(v).ok())
+            .unwrap_or(0)
+            .min(list.len() - 1);
+        self.profiles = list;
     }
 
     /// Open the options screens from the main menu or the pause menu.
@@ -791,27 +847,34 @@ impl Session {
             audio.set_music_volume(f32::from(settings.volumes[2]) / 10.0);
             audio.set_effects_volume(f32::from(settings.volumes[0]) / 10.0);
         }
-        self.settings = settings;
+        self.settings = settings.sanitized();
         let path = self.artifacts.join("settings.json");
-        match serde_json::to_string_pretty(&self.settings) {
-            Ok(text) => {
-                if let Err(e) = std::fs::write(&path, text) {
-                    eprintln!("opensherwood: settings {}: {e}", path.display());
-                }
-            }
-            Err(e) => eprintln!("opensherwood: settings: {e}"),
+        let result = serde_json::to_string_pretty(&self.settings)
+            .map_err(|e| e.to_string())
+            .and_then(|text| write_atomic(&path, &text).map_err(|e| e.to_string()));
+        self.note_persistence("settings", &path, result);
+    }
+
+    /// The stored volumes reach the audio output (at startup and whenever it is opened).
+    fn apply_volumes(&mut self) {
+        if let Some(audio) = self.audio.as_mut() {
+            audio.set_music_volume(f32::from(self.settings.volumes[2]) / 10.0);
+            audio.set_effects_volume(f32::from(self.settings.volumes[0]) / 10.0);
         }
     }
 
     /// Read `settings.json` and `profiles.json` if present (called once at startup by `main`).
+    /// A malformed or oversized document is ignored (logged); values are clamped to their ranges.
     pub fn load_settings(&mut self) {
         self.load_profiles();
         let path = self.artifacts.join("settings.json");
-        if let Ok(text) = std::fs::read_to_string(&path)
-            && let Ok(s) = serde_json::from_str::<Settings>(&text)
-        {
-            self.settings = s;
+        if let Some(text) = read_bounded(&path, PERSIST_MAX_BYTES) {
+            match serde_json::from_str::<Settings>(&text) {
+                Ok(s) => self.settings = s.sanitized(),
+                Err(e) => eprintln!("opensherwood: settings {}: {e}; ignored", path.display()),
+            }
         }
+        self.apply_volumes();
     }
 
     /// Leave the load / save screen the way it was entered.
@@ -1337,6 +1400,7 @@ impl Session {
                 }
             }
         };
+        self.apply_volumes();
     }
 
     /// Start the music that belongs to the current scenario (retail track names by map).
@@ -1439,6 +1503,7 @@ impl Session {
                 )
             }))
             .collect(),
+            starting_money: world.vm.as_ref().and(self.starting_money),
         })
     }
 
@@ -1824,7 +1889,7 @@ impl Session {
                 let (mut spec, profiles) =
                     mission::build_spec_checked(&mission_file, info, geometry, lenient_assets())?;
                 spec.lenient_natives = self.lenient_natives;
-                spec.starting_money = i32::try_from(self.profile().money).unwrap_or(0);
+                spec.starting_money = self.money_override.take().unwrap_or(self.profile().money);
                 let mut world = World::new_mission(scenario, seed, &spec)?;
                 // Optional: a level without a mini-map picture has no overlay (logged).
                 let minimap = Self::load_minimap(game, &map, ambiance);
@@ -1833,10 +1898,13 @@ impl Session {
                     world.attach_catalog(catalog, None, None);
                 }
                 self.minimap = minimap;
+                self.starting_money = Some(spec.starting_money);
                 (world, Some(bg))
             }
             Scenario::Synthetic(_) | Scenario::Menu(_) => {
                 self.minimap = None;
+                self.money_override = None;
+                self.starting_money = None;
                 (World::new(scenario, seed)?, None)
             }
         };
@@ -1893,7 +1961,7 @@ impl Session {
         self.notice = None;
         // Presentation state derived from the installed world, never from session history.
         self.hud = HudState {
-            money: self.profile().money,
+            money: u32::try_from(self.profile().money).unwrap_or(0),
             clover: 0,
             hero_name: self.hero_name_lines(),
         };
@@ -2017,6 +2085,7 @@ impl Session {
             }),
             "reset" => {
                 let p: ResetParams = params_required(p)?;
+                self.money_override = p.starting_money;
                 self.reset(p.scenario, p.seed).map_err(engine_err)?;
                 let ui = self.ui_state();
                 match self.world.as_ref() {
@@ -2110,6 +2179,7 @@ impl Session {
                         .as_ref()
                         .map_or_else(opensherwood_core::Hashes::default, World::hashes),
                     ui,
+                    persistence_error: self.persistence_error.clone(),
                 })
             }
             "snapshot" => {
@@ -2308,6 +2378,7 @@ impl Session {
                         "replay was recorded with different game content",
                     ));
                 }
+                self.money_override = replay.header.starting_money;
                 self.reset(replay.header.scenario.clone(), replay.header.seed)
                     .map_err(engine_err)?;
                 // The header must be exactly what this session would record now: a replay with
@@ -2475,6 +2546,44 @@ impl Session {
             )),
         }
     }
+}
+
+/// Longest persistence document (`profiles.json`, `settings.json`) that is read.
+const PERSIST_MAX_BYTES: u64 = 1 << 20;
+
+/// Read a small document, or `None` when missing, unreadable or over `max` bytes (logged).
+fn read_bounded(path: &Path, max: u64) -> Option<String> {
+    let len = std::fs::metadata(path).ok()?.len();
+    if len > max {
+        eprintln!(
+            "opensherwood: {}: {len} bytes, at most {max} are read; ignored",
+            path.display()
+        );
+        return None;
+    }
+    match std::fs::read_to_string(path) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            eprintln!("opensherwood: {}: {e}; ignored", path.display());
+            None
+        }
+    }
+}
+
+/// Write a document atomically: the parent directory is created, the text goes to a temporary
+/// file next to the target and is renamed over it, so an interrupted write never truncates the
+/// only copy.
+fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

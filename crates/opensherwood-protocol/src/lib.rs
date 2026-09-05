@@ -9,7 +9,7 @@ pub use opensherwood_core::{Hashes, InputEvent, Observation, Scenario, Snapshot}
 /// = [`REPLAY_TIME_SESSION`]), checkpoints carry `world_tick`, the tick-0 checkpoint is kept.
 /// 5: checkpoints carry the `session` digest (screen, UI state, notice) and the `frame` hash; a
 /// replay needs a checkpoint at tick 0 and a terminal one at its last tick.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// The only replay time model: one unit per `advance` of the session (every `step` tick, whether
 /// a screen consumed the events or the world stepped). Screens are part of the timeline.
@@ -141,6 +141,10 @@ pub struct ResetParams {
     /// Seed.
     #[serde(default)]
     pub seed: u64,
+    /// Starting money of a mission (the selected profile's money when absent). Replays record
+    /// the value used, so playback does not depend on the profile file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starting_money: Option<i32>,
 }
 
 /// One event scheduled inside a `step`.
@@ -209,6 +213,10 @@ pub struct ObserveResult {
     /// Active app screen, `None` while the world is played directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<UiState>,
+    /// The last failed profile / settings write (cleared by a successful one): the player's
+    /// data did not reach the disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistence_error: Option<String>,
 }
 
 /// A clickable element of a screen.
@@ -222,6 +230,9 @@ pub struct UiItem {
     pub rect: [i32; 4],
     /// Whether the element reacts to clicks.
     pub enabled: bool,
+    /// Whether the element is the current selection (list rows).
+    #[serde(default)]
+    pub selected: bool,
 }
 
 /// State of the screen shown over (or instead of) the world.
@@ -355,6 +366,10 @@ pub struct ReplayHeader {
     pub seed: u64,
     /// Named RNG streams and their initial (seed, stream id).
     pub rng_streams: std::collections::BTreeMap<String, RngStreamInit>,
+    /// Starting money of a mission scenario (`None` for the others): a canonical input of the
+    /// mission, recorded so playback does not read the profile file.
+    #[serde(default)]
+    pub starting_money: Option<i32>,
 }
 
 /// Initial state of one named RNG stream.
@@ -395,6 +410,10 @@ impl ReplayHeader {
         check("hash_schema", self.hash_schema == other.hash_schema);
         check("seed", self.seed == other.seed);
         check("rng_streams", self.rng_streams == other.rng_streams);
+        check(
+            "starting_money",
+            self.starting_money == other.starting_money,
+        );
         out
     }
 
@@ -958,6 +977,7 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
+                starting_money: None,
             },
             events: vec![ReplayEvent {
                 tick: 3,
@@ -1029,6 +1049,7 @@ mod tests {
             )]
             .into_iter()
             .collect(),
+            starting_money: None,
         }
     }
 

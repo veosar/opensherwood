@@ -4,11 +4,14 @@
 //! so of the snapshot, of `validate` and of the `actors` hash) and stepped by [`World::ai_tick`]
 //! from `World::simulate`, before the waypoint programs run.
 //!
-//! Every constant below is a **hypothesis**: the spec gives the animation ids, their tick counts
-//! and the punch's 30-35 px reach from the data, but no sight range, cone angle, noise radius or
-//! timer was measured (its section 7 lists the oracle captures that would settle them). The
-//! values are chosen to make the first mission playable and are pinned by tests so that a
-//! correction is a deliberate ruleset bump.
+//! Status of the constants below (`docs/original/stealth-and-combat.md` 8, measured 2026-09-05):
+//! the noise channel is **measured** (a running hero is heard at 330 px and more by soldiers
+//! not facing him, and they charge at once, without the noticed / alarm pause), the timed
+//! states' durations come from the profiles' tables on the measured animation clock
+//! (`anim.rs`); the view cone (angle, range, the crouch divisor), the alert timeout, the
+//! knock-out timer and the punch's arc remain **hypotheses** (section 7 lists the captures
+//! that would settle them). Every value is pinned by tests so that a correction is a
+//! deliberate ruleset bump.
 //!
 //! Not modelled (documented gaps): occluders and walls do not block sight; civilians neither
 //! perceive nor raise the alarm; walking makes no noise; soldiers do not fight, shoot, revive
@@ -29,7 +32,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::anim::{AnimSet, direction_of};
+use crate::anim::{AnimSet, direction_of, world_ticks};
 use crate::fixed::Fixed;
 use crate::vm::{Assumption, charge_budget};
 use crate::world::{Entity, EntityKind, Gait, ORDER_SEARCH_WORK, Posture, Team, World, facing_of};
@@ -164,17 +167,22 @@ impl ActorStatus {
 /// Half opening angle of a soldier's view cone in 1/256 turns: 32 = 45 degrees, a 90 degree
 /// cone. Hypothesis (no field of the data reads as an angle; `stealth-and-combat.md` 2.3 / 7.2).
 pub const VIEW_CONE_HALF_ANGLE_256: i32 = 32;
-/// Range of the view cone in map pixels. Hypothesis (the profile has no field in the 100..500 px
-/// range a cone would need; the rails' check-for radii are 25..125 and native 160 compares
-/// distances of 10..150, so 200 px puts a guard's sight beyond his patrol checks).
-pub const VIEW_RANGE: i32 = 200;
+/// Range of the view cone in map pixels. Hypothesis, bounded by the measurement: a walking
+/// hero 290..450 px from standing soldiers (not facing him) provoked nothing
+/// (`stealth-and-combat.md` 8.6), so the range of a soldier not facing him is below 290 px;
+/// a facing soldier was not measured. 250 keeps the sight beyond the rails' check-for radii
+/// (25..125) and native 160's distances (10..150).
+pub const VIEW_RANGE: i32 = 250;
 /// A crouched player character is seen at the range over this divisor (manual p. 16: crouching
 /// characters are less visible; the factor is a hypothesis).
 pub const CROUCH_VIEW_DIVISOR: i32 = 2;
 /// Radius in map pixels within which a running player character is heard whatever the
 /// soldier faces (manual p. 16: running makes a lot of noise; the console's `NOISE` shows such a
-/// radius exists). Hypothesis. Walking and sneaking make no noise here.
-pub const RUN_NOISE_RADIUS: i32 = 150;
+/// radius exists). Measured lower bound: soldiers not facing the hero detected his run from
+/// at least 330 px and charged at once (`stealth-and-combat.md` 8.6); the exact radius is not
+/// measured, 350 is the engine's choice above the bound. Walking (nothing at 290 px, measured)
+/// and sneaking make no noise.
+pub const RUN_NOISE_RADIUS: i32 = 350;
 /// Ticks an alerted soldier keeps searching after his last sighting before he returns to his
 /// patrol (5 s at 60 ticks per second). Hypothesis.
 pub const ALERT_TIMEOUT_TICKS: u32 = 300;
@@ -201,19 +209,20 @@ pub const BACK_ARC_HALF_ANGLE_256: i32 = 48;
 /// soldiers and no player characters costs 2^17 a tick, and a search over the largest accepted
 /// grid (`nav::MAX_CELLS`) fits three times.
 pub const AI_WORK_PER_TICK: u64 = 1 << 24;
-/// Fallback durations in ticks of the timed states when the profile has no block for the
-/// animation (or the world has no catalog): the spec's tick counts of actions 141, 142, 41, 49
-/// and 123 (`sprite-animations.md`, "Combat, state and stealth ids"; each tick of the timing
-/// word is one world tick here, as the animation player already assumes).
-pub const NOTICED_TICKS: u32 = 6;
-/// See [`NOTICED_TICKS`].
-pub const ALARM_TICKS: u32 = 11;
-/// See [`NOTICED_TICKS`].
-pub const KNOCKED_DOWN_TICKS: u32 = 13;
-/// See [`NOTICED_TICKS`].
-pub const GET_UP_TICKS: u32 = 16;
-/// See [`NOTICED_TICKS`].
-pub const PUNCH_TICKS: u32 = 12;
+/// Fallback durations in world ticks of the timed states when the profile has no block for
+/// the animation (or the world has no catalog): the soldier profiles' actions 141, 142, 41 and
+/// 49 and the hero's 123 on the animation clock (`sprite-animations.md`, "Reading rules": a
+/// frame lasts its tick half plus one table ticks of 3 clocks at 64 Hz; `anim::world_ticks`
+/// converts): 141 = 5 frames of 6 ticks -> 11 table ticks -> 31 world ticks.
+pub const NOTICED_TICKS: u32 = world_ticks(11);
+/// See [`NOTICED_TICKS`]: 142 = 8 frames of 11 ticks -> 19 table ticks.
+pub const ALARM_TICKS: u32 = world_ticks(19);
+/// See [`NOTICED_TICKS`]: 41 = 8 frames of 13 ticks -> 21 table ticks.
+pub const KNOCKED_DOWN_TICKS: u32 = world_ticks(21);
+/// See [`NOTICED_TICKS`]: 49 = 8 frames of 16 ticks -> 24 table ticks.
+pub const GET_UP_TICKS: u32 = world_ticks(24);
+/// See [`NOTICED_TICKS`]: 123 = 8 frames of 11 ticks (the hero) -> 19 table ticks.
+pub const PUNCH_TICKS: u32 = world_ticks(19);
 /// Hit points of a human whose profile gives none (player characters, civilians): the profile
 /// table's PC and CV records have no field read as hit points yet (`profile.md`). Hypothesis.
 pub const DEFAULT_HIT_POINTS: i32 = 100;
@@ -415,15 +424,25 @@ pub fn wanted_animation(e: &Entity, set: &AnimSet) -> u32 {
     }
 }
 
-/// A timed state's duration: the length of the animation it plays for this entity (the block of
-/// the entity's profile facing its direction), else `fallback`.
+/// A timed state's duration in world ticks: one loop of the animation it plays for this entity
+/// (the block of the entity's profile facing its direction) on the animation clock
+/// (`AnimSet::world_ticks`), else `fallback`.
 fn state_ticks(world: &World, e: &Entity, block: fn(&AnimSet) -> &[u32; 8], fallback: u32) -> u32 {
     let ticks = e
         .anim
         .as_ref()
         .and_then(|a| world.catalog.sets.get(&a.set))
-        .and_then(|set| set.length(block(set)[direction_of(e.facing256)]));
+        .and_then(|set| set.world_ticks(block(set)[direction_of(e.facing256)]));
     ticks.unwrap_or(fallback).max(1)
+}
+
+/// How a soldier perceived a player character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Channel {
+    /// Inside the view cone (hypothesis: the geometry is not measured).
+    Sight,
+    /// A running character within the noise radius (measured, `stealth-and-combat.md` 8.6).
+    Noise,
 }
 
 /// Whether the entity's profile has the knock-out blow: a set without action 123 cannot punch;
@@ -465,8 +484,9 @@ fn perceives(s: &Entity) -> bool {
         && s.ai_state != AiState::Punching
 }
 
-/// Whether soldier `s` sees or hears player character `p` this tick.
-fn stimulus(s: &Entity, p: &Entity) -> bool {
+/// Whether (and how) soldier `s` sees or hears player character `p` this tick: sight first,
+/// then the noise of a run.
+fn stimulus(s: &Entity, p: &Entity) -> Option<Channel> {
     let range = if p.posture == Posture::Crouched {
         VIEW_RANGE / CROUCH_VIEW_DIVISOR
     } else {
@@ -479,10 +499,11 @@ fn stimulus(s: &Entity, p: &Entity) -> bool {
         range,
         VIEW_CONE_HALF_ANGLE_256,
     ) {
-        return true;
+        return Some(Channel::Sight);
     }
     let noisy = p.target.is_some() && p.gait == Gait::Run && p.posture == Posture::Standing;
-    noisy && Fixed::length(p.x - s.x, p.y - s.y) <= Fixed::from_int(RUN_NOISE_RADIUS)
+    (noisy && Fixed::length(p.x - s.x, p.y - s.y) <= Fixed::from_int(RUN_NOISE_RADIUS))
+        .then_some(Channel::Noise)
 }
 
 impl World {
@@ -512,12 +533,12 @@ impl World {
     }
 
     /// The position of the first player character (in slot order) each soldier perceives this
-    /// tick. The perceivable player characters are indexed once (one unit per entity), then
+    /// tick, with the channel. The perceivable player characters are indexed once (one unit per entity), then
     /// the entities are inspected from `ai_cursor` on, round robin (one unit each, plus one
     /// per player character tested for a soldier); when the budget runs out the cursor stays on
     /// the entity not finished, which perceives nothing this tick, and the next tick resumes
     /// there; a completed scan resets the cursor to 0.
-    fn perception(&mut self, budget: &mut u64) -> Vec<Option<(Fixed, Fixed)>> {
+    fn perception(&mut self, budget: &mut u64) -> Vec<Option<((Fixed, Fixed), Channel)>> {
         let n = self.entities.len();
         let mut out = vec![None; n];
         if n == 0 {
@@ -552,8 +573,8 @@ impl World {
                     break 'scan;
                 }
                 let p = &self.entities[pi];
-                if stimulus(s, p) {
-                    out[i] = Some((p.x, p.y));
+                if let Some(channel) = stimulus(s, p) {
+                    out[i] = Some(((p.x, p.y), channel));
                     break;
                 }
             }
@@ -598,6 +619,7 @@ impl World {
         let e = &mut self.entities[i];
         e.ai_state = AiState::Patrol;
         e.state_ticks = 0;
+        e.heard = false;
         e.last_seen = None;
         e.alert_origin = None;
     }
@@ -621,29 +643,57 @@ impl World {
         }
     }
 
-    /// A stimulus reaches a soldier in a normal state: he notices it (141).
+    /// A sighting reaches a soldier in a normal state: he notices it (141), then raises the
+    /// alarm (142) and searches. The sequence is a hypothesis (the cone was not measured).
     fn notice(&mut self, i: usize, seen: (Fixed, Fixed)) {
         let e = &mut self.entities[i];
         if e.ai_state == AiState::Patrol {
             e.alert_origin = Some((e.x, e.y));
         }
         e.last_seen = Some(seen);
+        e.heard = false;
         stop(e);
         self.enter_timed(i, AiState::Noticed, |s| &s.noticed, NOTICED_TICKS);
     }
 
+    /// A running character is heard by a soldier in a normal state: he charges at once
+    /// (`Alerted`, the alert run 151 to the position of the noise) without the noticed / alarm
+    /// pause (measured: `stealth-and-combat.md` 8.6, soldiers converged within 1.5 s of the
+    /// first running frames, no reaction animation seen). `heard` marks the alert as the
+    /// measured channel so its action ids record no perception assumption.
+    fn charge(&mut self, i: usize, heard_at: (Fixed, Fixed), budget: &mut u64) {
+        let e = &mut self.entities[i];
+        if e.ai_state == AiState::Patrol {
+            e.alert_origin = Some((e.x, e.y));
+        }
+        e.last_seen = Some(heard_at);
+        e.heard = true;
+        e.ai_state = AiState::Alerted;
+        e.state_ticks = ALERT_TIMEOUT_TICKS;
+        stop(e);
+        self.walk_to(i, heard_at, Gait::Run, budget);
+    }
+
     /// The state machine of one human for this tick.
-    fn advance_state(&mut self, i: usize, seen: Option<(Fixed, Fixed)>, budget: &mut u64) {
+    fn advance_state(
+        &mut self,
+        i: usize,
+        stimulus: Option<((Fixed, Fixed), Channel)>,
+        budget: &mut u64,
+    ) {
+        let seen = stimulus.map(|(p, _)| p);
         match self.entities[i].ai_state {
-            AiState::Patrol | AiState::Returning => {
-                if let Some(p) = seen {
-                    self.notice(i, p);
-                } else if self.entities[i].ai_state == AiState::Returning
-                    && self.entities[i].target.is_none()
-                {
-                    self.resume_patrol(i);
+            AiState::Patrol | AiState::Returning => match stimulus {
+                Some((p, Channel::Sight)) => self.notice(i, p),
+                Some((p, Channel::Noise)) => self.charge(i, p, budget),
+                None => {
+                    if self.entities[i].ai_state == AiState::Returning
+                        && self.entities[i].target.is_none()
+                    {
+                        self.resume_patrol(i);
+                    }
                 }
-            }
+            },
             AiState::Noticed => {
                 if seen.is_some() {
                     self.entities[i].last_seen = seen;
@@ -779,6 +829,7 @@ impl World {
         stop(e);
         e.attack_target = None;
         e.fell_backward = backward;
+        e.heard = false;
         if e.alert_origin.is_none() {
             e.alert_origin = Some((e.x, e.y));
         }
@@ -998,11 +1049,33 @@ mod tests {
             w.step(&[]);
         }
         assert_eq!(states(&w).1, AiState::Patrol);
-        // Behind the guard's back but running within the noise radius: heard.
+        // Behind the guard's back but running within the noise radius: heard, and he charges
+        // at once (no noticed / alarm pause: measured), running to where the noise was.
         click(&mut w, 500, 240, Button::Left);
         click(&mut w, 500, 240, Button::Left);
         assert_eq!(w.entities[0].gait, Gait::Run);
+        let g = &w.entities[1];
+        assert_eq!(g.ai_state, AiState::Alerted);
+        assert!(g.heard && g.target.is_some() && g.gait == Gait::Run);
+        assert_eq!(g.state_ticks, ALERT_TIMEOUT_TICKS);
+        assert_eq!(g.alert_origin, Some((f(300), f(240))));
+        assert_eq!(g.action, actions::ALERT_RUN);
+        w.validate().unwrap();
+        // A run heard from 340 px (beyond the measured 330 px bound) alerts; from 360 px
+        // (beyond the radius) it does not.
+        let mut w = scene((60, 240), 128, (400, 240));
+        click(&mut w, 500, 240, Button::Left);
+        click(&mut w, 500, 240, Button::Left);
+        assert_eq!(states(&w).1, AiState::Alerted);
+        let mut w = scene((40, 240), 128, (400, 240));
+        click(&mut w, 500, 240, Button::Left);
+        click(&mut w, 500, 240, Button::Left);
+        assert_eq!(states(&w).1, AiState::Patrol);
+        // A sighting keeps the noticed -> alarm sequence and is not marked as heard.
+        let mut w = scene((400, 240), 128, (250, 240));
+        w.step(&[]);
         assert_eq!(states(&w).1, AiState::Noticed);
+        assert!(!w.entities[1].heard);
         // Walking behind him is silent.
         let mut w = scene((300, 240), 128, (400, 240));
         click(&mut w, 500, 240, Button::Left);
@@ -1148,6 +1221,7 @@ mod tests {
         let frame = |frame| FrameSpec {
             frame,
             duration: 1,
+            advance: 0,
             offset_x: 0,
             offset_y: 0,
         };
@@ -1171,10 +1245,12 @@ mod tests {
         let frame = |duration| FrameSpec {
             frame: 0,
             duration,
+            advance: 0,
             offset_x: 0,
             offset_y: 0,
         };
-        // Animation 2 is the noticed block (3 + 4 ticks), 3 the alarm block (2 ticks).
+        // Animation 2 is the noticed block (3 + 4 table ticks = 315 clock units = 20 world
+        // ticks), 3 the alarm block (2 table ticks = 90 units = 6 world ticks).
         let mut set = AnimSet::standing_only(
             vec![
                 vec![frame(1)],
@@ -1193,16 +1269,24 @@ mod tests {
         w.attach_catalog(catalog, None, Some("soldier"));
         w.step(&[]);
         let g = &w.entities[1];
-        assert_eq!((g.ai_state, g.state_ticks), (AiState::Noticed, 7));
+        assert_eq!((g.ai_state, g.state_ticks), (AiState::Noticed, 20));
         assert_eq!(g.anim.as_ref().unwrap().animation, 2);
-        for _ in 0..6 {
+        // The first frame (135 units) changes on the ninth tick of the state.
+        for _ in 0..8 {
+            w.step(&[]);
+        }
+        assert_eq!(w.entities[1].anim.as_ref().unwrap().frame, 0);
+        w.step(&[]);
+        assert_eq!(w.entities[1].anim.as_ref().unwrap().frame, 1);
+        for _ in 0..10 {
             w.step(&[]);
         }
         assert_eq!(w.entities[1].ai_state, AiState::Noticed);
         assert_eq!(w.entities[1].anim.as_ref().unwrap().frame, 1);
+        // The twentieth tick ends the state as the loop completes.
         w.step(&[]);
         let g = &w.entities[1];
-        assert_eq!((g.ai_state, g.state_ticks), (AiState::Alarm, 2));
+        assert_eq!((g.ai_state, g.state_ticks), (AiState::Alarm, 6));
         assert_eq!(g.anim.as_ref().unwrap().animation, 3);
         w.validate().unwrap();
     }
@@ -1211,7 +1295,8 @@ mod tests {
     fn stealth_state_survives_snapshots_and_is_validated() {
         let mut w = scene((400, 240), 128, (500, 240));
         click(&mut w, 400, 240, Button::Left);
-        for _ in 0..80 {
+        // 68 px into reach at 1.42 px per tick, then the 60-tick fall.
+        for _ in 0..130 {
             w.step(&[]);
         }
         assert_eq!(w.entities[1].ai_state, AiState::Lying);
@@ -1513,28 +1598,20 @@ mod tests {
         }
         w.selected = Some(w.entities[0].id);
         w.validate().unwrap();
-        click(&mut w, 700, 400, Button::Left);
-        click(&mut w, 700, 400, Button::Left);
-        assert_eq!(w.entities[0].gait, Gait::Run);
-        // Everyone noticed him on the double click's tick; the alarm follows, then the run.
+        // The hero runs east (the order set by hand so that the tick of the mass alert can be
+        // stepped with an explicit budget below).
+        let hero = &mut w.entities[0];
+        hero.target = Some((f(700), f(400)));
+        hero.gait = Gait::Run;
         assert!(
             w.entities
                 .iter()
                 .skip(1)
-                .all(|e| e.ai_state == AiState::Noticed)
-        );
-        for _ in 0..NOTICED_TICKS + ALARM_TICKS - 1 {
-            w.step(&[]);
-        }
-        assert!(
-            w.entities
-                .iter()
-                .skip(1)
-                .all(|e| e.ai_state == AiState::Alarm)
+                .all(|e| e.ai_state == AiState::Patrol)
         );
         let snap = w.snapshot(None);
-        // The transition tick with the real budget: every soldier is alerted and running, the
-        // work stayed within the bound.
+        // The tick of the noise with the real budget: every soldier hears him and charges at
+        // once, alerted and running, the work stayed within the bound.
         let mut full = w.clone();
         let spent = full.ai_tick();
         assert!(spent <= AI_WORK_PER_TICK);
@@ -1542,7 +1619,7 @@ mod tests {
             full.entities
                 .iter()
                 .skip(1)
-                .all(|e| e.ai_state == AiState::Alerted && e.target.is_some())
+                .all(|e| e.ai_state == AiState::Alerted && e.heard && e.target.is_some())
         );
         // A budget that covers the perception and a few searches: the rest stand alerted
         // without a path this tick and get theirs on the following ticks.
@@ -1567,7 +1644,10 @@ mod tests {
                 .all(|e| e.ai_state == AiState::Alerted)
         );
         w.validate().unwrap();
-        for _ in 0..3 {
+        // Thirty ticks later the hero has run 50 px east, out of everyone's reach, and every
+        // starved soldier re-planned (an alerted soldier within punch reach of the noise
+        // stands where he is).
+        for _ in 0..30 {
             w.step(&[]);
         }
         assert!(
@@ -1578,7 +1658,7 @@ mod tests {
         let mut w2 = crowd(0, 0);
         w2.restore(&snap).unwrap();
         w2.ai_tick_with(small);
-        for _ in 0..3 {
+        for _ in 0..30 {
             w2.step(&[]);
         }
         assert_eq!(w2.hashes(), w.hashes());

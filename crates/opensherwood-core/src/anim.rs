@@ -1,18 +1,68 @@
 //! Sprite animation state. The core does not read files: the app builds a [`Catalog`] from the
 //! parsed `.rhs` profiles and attaches it to the world. Animation *state* is authoritative (it is
 //! part of the snapshot and of the hash); the catalog is static data rebuilt on load.
+//!
+//! # The animation clock (measured 2026-09-05, `docs/original/stealth-and-combat.md` 8.4)
+//!
+//! The original displays a walking frame for 46.9 ms (hero walk: 22 frames of 4 px per 1.044 s
+//! stride, 85.3 px/s) and the crouched cycle (14 frames whose tick halves sum to 18) for 1.50 s.
+//! The reading that fits both is an animation clock of [`CLOCK_HZ`] = 64 Hz where a frame lasts
+//! `(tick half + 1)` table ticks of [`CLOCKS_PER_TABLE_TICK`] = 3 clocks: a walking frame (tick
+//! half 0) is one table tick, 46.875 ms; the sneak cycle is `18 + 14` = 32 table ticks = 96 clocks
+//! = 1.500 s (`docs/formats/sprite-animations.md`, "Reading rules"). The world runs at
+//! [`WORLD_TICK_HZ`] = 60 Hz, so a table tick is 2.8125 world ticks: the player keeps the
+//! remainder in [`AnimState::elapsed`], counted in units of 1/15 clock ([`UNITS_PER_WORLD_TICK`]
+//! = 16 per world tick, [`UNITS_PER_TABLE_TICK`] = 45 per table tick), and a frame changes when
+//! the units reach `duration x 45`. Everything is integer and part of the snapshot.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// One frame of an animation: bank frame index, duration in ticks, anchor inside the sequence box.
+use crate::fixed::Fixed;
+
+/// The original's animation clock in Hz (measured: 64 Hz fits the 46.9 ms walking frame, the
+/// 93.75 ms idle step and the 1.50 s crouched cycle; `stealth-and-combat.md` 8.4).
+pub const CLOCK_HZ: u32 = 64;
+/// Clocks per tick of the animation tables' timing word (a frame lasts `(tick half + 1)` such
+/// ticks: 3 clocks = 46.875 ms for a walking frame).
+pub const CLOCKS_PER_TABLE_TICK: u32 = 3;
+/// The world's tick rate in Hz (`docs/architecture.md`).
+pub const WORLD_TICK_HZ: u32 = 60;
+/// Clock sub-units per world tick: `CLOCK_HZ / WORLD_TICK_HZ` = 16 / 15 clocks per world tick,
+/// so with 15 units per clock a world tick is 16 units ...
+pub const UNITS_PER_WORLD_TICK: u32 = 16;
+/// ... and a table tick (3 clocks) is 45 units. A frame of duration `d` is displayed for
+/// `45 d` units = `2.8125 d` world ticks.
+pub const UNITS_PER_TABLE_TICK: u32 = 45;
+
+/// World ticks a run of `table_ticks` table ticks takes: the smallest number of world ticks
+/// whose units reach it (`ceil(45 t / 16)`), which is when the player leaves the last frame of
+/// an animation started with an empty accumulator. Saturates.
+#[must_use]
+pub const fn world_ticks(table_ticks: u32) -> u32 {
+    let units = (table_ticks as u64) * (UNITS_PER_TABLE_TICK as u64);
+    let ticks = units.div_ceil(UNITS_PER_WORLD_TICK as u64);
+    if ticks > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        ticks as u32
+    }
+}
+
+/// One frame of an animation: bank frame index, duration in table ticks, movement along the
+/// facing, anchor inside the sequence box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameSpec {
     /// Frame index in the sprite bank.
     pub frame: u32,
-    /// Display duration in ticks (at least 1).
+    /// Display duration in table ticks of [`CLOCKS_PER_TABLE_TICK`] clocks: the tick half of the
+    /// profile's timing word plus one (at least 1).
     pub duration: u32,
+    /// Movement along the facing while the frame is displayed, in map pixels (the signed high
+    /// half of the timing word; 0 for static frames). Only cycles use it ([`AnimSet::cycle_speed`]).
+    #[serde(default)]
+    pub advance: i32,
     /// Offset of the frame's left edge from the entity position (anchor minus sequence origin).
     pub offset_x: i32,
     /// Offset of the frame's top edge from the entity position.
@@ -111,8 +161,8 @@ impl AnimSet {
         }
     }
 
-    /// Length of one loop of animation `index` in ticks (the sum of its frame durations, each at
-    /// least 1); `None` when the index does not exist or the animation has no frames.
+    /// Length of one loop of animation `index` in table ticks (the sum of its frame durations,
+    /// each at least 1); `None` when the index does not exist or the animation has no frames.
     #[must_use]
     pub fn length(&self, index: u32) -> Option<u32> {
         let frames = self.animations.get(index as usize)?;
@@ -124,6 +174,34 @@ impl AnimSet {
                 .iter()
                 .fold(0u32, |acc, f| acc.saturating_add(f.duration.max(1))),
         )
+    }
+
+    /// World ticks one loop of animation `index` takes ([`world_ticks`] of its [`Self::length`]).
+    #[must_use]
+    pub fn world_ticks(&self, index: u32) -> Option<u32> {
+        self.length(index).map(world_ticks)
+    }
+
+    /// Speed of a movement cycle in map pixels per world tick (24.8): the cycle's advance
+    /// (the sum of its frames' `advance`) over its duration in world ticks, i.e.
+    /// `advance x (CLOCK_HZ / CLOCKS_PER_TABLE_TICK) / WORLD_TICK_HZ` per table tick =
+    /// `advance x 16 / 45`. The hero's walk (22 frames of 4 px, one table tick each) gives
+    /// 1.42 px per tick = 85.3 px/s, the measured value; the entity moves at this constant
+    /// speed rather than in per-frame steps (`docs/original/stealth-and-combat.md` 8.8).
+    /// `None` when the animation does not exist, has no frames or does not move forward.
+    #[must_use]
+    pub fn cycle_speed(&self, index: u32) -> Option<Fixed> {
+        let frames = self.animations.get(index as usize)?;
+        let ticks = self.length(index)?;
+        let advance: i64 = frames.iter().map(|f| i64::from(f.advance)).sum();
+        if advance <= 0 {
+            return None;
+        }
+        // raw = round(advance * 16 / 45 * 256 / ticks)
+        let num = advance * i64::from(UNITS_PER_WORLD_TICK) * i64::from(Fixed::ONE.raw());
+        let den = i64::from(UNITS_PER_TABLE_TICK) * i64::from(ticks);
+        let raw = (num + den / 2) / den;
+        Some(Fixed::from_raw(raw.clamp(0, i64::from(i32::MAX)) as i32))
     }
 }
 
@@ -143,7 +221,8 @@ pub struct AnimState {
     pub animation: u32,
     /// Current frame within the animation.
     pub frame: u32,
-    /// Ticks spent on the current frame.
+    /// Clock units spent on the current frame ([`UNITS_PER_WORLD_TICK`] per world tick), below
+    /// the frame's `duration x UNITS_PER_TABLE_TICK`.
     pub elapsed: u32,
 }
 
@@ -167,7 +246,9 @@ impl AnimState {
         anim.get(self.frame as usize).copied()
     }
 
-    /// Switch to `animation` if it differs, then advance one tick (looping).
+    /// Switch to `animation` if it differs, then advance one world tick of the clock (looping):
+    /// the frame changes when its `duration x UNITS_PER_TABLE_TICK` units are spent and the
+    /// remainder carries over, so the long-run rate is exact.
     pub fn advance(&mut self, catalog: &Catalog, animation: u32) {
         let Some(set) = catalog.sets.get(&self.set) else {
             return;
@@ -185,10 +266,14 @@ impl AnimState {
             return;
         }
         let len = anim.len() as u32;
-        let duration = anim[(self.frame % len) as usize].duration.max(1);
-        self.elapsed = self.elapsed.saturating_add(1);
-        if self.elapsed >= duration {
-            self.elapsed = 0;
+        let units = anim[(self.frame % len) as usize]
+            .duration
+            .max(1)
+            .saturating_mul(UNITS_PER_TABLE_TICK);
+        self.elapsed = self.elapsed.saturating_add(UNITS_PER_WORLD_TICK);
+        if self.elapsed >= units {
+            // A frame lasts at least 45 units and a tick adds 16, so at most one change per tick.
+            self.elapsed -= units;
             self.frame = (self.frame % len).saturating_add(1) % len;
         }
     }
@@ -205,18 +290,22 @@ pub fn direction_of(facing256: i32) -> usize {
 mod tests {
     use super::*;
 
-    fn catalog() -> Catalog {
-        let f = |frame, duration| FrameSpec {
+    fn frame(frame: u32, duration: u32) -> FrameSpec {
+        FrameSpec {
             frame,
             duration,
+            advance: 0,
             offset_x: 0,
             offset_y: 0,
-        };
+        }
+    }
+
+    fn catalog() -> Catalog {
         let mut sets = BTreeMap::new();
         sets.insert(
             "hero".into(),
             AnimSet::standing_only(
-                vec![vec![f(10, 2), f(11, 1)], vec![f(20, 1)]],
+                vec![vec![frame(10, 2), frame(11, 1)], vec![frame(20, 1)]],
                 [0; 8],
                 [1; 8],
             ),
@@ -225,19 +314,58 @@ mod tests {
     }
 
     #[test]
-    fn advances_and_loops() {
+    fn advances_on_the_clock_and_loops() {
         let c = catalog();
         let mut s = AnimState::new("hero", 0);
         assert_eq!(s.current(&c).unwrap().frame, 10);
+        // Frame 10 lasts 2 table ticks = 90 units: five world ticks (80) are not enough, the
+        // sixth (96) changes the frame and keeps the 6 units of remainder.
+        for k in 1..=5 {
+            s.advance(&c, 0);
+            assert_eq!((s.frame, s.elapsed), (0, 16 * k));
+        }
         s.advance(&c, 0);
-        assert_eq!((s.frame, s.elapsed), (0, 1));
+        assert_eq!((s.frame, s.elapsed), (1, 6));
+        // Frame 11 lasts 45 units: 6 + 16 * 3 = 54 >= 45 on the third tick, remainder 9.
         s.advance(&c, 0);
-        assert_eq!((s.frame, s.elapsed), (1, 0));
         s.advance(&c, 0);
-        assert_eq!((s.frame, s.elapsed), (0, 0));
+        assert_eq!((s.frame, s.elapsed), (1, 38));
+        s.advance(&c, 0);
+        assert_eq!((s.frame, s.elapsed), (0, 9));
         s.advance(&c, 1);
-        assert_eq!((s.animation, s.frame), (1, 0));
+        assert_eq!((s.animation, s.frame, s.elapsed), (1, 0, 0));
         assert_eq!(s.current(&c).unwrap().frame, 20);
+    }
+
+    #[test]
+    fn a_walking_frame_lasts_two_point_eight_world_ticks() {
+        // 22 frames of one table tick (the hero's walk): 22 x 45 = 990 units = 61.875 world
+        // ticks per loop; over 16 loops (990 world ticks) the frame counter wraps exactly 16
+        // times, so the frame rate is 64 / 3 Hz on average.
+        let mut sets = BTreeMap::new();
+        let walk: Vec<FrameSpec> = (0..22).map(|i| frame(i, 1)).collect();
+        sets.insert(
+            "hero".into(),
+            AnimSet::standing_only(vec![walk], [0; 8], [0; 8]),
+        );
+        let c = Catalog { sets };
+        let mut s = AnimState::new("hero", 0);
+        let mut changes = 0;
+        let mut last = 0;
+        for _ in 0..990 {
+            s.advance(&c, 0);
+            if s.frame != last {
+                changes += 1;
+                last = s.frame;
+            }
+        }
+        assert_eq!(changes, 16 * 22);
+        assert_eq!((s.frame, s.elapsed), (0, 0));
+        assert_eq!(world_ticks(1), 3);
+        assert_eq!(world_ticks(22), 62);
+        assert_eq!(world_ticks(32), 90);
+        assert_eq!(world_ticks(0), 0);
+        assert_eq!(world_ticks(u32::MAX), u32::MAX);
     }
 
     #[test]
@@ -247,7 +375,66 @@ mod tests {
         assert_eq!(set.length(0), Some(3));
         assert_eq!(set.length(1), Some(1));
         assert_eq!(set.length(2), None);
+        assert_eq!(set.world_ticks(0), Some(9));
         assert!(set.has_punch);
+    }
+
+    /// The measured hero values (`docs/original/stealth-and-combat.md` 8.8): walk 85.3 px/s,
+    /// run 106.7 (predicted; 101 +- 10 measured), crouched walk 17.8 px/s; the soldier's walk
+    /// 42.7 and alert run 85.3 derived from the same clock.
+    #[test]
+    fn cycle_speeds_match_the_measured_hero_values() {
+        let cycle = |n: u32, ticks: &[u32], adv: &[i32]| -> Vec<FrameSpec> {
+            (0..n as usize)
+                .map(|i| FrameSpec {
+                    frame: i as u32,
+                    duration: ticks[i % ticks.len()],
+                    advance: adv[i % adv.len()],
+                    offset_x: 0,
+                    offset_y: 0,
+                })
+                .collect()
+        };
+        let mut sneak_ticks = vec![3, 3, 3, 3];
+        sneak_ticks.extend([2; 10]);
+        let mut sneak_adv = vec![1];
+        sneak_adv.extend([2; 13]);
+        let set = AnimSet::standing_only(
+            vec![
+                cycle(22, &[1], &[4]),                // hero walk 6
+                cycle(12, &[1], &[5]),                // hero run 7
+                cycle(14, &sneak_ticks, &sneak_adv),  // hero sneak 16
+                cycle(22, &[1], &[2]),                // soldier walk
+                cycle(12, &[1], &[4]),                // soldier alert run 151
+                cycle(6, &[7, 3, 3, 16, 5, 5], &[0]), // an idle: no movement
+                cycle(7, &[1], &[-7]),                // a backward fall
+                Vec::new(),
+            ],
+            [0; 8],
+            [0; 8],
+        );
+        let px_per_s = |f: Fixed| f64::from(f.raw()) / 256.0 * 60.0;
+        let walk = set.cycle_speed(0).unwrap();
+        assert!((px_per_s(walk) - 85.3).abs() < 0.1, "{}", px_per_s(walk));
+        assert_eq!(walk.raw(), 364);
+        let run = set.cycle_speed(1).unwrap();
+        assert!((px_per_s(run) - 106.7).abs() < 0.1, "{}", px_per_s(run));
+        assert_eq!(run.raw(), 455);
+        let sneak = set.cycle_speed(2).unwrap();
+        assert!((px_per_s(sneak) - 17.8).abs() < 0.3, "{}", px_per_s(sneak));
+        assert_eq!(sneak.raw(), 77);
+        assert_eq!(
+            set.length(2),
+            Some(32),
+            "the sneak cycle is 32 table ticks = 1.5 s"
+        );
+        assert_eq!(set.world_ticks(2), Some(90));
+        assert_eq!(set.cycle_speed(3).unwrap().raw(), 182);
+        assert_eq!(set.cycle_speed(4).unwrap().raw(), 364);
+        assert_eq!(set.cycle_speed(5), None);
+        assert_eq!(set.cycle_speed(6), None);
+        assert_eq!(set.cycle_speed(7), None);
+        assert_eq!(set.cycle_speed(8), None);
     }
 
     #[test]
