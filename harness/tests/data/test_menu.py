@@ -248,6 +248,16 @@ def test_minimap_toggles_from_the_map_scroll_and_ignores_right_clicks(binary, ga
         assert obs["ui"]["screen"] == "minimap", obs.get("ui")
         e.capture("open.png")
         assert (tmp_path / "closed.png").read_bytes() != (tmp_path / "open.png").read_bytes()
+        # Markers over the map area (h01-measurements-2.md 5): the hero's green oval, at least one
+        # pick-up cross (yellow with a white centre), grey ovals for the unidentified garrison.
+        from PIL import Image
+
+        with Image.open(tmp_path / "open.png") as im:
+            area = im.convert("RGB").crop((728, 112, 728 + 204, 112 + 155))
+            colours = set(area.getdata())
+        assert (164, 251, 82) in colours, "the hero's oval"
+        assert (255, 220, 40) in colours, "a pick-up cross"
+        assert (176, 176, 176) in colours, "an unidentified character"
         t0 = obs["tick"]
         e.step(5)
         assert e.observe(entities=False)["tick"] == t0 + 5
