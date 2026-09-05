@@ -69,7 +69,9 @@ it. See "Stealth layer" and "Melee" below.
 timings are measured, the view cone and the timers hypotheses, every value pinned by tests). `observe` entities
 carry `team` (`player` / `enemy` / `civilian`), `ai_state`
 (`patrol` = normal, `noticed` (action 141), `alarm` (142), `alerted` (searching the last seen position with
-140 / 143 / 151), `returning` (walking back to the post), `punching` (123, player characters), `knocked_down`
+140 / 143 / 151), `returning` (walking back to the post), `return_pending` (the fight or the alert ended
+but the way back could not be searched within the tick's budget: standing with 140, searched again next
+tick), `punching` (123, player characters), `knocked_down`
 (41 / 44), `lying` (47 / 48, knocked out), `getting_up` (49), `dead`), `state_ticks` (ticks left in a timed
 state), `last_seen` and `alert_origin` (map points, 24.8), `attack_target` (entity id), `action` (the sprite
 action id the entity reports: a change fires the script's `ActionChange(previous, new)`), `hp` / `hp_max`
@@ -92,15 +94,20 @@ deterministic quotas (ADR-0008; Codex review 9): a pre-index pass (one unit per 
 about 2^22 + 2^21), the state transitions (one per human; 2^21), the attack orders (one per attacker, the
 victim found in the index; 2^21), the guards' waypoint programs (one per idle guard; 2^21), the movement
 (one per mover, per obstacle-index cell looked at, per obstacle candidate and per polygon edge of the
-walkable geometry tested; 2^20), the animation advance and the action-change scan (one per entity; 2^20
+walkable geometry tested; 2^21), the animation advance and the action-change scan (one per entity; 2^20
 each). A phase gets its quota plus what the phases before it left, so a hostile snapshot cannot starve a
 phase; every path search a phase issues draws from its grant, capped per search at `world::SIM_SEARCH_WORK`
 (2^20): a search that fails with the full cap is unreachable under this budget (the order dropped, the
-instruction skipped), one cut short with less is retried first next tick. Each phase walks its entities
+instruction skipped), one cut short with less changes nothing: the transition that wanted it (a charge, an
+alarm's end, a timed return) keeps its state, the cursor stays on the soldier and the next tick retries it
+first; a fight that ends on an unpaid return leaves the soldier `return_pending` (Codex review 10). Each
+phase walks its entities
 from its own cursor (the snapshot's `cursors: {perception, states, attacks, programs, movement, animation,
 actions}`, in the `world` hash); when its grant runs out the cursor marks where the next tick resumes (past
 an entity that alone exhausted a whole quota). Obstacle entities are queried through a 64 px grid index
-derived from the snapshot (`validate` refuses more than 2^22 cell entries).
+derived from the snapshot (`validate` refuses more than 2^22 cell entries and more than 2048 obstacles in
+one cell; entity sizes are bounded to 256 px and obstacle half extents to `0..=32768`, so one atomic
+movement query always fits the movement quota and a mover never restarts his query from zero forever).
 
 ## Melee
 
@@ -110,13 +117,19 @@ map px is the click of "Orders and movement modes", a longer stroke a drawn figu
 remembers the press (snapshotted, `world` hash). A left click on an enemy soldier is the **attack order**: the
 character walks up and, unless he arrives unseen from behind (the knock-out above), stops 52 px from the
 victim's feet and the **fight** begins: both are `ai_state` = `fighting` with `foe` naming the other and
-`in_combat` true in `observe`; the soldier turns to the attacker and fights where he stands. The soldier
+`in_combat` true in `observe`; the soldier turns to the attacker and fights where he stands. A soldier
+fights one player character at a time: a second attacker in reach waits with his order until the soldier
+is free (the `{"attack_policy": "multi_party"}` assumption; two living fighters always name each other,
+`validate` refuses a soldier fought by two). The soldier
 swings every ~5.3 s (318 ticks with the gameplay RNG's jitter, `swing_ticks`), two swings in three land for
 5 hp (`hp` falls, never regenerates) and cost him one unit of `energy` (0..20, regained after ~4 s); the
 hero's automatic strikes never land against a soldier (hypothesis: the pole arm's reach or a block, recorded
 as the `{"attack_policy": "block"}` assumption). The **forward stroke** (`pointer_down` on the ground, `pointer_move` at
 least 32 px to the right within 45 degrees, `pointer_up`: the manual's figure, drawn 80 px right and 20 px up
-in the measurements) locks onto the nearest enemy soldier (`figure` = `forward_stroke` until delivered) and,
+in the measurements) locks onto the nearest enemy soldier at the press (**`observe.figure_target`**, the
+soldier's id while the button is held, snapshotted and in the `world` hash; `capture` outlines him in
+yellow; the release strikes that soldier whatever moved meanwhile; `figure` = `forward_stroke` until
+delivered) and,
 in the fight, plays the **powerful blow** (`pose` = `powerful_blow`, action 75, `pose_ticks` = 57 to its
 resolution): two units of energy (regained one per 0.9 s), 50 hp when it lands (one in three: the
 `{"attack_policy": "hit_chance"}` assumption, recorded on every roll and on the soldier's jittered
@@ -216,17 +229,21 @@ a low-confidence opcode executed: 0x14, 0x24, 0x28, 0x2b), `"unresolved_jump"`, 
 whether or not a script handler exists (Codex review 9): `"sight_cone"` (the view cone decided a sighting
 that changed a soldier's state), `"noise_radius"` (a run heard from beyond the measured 330 px bound and
 within the engine's 350 px; within the bound the noise channel is measured and records nothing),
-`"alert_policy"` (the noticed -> alarm -> search sequence, the alert timeout, the re-plan, the return to
-the post), `{"attack_policy": "reach" | "block" | "hit_chance" | "post_bound"}` (the attack order
-resolved from behind; the hero's strikes never landing; a chance rolled or a soldier's swing timed with
-the engine's jitter; a soldier standing his ground), `"knock_out"` (the blow felled or failed to fell a
+`"alert_policy"` (the noticed -> alarm -> search sequence a sighting starts, the re-plan while
+searching), `"alert_timeout"` (the alert timeout and the return to the post, recorded before a heard
+charge stores them: the hearing within 330 px and the charge itself record nothing, so no charge wins
+untainted), `{"attack_policy": "reach" | "block" | "hit_chance" | "post_bound" | "multi_party"}`
+(the attack order resolved from behind; the hero's strikes never landing; a chance rolled or a soldier's
+swing timed with the engine's jitter; a soldier standing his ground; a second attacker waiting at reach
+because a soldier fights one at a time), `"knock_out"` (the blow felled or failed to fell a
 victim, native 90 / 128 reported it, or its action id reached a handler), `"profile_stats"`,
 `"tick_rate"`, `"scroll_pickup"`, `"item_pickup"` (a pick-up item was taken: the click gesture, the radius,
 the kind / stack reading and the purse amount), `"zone_at_load"`, `"walk_completion"`, `"action_change_order"`,
 `"campaign_graph"`, `"lenient_assets"`. Every fight is therefore tainted from its first swing and every
-sighting from the tick it changed a state; a win reached over measured rules only (a run heard within the
-bound, the immediate charge) keeps `tainted: false`
-(`a_charge_from_the_unmeasured_noise_band_taints_a_win_read_from_native_97`).
+sighting from the tick it changed a state; a win reached through a heard charge is tainted by
+`alert_timeout` alone, the hearing within the bound and the charge itself recording nothing
+(`a_charge_from_the_unmeasured_noise_band_taints_a_win_read_from_native_97`; `test_running_near_a_soldier_alerts_him_at_once_from_afar`
+and its replay `test_a_heard_charge_records_the_alert_timeout_and_replays_to_the_same_set` on H01).
 Under this model every retail mission is tainted from its load-time callbacks on (the first mission's
 `Initialize` calls effect stubs and policy natives: `test_first_mission_briefing_sequence_then_camera_on_the_hero`
 pins the exact set at load and after 600 ticks). The app dismisses
@@ -240,8 +257,10 @@ mission_lost, tainted, assumptions, money, sequence_active, sequences, faulted, 
 mission_vars, counters, rng_draws, element}` (`element` answers `{"element": i}`: the entry `i` of the script's element
 table as `{kind: map | unmodelled | actor | object | scroll | item | polygon, ...}` (an item carries `item_kind` and `stack`), `null` beyond the table; `money` is the
 script's integer of natives 236 / 237; `fault` is the
-sticky reason behind `faulted`: `{"unknown_native": id}`, `{"arity_mismatch": id}` or
-`"action_queue_overflow"`, `null` while the script runs as written); `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
+sticky reason behind `faulted`: `{"unknown_native": id}`, `{"arity_mismatch": id}`,
+`"action_queue_overflow"` or `"call_stack_overflow"` (a script call beyond the 64-frame limit: the
+callback aborted at the call, its result never fabricated, its transaction rolled back), `null` while the
+script runs as written); `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
 `traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives`,
 `objective_done_before_added`, `out_of_action_true` (native 90 calls that reported an actor knocked out or
 dead), `arity_mismatches` (`{id: count}` of native calls trapped because their argument count differed from the
