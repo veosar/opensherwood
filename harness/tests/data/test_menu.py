@@ -248,16 +248,38 @@ def test_minimap_toggles_from_the_map_scroll_and_ignores_right_clicks(binary, ga
         assert obs["ui"]["screen"] == "minimap", obs.get("ui")
         e.capture("open.png")
         assert (tmp_path / "closed.png").read_bytes() != (tmp_path / "open.png").read_bytes()
-        # Markers over the map area (h01-measurements-2.md 5): the hero's green oval, at least one
-        # pick-up cross (yellow with a white centre), grey ovals for the unidentified garrison.
+        # Markers over the map area (h01-measurements-2.md 5) at their computed places: the map
+        # area is 204x155 at (728,112) and a map position maps proportionally (15 map px per
+        # picture px on this map). The hero's oval is green at his position, an active pick-up's
+        # cross has a white centre, the camera rectangle's corner is black, and a soldier far from
+        # the hero is grey.
         from PIL import Image
 
+        full = e.observe()
+        mw, mh = full["map_size"]
+        to_map = lambda x, y: (728 + x * 204 // mw, 112 + y * 155 // mh)
         with Image.open(tmp_path / "open.png") as im:
-            area = im.convert("RGB").crop((728, 112, 728 + 204, 112 + 155))
-            colours = set(area.getdata())
-        assert (164, 251, 82) in colours, "the hero's oval"
-        assert (255, 220, 40) in colours, "a pick-up cross"
-        assert (176, 176, 176) in colours, "an unidentified character"
+            rgb = im.convert("RGB")
+            robin = next(x for x in full["entities"] if x["kind"] == "player")
+            hx, hy = to_map(robin["x"] // 256, robin["y"] // 256)
+            assert rgb.getpixel((hx, hy)) == (164, 251, 82), "the hero's oval"
+            item = next(it for it in e.call("debug.vm", {})["items"] if it["active"])
+            ix, iy = to_map(item["x"], item["y"])
+            # Neighbouring pick-ups overlap on the map (an arrow pile lies next to a scroll), so
+            # the centre may be covered by another cross's arm: both are cross colours.
+            assert rgb.getpixel((ix, iy)) in ((255, 255, 255), (255, 220, 40)), "the cross"
+            assert rgb.getpixel((ix - 2, iy)) in ((255, 220, 40), (255, 255, 255)), "the cross's arm"
+            cam = full["camera"]
+            cx, cy = to_map(cam[0], cam[1])
+            assert rgb.getpixel((cx, cy)) == (0, 0, 0), "the camera rectangle"
+            far = next(
+                x
+                for x in full["entities"]
+                if x["kind"] == "guard" and x["alive"]
+                and abs(x["x"] // 256 - robin["x"] // 256) + abs(x["y"] // 256 - robin["y"] // 256) > 1200
+            )
+            fx, fy = to_map(far["x"] // 256, far["y"] // 256)
+            assert rgb.getpixel((fx, fy)) in ((176, 176, 176), (0, 0, 0)), "an unidentified character"
         t0 = obs["tick"]
         e.step(5)
         assert e.observe(entities=False)["tick"] == t0 + 5

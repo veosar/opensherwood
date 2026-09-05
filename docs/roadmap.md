@@ -44,7 +44,7 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 - [x] Main menu from the player's files (background, plate buttons, fonts, strings; geometry from `docs/original/ui-flow.md`), Play! loads the first mission (`H01_Lin_VL`, Lincoln) behind its briefing pages, camera on the hero; menus and briefings are driven by canonical input and observable over RPC (`ui`)
 - [x] Pause menu (Escape: continue, restart, quit with confirmation), quit confirmation in the main menu, HUD frame (foliage, portrait scroll, money / clover) from the player's files
 - [x] HUD interactions: crouch / stand figures, the mini-map (scroll and `;`, at the measured place), the money counter
-- [ ] HUD interactions still missing: action icons, the clover counter, mini-map markers; briefing character picture; verified pause tint
+- [ ] HUD interactions still missing: action icons, the clover counter; briefing character picture; verified pause tint
 - [x] Credits (background, scrolling strip at the observed 20 px/s, Escape returns)
 - [x] Options screens (graphics / sounds / shortcuts, `settings.json`; only the effects and music volumes act, the other controls are stored until their subsystems exist), profiles (select / new / rename / delete, `profiles.json`), load / save screens, quick save and rolling auto saves
 - [ ] Movies (Bink)
