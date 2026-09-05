@@ -27,6 +27,7 @@ use opensherwood_core::vm::{
     BinOp, Class, Element, Function, Instr, Location, Program, Slot, Space,
 };
 use opensherwood_formats::rhm::{ActorGroup, Mission};
+use opensherwood_formats::rhp::Rhp;
 use opensherwood_formats::scb::{self, Quad, Script, Storage};
 
 /// Script ticks per second assumed for native 56 (`docs/formats/scb.md`, row 56).
@@ -93,62 +94,84 @@ pub struct MissionBinding {
     pub tick_rate: (u32, u32),
 }
 
-/// Number of map elements (`FLIM` entries plus the unidentified proto-level entries) that precede
-/// the mission's own elements in the flat table, per map (`docs/formats/scb.md`, "Index spaces").
-/// `None` for maps the model does not fit (`sherwood`).
+/// Number of map elements that precede the mission's own records in the flat element table of
+/// native 3: the map's `FLIM` entries (animated elements) followed by its `TUPO` entries (patches),
+/// both counted from the parsed `.rhp` (`docs/formats/scb.md`, "Index spaces";
+/// `docs/formats/sherwood-hub.md`, section 4).
 #[must_use]
-pub fn map_element_count(map: &str) -> Option<u32> {
+pub fn map_element_count(map: &Rhp) -> u32 {
+    map.flims.len() as u32 + u32::from(map.tupo_count())
+}
+
+/// The per-map prefix of the nine retail maps as the mission records' self-references place it
+/// (`docs/formats/sherwood-hub.md`, 4.1 and 4.2): a cross-check for [`map_element_count`] (the
+/// data-backed test `tests/gamedata.rs` asserts the two agree), never an input of the binding.
+/// `None` for a map that is not one of the nine.
+#[must_use]
+pub fn known_map_element_count(map: &str) -> Option<u32> {
     match map.to_ascii_lowercase().as_str() {
-        "croisement01" => Some(14),
-        "croisement02" | "croisement03" | "derby" => Some(19),
-        "nottingham" => Some(58),
-        "leicester" => Some(59),
-        "lincoln" => Some(49),
-        "york" => Some(67),
+        "croisement01" => Some(19),
+        "croisement02" | "croisement03" => Some(24),
+        "derby" | "sherwood" => Some(20),
+        "nottingham" => Some(59),
+        "leicester" => Some(63),
+        "lincoln" => Some(50),
+        "york" => Some(70),
         _ => None,
     }
 }
 
 impl MissionBinding {
-    /// Build the binding from a decoded mission: `map_elements` map entries first, then
-    /// `POUF` entries, then the actor groups in file order (`SCOT`, `OILE`, `TOTO`, `BORG` as
-    /// actors numbered like the world's entities, `BOOM` as objects), then the scrolls, then the
-    /// script polygons. The entity numbering must match the app's actor list (actor groups in
-    /// file order, objects skipped).
+    /// Build the binding from a decoded mission. The table order is the one the retail scripts'
+    /// self-references establish (`docs/formats/sherwood-hub.md`, 4.1 and 4.3): `map_elements`
+    /// map entries, then `POUF`, `OILE`, `TOTO`, `BORG` (actors), `BOOM` (objects), `SKRO`
+    /// (scrolls), `ZORG` and `TING` (inert, [`Element::Unmodelled`]), the `SCOT` player-character
+    /// slots at the tail, and the script polygons after them (their position is not observable;
+    /// no retail script addresses one through native 3). The entity numbering stays the app's
+    /// actor list (actor groups in file order: `SCOT` first, then `OILE`, `TOTO`, `BORG`; objects
+    /// skipped), so each group's entity ids are assigned in file order and the groups are then
+    /// laid out in table order.
     #[must_use]
     pub fn from_mission(mission: &Mission, map_elements: u32, tick_rate: (u32, u32)) -> Self {
         let mut elements: Vec<(Option<String>, Element)> = Vec::new();
         for i in 0..map_elements {
             elements.push((None, Element::Map(i)));
         }
-        for i in 0..mission.tenants.len() {
-            elements.push((
-                None,
-                Element::Unmodelled((map_elements as usize + i) as u32),
-            ));
+        let unmodelled = |elements: &mut Vec<(Option<String>, Element)>| {
+            let index = elements.len() as u32;
+            elements.push((None, Element::Unmodelled(index)));
+        };
+        for _ in &mission.tenants {
+            unmodelled(&mut elements);
         }
+        // Entity ids in file order; the groups are emitted in table order below.
         let mut entity = 0u32;
         let mut actor = |name: &Option<String>| {
             let e = (name.clone(), Element::Actor(entity));
             entity += 1;
             e
         };
+        let mut player_characters = Vec::new();
+        let mut civilians = Vec::new();
+        let mut vips = Vec::new();
+        let mut npcs = Vec::new();
+        let mut objects = Vec::new();
         for group in &mission.actor_groups {
             match group {
                 ActorGroup::PlayerCharacters { records, .. } => {
-                    elements.extend(records.iter().map(|r| actor(&r.name)));
+                    player_characters.extend(records.iter().map(|r| actor(&r.name)));
                 }
                 ActorGroup::Civilians { records, .. } => {
-                    elements.extend(records.iter().map(|r| actor(&r.name)));
+                    civilians.extend(records.iter().map(|r| actor(&r.name)));
                 }
                 ActorGroup::Vips { records, .. } => {
-                    elements.extend(records.iter().map(|r| actor(&r.name)));
+                    vips.extend(records.iter().map(|r| actor(&r.name)));
                 }
                 ActorGroup::Npcs { records, .. } => {
-                    elements.extend(records.iter().map(|r| actor(&r.name)));
+                    npcs.extend(records.iter().map(|r| actor(&r.name)));
                 }
                 ActorGroup::Objects { records, .. } => {
-                    elements.extend(records.iter().map(|r| {
+                    objects.extend(records.iter().map(|r| {
                         (
                             r.name.clone(),
                             Element::Object {
@@ -161,6 +184,10 @@ impl MissionBinding {
                 ActorGroup::Meow { .. } | ActorGroup::Unknown { .. } => {}
             }
         }
+        elements.extend(civilians);
+        elements.extend(vips);
+        elements.extend(npcs);
+        elements.extend(objects);
         elements.extend(mission.scrolls.iter().map(|s| {
             (
                 s.name.clone(),
@@ -170,6 +197,13 @@ impl MissionBinding {
                 },
             )
         }));
+        for _ in &mission.zorg {
+            unmodelled(&mut elements);
+        }
+        for _ in &mission.mobiles {
+            unmodelled(&mut elements);
+        }
+        elements.extend(player_characters);
         let mut locations: Vec<(Option<String>, Location)> = mission
             .script_areas
             .points
@@ -1203,10 +1237,217 @@ mod tests {
     }
 
     #[test]
-    fn map_table() {
-        assert_eq!(map_element_count("Lincoln"), Some(49));
-        assert_eq!(map_element_count("Croisement03"), Some(19));
-        assert_eq!(map_element_count("sherwood"), None);
+    fn known_map_table() {
+        assert_eq!(known_map_element_count("Lincoln"), Some(50));
+        assert_eq!(known_map_element_count("Croisement03"), Some(24));
+        assert_eq!(known_map_element_count("sherwood"), Some(20));
+        assert_eq!(known_map_element_count("Sherwood"), Some(20));
+        assert_eq!(known_map_element_count("nowhere"), None);
+    }
+
+    /// The element table of `docs/formats/sherwood-hub.md` 4.1: map entries, `POUF`, `OILE`,
+    /// `TOTO`, `BORG`, `BOOM`, `SKRO`, `ZORG`, `TING`, then the `SCOT` slots and the polygons,
+    /// while the entity ids keep the app's file order (`SCOT` first).
+    #[test]
+    fn mission_binding_puts_the_player_slots_after_the_inert_entries() {
+        use opensherwood_formats::rhm::{
+            Brains, Civilian, Header, Mobile, Npc, Object, Placement, PlayerCharacter, Polygon,
+            ScriptAreas, ScriptPolygon, Scroll, Tenant, Vip, ZorgEntry,
+        };
+        let placement = Placement {
+            x: 10,
+            y: 20,
+            ..Placement::default()
+        };
+        let pc = |name: Option<&str>| PlayerCharacter {
+            placement,
+            unknown_0x12: 0,
+            unknown_0x16: [0; 10],
+            name: name.map(str::to_string),
+            unknown_trailer: 0,
+        };
+        let npc = |name: Option<&str>| Npc {
+            placement,
+            unknown_0x12: 0,
+            profile: 0,
+            unknown_0x1a: 0,
+            unknown_0x1b: 0,
+            unknown_0x1f: 0,
+            unknown_0x23: 0,
+            members: Vec::new(),
+            rail: -1,
+            unknown_i16: -1,
+            name: name.map(str::to_string),
+        };
+        let mission = Mission {
+            version: 2,
+            header: Header {
+                version: 4,
+                map_id: 100,
+                variant: 1,
+                map: "Croisement01".into(),
+                mission_id: 1,
+            },
+            tenants: vec![Tenant {
+                sprite: "Trap".into(),
+                label: String::new(),
+                body: Vec::new(),
+            }],
+            actor_groups: vec![
+                ActorGroup::PlayerCharacters {
+                    version: 4,
+                    records: vec![pc(Some("hero_80000001")), pc(None)],
+                },
+                ActorGroup::Civilians {
+                    version: 3,
+                    records: vec![Civilian {
+                        placement,
+                        unknown_0x12: 0,
+                        profile: 1,
+                        unknown_i16_a: -1,
+                        unknown_i16_b: 0,
+                        unknown_u16: 0,
+                        lists: None,
+                        name: None,
+                    }],
+                },
+                ActorGroup::Vips {
+                    version: 2,
+                    records: vec![Vip {
+                        placement,
+                        unknown_0x12: 0,
+                        profile: 1,
+                        unknown_i16_a: 0,
+                        unknown_i16_b: 0,
+                        name: None,
+                    }],
+                },
+                ActorGroup::Npcs {
+                    version: 4,
+                    records: vec![npc(None), npc(Some("guard_80000002"))],
+                },
+                ActorGroup::Objects {
+                    version: 5,
+                    records: vec![Object {
+                        x: 5,
+                        y: 6,
+                        unknown_0x04: -1,
+                        unknown_0x06: 0,
+                        unknown_0x08: 0,
+                        unknown_0x0a: 0,
+                        unknown_0x0c: 0,
+                        unknown_0x0e: -1,
+                        unknown_0x10: 0,
+                        unknown_0x12: 0,
+                        sprite: "TG_x".into(),
+                        label: String::new(),
+                        unknown_flags: 1,
+                        x2: 5,
+                        y2: 6,
+                        unknown_q2: 0,
+                        unknown_r2: 0,
+                        polygon: Polygon {
+                            unknown_a: 0,
+                            points: Vec::new(),
+                            unknown_b: 0,
+                        },
+                        unknown_u8: 1,
+                        name: Some("target_80000003".into()),
+                    }],
+                },
+            ],
+            zorg: vec![ZorgEntry {
+                unknown_a: 12,
+                unknown_b: 1,
+                placement,
+            }],
+            brains: Brains::default(),
+            rails: Vec::new(),
+            scrolls: vec![Scroll {
+                placement,
+                unknown_flags: [1; 5],
+                name: Some("scroll_80000004".into()),
+            }],
+            mobiles: vec![Mobile {
+                flim_version: 2,
+                animations: Vec::new(),
+                woaw_version: 3,
+                woaw_count: 0,
+                woaw_rest: Vec::new(),
+                polygon: Polygon {
+                    unknown_a: 0,
+                    points: Vec::new(),
+                    unknown_b: 0,
+                },
+                x: 0,
+                y: 0,
+                unknown_a: 0,
+                unknown_b: 0,
+                unknown_c: 0,
+                unknown_d: 0,
+                unknown_e: 0,
+            }],
+            script_areas: ScriptAreas {
+                points: vec![opensherwood_formats::rhm::Point {
+                    x: 1,
+                    y: 1,
+                    unknown_0x04: 0,
+                    unknown_0x06: 0,
+                }],
+                polygons: vec![ScriptPolygon {
+                    polygon: Polygon {
+                        unknown_a: 0,
+                        points: vec![(0, 0), (9, 0), (9, 9)],
+                        unknown_b: 0,
+                    },
+                    unknown_0x00: 0,
+                    unknown_0x02: 0,
+                    name: Some("zone_80000005".into()),
+                }],
+            },
+            cave: Vec::new(),
+            chunk_versions: Vec::new(),
+            unknown_chunks: Vec::new(),
+        };
+        let b = MissionBinding::from_mission(&mission, 2, (60, 1));
+        let kinds: Vec<Element> = b.elements.iter().map(|(_, e)| *e).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                Element::Map(0),
+                Element::Map(1),
+                Element::Unmodelled(2), // POUF
+                Element::Actor(2),      // OILE
+                Element::Actor(3),      // TOTO
+                Element::Actor(4),      // BORG
+                Element::Actor(5),
+                Element::Object { x: 5, y: 6 },
+                Element::Scroll { x: 10, y: 20 },
+                Element::Unmodelled(9),  // ZORG
+                Element::Unmodelled(10), // TING
+                Element::Actor(0),       // SCOT
+                Element::Actor(1),
+                Element::Polygon(1),
+            ]
+        );
+        let named: Vec<(usize, &str)> = b
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (n, _))| n.as_deref().map(|n| (i, n)))
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                (6, "guard_80000002"),
+                (7, "target_80000003"),
+                (8, "scroll_80000004"),
+                (11, "hero_80000001"),
+                (13, "zone_80000005"),
+            ]
+        );
+        assert_eq!(b.actor_count(), 6);
+        assert_eq!(b.locations.len(), 2);
     }
     /// A native call and its `0x0d` are one instruction (finding 6 of Codex review 8): a jump
     /// whose target is the `0x0d` quad is refused, whether it comes straight from a `0x0e`,

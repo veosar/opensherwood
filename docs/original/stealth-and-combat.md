@@ -409,22 +409,33 @@ Sprite reactions: 169 (goes and picks up the purse), 165 (drinks), 166 (eats), t
 5. Speeds from section 4.2 on the measured animation clock (section 8.4, sprite-animations.md "Reading
    rules").
 
-## Engine (implemented 2026-09-03; `crates/opensherwood-core/src/ai.rs`, ruleset 9; measured values of section 8 applied 2026-09-05, ruleset 11)
+## Engine (implemented 2026-09-03; `crates/opensherwood-core/src/ai.rs`, ruleset 9; measured values of section 8 applied 2026-09-05, ruleset 11; the melee of `combat-measurements.md` 2026-09-05, ruleset 13)
 
 What of section 6 exists, with the constants chosen and their status. Everything is fixed point, part of
 every entity (`team`, `ai_state`, `state_ticks`, `last_seen`, `alert_origin`, `attack_target`, `action`,
-`hit_points`, `knockout_resistance`, `npc_gait`, `fell_backward`, `heard`), snapshotted, validated and hashed; the
-harness reads it through `observe` (`docs/harness.md`, "Stealth layer").
+`hp`, `hp_max`, `energy`, `energy_ticks`, `foe`, `pose`, `pose_ticks`, `swing_ticks`, `figure`,
+`knockout_resistance`, `npc_gait`, `fell_backward`, `heard`) or of the world (`press`, `hero_dead`),
+snapshotted, validated and hashed; the harness reads it through `observe` (`docs/harness.md`, "Stealth
+layer" and "Melee").
 
-**Measured versus assumed** (after section 8): the movement speeds (walk / run / sneak of the hero;
-the soldiers' walk, run, alert walk and alert run derived from the same clock), the animation clock
-(a table tick = 3 clocks of 1/64 s, a frame lasts its tick half plus one such ticks), the noise
-channel (a running character is heard from at least 330 px by soldiers not facing him, and they
-charge at once) and the silence of a walk at 290 px are **measured**; the view cone (angle, range,
-the crouch divisor), the noticed -> alarm sequence a sighting starts, the alert timeout, the return,
-the knock-out timer, the punch's arc and the profile stats stay **hypotheses**. The script VM
-records `Assumption::Perception` only for the hypothesised part (an alert an actor reached by sight),
-never for a run heard (ADR-0008, "Hypotheses and taint").
+**Measured versus assumed** (after section 8 and `combat-measurements.md`): the movement speeds (walk /
+run / sneak of the hero; the soldiers' walk, run, alert walk and alert run derived from the same clock),
+the animation clock (a table tick = 3 clocks of 1/64 s, a frame lasts its tick half plus one such ticks),
+the noise channel (a running character is heard from at least 330 px by soldiers not facing him, and they
+charge at once), the silence of a walk at 290 px, and of the melee the hero's 100 hit points, the
+soldier's `pre[0]` hit points (80 for the blue halberdier), the 20 units of energy, the soldier's basic
+hit of 5 hp landing two swings in three at a swing every ~5.3 s, the energy costs (one unit per landed
+soldier hit regained in ~4 s, two per powerful blow regained one per ~0.9 s), the powerful blow's 50 hp
+and its resolution ~0.95 s after the order, the fighting distance of 52 px, the attack order being a
+left click on the enemy, the halberdier standing his ground, the bars' geometry and colours, the damage
+numbers' rise and the loss on the hero's death are **measured**; the view cone (angle, range, the crouch
+divisor), the noticed -> alarm sequence a sighting starts, the alert timeout, the return, the knock-out
+timer, the punch's arc, the profile's `p4`, the hero's click attacks never landing against a soldier, the
+powerful blow's one-in-three chance, the post-bound behaviour of every soldier kind but the halberdier,
+the melee action ids and the loss when another player character survives stay **hypotheses**. The
+script VM records `Assumption::Perception` only for the hypothesised part (an alert an actor reached by
+sight), never for a run heard, and `MeleeReach` / `PowerfulBlowChance` / `PostBound` / `CombatActions`
+/ `HeroDeathLoss` for the melee's hypotheses (ADR-0008, "Hypotheses and taint").
 
 - **Speeds** (item 5). Every moving entity covers per world tick the speed of the cycle it plays
   (`Entity::effective_speed`, `AnimSet::cycle_speed`): the cycle's summed `advance` over its duration
@@ -440,12 +451,12 @@ never for a run heard (ADR-0008, "Hypotheses and taint").
   `FALLBACK_SNEAK_SPEED_RATIO` = 27 / 128. Pinned by `cycle_speeds_match_the_measured_hero_values`
   (core) and `test_walk_run_and_sneak_speeds_match_the_measurements` (H01, within 5 % over 120 ticks).
 - **Perception** (item 2). Every enemy soldier (`BORG` actor) that is alive, active, not AI-locked (natives
-  134 / 135: a locked AI perceives nothing, section 2.5) and on his feet tests every player character each
-  tick, in entity order from a round-robin cursor (`World::cursors.perception`, snapshotted) and within the
-  world's per-tick simulation budget (`SIM_WORK_PER_TICK` = 2^24, shared with the state transitions, the
-  attack orders, the waypoint programs and every path search they issue: one unit per entity pre-indexed,
-  one per soldier inspected, one per soldier / player character pair tested; a scan the budget cuts short
-  resumes next tick where it stopped): a **view cone** of half angle
+  134 / 135: a locked AI perceives nothing, section 2.5), on his feet and not fighting tests every player
+  character each tick, in entity order from a round-robin cursor (`World::cursors.perception`,
+  snapshotted) and within the world's per-tick simulation budget (`SIM_WORK_PER_TICK` = 2^24, shared
+  with the state transitions, the attack orders, the waypoint programs and every path search they issue:
+  one unit per entity pre-indexed, one per soldier inspected, one per soldier / player character pair
+  tested; a scan the budget cuts short resumes next tick where it stopped): a **view cone** of half angle
   `VIEW_CONE_HALF_ANGLE_256` = 32 (45 degrees) and range `VIEW_RANGE` = 250 map px, the range over
   `CROUCH_VIEW_DIVISOR` = 2 for a crouched character; and a **noise radius** `RUN_NOISE_RADIUS` = 350 px
   around the soldier within which a running character is heard whatever he faces. Occluders and walls do not
@@ -472,77 +483,106 @@ never for a run heard (ADR-0008, "Hypotheses and taint").
   `ActionChange(previous, new)` (the parameter order is a hypothesis: the H01 archer classes compare the
   second parameter with 141; pinned by `action_changes_reach_the_actors_class`); a run near the
   archery-training archers no longer ends the training through 141 (they charge instead), which is what
-  8.6 shows for the courtyard (`test_running_near_a_soldier_alerts_him_at_once_from_afar`).
-
-- **Perception** (item 2). Every enemy soldier (`BORG` actor) that is alive, active, not AI-locked (natives
-  134 / 135: a locked AI perceives nothing, section 2.5) and on his feet tests every player character each
-  tick, in entity order from a round-robin cursor (`World::cursors.perception`, snapshotted) and within the
-  world's per-tick simulation budget (`SIM_WORK_PER_TICK` = 2^24, shared with the state transitions, the
-  attack orders, the waypoint programs and every path search they issue: one unit per entity pre-indexed,
-  one per soldier inspected, one per soldier / player character pair tested; a scan the budget cuts short
-  resumes next tick where it stopped): a **view cone** of half angle
-  `VIEW_CONE_HALF_ANGLE_256` = 32 (45 degrees) and range `VIEW_RANGE` = 200 map px, the range over
-  `CROUCH_VIEW_DIVISOR` = 2 for a crouched character; and a **noise radius** `RUN_NOISE_RADIUS` = 150 px
-  around the soldier within which a running character is heard whatever he faces. Occluders and walls do not
-  block sight; walking and sneaking make no noise; civilians perceive nothing. All four numbers are
-  `hypothesis` (section 2.3 found no such field; item 7.2 / 7.3 measure them); the geometry (a sector test on a
-  4096-scaled sine table, `ai::in_view_cone`) is pinned by `view_cone_geometry`.
-- **Alert states** (item 1 / 3). `patrol` (the rail program, actions 0 / 6 / 7) -> `noticed` (141, plays
-  for the animation's length: 6 ticks on the soldier profiles; the soldier stops and remembers where he
-  perceived the character and where he stood) -> `alarm` (142, 11 ticks) -> `alerted` (runs to the last seen
-  position with 151, stands with 140, walks with 143; every new sighting refreshes the position and the
-  `ALERT_TIMEOUT_TICKS` = 300 timer, a hypothesis) -> `returning` (walks back to the origin with 143) ->
-  `patrol` (the program continues where it stood). The animation ids come from the soldier / knight profiles
-  (section 2.4); profiles without them fall back to idle / walk / run (`anim::AnimSet`). The states are the
-  engine's reading of section 2.4 (`inferred`); the transition order noticed -> alarm and the return are
-  `hypothesis`. Every change of an actor's action id reaches its script class as `ActionChange(previous,
-  new)` (the parameter order is a hypothesis: the H01 archer classes compare the second parameter with 141;
-  pinned by `action_changes_reach_the_actors_class`), so the archery training of the first mission ends when
-  an archer notices something (`test_running_past_a_soldier_is_noticed_then_the_alarm`).
-- **Knock-out** (item 4, the blow only). A left click on an enemy with a player character selected is an
-  attack order (hypothesis for the manual's fist icon, section 1): the character walks into
-  `PUNCH_REACH` = 32 px (the 30-35 px displacement of action 123, `observed`), then, if his profile has 123
-  (Robin and the big man, `observed`) and he stands within `BACK_ARC_HALF_ANGLE_256` = 48 (67.5 degrees) of
-  straight behind the victim (`hypothesis`), plays 123 (`punching`, 12 ticks) and the victim goes
-  `knocked_down` (41 forward, or 44 backward if struck from the front - unreachable today, since the blow is
-  only delivered from behind, 13 / 10 ticks) -> `lying` (47 / 48) for `KNOCK_OUT_BASE_TICKS` = 600 ticks
-  scaled by `(100 - p4) / 100` (`p4` = the profile's knock-out resistance, section 3.3, `hypothesis`; `p4` >=
-  100 makes the blow fail and the victim notices the attacker) -> `getting_up` (49, 16 ticks) -> `returning` /
-  `patrol`. From the front the character stops and faces the victim. The knock-out chance of the manual and
-  the "stars" are not modelled; no comrade revives him; the victim keeps his position (the fall's
-  displacement is ignored). Pinned by `knock_out_from_behind_and_a_stop_from_the_front`,
-  `immune_victims_notice_the_blow_and_resistance_shortens_the_sleep`, `a_profile_without_the_punch_cannot_strike`
-  and, on the first mission, `test_knock_out_from_behind_puts_the_soldier_out_of_action` (the corridor post
-  the level script polls with native 90).
-- **Hit points**: `p0` of the SD record per entity (`hypothesis`, section 2.3); 100 for player characters and
-  civilians (no field read yet). No damage model: nothing loses them yet.
+  8.6 shows for the courtyard (`test_running_near_a_soldier_alerts_him_at_once_from_afar`). A charging
+  soldier who reaches the hero stands by him: soldiers do not start fights (not measured beyond "five
+  soldiers around Robin"; documented gap).
+- **Attack order and the knock-out** (item 4; `combat-measurements.md` 1.1, `measured`: the left click on
+  the enemy sprite is the attack order, no icon and no key; the fist order from the front degenerates
+  into the same sword fight). The left button acts on its **release** (`World::press` remembers the
+  press): a press and release within `FIGURE_MIN_STROKE` = 32 px is the click, a longer stroke a drawn
+  figure (below). A click on an enemy soldier with a player character selected sets `attack_target`;
+  the character walks towards him and, when he arrives within `PUNCH_REACH` = 32 px **from behind**
+  (`BACK_ARC_HALF_ANGLE_256` = 48, `hypothesis`) with a profile that has action 123 and no figure
+  pending, plays the knock-out blow: the victim goes `knocked_down` (41, or 44 from the front) ->
+  `lying` (47 / 48) for `KNOCK_OUT_BASE_TICKS` = 600 ticks scaled by `(100 - p4) / 100` (`p4` >= 100
+  makes the blow fail and the victim notices the attacker; both `hypothesis`) -> `getting_up` (49) ->
+  `returning` / `patrol`. Otherwise he stops at `FIGHT_RANGE` = 52 px (`measured`) facing the victim and
+  the **fight** begins. Pinned by `knock_out_from_behind_and_a_stop_from_the_front`,
+  `immune_victims_notice_the_blow_and_resistance_shortens_the_sleep`,
+  `a_profile_without_the_punch_fights_instead` and, on the first mission,
+  `test_knock_out_from_behind_puts_the_soldier_out_of_action` and
+  `test_attack_order_closes_in_and_the_fight_starts_with_the_bars`.
+- **Melee** (`combat-measurements.md` 1, `measured` unless marked). Both fighters enter `fighting` with
+  `foe` naming the other (the victim turns to the attacker, remembers his post in `alert_origin` and
+  drops any alert; `in_combat` in `observe`): the stance 54 between blows, the strike 59, the powerful
+  blow 75, the flinch 104 (`pose`, `pose_ticks`; the ids `inferred` by eye, `CombatActions` when one
+  reaches the script). **Hit points**: the hero `HERO_HIT_POINTS` = 100 (5 per pixel of the 20 px bar);
+  a soldier his SD record's `pre[0]` (80 for the blue halberdier, confirmed by the 50-hp blow taking 13
+  of his 20 pixels); civilians and the other heroes `DEFAULT_HIT_POINTS` = 100 (`hypothesis`, no field
+  read). Health never regenerates. **Energy** `ENERGY_MAX` = 20 units: a soldier's landed hit costs him
+  `SOLDIER_HIT_ENERGY` = 1, regained after `SOLDIER_ENERGY_REGEN_TICKS` = 240 (~4 s); the hero's
+  powerful blow costs `POWERFUL_BLOW_ENERGY` = 2, landed or not, regained one unit per
+  `HERO_ENERGY_REGEN_TICKS` = 54 (0.9 s); click attacks cost nothing; an empty bar forbids nothing (not
+  measured). **The soldier's swing** every `SOLDIER_SWING_TICKS` = 318 (5.3 s) plus a jitter of up to
+  `SWING_JITTER_TICKS` = 32 either way from the gameplay RNG (the engine's spread within the measured
+  5.2..15.4 s between landed hits), landing `SOLDIER_HIT_CHANCE` = 2 in 3 for `SOLDIER_HIT_DAMAGE` = 5
+  (the occasional 25-hp blow is not modelled); the victim flinches (104) when idle in the stance. **The
+  hero's click attacks** (a strike every `HERO_SWING_TICKS` = 90, presentation) never land against a
+  soldier: `inferred` from 225 s against a pole arm at 52 px (the pole arm's reach band or a block); the
+  engine has no data path for the weapon class yet, so the rule applies to every soldier and every
+  resolution records `Assumption::MeleeReach`. **The forward stroke** (the powerful blow): the left
+  button held, the pointer moved at least `FIGURE_MIN_STROKE` px to the right within 45 degrees of
+  horizontal, released; the figure locks onto the nearest enemy soldier (`Entity::figure`), the
+  character walks up if need be, and the blow resolves `POWERFUL_BLOW_TICKS` = 57 after it starts
+  (0.9-1.0 s measured), landing `POWERFUL_BLOW_CHANCE` = 1 in 3 (2 of 6 strokes: `hypothesis`,
+  `Assumption::PowerfulBlowChance` on every resolution) for `POWERFUL_BLOW_DAMAGE` = 50, so two landed
+  blows kill an 80-hp soldier. Any other stroke orders nothing (the other eight figures are not
+  modelled). A ground order or a right click leaves the fight; the soldier stands his ground and
+  returns to his post (`measured` for the halberdier over 5 min; `Assumption::PostBound` for every
+  soldier whose foe leaves alive). A fighter whose foe is gone (dead, absent, off his feet or beyond
+  `FIGHT_BREAK_RANGE` = 104 px by a script walk) leaves the fight the next tick. **Damage numbers**
+  (`World::damage_numbers`, presentation: snapshotted so a restore draws the same picture, not
+  hashed): cream digits at the victim's head rising `DAMAGE_NUMBER_RISE` = 50 px over
+  `DAMAGE_NUMBER_TICKS` = 90. **Bars** (`opensherwood-render`): for every fighter and for the actor
+  under the pointer, a 20 x 3 px red health row 8 px below the feet starting 10 px left of them and a
+  blue energy row 4 px lower, the filled width the value's share of 20 px rounded down, the spent
+  part black, brighter colours for the hovered actor. Pinned by
+  `soldier_blows_land_at_the_measured_cadence_until_the_hero_dies`,
+  `the_forward_stroke_is_the_powerful_blow_and_two_kill_a_soldier`,
+  `leaving_the_fight_and_the_release_rule` (core), `bars_and_damage_numbers_are_drawn_where_measured`
+  (render) and, on the first mission, `test_the_soldiers_blows_wear_robin_down_to_the_lost_page` and
+  `test_two_powerful_blows_kill_the_soldier_the_script_polls`.
+- **Death** (`combat-measurements.md` 4, `measured` for the hero's death and the lost page). Hit points at
+  0: `alive` is false from that tick (natives 85 / 87 / 90 report it at once), the entity is `dying`
+  (44 falling backward when struck from the front, 41 forward, for the animation's length) then `dead`
+  (48 / 47 for good; the body stays drawn); every order and fight of his ends. A player character's
+  death raises `World::hero_dead` (sticky, hashed under `world`, `observe.hero_dead`): the app shows
+  the lost page on the same tick whether or not the script's `CheckVictoryCondition` reports the loss;
+  with another player character still alive the loss records `Assumption::HeroDeathLoss` (measured
+  for a lone hero only). The knock-out's ids reaching the script of a dead actor record
+  `CombatActions`, not `KnockOut`.
 - **Script predicates** (item 3; all five read one state function, `ai::ActorStatus`, and `validate` holds
-  the layer's invariants: `Dead` exactly when `alive` is false, a timer exactly in the timed states, alert
-  states on enemy soldiers only, attack orders from a player character to an enemy soldier): 85 = dead or
-  deactivated, 87 = dead, 90 = knocked down / lying / dead
-  (getting up counts as back in action: hypothesis), 128 = alive, active and on his feet, 240 = active;
-  88 / 89 stay stubs returning 0 (no tied / netted state exists); 140 (actor, 0 / 1 / 2) sets the gait of the
-  actor's program walks (0 walk, else run; section 2.5, `hypothesis`); `FilterAIEvent` is never called.
+  the layer's invariants: `Dead` / `Dying` exactly when `alive` is false and hit points are 0, a timer
+  exactly in the timed states, alert states on enemy soldiers only, attack orders from a player
+  character to an enemy soldier, a foe exactly in the fighting state and of the other side, a pose and
+  the swing timer only in a fight, energy within its bar with its timer running exactly below full):
+  85 = dead or deactivated, 87 = dead, 90 = knocked down / lying / dead (getting up counts as back in
+  action: hypothesis), 128 = alive, active and on his feet, 240 = active; 88 / 89 stay stubs returning 0
+  (no tied / netted state exists); 140 (actor, 0 / 1 / 2) sets the gait of the actor's program walks
+  (0 walk, else run; section 2.5, `hypothesis`); `FilterAIEvent` is never called.
 - **Timing**: every timed state lasts one loop of its animation on the measured animation clock
   (`anim::world_ticks`: a frame lasts its tick half plus one table ticks of 3 clocks at 64 Hz, 2.8125
   world ticks per table tick at 60 Hz; the animation player accumulates the clock in
   `AnimState::elapsed`, 16 units per world tick against 45 per table tick, so the frame rate is exact in
   the long run and a state ends on the tick its loop completes); without the block (or a catalog) the
   soldier profiles' counts apply (`NOTICED_TICKS` 31 world ticks from 11 table ticks, `ALARM_TICKS` 54
-  from 19, `KNOCKED_DOWN_TICKS` 60 from 21, `GET_UP_TICKS` 68 from 24, `PUNCH_TICKS` 54 from the hero's
-  19). The `+ 1` rule is `inferred` from the sneak cycle alone (8.4 note); no reaction animation was
-  timed.
-
+  from 19, `KNOCKED_DOWN_TICKS` 60 from 21 (the death's fall too), `GET_UP_TICKS` 68 from 24,
+  `PUNCH_TICKS` 54 from the hero's 19, `STRIKE_TICKS` 45 from 16, `FLINCH_TICKS` 34 from 12). The
+  `+ 1` rule is `inferred` from the sneak cycle alone (8.4 note); no reaction animation was timed.
 - **Taint** (ADR-0008, "Hypotheses and taint"): the VM records an assumption whenever a *hypothesised*
   part of the layer changes script-visible state: `perception` when an alert action id of an actor alerted
   by sight reaches an `ActionChange` handler (an actor alerted by a run heard, `heard`, records nothing:
   that channel is measured), `knock_out` when native 90 reports a knocked-out actor, 128 refuses one or a
-  knock-out action id reaches a handler, `profile_stats` when a blow consults `p4`; `observe.script.tainted`
-  then marks the mission's outcome as not authoritative until the oracle captures of section 7 settle the
-  values.
+  knock-out action id of a living actor reaches a handler, `profile_stats` when a blow consults `p4`,
+  `melee_reach` when a hero's click attack is resolved, `powerful_blow_chance` when a powerful blow is
+  resolved, `post_bound` when a soldier's foe leaves him alive, `combat_actions` when a melee id or a
+  dead actor's fall reaches a handler, `hero_death_loss` when the loss is raised with another player
+  character alive; `observe.script.tainted` then marks the mission's outcome as not authoritative until
+  the oracle captures of section 7 and `combat-measurements.md` 7 settle the values.
 
-Not implemented from section 6: the rails' check-for scans, silhouettes, the fighting posture, strikes and
-parries, the bow, damage and death, tying / carrying / reviving, the stimuli of section 5.
+Not implemented from section 6: the rails' check-for scans, silhouettes, parries and the block, the
+other eight figures, soldiers starting fights or fighting several at once, the 25-hp blow, the bow,
+tying / carrying / reviving, the stimuli of section 5.
 
 ## 7. Open questions and the oracle capture plan
 

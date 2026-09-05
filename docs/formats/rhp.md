@@ -30,7 +30,7 @@ to the child body *after* its version word.
 | `FARM` | 4 | buildings (door position, entry points) | raw |
 | ` AZ ` | 2 | records with points; doors/lifts? | raw |
 | `DARK` | 2 | dark zone polygons | typed |
-| `TUPO` | 3 | named "patch" records (`pixel_vert`, `notpatch`) | raw |
+| `TUPO` | 3 | named "patch" records (`pixel_vert`, `notpatch`); the leading count, with the `FLIM` count, sizes the map's part of the script element table (`scb.md`, Index spaces) | raw, count typed (`Rhp::tupo_count`) |
 | `LOUD` | 2 | sound sources / zones (`RHSoundGeometry`) | raw |
 | `PPPP` | 4 | zone polygons and jump lines | typed |
 
@@ -190,7 +190,10 @@ JUMP-ZONE / jump-line). Croisement01: 11 zones, 13 jump lines; sherwood 2 / 1.
   u8[5] 0, u16 a, u8 0, u8 id, Point door, u16 b, u16 c, Point p1, Point p2, u16 d, u16 e`; the door lies on a
   bond and `p1`/`p2` are just inside it. Sherwood records are 53 bytes (an extra point list); not resolved.
 * ` AZ `: `u16 n`, records of about 40 bytes with a `u16 0x1a/0x1e/0x23...` word, an id byte and three points.
-* `TUPO`: `u16 n`, then `pstring16 short name, pstring16 long name` and a 100-byte record.
+* `TUPO`: `u16 n`, then `pstring16 short name, pstring16 long name` and a 100-byte record. `n` is
+  `Rhp::tupo_count()`: the script element table of a level starts with the `FLIM` entries and then these `n`
+  patches (`scb.md`, Index spaces; `sherwood-hub.md` 4.1). Counts: Croisement01 6, Croisement02 9,
+  Croisement03 9, Derby 7, Nottingham 11, Leicester 16, Lincoln 12, York 10, Sherwood 0.
 * `LOUD`: `u16 n`, then `u32 id, u8 1, u8 kind (1 or 2)` and a variable record ending in `u8 100, u8[6],
   u32 0xff/0xfb`; kind 2 carries `u16 500, u16 1500` (sound distances?).
 

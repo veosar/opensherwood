@@ -72,10 +72,11 @@ pub struct FrameSpec {
 /// The animations of one character profile plus which of them play for each posture and state,
 /// per 8-way direction (`docs/formats/sprite-animations.md`: action ids 0, 6, 7, 14, 16; the alert
 /// set 140 / 141 / 142 / 143 / 151; the fall set 41 / 44 / 47 / 48 / 49; the knock-out blow 123;
-/// `docs/original/stealth-and-combat.md`, "Engine"). Every array always resolves: a profile without
-/// a block names the documented fallback (crouch -> standing, run -> walk, alert idle / noticed /
-/// alarm -> idle, alert walk / run -> walk / run, knocked down -> idle, lying -> knocked down,
-/// get up -> idle, punch -> idle), so a soldier without a sneak block sneaks with its walk and a
+/// the melee set 54 / 59 / 75 / 104; `docs/original/stealth-and-combat.md`, "Engine"). Every
+/// array always resolves: a profile without a block names the documented fallback (crouch ->
+/// standing, run -> walk, alert idle / noticed / alarm -> idle, alert walk / run -> walk / run,
+/// knocked down -> idle, lying -> knocked down, get up -> idle, punch -> idle, fight idle ->
+/// idle, strike / flinch -> fight idle, powerful blow -> strike), so a soldier without a sneak block sneaks with its walk and a
 /// civilian without an alert set stands. `has_punch` records whether the knock-out blow exists,
 /// because the order model must not fake it (`docs/original/stealth-and-combat.md` 3.2: Robin
 /// and the big man only).
@@ -132,6 +133,19 @@ pub struct AnimSet {
     /// Whether the profile has the knock-out blow (action 123).
     #[serde(default)]
     pub has_punch: bool,
+    /// Fight idle: the stance with the weapon held level (action 54; fallback idle).
+    #[serde(default)]
+    pub fight_idle: [u32; 8],
+    /// A quick strike (action 59; fallback `fight_idle`).
+    #[serde(default)]
+    pub strike: [u32; 8],
+    /// The powerful blow of the forward-stroke figure (action 75, the over-the-head finishing
+    /// blow; fallback `strike`).
+    #[serde(default)]
+    pub powerful_blow: [u32; 8],
+    /// Hit in the fighting stance, stumbles back a step (action 104; fallback `fight_idle`).
+    #[serde(default)]
+    pub flinch: [u32; 8],
 }
 
 impl AnimSet {
@@ -158,6 +172,10 @@ impl AnimSet {
             get_up: idle,
             punch: idle,
             has_punch: true,
+            fight_idle: idle,
+            strike: idle,
+            powerful_blow: idle,
+            flinch: idle,
         }
     }
 

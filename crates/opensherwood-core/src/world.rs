@@ -9,7 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ai::{AiState, action_id, wanted_animation};
+use crate::ai::{
+    AiState, DAMAGE_NUMBER_TICKS, ENERGY_MAX, FIGURE_MIN_STROKE, FightPose, Figure, action_id,
+    wanted_animation,
+};
 use crate::anim::{AnimState, Catalog, UNITS_PER_TABLE_TICK, direction_of};
 use crate::fixed::Fixed;
 use crate::geom::Geometry;
@@ -181,10 +184,39 @@ pub struct Entity {
     /// script's `ActionChange`.
     #[serde(default)]
     pub action: u32,
-    /// Hit points (`profile.md`, SD `p0`: hypothesis; [`crate::ai::DEFAULT_HIT_POINTS`] for
-    /// everyone without a profile value). No damage model yet beyond the knock-out.
+    /// Hit points left (`combat-measurements.md` 1.2: the red bar, never regenerating); 0
+    /// exactly when the entity is dead. Obstacles carry 0.
     #[serde(default = "default_hit_points")]
-    pub hit_points: i32,
+    pub hp: i32,
+    /// Full hit points: the hero's measured 100, a soldier's SD `pre[0]` (80 for a blue
+    /// halberdier, confirmed), [`crate::ai::DEFAULT_HIT_POINTS`] for everyone without a
+    /// profile value (the other heroes and the civilians: hypothesis).
+    #[serde(default = "default_hit_points")]
+    pub hp_max: i32,
+    /// Energy units left, 0..=[`crate::ai::ENERGY_MAX`] (the blue bar): a landed soldier hit
+    /// costs the soldier one, the hero's powerful blow two; regained one unit per interval.
+    #[serde(default = "default_energy")]
+    pub energy: i32,
+    /// Ticks until the next unit of energy is regained; 0 exactly when the energy is full.
+    #[serde(default)]
+    pub energy_ticks: u32,
+    /// The opponent of the current melee (`Fighting` state, exactly then): a player character's
+    /// enemy soldier or a soldier's player character.
+    #[serde(default)]
+    pub foe: Option<EntityId>,
+    /// What the fighter is doing in the stance (`crate::ai::FightPose`); `Idle` outside a fight.
+    #[serde(default)]
+    pub pose: FightPose,
+    /// Ticks left in the current pose; 0 exactly in the idle pose.
+    #[serde(default)]
+    pub pose_ticks: u32,
+    /// Ticks until the next automatic swing while fighting (0 when due or outside a fight).
+    #[serde(default)]
+    pub swing_ticks: u32,
+    /// The figure a player character drew (`crate::ai::Figure`), pending until he fights the
+    /// target of the order; only with an attack order or in a fight.
+    #[serde(default)]
+    pub figure: Option<Figure>,
     /// Knock-out resistance (`profile.md`, SD `p4`: hypothesis, 0..100): scales the knock-out
     /// timer, 100 makes the blow fail.
     #[serde(default)]
@@ -244,6 +276,39 @@ fn default_team() -> Team {
 
 fn default_hit_points() -> i32 {
     crate::ai::DEFAULT_HIT_POINTS
+}
+
+fn default_energy() -> i32 {
+    crate::ai::ENERGY_MAX
+}
+
+/// A damage number rising over a victim's head (`combat-measurements.md` 1.2: cream digits
+/// climbing about 50 px in 1.5 s). Presentation only: kept in the snapshot so a restored world
+/// draws the same picture, but neither hashed nor validated beyond its bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DamageNumber {
+    /// Feet position of the victim when hit (map pixels).
+    pub x: i32,
+    /// Feet position.
+    pub y: i32,
+    /// Hit points taken.
+    pub amount: i32,
+    /// Ticks since the hit (below [`crate::ai::DAMAGE_NUMBER_TICKS`]).
+    pub age: u32,
+}
+
+/// Most damage numbers kept at once (the oldest is dropped beyond it).
+pub const MAX_DAMAGE_NUMBERS: usize = 256;
+
+/// One entity as `observe` reports it: every field of [`Entity`] plus the derived `in_combat`
+/// (the entity fights: `foe` is set).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntityObservation {
+    /// The entity.
+    #[serde(flatten)]
+    pub entity: Entity,
+    /// In a melee (`ai_state` is `fighting`): the bars are drawn.
+    pub in_combat: bool,
 }
 
 /// The last left click on the ground, remembered for double-click detection (authoritative: it
@@ -537,11 +602,14 @@ pub struct Observation {
     /// Selected entity.
     pub selected: Option<EntityId>,
     /// Entities (empty when the caller asked to omit them).
-    pub entities: Vec<Entity>,
+    pub entities: Vec<EntityObservation>,
     /// RNG draws so far.
     pub rng_draws: u64,
     /// Objective state for the synthetic scenario.
     pub objective_reached: bool,
+    /// A player character died (`World::hero_dead`): the app shows the lost page.
+    #[serde(default)]
+    pub hero_dead: bool,
     /// Script state (objectives, pending texts, victory, unknown natives), if the world runs a
     /// script.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -664,6 +732,17 @@ pub struct World {
     /// "Work": round robin per phase; 0 after a completed walk).
     #[serde(default)]
     pub cursors: SimCursors,
+    /// Where the left button went down on the map (24.8), until it comes up: the release
+    /// decides between a click and a drawn figure (`combat-measurements.md` 1.4).
+    #[serde(default)]
+    pub press: Option<(Fixed, Fixed)>,
+    /// A player character died (`ai::World::kill`): the mission is lost (measured for a lone
+    /// hero, `combat-measurements.md` 4); sticky, read by the app for the lost page.
+    #[serde(default)]
+    pub hero_dead: bool,
+    /// Damage numbers in flight, oldest first (presentation: not hashed).
+    #[serde(default)]
+    pub damage_numbers: Vec<DamageNumber>,
     /// Navigation grid derived from `geometry` and `map_size`: not serialised, built by every
     /// constructor, `set_geometry` and `restore` before the world is committed (a world the core
     /// hands out always has it; movement orders are refused, never unbounded, without it).
@@ -713,8 +792,11 @@ pub const SIM_WORK_PER_TICK: u64 = 1 << 24;
 /// `heard`, animation `elapsed` in clock units of the measured animation clock; 15: the
 /// world's `cursors` (one per simulation phase) replace `ai_cursor`, the VM's `fault`
 /// replaces `faulted`, native calls carry their result slot, frames no longer hold a native
-/// result, the assumption registry grew).
-pub const SNAPSHOT_VERSION: u32 = 15;
+/// result, the assumption registry grew; 16: the melee: entity `hp` / `hp_max` (replacing
+/// `hit_points`) / `energy` / `energy_ticks` / `foe` / `pose` / `pose_ticks` / `swing_ticks`
+/// / `figure`, the world's `press`, `hero_dead` and `damage_numbers`, the assumption
+/// registry grew).
+pub const SNAPSHOT_VERSION: u32 = 16;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -816,7 +898,15 @@ impl World {
                 alert_origin: None,
                 attack_target: None,
                 action: 0,
-                hit_points: a.hit_points,
+                hp: a.hit_points,
+                hp_max: a.hit_points,
+                energy: ENERGY_MAX,
+                energy_ticks: 0,
+                foe: None,
+                pose: FightPose::Idle,
+                pose_ticks: 0,
+                swing_ticks: 0,
+                figure: None,
                 knockout_resistance: a.knockout_resistance,
                 npc_gait: Gait::Walk,
                 fell_backward: false,
@@ -1050,7 +1140,15 @@ impl World {
             alert_origin: None,
             attack_target: None,
             action: 0,
-            hit_points: crate::ai::DEFAULT_HIT_POINTS,
+            hp: crate::ai::DEFAULT_HIT_POINTS,
+            hp_max: crate::ai::DEFAULT_HIT_POINTS,
+            energy: ENERGY_MAX,
+            energy_ticks: 0,
+            foe: None,
+            pose: FightPose::Idle,
+            pose_ticks: 0,
+            swing_ticks: 0,
+            figure: None,
             knockout_resistance: 0,
             npc_gait: Gait::Walk,
             fell_backward: false,
@@ -1084,7 +1182,15 @@ impl World {
             alert_origin: None,
             attack_target: None,
             action: 0,
-            hit_points: crate::ai::DEFAULT_HIT_POINTS,
+            hp: crate::ai::DEFAULT_HIT_POINTS,
+            hp_max: crate::ai::DEFAULT_HIT_POINTS,
+            energy: ENERGY_MAX,
+            energy_ticks: 0,
+            foe: None,
+            pose: FightPose::Idle,
+            pose_ticks: 0,
+            swing_ticks: 0,
+            figure: None,
             knockout_resistance: 0,
             npc_gait: Gait::Walk,
             fell_backward: false,
@@ -1124,7 +1230,15 @@ impl World {
                 alert_origin: None,
                 attack_target: None,
                 action: 0,
-                hit_points: 0,
+                hp: 0,
+                hp_max: 0,
+                energy: 0,
+                energy_ticks: 0,
+                foe: None,
+                pose: FightPose::Idle,
+                pose_ticks: 0,
+                swing_ticks: 0,
+                figure: None,
                 knockout_resistance: 0,
                 npc_gait: Gait::Walk,
                 fell_backward: false,
@@ -1155,6 +1269,9 @@ impl World {
             programs: Vec::new(),
             vm: None,
             cursors: SimCursors::default(),
+            press: None,
+            hero_dead: false,
+            damage_numbers: Vec::new(),
             nav: Some(nav),
             catalog: Catalog::default(),
         })
@@ -1359,10 +1476,84 @@ impl World {
             // carries its timer and an untimed one none, the alert states belong to enemy
             // soldiers and the blow to player characters, a returning soldier knows where to,
             // a patrolling one remembers nothing.
-            if (e.ai_state == AiState::Dead) == e.alive {
+            if e.ai_state.dead() == e.alive {
                 return Err(format!(
                     "entity {:?} dead state {:?} disagrees with alive = {}",
                     e.id, e.ai_state, e.alive
+                ));
+            }
+            // The melee's invariants (`ai.rs`): hit points within the maximum and 0 exactly
+            // when dead, energy within its bar with its regain timer running exactly while
+            // below full, a foe exactly in the fighting state (an opponent of the other side),
+            // a timed pose exactly outside the idle one and only in a fight, the swing timer
+            // only in a fight, a figure only on a player character who attacks or fights.
+            if e.kind != EntityKind::Obstacle {
+                if e.hp < 0 || e.hp > e.hp_max {
+                    return Err(format!(
+                        "entity {:?} hit points {} outside 0..={}",
+                        e.id, e.hp, e.hp_max
+                    ));
+                }
+                if (e.hp > 0) != e.alive {
+                    return Err(format!(
+                        "entity {:?} hit points {} disagree with alive = {}",
+                        e.id, e.hp, e.alive
+                    ));
+                }
+                if !(0..=ENERGY_MAX).contains(&e.energy) {
+                    return Err(format!(
+                        "entity {:?} energy {} out of range",
+                        e.id, e.energy
+                    ));
+                }
+                if (e.energy < ENERGY_MAX) != (e.energy_ticks > 0)
+                    || e.energy_ticks > MAX_STATE_TICKS
+                {
+                    return Err(format!(
+                        "entity {:?} energy timer {} inconsistent with energy {}",
+                        e.id, e.energy_ticks, e.energy
+                    ));
+                }
+            }
+            if (e.ai_state == AiState::Fighting) != e.foe.is_some() {
+                return Err(format!(
+                    "entity {:?} in the {:?} state with foe {:?}",
+                    e.id, e.ai_state, e.foe
+                ));
+            }
+            if (e.pose != FightPose::Idle) != (e.pose_ticks > 0)
+                || e.pose_ticks > MAX_STATE_TICKS
+                || (e.pose != FightPose::Idle && e.ai_state != AiState::Fighting)
+            {
+                return Err(format!(
+                    "entity {:?} pose {:?} with {} pose ticks in the {:?} state",
+                    e.id, e.pose, e.pose_ticks, e.ai_state
+                ));
+            }
+            if e.swing_ticks > MAX_STATE_TICKS
+                || (e.swing_ticks > 0 && e.ai_state != AiState::Fighting)
+            {
+                return Err(format!(
+                    "entity {:?} swing timer {} outside a fight",
+                    e.id, e.swing_ticks
+                ));
+            }
+            if e.figure.is_some()
+                && !(e.kind == EntityKind::Player
+                    && (e.attack_target.is_some() || e.ai_state == AiState::Fighting))
+            {
+                return Err(format!(
+                    "entity {:?} holds a figure without an attack order or a fight",
+                    e.id
+                ));
+            }
+            if e.ai_state == AiState::Fighting
+                && !(e.kind == EntityKind::Player
+                    || (e.kind == EntityKind::Guard && e.team == Team::Enemy))
+            {
+                return Err(format!(
+                    "entity {:?} fights but is neither a player character nor an enemy soldier",
+                    e.id
                 ));
             }
             if e.ai_state.timed() != (e.state_ticks > 0) {
@@ -1423,6 +1614,39 @@ impl World {
                     ));
                 }
             }
+            if let Some(f) = e.foe {
+                let foe = self.entities.iter().find(|v| v.id == f);
+                let ok = f != e.id
+                    && foe.is_some_and(|v| match e.kind {
+                        EntityKind::Player => v.kind == EntityKind::Guard && v.team == Team::Enemy,
+                        _ => v.kind == EntityKind::Player,
+                    });
+                if !ok {
+                    return Err(format!(
+                        "entity {:?} foe {f:?} is invalid: a fight is between a player character and an enemy soldier",
+                        e.id
+                    ));
+                }
+            }
+        }
+        if let Some((x, y)) = self.press {
+            let bound = Fixed::from_int(MAX_ENTITY_COORD);
+            if x.abs() > bound || y.abs() > bound {
+                return Err(format!("press position ({x:?}, {y:?}) out of range"));
+            }
+        }
+        if self.damage_numbers.len() > MAX_DAMAGE_NUMBERS {
+            return Err(format!(
+                "{} damage numbers exceed the limit",
+                self.damage_numbers.len()
+            ));
+        }
+        if let Some(d) = self
+            .damage_numbers
+            .iter()
+            .find(|d| d.age >= DAMAGE_NUMBER_TICKS)
+        {
+            return Err(format!("damage number {d:?} outlived its rise"));
         }
         for cursor in self.cursors.all() {
             if !self.entities.is_empty() && cursor as usize >= self.entities.len() {
@@ -1498,13 +1722,27 @@ impl World {
             InputEvent::PointerDown { button } => {
                 self.buttons_down.insert(button);
                 match button {
-                    Button::Left => self.left_click(),
+                    // The left button acts on its release: a press and a release on the same
+                    // spot is the click, a stroke between them a drawn figure
+                    // (`combat-measurements.md` 1.4).
+                    Button::Left => self.press = Some(self.pointer_in_map()),
                     Button::Right => self.right_click(),
                     Button::Middle => {}
                 }
             }
             InputEvent::PointerUp { button } => {
                 self.buttons_down.remove(&button);
+                if button == Button::Left
+                    && let Some(from) = self.press.take()
+                {
+                    let to = self.pointer_in_map();
+                    match figure_of(from, to) {
+                        Ok(Some(figure)) => self.figure_order(figure),
+                        // A stroke the engine does not read as a figure orders nothing.
+                        Ok(None) => {}
+                        Err(()) => self.left_click(),
+                    }
+                }
             }
             InputEvent::KeyDown { key } => {
                 self.keys_down.insert(key);
@@ -1556,8 +1794,9 @@ impl World {
     }
 
     /// The actor under the pointer: first match in slot order (order is authoritative and
-    /// hashed).
-    fn actor_at_pointer(&self) -> Option<EntityId> {
+    /// hashed). The renderer draws the bars of a hovered actor with it.
+    #[must_use]
+    pub fn actor_at_pointer(&self) -> Option<EntityId> {
         let (px, py) = self.pointer_in_map();
         self.entities
             .iter()
@@ -1577,12 +1816,13 @@ impl World {
             .position(|e| e.id == sel && e.kind == EntityKind::Player && e.alive && e.active)
     }
 
-    /// Left click (`docs/original/ui-flow.md` 9.4): on an enemy while a player character is
-    /// selected it orders the attack (`crate::ai`: walk into reach, then the knock-out blow when
-    /// behind him; hypothesis, the manual's fist icon is not drawn yet); on any other character
-    /// it selects him; on the ground it orders the selected player character to walk there, and
-    /// a second click within [`DOUBLE_CLICK_TICKS`] and [`DOUBLE_CLICK_DISTANCE`] of the first
-    /// makes the order a run. A click on the ground with nothing selected does nothing.
+    /// Left click (`docs/original/ui-flow.md` 9.4; `combat-measurements.md` 1.1): on an enemy
+    /// while a player character is selected it orders the attack (`crate::ai`: walk to the
+    /// fighting distance and fight, or the knock-out blow from behind); on any other character
+    /// it selects him; on the ground it orders the selected player character to walk there
+    /// (leaving a fight he is in), and a second click within [`DOUBLE_CLICK_TICKS`] and
+    /// [`DOUBLE_CLICK_DISTANCE`] of the first makes the order a run. A click on the ground
+    /// with nothing selected does nothing.
     fn left_click(&mut self) {
         if let Some(hit) = self.actor_at_pointer() {
             self.last_ground_click = None;
@@ -1591,10 +1831,16 @@ impl World {
                 .iter()
                 .position(|e| e.id == hit && e.kind == EntityKind::Guard && e.team == Team::Enemy);
             match (enemy, self.commanded_player()) {
+                (Some(t), Some(i)) if self.entities[i].ai_state == AiState::Fighting => {
+                    // Already fighting him: the order stands; another soldier: leave this
+                    // fight and go for him.
+                    if self.entities[i].foe != Some(hit) {
+                        self.leave_fight(i);
+                        self.order_attack(i, t, None);
+                    }
+                }
                 (Some(t), Some(i)) if self.entities[i].ai_state == AiState::Patrol => {
-                    let to = (self.entities[t].x, self.entities[t].y);
-                    self.plan_path(i, to);
-                    self.entities[i].attack_target = Some(hit);
+                    self.order_attack(i, t, None);
                 }
                 _ => self.selected = Some(hit),
             }
@@ -1605,12 +1851,16 @@ impl World {
             return;
         };
         let target = self.pointer_in_map();
+        if self.entities[i].ai_state == AiState::Fighting {
+            self.leave_fight(i);
+        }
         if self.entities[i].ai_state != AiState::Patrol {
             // A character delivering a blow finishes it first.
             self.last_ground_click = None;
             return;
         }
         self.entities[i].attack_target = None;
+        self.entities[i].figure = None;
         let double = self.last_ground_click.is_some_and(|c| {
             self.tick.saturating_sub(c.tick) <= DOUBLE_CLICK_TICKS
                 && Fixed::length(target.0 - c.x, target.1 - c.y)
@@ -1633,20 +1883,78 @@ impl World {
         }
     }
 
-    /// Right click: on the selected character it cancels his order; anywhere else it deselects.
+    /// Right click: on the selected character it cancels his order (and the fight he is in);
+    /// anywhere else it deselects.
     fn right_click(&mut self) {
         self.last_ground_click = None;
         let hit = self.actor_at_pointer();
         match (hit, self.commanded_player()) {
             (Some(h), Some(i)) if self.entities[i].id == h => {
+                if self.entities[i].ai_state == AiState::Fighting {
+                    self.leave_fight(i);
+                }
                 let e = &mut self.entities[i];
                 e.target = None;
                 e.path.clear();
                 e.gait = Gait::Walk;
                 e.attack_target = None;
+                e.figure = None;
             }
             _ => self.selected = None,
         }
+    }
+
+    /// The attack order: player character `i` walks towards soldier `t` (`attack_target`; the
+    /// stealth layer stops him in reach), carrying the figure he drew, if any.
+    fn order_attack(&mut self, i: usize, t: usize, figure: Option<Figure>) {
+        let to = (self.entities[t].x, self.entities[t].y);
+        let id = self.entities[t].id;
+        self.plan_path(i, to);
+        let e = &mut self.entities[i];
+        e.attack_target = Some(id);
+        e.figure = figure;
+    }
+
+    /// Player character `i` leaves his fight on the player's order; his foe stands his ground
+    /// (`ai::World::end_fight`, with a per-order search budget for the soldier's way back).
+    fn leave_fight(&mut self, i: usize) {
+        let foe = self.entities[i].foe;
+        let mut budget = ORDER_SEARCH_WORK;
+        self.end_fight(i, &mut budget);
+        if let Some(t) = foe.and_then(|id| self.entities.iter().position(|e| e.id == id))
+            && self.entities[t].ai_state == AiState::Fighting
+            && self.entities[t].foe == Some(self.entities[i].id)
+        {
+            let mut budget = ORDER_SEARCH_WORK;
+            self.end_fight(t, &mut budget);
+        }
+    }
+
+    /// A drawn figure (`combat-measurements.md` 1.4): the selected player character locks it
+    /// onto the nearest enemy soldier and, once he fights him, delivers the blow (the forward
+    /// stroke: the powerful blow). A figure while he already fights that soldier is delivered
+    /// in the fight; while he fights another, he leaves that fight.
+    fn figure_order(&mut self, figure: Figure) {
+        self.last_ground_click = None;
+        let Some(i) = self.commanded_player() else {
+            return;
+        };
+        let e = &self.entities[i];
+        if !matches!(e.ai_state, AiState::Patrol | AiState::Fighting) {
+            return;
+        }
+        let Some(t) = self.nearest_fightable(e.x, e.y) else {
+            return;
+        };
+        let target = self.entities[t].id;
+        if self.entities[i].ai_state == AiState::Fighting {
+            if self.entities[i].foe == Some(target) {
+                self.entities[i].figure = Some(figure);
+                return;
+            }
+            self.leave_fight(i);
+        }
+        self.order_attack(i, t, Some(figure));
     }
 
     /// Keys `c` / `s`: the selected player character crouches / stands up. Orders and the gait
@@ -1777,6 +2085,11 @@ impl World {
             self.vm_queue_action_change(class, previous, now);
         }
         self.vm_deliver_action_changes();
+        // The damage numbers rise and vanish (presentation).
+        for d in &mut self.damage_numbers {
+            d.age += 1;
+        }
+        self.damage_numbers.retain(|d| d.age < DAMAGE_NUMBER_TICKS);
         if let Some(p) = self.entities.iter().find(|e| e.kind == EntityKind::Player)
             && Fixed::length(p.x - self.goal.0, p.y - self.goal.1) <= Fixed::from_int(16)
         {
@@ -1858,6 +2171,20 @@ impl World {
         self.cursors.programs = cursor;
     }
 
+    /// A blow of `amount` hit points landed on a victim whose feet are at `at`: a damage
+    /// number starts rising there (the oldest is dropped beyond [`MAX_DAMAGE_NUMBERS`]).
+    pub(crate) fn push_damage_number(&mut self, at: (i32, i32), amount: i32) {
+        if self.damage_numbers.len() >= MAX_DAMAGE_NUMBERS {
+            self.damage_numbers.remove(0);
+        }
+        self.damage_numbers.push(DamageNumber {
+            x: at.0,
+            y: at.1,
+            amount,
+            age: 0,
+        });
+    }
+
     /// Snapshot everything authoritative. `content` is the fingerprint of the game content the
     /// world was built from (`None` for synthetic scenarios); the core has no I/O, so the app
     /// supplies it.
@@ -1915,12 +2242,19 @@ impl World {
             pointer: self.pointer,
             selected: self.selected,
             entities: if with_entities {
-                self.entities.clone()
+                self.entities
+                    .iter()
+                    .map(|e| EntityObservation {
+                        entity: e.clone(),
+                        in_combat: e.foe.is_some(),
+                    })
+                    .collect()
             } else {
                 Vec::new()
             },
             rng_draws: self.rng.draws,
             objective_reached: self.objective_reached,
+            hero_dead: self.hero_dead,
             script: self.script_observation(),
         }
     }
@@ -1945,9 +2279,14 @@ impl World {
             .u64(self.seed)
             .u8(u8::from(self.objective_reached))
             .i32(self.goal.0.raw())
-            .i32(self.goal.1.raw());
+            .i32(self.goal.1.raw())
+            .u8(u8::from(self.hero_dead));
         match self.last_ground_click {
             Some(c) => w.u8(1).u64(c.tick).i32(c.x.raw()).i32(c.y.raw()),
+            None => w.u8(0),
+        };
+        match self.press {
+            Some((x, y)) => w.u8(1).i32(x.raw()).i32(y.raw()),
             None => w.u8(0),
         };
         match &self.scenario {
@@ -1988,7 +2327,14 @@ impl World {
                 .u8(e.ai_state.tag())
                 .u32(e.state_ticks)
                 .u32(e.action)
-                .i32(e.hit_points)
+                .i32(e.hp)
+                .i32(e.hp_max)
+                .i32(e.energy)
+                .u32(e.energy_ticks)
+                .u8(e.pose.tag())
+                .u32(e.pose_ticks)
+                .u32(e.swing_ticks)
+                .u8(e.figure.map_or(0, Figure::tag))
                 .i32(e.knockout_resistance)
                 .u8(e.npc_gait.tag())
                 .u8(u8::from(e.fell_backward))
@@ -2019,10 +2365,12 @@ impl World {
                     None => a.u8(0),
                 };
             }
-            match e.attack_target {
-                Some(t) => a.u8(1).u32(t.index).u32(t.generation),
-                None => a.u8(0),
-            };
+            for id in [e.attack_target, e.foe] {
+                match id {
+                    Some(t) => a.u8(1).u32(t.index).u32(t.generation),
+                    None => a.u8(0),
+                };
+            }
         }
         a.u32(self.programs.len() as u32);
         for p in &self.programs {
@@ -2181,6 +2529,20 @@ fn run_program(e: &mut Entity, program: &[Instruction], rng: &mut Rng) -> Option
     None
 }
 
+/// What a left-button stroke from `from` to `to` (map pixels) is: `Err(())` for a click (shorter
+/// than [`FIGURE_MIN_STROKE`]), `Ok(Some(figure))` for a stroke the engine reads as a figure
+/// (the forward stroke: at least the minimum to the right, within 45 degrees of horizontal;
+/// `combat-measurements.md` 1.4 drew it 80 px right and 20 px up), `Ok(None)` for any other
+/// stroke (the other eight figures are not modelled).
+fn figure_of(from: (Fixed, Fixed), to: (Fixed, Fixed)) -> Result<Option<Figure>, ()> {
+    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+    if Fixed::length(dx, dy) < Fixed::from_int(FIGURE_MIN_STROKE) {
+        return Err(());
+    }
+    Ok((dx >= Fixed::from_int(FIGURE_MIN_STROKE) && dy.abs() <= dx)
+        .then_some(Figure::ForwardStroke))
+}
+
 /// Facing from a direction vector: 8-way quantised to 1/256 turns, exact and deterministic.
 pub(crate) fn facing_of(dx: Fixed, dy: Fixed) -> i32 {
     let (ax, ay) = (i64::from(dx.abs().raw()), i64::from(dy.abs().raw()));
@@ -2286,7 +2648,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "d27f5fc5cb0434b393321b8d28fc10574d22373d74d577d286c798c773c76ace";
+        "0f026ac0a3b668f6032272475dcfd35ae55f5ed0ebbee8ab1be2c4a742f5391a";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -2353,8 +2715,38 @@ mod tests {
         w.entities[1].action = 141;
         variants.push(("action", w));
         let mut w = base.clone();
-        w.entities[1].hit_points += 1;
-        variants.push(("hit_points", w));
+        w.entities[1].hp -= 1;
+        variants.push(("hp", w));
+        let mut w = base.clone();
+        w.entities[1].hp_max += 1;
+        variants.push(("hp_max", w));
+        let mut w = base.clone();
+        w.entities[1].energy -= 1;
+        variants.push(("energy", w));
+        let mut w = base.clone();
+        w.entities[1].energy_ticks = 5;
+        variants.push(("energy_ticks", w));
+        let mut w = base.clone();
+        w.entities[1].foe = Some(base.entities[0].id);
+        variants.push(("foe", w));
+        let mut w = base.clone();
+        w.entities[1].pose = FightPose::Strike;
+        variants.push(("pose", w));
+        let mut w = base.clone();
+        w.entities[1].pose_ticks = 4;
+        variants.push(("pose_ticks", w));
+        let mut w = base.clone();
+        w.entities[1].swing_ticks = 4;
+        variants.push(("swing_ticks", w));
+        let mut w = base.clone();
+        w.entities[0].figure = Some(Figure::ForwardStroke);
+        variants.push(("figure", w));
+        let mut w = base.clone();
+        w.press = Some((Fixed::ONE, Fixed::ONE));
+        variants.push(("press", w));
+        let mut w = base.clone();
+        w.hero_dead = true;
+        variants.push(("hero_dead", w));
         let mut w = base.clone();
         w.entities[1].knockout_resistance = 35;
         variants.push(("knockout_resistance", w));

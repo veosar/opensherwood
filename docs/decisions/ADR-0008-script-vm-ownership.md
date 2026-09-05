@@ -53,7 +53,10 @@ settled before any interpreter is written: a VM living above core cannot be snap
   units, the noise channel's immediate charge and the entity `heard` flag); ruleset 12, snapshot schema
   15 and hash schema 14 (2026-09-05, Codex review 8: the dependency-closed taint registry, transactional
   action-change delivery with the queue overflow as a fault, one simulation budget with a cursor per
-  phase, the native call fused with its result read).
+  phase, the native call fused with its result read); ruleset 13, snapshot schema 16 and hash schema 15
+  (2026-09-05, the melee of `docs/original/combat-measurements.md`: hit points, energy, the fight state
+  and poses, death, `hero_dead`, the press for the drawn figures, the assumption sources `MeleeReach`,
+  `PowerfulBlowChance`, `PostBound`, `CombatActions`, `HeroDeathLoss`).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
 - **What is authoritative and what is not.** `VmState::counters` (instructions, callbacks, budget aborts,
   faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
@@ -130,7 +133,14 @@ settled before any interpreter is written: a VM living above core cannot be snap
   `KnockOut` when the stealth layer changed script-visible state (an alert action id of an actor alerted
   by sight, never of one alerted by a run heard (`Entity::heard`), or a knock-out action id delivered to
   `ActionChange`, native 90 reporting a knock-out, 128 refusing one); `ProfileStats` when a blow consulted
-  the knock-out resistance; `TickRate` when a native-56 wait ran (in a sequence or outside one) or
+  the knock-out resistance; `MeleeReach` when a player character's automatic strike was resolved against
+  a soldier (it never lands: inferred from one fighter pair), `PowerfulBlowChance` when a powerful blow
+  was resolved (one in three from 2 of 6 strokes), `PostBound` when a soldier's foe left him alive and he
+  stood his ground (measured for the halberdier only), `CombatActions` when a melee action id or a dead
+  actor's fall reached an `ActionChange` handler (the ids are read by eye), `HeroDeathLoss` when a player
+  character's death raised the loss while another one was alive (measured for a lone hero); the measured
+  melee constants (hit points, energy, damage, cadence, the fighting distance, the blow's timing, the
+  attack order, death and the lost page) record nothing; `TickRate` when a native-56 wait ran (in a sequence or outside one) or
   `Hourglass` read its time; `ScrollPickup` when `IsTaken` fired (the pickup radius and the
   take-on-non-zero rule); `ZoneAtLoad` when a zone callback fired on the first scan for a character
   standing inside at load; `WalkCompletion` when a barrier was released by a walk that did not arrive;

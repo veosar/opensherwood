@@ -71,6 +71,10 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
     const ALERT_RUN: ActionId = ActionId(151);
     const LYING_BACK: ActionId = ActionId(48);
     const PUNCH: ActionId = ActionId(123);
+    const FIGHT_IDLE: ActionId = ActionId(54);
+    const STRIKE: ActionId = ActionId(59);
+    const POWERFUL_BLOW: ActionId = ActionId(75);
+    const FLINCH: ActionId = ActionId(104);
     // Frame anchors are relative to a canvas whose origin (the entity position) is the sequence's
     // `origin_x/origin_y` (150,150 for characters); see docs/formats/sprites.md.
     let animations: Vec<Vec<FrameSpec>> = profile
@@ -112,6 +116,10 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
     let mut lying_back = [0u32; 8];
     let mut get_up = [0u32; 8];
     let mut punch = [0u32; 8];
+    let mut fight_idle = [0u32; 8];
+    let mut strike = [0u32; 8];
+    let mut powerful_blow = [0u32; 8];
+    let mut flinch = [0u32; 8];
     let table = AnimationTable::from_profile(profile);
     for o in 0..8 {
         let dir = Direction::from_octant(o);
@@ -140,6 +148,10 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
         lying_back[o] = action(LYING_BACK).unwrap_or(lying[o]);
         get_up[o] = action(ActionId::GET_UP).unwrap_or(idle[o]);
         punch[o] = action(PUNCH).unwrap_or(idle[o]);
+        fight_idle[o] = action(FIGHT_IDLE).unwrap_or(idle[o]);
+        strike[o] = action(STRIKE).unwrap_or(fight_idle[o]);
+        powerful_blow[o] = action(POWERFUL_BLOW).unwrap_or(strike[o]);
+        flinch[o] = action(FLINCH).unwrap_or(fight_idle[o]);
     }
     AnimSet {
         animations,
@@ -160,6 +172,10 @@ fn anim_set_from_profile(profile: &opensherwood_formats::rhs::Profile) -> AnimSe
         get_up,
         punch,
         has_punch: table.as_ref().is_some_and(|t| t.has(PUNCH)),
+        fight_idle,
+        strike,
+        powerful_blow,
+        flinch,
     }
 }
 
@@ -500,11 +516,17 @@ impl Session {
         if self.ended || !matches!(self.screen, Screen::World) {
             return;
         }
-        let Some(vm) = self.world.as_ref().and_then(|w| w.vm.as_ref()) else {
+        let Some(world) = self.world.as_ref() else {
+            return;
+        };
+        // The hero's death is the loss whether or not the script's `CheckVictoryCondition`
+        // reports it (`combat-measurements.md` 4: the lost page within a third of a second).
+        let hero_dead = world.hero_dead;
+        let Some(vm) = world.vm.as_ref() else {
             return;
         };
         // A loss takes precedence: the script sets it on death or failure and no win follows it.
-        let lost = vm.mission_lost;
+        let lost = vm.mission_lost || hero_dead;
         if !vm.mission_won && !lost {
             return;
         }
@@ -1740,14 +1762,16 @@ impl Session {
     }
 
     /// Decode a retail background and the map's geometry (occluders for drawing, walkable area for
-    /// movement). With `lenient` (see [`lenient_assets`]) a missing or malformed `.rhp` degrades
-    /// to default geometry with a log line; otherwise it is an error.
+    /// movement), and count the map's part of the script element table
+    /// (`opensherwood_script::map_element_count`: `FLIM` plus `TUPO` entries of the `.rhp`).
+    /// With `lenient` (see [`lenient_assets`]) a missing or malformed `.rhp` degrades to default
+    /// geometry and no element count with a log line; otherwise it is an error.
     fn load_map(
         game: &GameDir,
         map: &str,
         ambiance: &str,
         lenient: bool,
-    ) -> Result<(Background, Geometry), String> {
+    ) -> Result<(Background, Geometry, Option<u32>), String> {
         let logical = format!("Data/Levels/{ambiance}/{map}.map");
         let data = game.read(&logical).map_err(|e| e.to_string())?;
         let img = opensherwood_formats::image_blob::parse_file(&data)
@@ -1778,6 +1802,7 @@ impl Session {
             }
             Err(e) => return Err(format!("{rhp_path}: {e}")),
         };
+        let map_elements = rhp.as_ref().map(opensherwood_script::map_element_count);
         if let Some(rhp) = rhp {
             background.occluders = rhp
                 .faces
@@ -1828,7 +1853,7 @@ impl Session {
                 })
                 .collect();
         }
-        Ok((background, geometry))
+        Ok((background, geometry, map_elements))
     }
 
     /// Open the sprite bank once and build a catalog for the given profiles. A sprite bank that
@@ -1904,7 +1929,7 @@ impl Session {
                     .game
                     .as_ref()
                     .ok_or("map scenarios need a game directory")?;
-                let (bg, geometry) = Self::load_map(game, map, ambiance, lenient_assets())?;
+                let (bg, geometry, _) = Self::load_map(game, map, ambiance, lenient_assets())?;
                 let info = MapInfo {
                     width: bg.width,
                     height: bg.height,
@@ -1921,14 +1946,34 @@ impl Session {
             Scenario::Mission(name) => {
                 let game = self.game.as_ref().ok_or("missions need a game directory")?;
                 let (mission_file, map) = mission::load(game, name, lenient_assets())?;
-                let ambiance = "Day";
-                let (bg, geometry) = Self::load_map(game, &map, ambiance, lenient_assets())?;
+                // The background of the mission's ambiance variant; `Day` when the retail data
+                // has no picture for it (`mission::ambiance_for_variant`).
+                let variant = mission_file.mission.header.variant;
+                let wanted = mission::ambiance_for_variant(variant);
+                let ambiance = if game
+                    .resolve(&format!("Data/Levels/{wanted}/{map}.map"))
+                    .is_some()
+                {
+                    wanted
+                } else {
+                    eprintln!(
+                        "opensherwood: mission {name}: variant {variant} background Data/Levels/{wanted}/{map}.map unavailable; using Day"
+                    );
+                    "Day"
+                };
+                let (bg, geometry, map_elements) =
+                    Self::load_map(game, &map, ambiance, lenient_assets())?;
                 let info = MapInfo {
                     width: bg.width,
                     height: bg.height,
                 };
-                let (mut spec, profiles) =
-                    mission::build_spec_checked(&mission_file, info, geometry, lenient_assets())?;
+                let (mut spec, profiles) = mission::build_spec_checked(
+                    &mission_file,
+                    info,
+                    geometry,
+                    map_elements,
+                    lenient_assets(),
+                )?;
                 spec.lenient_natives = self.lenient_natives;
                 spec.starting_money = self.money_override.take().unwrap_or(self.profile().money);
                 let mut world = World::new_mission(scenario, seed, &spec)?;
@@ -2532,6 +2577,9 @@ impl Session {
                     /// Mark the mission lost (the same shortcut for the loss flow).
                     #[serde(default)]
                     lose: bool,
+                    /// Describe one entry of the element table (native 3's index space).
+                    #[serde(default)]
+                    element: Option<i32>,
                 }
                 let p: P = params(p)?;
                 self.world()?;
@@ -2545,10 +2593,30 @@ impl Session {
                 let Some(vm) = world.vm.as_ref() else {
                     return ok(json!({ "present": false }));
                 };
+                let element = p.element.map(|index| {
+                    use opensherwood_core::vm::Element;
+                    match usize::try_from(index)
+                        .ok()
+                        .and_then(|i| vm.program.elements.get(i))
+                    {
+                        Some(Element::Map(i)) => json!({ "kind": "map", "index": i }),
+                        Some(Element::Unmodelled(i)) => json!({ "kind": "unmodelled", "index": i }),
+                        Some(Element::Actor(e)) => json!({ "kind": "actor", "entity": e }),
+                        Some(Element::Object { x, y }) => {
+                            json!({ "kind": "object", "x": x, "y": y })
+                        }
+                        Some(Element::Scroll { x, y }) => {
+                            json!({ "kind": "scroll", "x": x, "y": y })
+                        }
+                        Some(Element::Polygon(l)) => json!({ "kind": "polygon", "location": l }),
+                        None => json!(null),
+                    }
+                });
                 ok(json!({
                     "present": true,
                     "classes": vm.program.classes.len(),
                     "elements": vm.program.elements.len(),
+                    "element": element,
                     "locations": vm.program.locations.len(),
                     "objectives": vm.objectives,
                     "texts": vm.pending_texts(),

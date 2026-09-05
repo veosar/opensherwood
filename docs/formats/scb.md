@@ -364,8 +364,8 @@ only when a player-character slot is empty (`n85(pc) == 1`), i.e. in the five fi
 | Tac18_FoA_EC | 20, 42, 72, 73, 244 | 244; 73 | 178 | 133, 177, 220, 228 |
 | Tac19_FoB_EC | 12, 20, 72, 73 | 12; 20 | 178 | 177, 228 |
 | Tac21_FoB_EC | 20, 39, 250 | 20; 39 | 29, 178, 240 | - |
-| sherwood | (static) 7, 150, 205, 210, 213, 214, 215, 256, 261 | refused: no element index space (Index spaces) | 86, 101, 112, 125, 126, 163, 164, 172, 173, 205, 213, 229, 232, 240, 248, 255, 256, 258 (static) | - |
-| SherwoodOutro | (static) 180 | refused (same) | - | - |
+| sherwood | (static) 7, 150, 205, 210, 213, 214, 215, 256, 261 | - (loads since 2026-09-05; hit at load: 7, 150, 210, 214, 215, 256, 261) | 86, 101, 112, 125, 126, 163, 164, 172, 173, 205, 213, 229, 232, 240, 248, 255, 256, 258 (static) | - |
+| SherwoodOutro | (static) 180 | - (loads since 2026-09-05; hit at load: 54, 180) | - | - |
 
 Union of the load column over the 37 loadable files: 8, 12, 13, 20, 24, 38, 39, 42, 46, 70, 72, 73, 92, 125, 143,
 156, 177, 180, 205, 228, 232, 236, 237, 244, 247, 250, 254, 264 (28 ids; 20 blocks 18 files, 250 eleven, 42 ten,
@@ -398,7 +398,7 @@ not, and what a first implementation would be where the row is confident enough.
 | 182 | either | a run-once flag guards the branch; 1 avoids a spurious door close at tick 1 |
 | 192 | **no** | 0 addresses element 0 (a map element) with 193 / 194 / 113: return the class's own element (as 74 does for actors) |
 | 205 | return -1 | 0 would be a map element handed to 80 / 81 / 99 / 243 |
-| 210, 215, 256, 261, 163, 164, 172, 173, 199, 200, 248, 258 | yes | sherwood only (refused today); 210 = 0 means nothing accomplished |
+| 210, 215, 256, 261, 163, 164, 172, 173, 199, 200, 248, 258 | yes | sherwood only (loads since 2026-09-05); 210 = 0 means nothing accomplished |
 | 213 | yes (wrong walks) | 0 is location 0; implement the interpolation (medium) |
 | 221, 222 | yes | 0 = not mounted / not used: the zones fire as for unmounted actors; objects count as unused until implemented |
 | 231, 246 | yes | 1 would win H03 / H04 / S04 at tick 1 |
@@ -411,18 +411,30 @@ not, and what a first implementation would be where the row is confident enough.
 
 ## Index spaces
 
-- **Elements (native 3)**: one flat table per level. From self-references of object classes (a target plays
-  its own hit animation on `n3(k)`; `scb_elements.py`), the mission part of the table is, in `.rhm` order,
-  `SCOT` (player characters), `OILE`, `TOTO`, `BORG`, `BOOM`, `SKRO`, then further entries (script polygons or
-  the `CAVE` list; not resolved). The first mission index of a file is `base = POUF count + K(map)` where K is
-  14 for Croisement01, 19 for Croisement02 and Croisement03 (20 forest missions, exact), 19 for Derby, 58 for
-  Nottingham, 59 for Leicester, 49 for Lincoln (H01), about 67 for York. The map's `FLIM` animated elements
-  occupy indices 0..FLIM-1 (confirmed in H01: indices 19..=32 are Lincoln's chimney fires, torches and candles,
-  which the day mission deactivates at start and re-activates room by room); K exceeds the `FLIM` count by 1, 4,
-  4, 6, 10, 12, 11 respectively, so a small proto-level table that is not identified follows the animated
-  elements. `sherwood.scb` (50 PCs) does not fit this model (max index 50). For H01: map elements 0..=37,
-  unresolved 38..=48, PC = 49, civilians 50..=56, soldiers 57..=94, objects 95..=99, scrolls 100..=114,
-  115..=126 unresolved (script polygons or the `CAVE` list).
+- **Elements (native 3)**: one flat table per level (established 2026-09-05, `sherwood-hub.md` section 4,
+  from the self-references of object, actor and player-character classes over all 39 files; implemented in
+  `crates/opensherwood-script`, `MissionBinding::from_mission`):
+
+  ```
+  [ map FLIM ] [ map TUPO ] [ POUF ] [ OILE ] [ TOTO ] [ BORG ] [ BOOM ] [ SKRO ] [ ZORG ] [ TING ] [ SCOT ] [ GULP polygons ]
+  ```
+
+  The map's `FLIM` animated elements occupy indices 0..FLIM-1 (confirmed in H01: indices 19..=32 are Lincoln's
+  chimney fires, torches and candles, which the day mission deactivates at start and re-activates room by
+  room), followed by the map's `TUPO` patches (medium: the counts fit all nine maps and native 5's per-map
+  ranges agree; no script addresses a patch through native 3). The per-map prefix `K = FLIM + TUPO` is
+  computed from the parsed `.rhp` (`map_element_count`): 19 Croisement01, 24 Croisement02 and Croisement03,
+  20 Derby, 59 Nottingham, 63 Leicester, 50 Lincoln, 70 York, 20 Sherwood (`known_map_element_count` keeps
+  the nine values as a cross-check, `crates/opensherwood-script/tests/gamedata.rs`). The mission's records
+  follow in the chunk order above; the player-character slots (`SCOT`) sit at the *tail*, after the inert
+  `ZORG` and `TING` entries: four named `SCOT` classes address their own slot (Tac01 107, Emb03 107, Emb04 93,
+  the outro 70, exact) and no mission's self-references fit `SCOT` in front (high). The position of the
+  script polygons is not observable (no polygon class references itself by index); the engine puts them
+  last. Under the earlier model (`SCOT` first, `K` read off one mission per map) eleven missions were bound
+  with their records shifted by 1..=4: H02, H09, H12, H05, Str01, H03, S04, Str02, H10, S05, Str03. For H01:
+  map elements 0..=49 (38 animated, 12 patches), civilians 50..=56, soldiers 57..=94, objects 95..=99, scrolls
+  100..=114, `ZORG` 115..=125 (inert), the hero's slot 126 (the element whose two attributes the level's
+  `Initialize` zeroes), polygons 127..=138.
 - **Locations (native 6)**: `GULP` points then polygons (exact bound in 11 files).
 - **Paths (native 9)**: `RAIL` index.
 - **Doors (native 4) and patches (native 5)**: per-map tables of the proto-level (index ranges are consistent
@@ -443,8 +455,9 @@ element classes are referred to by role, never by their designer names (those ar
 
 **Confidence marks.** Every statement carries the *minimum* confidence of the opcode, native and index-space
 hypotheses it depends on: **[H]** all high, **[M]** at least one medium, **[L]** at least one low. The
-element-index resolution (index -> `.rhm` record) is itself **medium** for the mission part of the table
-(placed by object self-references) and **medium** for the map part (only the `FLIM` light check supports it),
+element-index resolution (index -> `.rhm` record) is **high** for the mission part of the table since
+2026-09-05 (Index spaces: placed by the self-references of all 39 files) and **medium** for the map part
+(the `FLIM` light check and the `TUPO` count fit),
 so no statement that names a specific actor, scroll or zone by index is better than [M]. Only the statements
 marked *observed* were checked against the original (`docs/original/campaign-flow.md`: the three briefing
 pages, the initial objective, the camera on Robin afterwards). Everything else is *consistent with the
@@ -461,7 +474,7 @@ and bound, an `Actor` scratch variable, a "going away" flag).
   variables 1, 2, 3 [M]; locks doors 20 and 28 and closes doors 8, 20, 21, 37, 25, 23 [L: natives 4, 186,
   191]; deactivates, AI-locks and hides four actors (50, 79, 53, 92: the girl, a soldier, the servant, a
   soldier) that are activated by later events [L: 113 high, 134 medium, 197 / 198 low]; sets two attributes
-  of element 126 to 0 [M: 117]; returns 0 [H].
+  of element 126, the hero's own slot (Index spaces), to 0 [M: 117]; returns 0 [H].
 - `PostInitialize` [M]: adds the primary objective 0 [H], then one sequence [H: 30 / 32 / 31]: text pages 0, 1,
   2 [H: 203; *observed*: the three briefing pages], then the camera goes to the main PC (`n34(n95(n211()))`)
   [M: 34, 211; *observed*: camera on Robin after the parchment]. This is consistent with the observed
@@ -607,7 +620,17 @@ observation and `debug.vm`); the app does not react to it yet. Strict run of 202
 dismissed): all 37 loadable missions run `Initialize` / `PostInitialize` and 1000 ticks without a trap, a
 run-time fault or a budget abort, none is won or lost; H10 holds 100000 of money after its `Initialize`.
 The harness pins the load-time state of every script (`EXPECTED_AT_LOAD`) and the first 300 strict ticks
-(`harness/tests/data/test_script.py`).
+(`harness/tests/data/test_script.py`). Strict run of 2026-09-05 under the corrected element table (Index
+spaces): all 39 files, the Sherwood hub and its outro included, load with their script and run 300 strict
+ticks without a trap, a run-time fault or a budget abort, none won or lost. The re-binding changed, at load,
+only the forest missions' stub 244 counts (the hidden player slots now answer 85 = 1 and 244 fires per empty
+slot: 4 or 5 per file, where the shifted table had reported 0, 1, 4 or 5 by accident) and the "every element"
+loop counts of H05 / Str01 / Str02 (80 / 81, the table grew by the `ZORG` / `TING` entries); over the 300 ticks
+S03's companion is now addressed (its remarks 69, animations 49 and status checks 88 / 89 run and draw script
+randomness), H02's and Tac21's counting mission variables reach other values, and the hashes of every mission
+differ from the 2026-09-03 run because the element table itself is hashed. The hub reaches none of the six
+natives without a row (165, 166, 170, 174, 239, 249) at load or in 300 ticks (no player character enters the
+deployment zone by itself).
 
 Stealth layer (2026-09-03, ruleset 9, `crates/opensherwood-core/src/ai.rs`,
 `docs/original/stealth-and-combat.md` "Engine"): 87 (dead), 90 (out of action: knocked down, lying knocked

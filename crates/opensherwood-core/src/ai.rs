@@ -1,23 +1,31 @@
-//! NPC perception, alert states and the knock-out: the stealth layer of
-//! `docs/original/stealth-and-combat.md` (section 6, items 1-3 and the knock-out of 4), as far as
-//! the first mission needs it. Everything here is fixed point or integer, part of [`Entity`] (and
-//! so of the snapshot, of `validate` and of the `actors` hash) and stepped by [`World::ai_tick`]
-//! from `World::simulate`, before the waypoint programs run.
+//! NPC perception, alert states, the knock-out and the melee: the stealth and combat layer of
+//! `docs/original/stealth-and-combat.md` (section 6, items 1-4) and
+//! `docs/original/combat-measurements.md`, as far as the first mission needs it. Everything
+//! here is fixed point or integer, part of [`Entity`] (and so of the snapshot, of `validate`
+//! and of the `actors` hash) and stepped by [`World::ai_tick`] from `World::simulate`, before
+//! the waypoint programs run.
 //!
-//! Status of the constants below (`docs/original/stealth-and-combat.md` 8, measured 2026-09-05):
-//! the noise channel is **measured** (a running hero is heard at 330 px and more by soldiers
-//! not facing him, and they charge at once, without the noticed / alarm pause), the timed
-//! states' durations come from the profiles' tables on the measured animation clock
-//! (`anim.rs`); the view cone (angle, range, the crouch divisor), the alert timeout, the
-//! knock-out timer and the punch's arc remain **hypotheses** (section 7 lists the captures
-//! that would settle them). Every value is pinned by tests so that a correction is a
-//! deliberate ruleset bump.
+//! Status of the constants below (`docs/original/stealth-and-combat.md` 8 and
+//! `combat-measurements.md`, measured 2026-09-05): the noise channel is **measured** (a running
+//! hero is heard at 330 px and more by soldiers not facing him, and they charge at once,
+//! without the noticed / alarm pause), the timed states' durations come from the profiles'
+//! tables on the measured animation clock (`anim.rs`); the melee's hit points, energy, damage,
+//! cadence, fighting distance and the powerful blow's timing are **measured**; the view cone
+//! (angle, range, the crouch divisor), the alert timeout, the knock-out timer, the punch's
+//! arc, the hero's click attacks never landing ([`Assumption::MeleeReach`]), the powerful
+//! blow's chance ([`Assumption::PowerfulBlowChance`]) and the soldier standing his ground when
+//! his foe leaves ([`Assumption::PostBound`]) remain **hypotheses** (section 7 and
+//! `combat-measurements.md` 7 list the captures that would settle them). Every value is pinned
+//! by tests so that a correction is a deliberate ruleset bump.
 //!
 //! Not modelled (documented gaps): occluders and walls do not block sight; civilians neither
-//! perceive nor raise the alarm; walking makes no noise; soldiers do not fight, shoot, revive
-//! comrades or report to the script through `FilterAIEvent`; a knock-out never fails (the
-//! manual's chance is not modelled beyond the resistance threshold); knocked-down bodies do
-//! not move by the animation's displacement.
+//! perceive nor raise the alarm; walking makes no noise; soldiers do not start fights (only
+//! the player's attack order does: a charging soldier who reaches the hero stands by him),
+//! shoot, revive comrades or report to the script through `FilterAIEvent`; a knock-out never
+//! fails (the manual's chance is not modelled beyond the resistance threshold); knocked-down
+//! and dead bodies do not move by the animation's displacement; the soldiers' occasional
+//! 25-hp blow, the block and the other eight figures are not modelled; an empty energy bar
+//! forbids nothing (its effect is not measured).
 //!
 //! Work. One simulation budget per tick (`world::SIM_WORK_PER_TICK`) pays for everything the
 //! simulation does besides the script: the pre-index pass ([`SimIndex`], one unit per entity,
@@ -68,9 +76,16 @@ pub enum AiState {
     Lying,
     /// Gets up (action 49), timed.
     GettingUp,
-    /// Dead: lies for good (no damage model kills anyone yet; the state exists for the script
-    /// predicates).
+    /// Dead: lies for good (47 / 48) after the fall ([`AiState::Dying`]); the script
+    /// predicates 85 / 87 / 90 see it.
     Dead,
+    /// In a melee (`combat-measurements.md` 1): stands in the fighting stance (54) facing the
+    /// foe (`Entity::foe`), strikes (59 / 75) and flinches (104) by `Entity::pose`; player
+    /// characters and enemy soldiers.
+    Fighting,
+    /// Killed: the fall (44 backward when struck from the front, 41 forward) plays, timed;
+    /// already not alive (the predicates report dead from the first tick).
+    Dying,
 }
 
 impl AiState {
@@ -88,14 +103,25 @@ impl AiState {
             AiState::Lying => 8,
             AiState::GettingUp => 9,
             AiState::Dead => 10,
+            AiState::Fighting => 11,
+            AiState::Dying => 12,
         }
     }
 
-    /// Knocked out (down or lying) or dead: what script native 90 reports as "out of action"
-    /// (a soldier getting up is back in action; hypothesis).
+    /// Knocked out (down or lying) or dead (falling or lying for good): what script native 90
+    /// reports as "out of action" (a soldier getting up is back in action; hypothesis).
     #[must_use]
     pub fn out_of_action(self) -> bool {
-        matches!(self, AiState::KnockedDown | AiState::Lying | AiState::Dead)
+        matches!(
+            self,
+            AiState::KnockedDown | AiState::Lying | AiState::Dead | AiState::Dying
+        )
+    }
+
+    /// Dead: the two states of a killed entity (`alive` is false exactly then).
+    #[must_use]
+    pub fn dead(self) -> bool {
+        matches!(self, AiState::Dead | AiState::Dying)
     }
 
     /// On its feet: can perceive, walk, be ordered, be knocked out (script native 128, "able
@@ -104,7 +130,11 @@ impl AiState {
     pub fn standing(self) -> bool {
         !matches!(
             self,
-            AiState::KnockedDown | AiState::Lying | AiState::GettingUp | AiState::Dead
+            AiState::KnockedDown
+                | AiState::Lying
+                | AiState::GettingUp
+                | AiState::Dead
+                | AiState::Dying
         )
     }
 
@@ -130,7 +160,59 @@ impl AiState {
                 | AiState::KnockedDown
                 | AiState::Lying
                 | AiState::GettingUp
+                | AiState::Dying
         )
+    }
+}
+
+/// What a fighter is doing inside the `Fighting` state (`Entity::pose`): the stance, or a
+/// timed pose (`Entity::pose_ticks`) whose end resolves the blow it carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FightPose {
+    /// The fighting stance (action 54), between blows.
+    #[default]
+    Idle,
+    /// An automatic strike (action 59): a soldier's basic hit (5 hp, two in three land), the
+    /// hero's click attack (never lands against a soldier, [`Assumption::MeleeReach`]).
+    Strike,
+    /// The hero's powerful blow of the forward-stroke figure (action 75): 50 hp when it
+    /// lands, resolved [`POWERFUL_BLOW_TICKS`] after the order.
+    PowerfulBlow,
+    /// Hit in the stance (action 104).
+    Flinch,
+}
+
+impl FightPose {
+    /// Stable tag for canonical encodings (never derived from declaration order).
+    #[must_use]
+    pub fn tag(self) -> u8 {
+        match self {
+            FightPose::Idle => 1,
+            FightPose::Strike => 2,
+            FightPose::PowerfulBlow => 3,
+            FightPose::Flinch => 4,
+        }
+    }
+}
+
+/// A drawn figure (the manual's mouse strokes; `combat-measurements.md` 1.4): the pending
+/// order of a player character (`Entity::figure`), executed once he fights the target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Figure {
+    /// The stroke forwards (the pointer dragged right with the button held): the slow,
+    /// powerful blow.
+    ForwardStroke,
+}
+
+impl Figure {
+    /// Stable tag for canonical encodings (never derived from declaration order).
+    #[must_use]
+    pub fn tag(self) -> u8 {
+        match self {
+            Figure::ForwardStroke => 1,
+        }
     }
 }
 
@@ -157,7 +239,7 @@ impl ActorStatus {
     /// The status of an entity.
     #[must_use]
     pub fn of(e: &Entity) -> Self {
-        let dead = !e.alive || e.ai_state == AiState::Dead;
+        let dead = !e.alive || e.ai_state.dead();
         let knocked_out = !dead && matches!(e.ai_state, AiState::KnockedDown | AiState::Lying);
         ActorStatus {
             dead,
@@ -221,9 +303,72 @@ pub const KNOCKED_DOWN_TICKS: u32 = world_ticks(21);
 pub const GET_UP_TICKS: u32 = world_ticks(24);
 /// See [`NOTICED_TICKS`]: 123 = 8 frames of 11 ticks (the hero) -> 19 table ticks.
 pub const PUNCH_TICKS: u32 = world_ticks(19);
-/// Hit points of a human whose profile gives none (player characters, civilians): the profile
-/// table's PC and CV records have no field read as hit points yet (`profile.md`). Hypothesis.
-pub const DEFAULT_HIT_POINTS: i32 = 100;
+/// Hit points of the hero: 100, measured (`combat-measurements.md` 1.2: a 20 px bar at 5 hp
+/// per pixel, 36 hits of one pixel).
+pub const HERO_HIT_POINTS: i32 = 100;
+/// Hit points of a human whose profile gives none (player characters, civilians): the hero's
+/// measured value; the profile table's PC and CV records have no field read as hit points
+/// (`profile.md`), so the other heroes and the civilians share it (hypothesis for them). A
+/// soldier's hit points are his SD record's `pre[0]` (80 for a blue halberdier, confirmed by
+/// the powerful blow's 50 hp taking 13 of his 20 pixels; `combat-measurements.md` 1.2).
+pub const DEFAULT_HIT_POINTS: i32 = HERO_HIT_POINTS;
+/// Energy of every fighter: 20 units, one per pixel of the blue bar (measured, 1.2).
+pub const ENERGY_MAX: i32 = 20;
+/// Ticks the hero needs to regain one unit of energy: 0.9 s (measured 0.8-1.0 s per pixel,
+/// 1.2), 54 ticks at 60 Hz.
+pub const HERO_ENERGY_REGEN_TICKS: u32 = 54;
+/// Ticks a soldier needs to regain the unit a landed hit cost him: about 4 s (measured, 1.2).
+pub const SOLDIER_ENERGY_REGEN_TICKS: u32 = 240;
+/// Energy a soldier's landed hit costs him (measured: one pixel, 1.2).
+pub const SOLDIER_HIT_ENERGY: i32 = 1;
+/// Energy the hero's powerful blow costs, landed or not (measured: two pixels, 1.2 / 1.4).
+pub const POWERFUL_BLOW_ENERGY: i32 = 2;
+/// Fighting distance between the feet in map pixels (measured: 52 px, 1.6): the attacker
+/// stops here and the fight begins.
+pub const FIGHT_RANGE: i32 = 52;
+/// Distance beyond which a fight breaks off (a fighter moved away by a script walk; the
+/// player's own orders end his fight directly): twice the fighting distance.
+pub const FIGHT_BREAK_RANGE: i32 = 2 * FIGHT_RANGE;
+/// Ticks between a soldier's swings: about 5.3 s (measured: 12 swings in 64 s, 1.5), 318
+/// ticks; the gameplay RNG adds a jitter of up to [`SWING_JITTER_TICKS`] either way.
+pub const SOLDIER_SWING_TICKS: u32 = 318;
+/// Half width of the uniform jitter on a soldier's swing interval (about half a second; the
+/// measured intervals between landed hits spread 5.2..15.4 s around the 7.7 s median, which
+/// the cadence with two of three swings landing reproduces). The engine's choice within the
+/// measurement, not a rule of the original.
+pub const SWING_JITTER_TICKS: u32 = 32;
+/// Chance of a soldier's swing landing as `(numerator, denominator)`: two in three
+/// (measured: median 7.7 s between landed hits over a swing every 5.3 s, 1.5).
+pub const SOLDIER_HIT_CHANCE: (u32, u32) = (2, 3);
+/// Damage of a soldier's landed basic hit (measured: one pixel of the hero's bar, 5 hp, 36
+/// times; the occasional 25-hp blow is not modelled).
+pub const SOLDIER_HIT_DAMAGE: i32 = 5;
+/// Damage of the hero's powerful blow when it lands (measured: "50", 13 pixels of 80 hp, 1.4).
+pub const POWERFUL_BLOW_DAMAGE: i32 = 50;
+/// Ticks from the figure's order to the blow's resolution: 0.9-1.0 s measured (1.4), 57 ticks.
+pub const POWERFUL_BLOW_TICKS: u32 = 57;
+/// Chance of the hero's powerful blow landing on a soldier as `(numerator, denominator)`: one
+/// in three, from 2 of 6 strokes against a halberdier (1.4; small sample). Hypothesis:
+/// resolving a blow records [`Assumption::PowerfulBlowChance`].
+pub const POWERFUL_BLOW_CHANCE: (u32, u32) = (1, 3);
+/// Ticks between the hero's automatic strikes while fighting (1.5 s): presentation only,
+/// since a click attack never lands against a soldier ([`Assumption::MeleeReach`]; observed
+/// against a pole arm at 52 px over 225 s, 1.3); the interval itself is not measured.
+pub const HERO_SWING_TICKS: u32 = 90;
+/// Fallback duration of a quick strike (actions 59..66: 8 tick halves over 8 frames = 16
+/// table ticks on `Soldier A00`, `sprite-animations.md`).
+pub const STRIKE_TICKS: u32 = world_ticks(16);
+/// Fallback duration of the flinch in the stance (action 104; not read: 12 table ticks).
+pub const FLINCH_TICKS: u32 = world_ticks(12);
+/// Ticks a damage number rises over the victim's head before it vanishes (measured: about
+/// 1.5 s for 50 px, 1.2).
+pub const DAMAGE_NUMBER_TICKS: u32 = 90;
+/// Pixels a damage number rises in [`DAMAGE_NUMBER_TICKS`] (measured, 1.2).
+pub const DAMAGE_NUMBER_RISE: i32 = 50;
+/// Shortest pointer stroke (map pixels between the press and the release of the left button)
+/// read as a drawn figure rather than a click; the measured stroke was 80 px (1.4). The
+/// engine's choice.
+pub const FIGURE_MIN_STROKE: i32 = 32;
 
 /// Sprite action ids the states report (`sprite-animations.md`); [`action_id`] picks them.
 pub mod actions {
@@ -259,6 +404,14 @@ pub mod actions {
     pub const ALERT_WALK: u32 = 143;
     /// Alert run.
     pub const ALERT_RUN: u32 = 151;
+    /// Fight idle (the stance).
+    pub const FIGHT_IDLE: u32 = 54;
+    /// A quick strike.
+    pub const STRIKE: u32 = 59;
+    /// The powerful blow (the over-the-head finishing blow).
+    pub const POWERFUL_BLOW: u32 = 75;
+    /// Hit in the stance.
+    pub const FLINCH: u32 = 104;
 }
 
 /// Unit scale of the sine table.
@@ -345,11 +498,18 @@ pub fn knock_out_ticks(resistance: i32) -> Option<u32> {
 #[must_use]
 pub fn action_id(e: &Entity) -> u32 {
     use actions::{
-        ALARM, ALERT_IDLE, ALERT_RUN, ALERT_WALK, CROUCH_IDLE, GET_UP, IDLE, KNOCKED_DOWN,
-        KNOCKED_DOWN_BACK, LYING, LYING_BACK, NOTICED, PUNCH, RUN, SNEAK, WALK,
+        ALARM, ALERT_IDLE, ALERT_RUN, ALERT_WALK, CROUCH_IDLE, FIGHT_IDLE, FLINCH, GET_UP, IDLE,
+        KNOCKED_DOWN, KNOCKED_DOWN_BACK, LYING, LYING_BACK, NOTICED, POWERFUL_BLOW, PUNCH, RUN,
+        SNEAK, STRIKE, WALK,
     };
     let moving = e.target.is_some();
     match e.ai_state {
+        AiState::Fighting => match e.pose {
+            FightPose::Idle => FIGHT_IDLE,
+            FightPose::Strike => STRIKE,
+            FightPose::PowerfulBlow => POWERFUL_BLOW,
+            FightPose::Flinch => FLINCH,
+        },
         AiState::Patrol => match (e.posture, moving, e.gait) {
             (Posture::Crouched, true, _) => SNEAK,
             (Posture::Crouched, false, _) => CROUCH_IDLE,
@@ -365,7 +525,7 @@ pub fn action_id(e: &Entity) -> u32 {
             (false, _) => ALERT_IDLE,
         },
         AiState::Punching => PUNCH,
-        AiState::KnockedDown => {
+        AiState::KnockedDown | AiState::Dying => {
             if e.fell_backward {
                 KNOCKED_DOWN_BACK
             } else {
@@ -389,6 +549,12 @@ pub fn wanted_animation(e: &Entity, set: &AnimSet) -> u32 {
     let dir = direction_of(e.facing256);
     let moving = e.target.is_some();
     match e.ai_state {
+        AiState::Fighting => match e.pose {
+            FightPose::Idle => set.fight_idle[dir],
+            FightPose::Strike => set.strike[dir],
+            FightPose::PowerfulBlow => set.powerful_blow[dir],
+            FightPose::Flinch => set.flinch[dir],
+        },
         AiState::Patrol => match (e.posture, moving, e.gait) {
             (Posture::Crouched, true, _) => set.crouch_walk[dir],
             (Posture::Crouched, false, _) => set.crouch_idle[dir],
@@ -404,7 +570,7 @@ pub fn wanted_animation(e: &Entity, set: &AnimSet) -> u32 {
             (false, _) => set.alert_idle[dir],
         },
         AiState::Punching => set.punch[dir],
-        AiState::KnockedDown => {
+        AiState::KnockedDown | AiState::Dying => {
             if e.fell_backward {
                 set.knocked_down_back[dir]
             } else {
@@ -479,7 +645,25 @@ fn perceives(s: &Entity) -> bool {
         && s.active
         && !s.ai_locked
         && s.ai_state.standing()
-        && s.ai_state != AiState::Punching
+        && !matches!(s.ai_state, AiState::Punching | AiState::Fighting)
+}
+
+/// A human whose state machine runs: alive (or falling dead: the fall is timed), active, not
+/// an obstacle, not locked.
+fn stepped(e: &Entity) -> bool {
+    (e.alive || e.ai_state == AiState::Dying)
+        && e.active
+        && e.kind != EntityKind::Obstacle
+        && !e.ai_locked
+}
+
+/// An enemy soldier a player character can fight: alive, present, on his feet.
+fn fightable(v: &Entity) -> bool {
+    v.alive
+        && v.active
+        && v.kind == EntityKind::Guard
+        && v.team == Team::Enemy
+        && v.ai_state.standing()
 }
 
 /// Whether (and how) soldier `s` sees or hears player character `p` this tick: sight first,
@@ -519,8 +703,18 @@ pub(crate) struct SimIndex {
     pub attackers: Vec<usize>,
     /// Guards in the normal state without a walk (their program or patrol may issue one).
     pub idle_guards: Vec<usize>,
-    /// `(id, index)` of every entity, sorted by id: the attack target lookup.
+    /// `(id, index)` of every entity, sorted by id: the attack target and foe lookup.
     pub by_id: Vec<(EntityId, usize)>,
+}
+
+impl SimIndex {
+    /// The slot of an entity by id (binary search in `by_id`).
+    fn slot(&self, id: EntityId) -> Option<usize> {
+        self.by_id
+            .binary_search_by_key(&id, |&(id, _)| id)
+            .ok()
+            .map(|k| self.by_id[k].1)
+    }
 }
 
 /// What a walk order came to ([`World::walk_to`]).
@@ -600,7 +794,7 @@ impl World {
             if perceives(e) {
                 index.perceivers.push(i);
             }
-            if e.alive && e.active && e.kind != EntityKind::Obstacle && !e.ai_locked {
+            if stepped(e) {
                 index.humans.push(i);
             }
             if e.attack_target.is_some() && e.kind == EntityKind::Player {
@@ -680,11 +874,10 @@ impl World {
                 cursor = i as u32;
                 break;
             }
-            let e = &self.entities[i];
-            if !e.alive || !e.active || e.kind == EntityKind::Obstacle || e.ai_locked {
+            if !stepped(&self.entities[i]) {
                 continue;
             }
-            self.advance_state(i, stimuli.get(i).copied().flatten(), budget);
+            self.advance_state(i, index, stimuli.get(i).copied().flatten(), budget);
         }
         self.cursors.states = cursor;
     }
@@ -785,15 +978,24 @@ impl World {
         self.walk_to(i, heard_at, Gait::Run, budget);
     }
 
-    /// The state machine of one human for this tick.
+    /// The state machine of one human for this tick (the energy regains its units first, in
+    /// every state).
     fn advance_state(
         &mut self,
         i: usize,
+        index: &SimIndex,
         stimulus: Option<((Fixed, Fixed), Channel)>,
         budget: &mut u64,
     ) {
         let seen = stimulus.map(|(p, _)| p);
+        self.regain_energy(i);
         match self.entities[i].ai_state {
+            AiState::Fighting => self.fight_tick(i, index, budget),
+            AiState::Dying => {
+                if countdown(&mut self.entities[i]) {
+                    self.entities[i].ai_state = AiState::Dead;
+                }
+            }
             AiState::Patrol | AiState::Returning => match stimulus {
                 Some((p, Channel::Sight)) => self.notice(i, p),
                 Some((p, Channel::Noise)) => self.charge(i, p, budget),
@@ -871,11 +1073,12 @@ impl World {
         }
     }
 
-    /// The player characters' attack orders (`docs/original/stealth-and-combat.md` 1, tutorial
-    /// string 14; the order model is a hypothesis: a left click on an enemy with a character
-    /// selected walks into reach, then punches when behind the victim, else stops facing him).
-    /// One unit per attacker from `cursors.attacks`, round robin; the victim is looked up in
-    /// the index, never by a scan.
+    /// The player characters' attack orders (`combat-measurements.md` 1.1, measured: a left
+    /// click on the enemy is the attack order, the character walks up, stops at the fighting
+    /// distance and the sword fight begins; the knock-out blow from behind of
+    /// `stealth-and-combat.md` 1 is kept for an unseen approach, a hypothesis). One unit per
+    /// attacker from `cursors.attacks`, round robin; the victim is looked up in the index,
+    /// never by a scan.
     fn attack_orders(&mut self, index: &SimIndex, budget: &mut u64) {
         let mut cursor = 0u32;
         for i in rotated(&index.attackers, self.cursors.attacks) {
@@ -892,22 +1095,23 @@ impl World {
             {
                 continue;
             }
-            let victim = index
-                .by_id
-                .binary_search_by_key(&target, |&(id, _)| id)
-                .ok()
-                .map(|k| index.by_id[k].1);
-            let valid = victim.is_some_and(|t| {
-                let v = &self.entities[t];
-                v.alive && v.active && v.kind == EntityKind::Guard && v.ai_state.standing()
-            });
-            let Some(t) = victim.filter(|_| valid) else {
-                self.entities[i].attack_target = None;
+            let victim = index.slot(target);
+            let Some(t) = victim.filter(|&t| fightable(&self.entities[t])) else {
+                let e = &mut self.entities[i];
+                e.attack_target = None;
+                e.figure = None;
                 continue;
             };
             let (vx, vy) = (self.entities[t].x, self.entities[t].y);
-            let (dx, dy) = (vx - self.entities[i].x, vy - self.entities[i].y);
-            if Fixed::length(dx, dy) > Fixed::from_int(PUNCH_REACH) {
+            let attacker_pos = (self.entities[i].x, self.entities[i].y);
+            let (dx, dy) = (vx - attacker_pos.0, vy - attacker_pos.1);
+            // An unseen approach from behind ends in the knock-out blow at its shorter reach;
+            // a drawn figure or a victim who faces the attacker means the sword fight.
+            let punching = self.entities[i].figure.is_none()
+                && is_behind((vx, vy), self.entities[t].facing256, attacker_pos)
+                && can_punch(self, &self.entities[i]);
+            let reach = if punching { PUNCH_REACH } else { FIGHT_RANGE };
+            if Fixed::length(dx, dy) > Fixed::from_int(reach) {
                 if self.entities[i].target.is_none() {
                     match self.walk_to(i, (vx, vy), Gait::Walk, budget) {
                         Walk::Planned => {}
@@ -922,22 +1126,298 @@ impl World {
                 }
                 continue;
             }
-            // In reach: stop, face the victim, strike when behind him.
-            let attacker_pos = (self.entities[i].x, self.entities[i].y);
+            // In reach: stop, face the victim, then the blow from behind or the fight.
             let e = &mut self.entities[i];
             stop(e);
             e.attack_target = None;
             if dx.raw() != 0 || dy.raw() != 0 {
                 e.facing256 = facing_of(dx, dy);
             }
-            let behind = is_behind((vx, vy), self.entities[t].facing256, attacker_pos);
-            if !(behind && can_punch(self, &self.entities[i])) {
-                continue;
+            if punching {
+                self.enter_timed(i, AiState::Punching, |s| &s.punch, PUNCH_TICKS);
+                self.knock_down(t, attacker_pos);
+            } else {
+                self.start_fight(i, t);
             }
-            self.enter_timed(i, AiState::Punching, |s| &s.punch, PUNCH_TICKS);
-            self.knock_down(t, attacker_pos);
         }
         self.cursors.attacks = cursor;
+    }
+
+    /// The fight begins between the attacker `i` (a player character in reach, facing the
+    /// victim) and the victim `t` (measured, `combat-measurements.md` 1.1: both bars appear as
+    /// the attacker arrives; the victim's first swing comes at his normal cadence). The victim
+    /// turns to the attacker, remembers his post (he returns there afterwards) and drops any
+    /// alert; a victim already fighting another character turns to the new one. A figure the
+    /// attacker holds stays pending and starts on the next tick.
+    fn start_fight(&mut self, i: usize, t: usize) {
+        let (ax, ay) = (self.entities[i].x, self.entities[i].y);
+        let (vx, vy) = (self.entities[t].x, self.entities[t].y);
+        let attacker_id = self.entities[i].id;
+        let victim_id = self.entities[t].id;
+        let e = &mut self.entities[i];
+        e.ai_state = AiState::Fighting;
+        e.state_ticks = 0;
+        e.foe = Some(victim_id);
+        e.pose = FightPose::Idle;
+        e.pose_ticks = 0;
+        e.swing_ticks = HERO_SWING_TICKS;
+        let first_swing = self.next_swing(t);
+        let v = &mut self.entities[t];
+        stop(v);
+        if v.ai_state == AiState::Patrol {
+            v.alert_origin = Some((v.x, v.y));
+        }
+        v.ai_state = AiState::Fighting;
+        v.state_ticks = 0;
+        v.heard = false;
+        v.last_seen = None;
+        v.foe = Some(attacker_id);
+        v.pose = FightPose::Idle;
+        v.pose_ticks = 0;
+        v.swing_ticks = first_swing;
+        let (dx, dy) = (ax - vx, ay - vy);
+        if dx.raw() != 0 || dy.raw() != 0 {
+            v.facing256 = facing_of(dx, dy);
+        }
+    }
+
+    /// Ticks until the next automatic swing: a soldier's measured cadence with the RNG's
+    /// jitter, the hero's presentation interval.
+    fn next_swing(&mut self, i: usize) -> u32 {
+        if self.entities[i].kind == EntityKind::Player {
+            HERO_SWING_TICKS
+        } else {
+            let jitter = self.rng.below(2 * SWING_JITTER_TICKS + 1);
+            (SOLDIER_SWING_TICKS - SWING_JITTER_TICKS + jitter).max(1)
+        }
+    }
+
+    /// One tick of a fighter: the fight ends when the foe is gone (dead, absent, off his feet
+    /// or beyond [`FIGHT_BREAK_RANGE`]); otherwise the swing timer runs, a pose under way
+    /// counts down and resolves its blow when it ends, a pending figure starts the powerful
+    /// blow, and a due swing starts the next automatic strike.
+    fn fight_tick(&mut self, i: usize, index: &SimIndex, budget: &mut u64) {
+        let foe = self.entities[i].foe.and_then(|id| index.slot(id));
+        let engaged = foe.is_some_and(|t| {
+            let (me, foe) = (&self.entities[i], &self.entities[t]);
+            foe.alive
+                && foe.active
+                && foe.ai_state.standing()
+                && Fixed::length(foe.x - me.x, foe.y - me.y) <= Fixed::from_int(FIGHT_BREAK_RANGE)
+        });
+        let Some(t) = foe.filter(|_| engaged) else {
+            self.end_fight(i, budget);
+            return;
+        };
+        let e = &mut self.entities[i];
+        if e.swing_ticks > 0 {
+            e.swing_ticks -= 1;
+        }
+        if e.pose != FightPose::Idle {
+            e.pose_ticks = e.pose_ticks.saturating_sub(1);
+            if e.pose_ticks == 0 {
+                let pose = std::mem::replace(&mut e.pose, FightPose::Idle);
+                self.resolve_blow(i, t, pose);
+            }
+            return;
+        }
+        if e.kind == EntityKind::Player && e.figure.take().is_some() {
+            e.pose = FightPose::PowerfulBlow;
+            e.pose_ticks = POWERFUL_BLOW_TICKS;
+            return;
+        }
+        if e.swing_ticks == 0 {
+            let ticks = state_ticks(self, &self.entities[i], |s| &s.strike, STRIKE_TICKS);
+            let next = self.next_swing(i);
+            let e = &mut self.entities[i];
+            e.swing_ticks = next;
+            e.pose = FightPose::Strike;
+            e.pose_ticks = ticks;
+        }
+    }
+
+    /// A pose of fighter `i` against foe `t` ended: a soldier's strike lands two times in
+    /// three for 5 hp and costs him one unit of energy when it does (measured); the hero's
+    /// automatic strike never lands against a soldier ([`Assumption::MeleeReach`], inferred:
+    /// the pole arm's reach or a block); the powerful blow costs two units, lands one time in
+    /// three ([`Assumption::PowerfulBlowChance`]) for 50 hp (measured).
+    fn resolve_blow(&mut self, i: usize, t: usize, pose: FightPose) {
+        let from = (self.entities[i].x, self.entities[i].y);
+        match pose {
+            FightPose::Idle | FightPose::Flinch => {}
+            FightPose::Strike => {
+                if self.entities[i].kind == EntityKind::Player {
+                    self.record_assumption(Assumption::MeleeReach);
+                } else if self.rng.below(SOLDIER_HIT_CHANCE.1) < SOLDIER_HIT_CHANCE.0 {
+                    self.spend_energy(i, SOLDIER_HIT_ENERGY);
+                    self.damage(t, from, SOLDIER_HIT_DAMAGE);
+                }
+            }
+            FightPose::PowerfulBlow => {
+                self.record_assumption(Assumption::PowerfulBlowChance);
+                self.spend_energy(i, POWERFUL_BLOW_ENERGY);
+                if self.rng.below(POWERFUL_BLOW_CHANCE.1) < POWERFUL_BLOW_CHANCE.0 {
+                    self.damage(t, from, POWERFUL_BLOW_DAMAGE);
+                }
+            }
+        }
+    }
+
+    /// Ticks a fighter needs to regain one unit of energy.
+    fn energy_regen_ticks(e: &Entity) -> u32 {
+        if e.kind == EntityKind::Player {
+            HERO_ENERGY_REGEN_TICKS
+        } else {
+            SOLDIER_ENERGY_REGEN_TICKS
+        }
+    }
+
+    /// A blow cost `cost` units of energy (never below 0); the regain timer starts unless it
+    /// is already running.
+    fn spend_energy(&mut self, i: usize, cost: i32) {
+        let regen = Self::energy_regen_ticks(&self.entities[i]);
+        let e = &mut self.entities[i];
+        e.energy = (e.energy - cost).max(0);
+        if e.energy < ENERGY_MAX && e.energy_ticks == 0 {
+            e.energy_ticks = regen;
+        }
+    }
+
+    /// The energy regains one unit every regain interval while below the maximum (health
+    /// never regenerates: measured).
+    fn regain_energy(&mut self, i: usize) {
+        let regen = Self::energy_regen_ticks(&self.entities[i]);
+        let e = &mut self.entities[i];
+        if e.energy >= ENERGY_MAX {
+            e.energy_ticks = 0;
+            return;
+        }
+        if e.energy_ticks > 1 {
+            e.energy_ticks -= 1;
+            return;
+        }
+        e.energy += 1;
+        e.energy_ticks = if e.energy < ENERGY_MAX { regen } else { 0 };
+    }
+
+    /// `amount` hit points are taken from entity `t` by a blow from `from`: a damage number
+    /// rises over his head, he flinches in the stance if he stands idle in it, and at 0 he
+    /// dies ([`World::kill`]).
+    fn damage(&mut self, t: usize, from: (Fixed, Fixed), amount: i32) {
+        let v = &mut self.entities[t];
+        if !v.alive {
+            return;
+        }
+        v.hp = (v.hp - amount).max(0);
+        let hp = v.hp;
+        let at = (v.x.round(), v.y.round());
+        self.push_damage_number(at, amount);
+        if hp == 0 {
+            self.kill(t, from);
+            return;
+        }
+        let v = &self.entities[t];
+        if v.ai_state == AiState::Fighting && v.pose == FightPose::Idle {
+            let ticks = state_ticks(self, v, |s| &s.flinch, FLINCH_TICKS);
+            let v = &mut self.entities[t];
+            v.pose = FightPose::Flinch;
+            v.pose_ticks = ticks;
+        }
+    }
+
+    /// Entity `t` dies of a blow from `from`: not alive from this tick on (natives 85 / 87 /
+    /// 90 report it), falling backward when struck from the front (44, then 48) or forward
+    /// (41, then 47) for the animation's length, then `Dead`. Every order and fight of his
+    /// ends (his foe notices on the next tick); a player character's death raises
+    /// `World::hero_dead` (measured for a lone hero, `combat-measurements.md` 4; with another
+    /// player character still alive the loss is a hypothesis, [`Assumption::HeroDeathLoss`]).
+    fn kill(&mut self, t: usize, from: (Fixed, Fixed)) {
+        let v = &self.entities[t];
+        let backward = !is_behind((v.x, v.y), v.facing256, from);
+        let block: fn(&AnimSet) -> &[u32; 8] = if backward {
+            |s| &s.knocked_down_back
+        } else {
+            |s| &s.knocked_down
+        };
+        let v = &mut self.entities[t];
+        stop(v);
+        v.alive = false;
+        v.hp = 0;
+        v.fell_backward = backward;
+        v.attack_target = None;
+        v.figure = None;
+        v.foe = None;
+        v.pose = FightPose::Idle;
+        v.pose_ticks = 0;
+        v.swing_ticks = 0;
+        v.heard = false;
+        v.last_seen = None;
+        v.alert_origin = None;
+        self.enter_timed(t, AiState::Dying, block, KNOCKED_DOWN_TICKS);
+        if self.entities[t].kind == EntityKind::Player {
+            self.hero_dead = true;
+            let others = self
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Player && e.alive && e.active);
+            if others {
+                self.record_assumption(Assumption::HeroDeathLoss);
+            }
+        }
+    }
+
+    /// Fighter `i` leaves the fight: a player character stands where he is (normal state), a
+    /// soldier walks back to his post or patrols where he stands. A soldier whose foe is
+    /// still alive stands his ground rather than chasing (measured for the halberdier,
+    /// `combat-measurements.md` 3; a hypothesis for every other kind:
+    /// [`Assumption::PostBound`]).
+    pub(crate) fn end_fight(&mut self, i: usize, budget: &mut u64) {
+        let foe_alive = self.entities[i]
+            .foe
+            .and_then(|id| self.entities.iter().find(|e| e.id == id))
+            .is_some_and(|f| f.alive && f.active);
+        let e = &mut self.entities[i];
+        e.foe = None;
+        e.pose = FightPose::Idle;
+        e.pose_ticks = 0;
+        e.swing_ticks = 0;
+        e.figure = None;
+        if e.kind == EntityKind::Player {
+            e.ai_state = AiState::Patrol;
+            e.state_ticks = 0;
+            e.last_seen = None;
+            e.alert_origin = None;
+            return;
+        }
+        let here = (e.x, e.y);
+        let origin = e.alert_origin;
+        if foe_alive {
+            self.record_assumption(Assumption::PostBound);
+        }
+        match origin {
+            Some(origin) if origin != here => match self.walk_to(i, origin, Gait::Walk, budget) {
+                Walk::Planned => {
+                    let e = &mut self.entities[i];
+                    e.ai_state = AiState::Returning;
+                    e.state_ticks = 0;
+                }
+                // Unreachable or unpaid: his post is where he stands.
+                Walk::Unreachable | Walk::Exhausted => self.resume_patrol(i),
+            },
+            _ => self.resume_patrol(i),
+        }
+    }
+
+    /// The nearest enemy soldier a player character at `(x, y)` can fight (slot order breaks
+    /// ties), for the figures' lock-on (`combat-measurements.md` 1.4: the figure locks onto
+    /// the nearest enemy while the button is held).
+    pub(crate) fn nearest_fightable(&self, x: Fixed, y: Fixed) -> Option<usize> {
+        self.entities
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| fightable(e))
+            .min_by_key(|(_, e)| Fixed::length(e.x - x, e.y - y).raw())
+            .map(|(i, _)| i)
     }
 
     /// The blow lands on `t` from `from`: the victim goes down forward when struck from behind,
@@ -1292,8 +1772,9 @@ mod tests {
         );
         w.validate().unwrap();
 
-        // From the front: the guard faces the player; the character walks up, stops and faces
-        // him, no blow, the guard has noticed him meanwhile.
+        // From the front: the guard faces the player; the character walks up, stops at the
+        // fighting distance facing him and the sword fight begins, no blow (measured,
+        // `combat-measurements.md` 1.1; the guard had noticed him on the way).
         let mut w = scene((400, 240), 0, (500, 240));
         click(&mut w, 400, 240, Button::Left);
         let mut ticks = 0;
@@ -1302,12 +1783,20 @@ mod tests {
             ticks += 1;
             assert!(ticks < 200);
         }
-        let p = &w.entities[0];
-        assert_ne!(p.ai_state, AiState::Punching);
+        let (p, g) = (&w.entities[0], &w.entities[1]);
+        assert_eq!(states(&w), (AiState::Fighting, AiState::Fighting));
         assert_eq!(p.facing256, 128);
-        assert!(p.target.is_none());
-        assert!(w.entities[1].ai_state.alert());
-        assert!(w.entities[1].ai_state.standing());
+        assert!(p.target.is_none() && g.target.is_none());
+        assert_eq!((p.foe, g.foe), (Some(g.id), Some(p.id)));
+        assert_eq!(g.facing256, 0, "turns to the attacker");
+        let d = Fixed::length(p.x - g.x, p.y - g.y);
+        assert!(d <= f(FIGHT_RANGE) && d >= f(FIGHT_RANGE - 3), "{d:?}");
+        assert_eq!(
+            (p.action, g.action),
+            (actions::FIGHT_IDLE, actions::FIGHT_IDLE)
+        );
+        assert!(g.alert_origin.is_some() && g.state_ticks == 0 && !g.heard);
+        w.validate().unwrap();
         // Right click cancels an attack order like a walk.
         let mut w = scene((400, 240), 128, (500, 240));
         click(&mut w, 400, 240, Button::Left);
@@ -1345,7 +1834,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_without_the_punch_cannot_strike() {
+    fn a_profile_without_the_punch_fights_instead() {
         use crate::anim::{AnimSet, Catalog, FrameSpec};
         let frame = |frame| FrameSpec {
             frame,
@@ -1364,8 +1853,10 @@ mod tests {
         for _ in 0..200 {
             w.step(&[]);
         }
-        assert_eq!(states(&w), (AiState::Patrol, AiState::Patrol));
+        assert_eq!(states(&w), (AiState::Fighting, AiState::Fighting));
         assert!(w.entities[0].target.is_none() && w.entities[0].attack_target.is_none());
+        assert_eq!(w.entities[1].foe, Some(w.entities[0].id));
+        w.validate().unwrap();
     }
 
     #[test]
@@ -1534,11 +2025,62 @@ mod tests {
             |s| s.entities[1].last_seen = Some((Fixed::ONE, Fixed::ONE)),
             "last seen",
         );
+        // The melee's invariants: hit points within the maximum and 0 exactly when dead, the
+        // energy timer running exactly below full, a foe exactly in a fight and of the other
+        // side, a pose with its timer only in a fight, the swing timer only in a fight, a
+        // figure only with an order or a fight.
+        reject(&mut w, |s| s.entities[1].hp = 0, "hit points");
+        reject(&mut w, |s| s.entities[1].hp = 101, "hit points");
+        reject(&mut w, |s| s.entities[1].energy = 21, "energy");
+        reject(&mut w, |s| s.entities[1].energy = 19, "energy timer");
+        reject(&mut w, |s| s.entities[1].energy_ticks = 3, "energy timer");
+        reject(
+            &mut w,
+            |s| s.entities[1].foe = Some(s.entities[0].id),
+            "foe",
+        );
+        reject(
+            &mut w,
+            |s| {
+                s.entities[1].ai_state = AiState::Fighting;
+                s.entities[1].state_ticks = 0;
+            },
+            "foe",
+        );
+        reject(
+            &mut w,
+            |s| {
+                s.entities[0].ai_state = AiState::Fighting;
+                s.entities[0].foe = Some(s.entities[0].id);
+            },
+            "foe",
+        );
+        reject(&mut w, |s| s.entities[0].pose = FightPose::Strike, "pose");
+        reject(&mut w, |s| s.entities[0].pose_ticks = 3, "pose");
+        reject(&mut w, |s| s.entities[0].swing_ticks = 3, "swing");
+        reject(
+            &mut w,
+            |s| s.entities[0].figure = Some(Figure::ForwardStroke),
+            "figure",
+        );
+        reject(
+            &mut w,
+            |s| {
+                s.damage_numbers.push(crate::world::DamageNumber {
+                    x: 0,
+                    y: 0,
+                    amount: 5,
+                    age: 90,
+                });
+            },
+            "damage number",
+        );
         // The consistent forms are accepted.
         let mut snap = w.snapshot(None);
         snap.world.entities[1].ai_state = AiState::Dead;
         snap.world.entities[1].alive = false;
         snap.world.entities[1].state_ticks = 0;
+        snap.world.entities[1].hp = 0;
         w.restore(&snap).unwrap();
         w.validate().unwrap();
         // Keys still act on a punching character's posture only after the blow: no panic.
@@ -1575,11 +2117,348 @@ mod tests {
         w.entities[1].alive = false;
         let s = g(&w);
         assert!(s.dead && s.out_of_action && !s.knocked_out && !s.can_act && s.present);
+        w.entities[1].ai_state = AiState::Dying;
+        let s = g(&w);
+        assert!(s.dead && s.out_of_action && !s.knocked_out && !s.can_act && s.present);
+        w.entities[1].ai_state = AiState::Fighting;
+        w.entities[1].alive = true;
+        let s = g(&w);
+        assert!(!s.dead && !s.out_of_action && !s.knocked_out && s.can_act && s.present);
         w.entities[1].ai_state = AiState::Patrol;
         w.entities[1].alive = true;
         w.entities[1].active = false;
         let s = g(&w);
         assert!(!s.dead && !s.present && !s.can_act);
+    }
+
+    /// The corridor with the guard facing the player, the fight started by a click on him:
+    /// returns the world on the first tick of the fight.
+    fn fight() -> World {
+        let mut w = scene((400, 240), 0, (500, 240));
+        click(&mut w, 400, 240, Button::Left);
+        let mut ticks = 0;
+        while states(&w) != (AiState::Fighting, AiState::Fighting) {
+            w.step(&[]);
+            ticks += 1;
+            assert!(ticks < 200, "{:?}", states(&w));
+        }
+        w
+    }
+
+    /// The forward stroke: the left button pressed on open ground, dragged 80 px right and 20
+    /// px up, released (`combat-measurements.md` 1.4), in two ticks.
+    fn forward_stroke(w: &mut World, x: i32, y: i32) {
+        w.step(&[
+            InputEvent::PointerMove {
+                x256: x * 256,
+                y256: y * 256,
+            },
+            InputEvent::PointerDown {
+                button: Button::Left,
+            },
+        ]);
+        w.step(&[
+            InputEvent::PointerMove {
+                x256: (x + 80) * 256,
+                y256: (y - 20) * 256,
+            },
+            InputEvent::PointerUp {
+                button: Button::Left,
+            },
+        ]);
+    }
+
+    /// The soldier's blows (`combat-measurements.md` 1.5, measured): a swing every ~5.3 s of
+    /// which two in three land for 5 hp, so the hero's 100 hp fall by 5 at a time at a mean
+    /// interval near 8 s; his click attacks never hurt the soldier (1.3) and cost no energy;
+    /// a landed hit costs the soldier one unit of energy, regained in ~4 s; health never
+    /// regenerates; at 0 hp the hero dies (his fall, then lying for good; `hero_dead`), the
+    /// soldier's fight ends and he stands at his post. A snapshot taken mid-fight restores to
+    /// the same run.
+    #[test]
+    fn soldier_blows_land_at_the_measured_cadence_until_the_hero_dies() {
+        let mut w = fight();
+        let start = w.tick;
+        assert_eq!(w.entities[0].hp, HERO_HIT_POINTS);
+        assert_eq!(w.entities[1].hp, DEFAULT_HIT_POINTS);
+        let g = &w.entities[1];
+        assert!(
+            (SOLDIER_SWING_TICKS - SWING_JITTER_TICKS..=SOLDIER_SWING_TICKS + SWING_JITTER_TICKS)
+                .contains(&g.swing_ticks),
+            "{}",
+            g.swing_ticks
+        );
+        let mut hits: Vec<u64> = Vec::new();
+        let mut swings = 0;
+        let mut hp = w.entities[0].hp;
+        let mut regained_after = None;
+        let mut spent_at = None;
+        let mut mid = None;
+        let mut ticks = 0u64;
+        while w.entities[0].alive {
+            w.step(&[]);
+            ticks += 1;
+            assert!(
+                ticks < 30_000,
+                "the hero never died: {} hp",
+                w.entities[0].hp
+            );
+            if ticks == 1000 {
+                mid = Some(w.snapshot(None));
+            }
+            let (p, g) = (&w.entities[0], &w.entities[1]);
+            if g.pose == FightPose::Strike && g.pose_ticks == STRIKE_TICKS {
+                swings += 1;
+            }
+            if p.hp != hp {
+                assert_eq!(hp - p.hp, SOLDIER_HIT_DAMAGE, "one basic hit at a time");
+                hp = p.hp;
+                hits.push(w.tick);
+                assert_eq!(g.energy, ENERGY_MAX - SOLDIER_HIT_ENERGY);
+                assert_eq!(g.energy_ticks, SOLDIER_ENERGY_REGEN_TICKS);
+                spent_at = Some(w.tick);
+            } else if let Some(t) = spent_at
+                && g.energy == ENERGY_MAX
+            {
+                regained_after = Some(w.tick - t);
+                spent_at = None;
+            }
+            assert_eq!(p.energy, ENERGY_MAX, "click attacks cost nothing");
+            assert_eq!(g.hp, DEFAULT_HIT_POINTS, "click attacks never land");
+            if ticks.is_multiple_of(500) {
+                w.validate().unwrap();
+            }
+        }
+        assert_eq!(hits.len(), (HERO_HIT_POINTS / SOLDIER_HIT_DAMAGE) as usize);
+        assert_eq!(regained_after, Some(u64::from(SOLDIER_ENERGY_REGEN_TICKS)));
+        let span = hits.last().unwrap() - start;
+        let mean = span / (hits.len() as u64 - 1);
+        assert!(
+            (380..=600).contains(&mean),
+            "mean interval between landed hits {mean} ticks (measured median 462)"
+        );
+        // Two of three swings land, within the sample's spread.
+        assert!(
+            swings >= hits.len() + 3 && swings <= hits.len() * 2,
+            "{swings} swings for {} hits",
+            hits.len()
+        );
+        // The death: not alive from the tick of the blow, falling backward (struck from the
+        // front), every order gone, the loss raised; the soldier notices next tick.
+        let p = &w.entities[0];
+        assert_eq!(p.ai_state, AiState::Dying);
+        assert_eq!(p.state_ticks, KNOCKED_DOWN_TICKS);
+        assert!(p.fell_backward && p.foe.is_none() && p.target.is_none() && p.hp == 0);
+        assert_eq!(p.action, actions::KNOCKED_DOWN_BACK);
+        assert!(w.hero_dead);
+        let s = ActorStatus::of(p);
+        assert!(s.dead && s.out_of_action && !s.can_act && !s.knocked_out);
+        assert_eq!(w.entities[1].ai_state, AiState::Fighting);
+        w.step(&[]);
+        let g = &w.entities[1];
+        assert_eq!(g.ai_state, AiState::Patrol, "his post is where he stands");
+        assert!(g.foe.is_none() && g.target.is_none() && g.alert_origin.is_none());
+        for _ in 1..KNOCKED_DOWN_TICKS {
+            w.step(&[]);
+        }
+        let p = &w.entities[0];
+        assert_eq!(p.ai_state, AiState::Dead);
+        assert_eq!(p.action, actions::LYING_BACK);
+        assert!(!p.alive && p.state_ticks == 0);
+        w.validate().unwrap();
+        // The damage numbers rose and vanished.
+        assert!(w.damage_numbers.iter().all(|d| d.age < DAMAGE_NUMBER_TICKS));
+        // Determinism across a mid-fight snapshot.
+        let mid = mid.unwrap();
+        let json = serde_json::to_string(&mid).unwrap();
+        let snap: Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = World::new(Scenario::Synthetic("corridor".into()), 3).unwrap();
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.entities[0].ai_state, AiState::Fighting);
+        let mut w1 = World::new(Scenario::Synthetic("corridor".into()), 3).unwrap();
+        w1.restore(&mid).unwrap();
+        assert_eq!(w1.hashes(), w2.hashes());
+        while w2.tick < w.tick {
+            w1.step(&[]);
+            w2.step(&[]);
+        }
+        assert_eq!(w1.hashes(), w2.hashes());
+        assert_eq!(w2.hashes(), w.hashes());
+    }
+
+    /// The forward stroke (`combat-measurements.md` 1.4): the figure locks onto the nearest
+    /// soldier, the hero walks up and fights him, the powerful blow resolves
+    /// `POWERFUL_BLOW_TICKS` after it starts, costs two units of energy (regained one per
+    /// `HERO_ENERGY_REGEN_TICKS`) and does 50 hp when it lands (one time in three across
+    /// seeds); two landed blows kill an 80 hp soldier, who falls and lies for good, out of
+    /// action for native 90 and dead for 87.
+    #[test]
+    fn the_forward_stroke_is_the_powerful_blow_and_two_kill_a_soldier() {
+        let mut landed = 0;
+        let mut missed = 0;
+        let mut killed = false;
+        for seed in 1..=12u64 {
+            let mut w = scene((400, 240), 0, (500, 240));
+            w.seed = seed;
+            w.rng = crate::rng::Rng::new(seed, crate::world::GAMEPLAY_RNG_STREAM);
+            // A blue halberdier's 80 hp.
+            w.entities[1].hp = 80;
+            w.entities[1].hp_max = 80;
+            forward_stroke(&mut w, 520, 260);
+            let p = &w.entities[0];
+            assert_eq!(p.attack_target, Some(w.entities[1].id));
+            assert_eq!(p.figure, Some(Figure::ForwardStroke));
+            assert!(p.target.is_some(), "walks up to him");
+            let mut ticks = 0;
+            while w.entities[0].pose != FightPose::PowerfulBlow {
+                w.step(&[]);
+                ticks += 1;
+                assert!(ticks < 200, "{:?}", states(&w));
+            }
+            let p = &w.entities[0];
+            assert_eq!(p.ai_state, AiState::Fighting);
+            assert_eq!(p.pose_ticks, POWERFUL_BLOW_TICKS);
+            assert_eq!(p.action, actions::POWERFUL_BLOW);
+            assert!(p.figure.is_none() && p.energy == ENERGY_MAX);
+            for _ in 0..POWERFUL_BLOW_TICKS {
+                w.step(&[]);
+            }
+            let (p, g) = (&w.entities[0], &w.entities[1]);
+            assert_eq!(p.pose, FightPose::Idle);
+            assert_eq!(p.energy, ENERGY_MAX - POWERFUL_BLOW_ENERGY);
+            assert_eq!(p.energy_ticks, HERO_ENERGY_REGEN_TICKS);
+            match g.hp {
+                30 => {
+                    landed += 1;
+                    assert_eq!(w.damage_numbers.last().map(|d| d.amount), Some(50));
+                    assert!(g.pose == FightPose::Flinch || g.pose == FightPose::Strike);
+                }
+                80 => missed += 1,
+                hp => panic!("{hp} hp after the blow"),
+            }
+            // The energy comes back one unit per interval.
+            for _ in 0..HERO_ENERGY_REGEN_TICKS {
+                w.step(&[]);
+            }
+            assert_eq!(w.entities[0].energy, ENERGY_MAX - 1);
+            for _ in 0..HERO_ENERGY_REGEN_TICKS {
+                w.step(&[]);
+            }
+            assert_eq!(w.entities[0].energy, ENERGY_MAX);
+            assert_eq!(w.entities[0].energy_ticks, 0);
+            w.validate().unwrap();
+            if killed {
+                continue;
+            }
+            // Strokes until he dies (each one in the fight: the figure is delivered in the
+            // next idle pose).
+            'strokes: for _ in 0..40 {
+                forward_stroke(&mut w, 520, 260);
+                assert!(w.entities[0].ai_state == AiState::Fighting);
+                for _ in 0..(POWERFUL_BLOW_TICKS + STRIKE_TICKS + FLINCH_TICKS + 4) {
+                    w.step(&[]);
+                    if !w.entities[1].alive {
+                        break 'strokes;
+                    }
+                }
+            }
+            let g = &w.entities[1];
+            assert!(!g.alive && g.hp == 0, "{} hp", g.hp);
+            assert_eq!(g.ai_state, AiState::Dying);
+            assert!(g.fell_backward, "struck from the front");
+            assert_eq!(g.action, actions::KNOCKED_DOWN_BACK);
+            let s = ActorStatus::of(g);
+            assert!(s.dead && s.out_of_action && !s.knocked_out && !s.can_act);
+            assert!(!w.hero_dead);
+            w.step(&[]);
+            assert_eq!(w.entities[0].ai_state, AiState::Patrol, "the fight is over");
+            assert!(w.entities[0].foe.is_none());
+            for _ in 0..KNOCKED_DOWN_TICKS {
+                w.step(&[]);
+            }
+            let g = &w.entities[1];
+            assert_eq!(g.ai_state, AiState::Dead);
+            assert_eq!(g.action, actions::LYING_BACK);
+            w.validate().unwrap();
+            // A dead soldier takes no orders and is not picked.
+            click(&mut w, 400, 240, Button::Left);
+            assert!(w.entities[0].attack_target.is_none());
+            killed = true;
+        }
+        assert!(
+            landed >= 1 && missed >= 1,
+            "{landed} landed, {missed} missed of 12"
+        );
+        assert!(killed);
+    }
+
+    /// A ground order while fighting leaves the fight: the hero walks off and the soldier
+    /// stands his ground (post-bound: measured for the halberdier); a right click on the
+    /// hero leaves it too; the click on an enemy acts on the button's release, so a press
+    /// held still is still a click, and a stroke to the left orders nothing.
+    #[test]
+    fn leaving_the_fight_and_the_release_rule() {
+        let mut w = fight();
+        click(&mut w, 600, 240, Button::Left);
+        let (p, g) = (&w.entities[0], &w.entities[1]);
+        assert_eq!(p.ai_state, AiState::Patrol);
+        assert!(p.foe.is_none() && p.target.is_some() && p.pose == FightPose::Idle);
+        // Stands his ground (his post is where he fought); the hero in his cone is a fresh
+        // sighting on the same tick.
+        assert!(
+            matches!(g.ai_state, AiState::Patrol | AiState::Noticed),
+            "{:?}",
+            g.ai_state
+        );
+        assert!(g.foe.is_none() && g.target.is_none() && g.swing_ticks == 0);
+        w.validate().unwrap();
+        let mut w = fight();
+        let (px, py) = (w.entities[0].x.round(), w.entities[0].y.round());
+        click(&mut w, px, py, Button::Right);
+        assert_eq!(states(&w).0, AiState::Patrol);
+        assert!(w.entities[1].foe.is_none() && w.entities[1].target.is_none());
+        // A press without a release orders nothing yet; the release is the click.
+        let mut w = scene((400, 240), 0, (500, 240));
+        w.step(&[
+            InputEvent::PointerMove {
+                x256: 400 * 256,
+                y256: 240 * 256,
+            },
+            InputEvent::PointerDown {
+                button: Button::Left,
+            },
+        ]);
+        assert!(w.entities[0].attack_target.is_none() && w.press.is_some());
+        for _ in 0..5 {
+            w.step(&[]);
+        }
+        w.step(&[InputEvent::PointerUp {
+            button: Button::Left,
+        }]);
+        assert!(w.entities[0].attack_target.is_some() && w.press.is_none());
+        // A stroke to the left is not a figure the engine reads: nothing happens.
+        let mut w = scene((400, 240), 0, (500, 240));
+        w.step(&[
+            InputEvent::PointerMove {
+                x256: 600 * 256,
+                y256: 260 * 256,
+            },
+            InputEvent::PointerDown {
+                button: Button::Left,
+            },
+        ]);
+        w.step(&[
+            InputEvent::PointerMove {
+                x256: 520 * 256,
+                y256: 240 * 256,
+            },
+            InputEvent::PointerUp {
+                button: Button::Left,
+            },
+        ]);
+        let p = &w.entities[0];
+        assert!(p.attack_target.is_none() && p.target.is_none() && p.figure.is_none());
+        w.validate().unwrap();
     }
 
     /// An open 1000x800 mission of `guards` enemy soldiers at distinct spots facing +x, with

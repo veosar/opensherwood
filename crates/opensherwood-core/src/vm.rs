@@ -1162,6 +1162,27 @@ pub enum Assumption {
     /// A profile index or sprite fell back to a default under `OPENSHERWOOD_LENIENT_ASSETS`
     /// (recorded by the app through `MissionSpec::assumptions`).
     LenientAssets,
+    /// A player character's automatic strike was resolved against a soldier and did not land:
+    /// the reading of `combat-measurements.md` 1.3 (225 s of click attacks against a pole arm
+    /// at 52 px never hurt him: the pole arm's reach band or a block) is inferred from one
+    /// fighter pair and applied to every soldier.
+    MeleeReach,
+    /// The hero's powerful blow was resolved: its chance of landing (one in three, from 2 of
+    /// 6 strokes, `combat-measurements.md` 1.4) is a hypothesis; its damage is measured.
+    PowerfulBlowChance,
+    /// A soldier's foe left the fight alive and the soldier stood his ground rather than
+    /// chasing: measured for the halberdier (`combat-measurements.md` 3), a hypothesis for
+    /// every other kind.
+    PostBound,
+    /// A melee action id (the stance 54, the strike 59, the powerful blow 75, the flinch 104)
+    /// or a death's fall / lying id (41 / 44 / 47 / 48 of a dead actor) reached an
+    /// `ActionChange` handler: which id the original plays in each case is inferred by eye
+    /// (`sprite-animations.md`).
+    CombatActions,
+    /// A player character died while another one was still alive and present, and the world
+    /// raised `hero_dead` (the loss): measured for a lone hero only (`combat-measurements.md`
+    /// 4).
+    HeroDeathLoss,
 }
 
 impl Assumption {
@@ -1182,6 +1203,11 @@ impl Assumption {
             Assumption::ZoneAtLoad => e.u8(13),
             Assumption::WalkCompletion => e.u8(14),
             Assumption::ActionChangeOrder => e.u8(15),
+            Assumption::MeleeReach => e.u8(16),
+            Assumption::PowerfulBlowChance => e.u8(17),
+            Assumption::PostBound => e.u8(18),
+            Assumption::CombatActions => e.u8(19),
+            Assumption::HeroDeathLoss => e.u8(20),
         };
     }
 
@@ -1257,8 +1283,12 @@ pub struct ActionChange {
 /// (`Entity::heard`).
 const ALERT_ACTIONS: [u32; 5] = [140, 141, 142, 143, 151];
 /// Action ids of the knock-out (`crate::ai::actions`) whose delivery records
-/// [`Assumption::KnockOut`].
+/// [`Assumption::KnockOut`] (of a living actor; a dead one fell by a blow and records
+/// [`Assumption::CombatActions`] instead).
 const KNOCK_OUT_ACTIONS: [u32; 6] = [41, 44, 47, 48, 49, 123];
+/// Action ids of the melee (`crate::ai::actions`) whose delivery records
+/// [`Assumption::CombatActions`].
+const COMBAT_ACTIONS: [u32; 4] = [54, 59, 75, 104];
 
 /// Diagnostic counters: neither in the snapshot nor in the hash (a restored world counts afresh;
 /// ADR-0008). Every counter saturates.
@@ -2262,18 +2292,21 @@ impl World {
                 break;
             }
             // The actor bound to the class: an alert it reached through the measured noise
-            // channel is not a hypothesis (`Entity::heard`).
-            let heard = self
+            // channel is not a hypothesis (`Entity::heard`); a dead actor's fall is the
+            // melee's, not the knock-out's.
+            let (heard, dead) = self
                 .vm
                 .as_ref()
                 .and_then(|vm| {
                     let handle = vm.program.classes.get(change.class as usize)?.element?;
                     match vm.program.elements.get(handle as usize)? {
-                        Element::Actor(i) => self.entities.get(*i as usize).map(|e| e.heard),
+                        Element::Actor(i) => {
+                            self.entities.get(*i as usize).map(|e| (e.heard, !e.alive))
+                        }
                         _ => None,
                     }
                 })
-                .unwrap_or(false);
+                .unwrap_or((false, false));
             // Open the transaction (the capture is charged; when it does not fit the delivery
             // waits for the next tick like an exhausted handler).
             let captured = self.vm.as_mut().and_then(VmState::capture);
@@ -2291,8 +2324,12 @@ impl World {
                 if !heard && ids.iter().any(|&a| ALERT_ACTIONS.contains(&(a as u32))) {
                     vm.assume(Assumption::Perception);
                 }
-                if ids.iter().any(|&a| KNOCK_OUT_ACTIONS.contains(&(a as u32))) {
+                let fallen = ids.iter().any(|&a| KNOCK_OUT_ACTIONS.contains(&(a as u32)));
+                if fallen && !dead {
                     vm.assume(Assumption::KnockOut);
+                }
+                if (fallen && dead) || ids.iter().any(|&a| COMBAT_ACTIONS.contains(&(a as u32))) {
+                    vm.assume(Assumption::CombatActions);
                 }
                 vm.assume(Assumption::ActionChangeOrder);
             }
@@ -4906,7 +4943,17 @@ pub(crate) mod tests {
         init.extend(native(245, &[], Some(cv(17)), 0));
         init.extend(native(20, &[0], None, 0));
         init.extend(native(192, &[], Some(cv(18)), 0));
-        let level = class("StartUp", 19, &[("Initialize", 0, false, 0, 4, init)]);
+        // The Sherwood hub's team natives (`docs/formats/sherwood-hub.md`): recorded stubs, 174
+        // with the policy limit.
+        init.extend(native(174, &[], Some(cv(19)), 0));
+        init.extend(native(170, &[], Some(cv(20)), 0));
+        init.extend(native(249, &[], Some(cv(21)), 0));
+        init.extend(native(172, &[], Some(cv(22)), 0));
+        init.extend(native(173, &[], Some(cv(23)), 0));
+        init.extend(native(165, &[0], None, 0));
+        init.extend(native(166, &[0], None, 0));
+        init.extend(native(239, &[], None, 0));
+        let level = class("StartUp", 24, &[("Initialize", 0, false, 0, 4, init)]);
         let w = mission_world(2, Some(program(vec![level], 2)));
         let vm = w.vm.as_ref().unwrap();
         assert!(
@@ -4930,7 +4977,15 @@ pub(crate) mod tests {
         assert_eq!((v[15], v[16]), (0, 0), "250(0) is 211's value: the hero");
         assert_eq!(v[17], 1, "245: one live player character");
         assert_eq!(v[18], NONE_HANDLE, "192: the level class has no element");
-        for id in [253, 255, 205, 119, 231, 246, 20] {
+        assert_eq!(v[19], 5, "174: the team size limit");
+        assert_eq!(
+            (v[20], v[21], v[22], v[23]),
+            (0, 0, 0, 0),
+            "170 / 249 / 172 / 173: no team, nobody to send, no level selected, state 0"
+        );
+        for id in [
+            253, 255, 205, 119, 231, 246, 20, 174, 170, 249, 172, 173, 165, 166, 239,
+        ] {
             assert_eq!(
                 vm.counters.stub_natives.get(&id),
                 Some(&1),
