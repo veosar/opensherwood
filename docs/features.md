@@ -80,6 +80,8 @@ reused for a consistent look because they are read from the player's copy, never
 
 ## Platform and QoL (M2-M7)
 
+- Done: quick save (F1) / quick load (F5) and rolling auto saves (5 slots, every minute of world time) over the snapshot envelope; save screens of the original and save compatibility are separate items.
+
 | Feature | Notes |
 |---|---|
 | Any resolution, widescreen, hi-DPI, borderless, windowed | reference mode stays pixel-exact; UI re-laid out for wide screens |
