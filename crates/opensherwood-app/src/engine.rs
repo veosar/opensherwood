@@ -193,6 +193,8 @@ pub struct Session {
     debriefings_lost: Vec<String>,
     /// The mission's end has been shown (the debriefing parchment leads to the next mission or the menu).
     ended: bool,
+    /// The mission ended with a loss: the debriefing leads back to the menu, not onward.
+    ended_lost: bool,
     /// Mission file that follows the current one in the campaign graph (`profile.cpf` level table:
     /// the level whose only prerequisite is the current level), if any.
     next_mission: Option<String>,
@@ -360,6 +362,7 @@ impl Session {
             debriefings_won: Vec::new(),
             debriefings_lost: Vec::new(),
             ended: false,
+            ended_lost: false,
             next_mission: None,
             notice: None,
             hud_press_pending: false,
@@ -414,6 +417,7 @@ impl Session {
         self.debriefings_won.clear();
         self.debriefings_lost.clear();
         self.ended = false;
+        self.ended_lost = false;
         self.next_mission = None;
         let Some(game) = self.game.as_ref() else {
             return;
@@ -473,20 +477,27 @@ impl Session {
         let Some(vm) = self.world.as_ref().and_then(|w| w.vm.as_ref()) else {
             return;
         };
-        if !vm.mission_won {
+        // A loss takes precedence: the script sets it on death or failure and no win follows it.
+        let lost = vm.mission_lost;
+        if !vm.mission_won && !lost {
             return;
         }
         let variant = vm
             .debriefing
             .and_then(|d| usize::try_from(d).ok())
             .unwrap_or(0);
-        let text = self
-            .debriefings_won
+        let (texts, fallback) = if lost {
+            (&self.debriefings_lost, "[mission lost]")
+        } else {
+            (&self.debriefings_won, "[mission won]")
+        };
+        let text = texts
             .get(variant)
-            .or_else(|| self.debriefings_won.first())
+            .or_else(|| texts.first())
             .cloned()
-            .unwrap_or_else(|| "[mission won]".to_string());
+            .unwrap_or_else(|| fallback.to_string());
         self.ended = true;
+        self.ended_lost = lost;
         let _ = self.ui_assets();
         self.screen = Screen::Debriefing(Briefing::new(vec![text]));
         self.frame = None;
@@ -1106,21 +1117,25 @@ impl Session {
                 let done = events.iter().any(|e| b.handle(*e));
                 self.frame = None;
                 if done {
-                    // The next level of the campaign graph launches automatically (manual, p.9);
-                    // without one (or when it cannot load) the main menu follows.
-                    match self.next_mission.clone() {
-                        Some(next) => {
-                            // The successor rule is a hypothesis of the campaign graph reading.
-                            if let Some(w) = self.world.as_mut() {
-                                w.record_assumption(
-                                    opensherwood_core::vm::Assumption::CampaignGraph,
-                                );
+                    // After a win the next level of the campaign graph launches automatically
+                    // (manual, p.9); without one (or when it cannot load), and after a loss, the
+                    // main menu follows.
+                    match self.next_mission.clone().filter(|_| !self.ended_lost) {
+                        Some(next) => match self.reset(Scenario::Mission(next.clone()), 0) {
+                            Ok(()) => {
+                                // The successor rule is a hypothesis of the campaign graph
+                                // reading: the new world carries the assumption from tick 0.
+                                if let Some(w) = self.world.as_mut() {
+                                    w.record_assumption(
+                                        opensherwood_core::vm::Assumption::CampaignGraph,
+                                    );
+                                }
                             }
-                            if let Err(e) = self.reset(Scenario::Mission(next.clone()), 0) {
+                            Err(e) => {
                                 eprintln!("opensherwood: cannot start {next}: {e}");
                                 self.open_menu();
                             }
-                        }
+                        },
                         None => self.open_menu(),
                     }
                 }
@@ -2328,13 +2343,17 @@ impl Session {
                     /// Mark the mission won (harness shortcut for the end-of-mission flow).
                     #[serde(default)]
                     win: bool,
+                    /// Mark the mission lost (the same shortcut for the loss flow).
+                    #[serde(default)]
+                    lose: bool,
                 }
                 let p: P = params(p)?;
                 self.world()?;
-                if p.win
+                if (p.win || p.lose)
                     && let Some(vm) = self.world.as_mut().and_then(|w| w.vm.as_mut())
                 {
-                    vm.mission_won = true;
+                    vm.mission_won |= p.win;
+                    vm.mission_lost |= p.lose;
                 }
                 let world = self.world()?;
                 let Some(vm) = world.vm.as_ref() else {

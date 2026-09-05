@@ -409,3 +409,32 @@ def test_mission_won_shows_the_debriefing_then_the_menu(binary, game_dir, tmp_pa
         vm = e.call("debug.vm", {})
         assert vm["present"] and not vm["faulted"] and vm["counters"]["traps"] == 0
         assert obs.get("ui") is None or obs["ui"]["screen"] == "briefing"
+        # The successor rule is a hypothesis (ADR-0008): the new world is tainted from tick 0.
+        assert vm["tainted"] and any("ampaign" in str(x) for x in vm["assumptions"]), vm["assumptions"]
+
+
+def test_mission_lost_shows_the_lost_debriefing_then_the_menu(binary, game_dir, tmp_path):
+    """A loss shows the lost parchment (a different text than the won one) and leads back to the
+    main menu instead of the next mission. `debug.vm {lose}` is the same documented shortcut."""
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
+        e.reset({"mission": "H01_Lin_VL"}, seed=0)
+        e.skip_briefing()
+        e.step(5)
+        e.call("debug.vm", {"lose": True})
+        e.step(1)
+        ui = e.observe(entities=False)["ui"]
+        assert ui["screen"] == "debriefing", ui
+        e.capture("lost.png")
+        e.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": "enter"}])
+        obs = e.observe(entities=False)
+        assert obs["ui"]["screen"] == "main_menu", obs.get("ui")
+        # The won flow shows a different parchment.
+        e.reset({"mission": "H01_Lin_VL"}, seed=0)
+        e.skip_briefing()
+        e.step(5)
+        e.call("debug.vm", {"win": True})
+        e.step(1)
+        won = e.observe(entities=False)["ui"]
+        assert won["screen"] == "debriefing", won
+        e.capture("won.png")
+        assert (tmp_path / "lost.png").read_bytes() != (tmp_path / "won.png").read_bytes()

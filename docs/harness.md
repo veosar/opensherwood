@@ -155,8 +155,8 @@ mission_vars, counters, rng_draws}` (`money` is the script's integer of natives 
 `traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives`,
 `objective_done_before_added`, `out_of_action_true` (native 90 calls that reported an actor knocked out or
 dead), `arity_mismatches` (`{id: count}` of native calls trapped because their argument count differed from the
-signature table) and `action_changes_dropped` (action changes lost to a full queue). Its one mutation, `debug.vm {"win": true}`, marks the mission won: a documented
-harness shortcut used only by the end-of-mission flow test (`test_mission_won_shows_the_debriefing_then_the_menu`),
+signature table) and `action_changes_dropped` (action changes lost to a full queue). Its only mutations, `debug.vm {"win": true}` and `{"lose": true}`, mark the mission won or lost: a documented
+harness shortcut used only by the end-of-mission flow tests (`test_mission_won_shows_the_debriefing_then_the_menu`, `test_mission_lost_shows_the_lost_debriefing_then_the_menu`),
 because no mission can be won yet through play; it is not a player action and no other test may use it.
 
 Unknown natives (no row of `docs/formats/scb.md` with an effect) are a deterministic trap by default: the
