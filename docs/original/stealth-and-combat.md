@@ -119,21 +119,22 @@ percentage `unknown_0x23` is a candidate.
 
 ### 2.3 Profile fields that could be perception parameters (`profile.cpf` SD records)
 
-Full field analysis in profile.md "Stat field hypotheses" (added 2026-09-03). Summary of what varies
-with what, over the 7 families x 5 tiers (`cpf_stats.py --tiers`):
+Full field analysis in profile.md "Stat field hypotheses" (added 2026-09-03; readings as intervals with
+example values - the per-record columns stay in the analyst workspace). Summary of what varies with
+what, over the 7 families x 5 tiers (`cpf_stats.py --tiers`):
 
-- **Rises with the tier, differs per family**: `pre[0]` (80..120 for halberdiers, swordsmen and
-  crossbowmen; 30..70 archers; 45..85 lancers; 130..170 officers; 105..145 knights; 250 for the four
-  antagonists), `pre[1]`, `pre[2]` (+5 per tier), `q1`, `q2` (+10..20 per tier for the melee families,
-  constant 30 / 10 for archers and crossbowmen), `ranged` (30..70 for archers and crossbowmen only,
-  100 for the merry man with a bow, 80 for the trainer, 0 elsewhere), `p4` (officers 35..75, knights
-  50..90, mounted knights 60..100, trainer 95, antagonists 100, 0 elsewhere).
+- **Rises with the tier, differs per family**: `pre[0]` (30..250: 80 for a blue halberdier, 30 for a
+  blue archer, 130 for a blue officer, 250 for the four antagonists; +10 per tier), `pre[1]`, `pre[2]`
+  (0..100, +5 per tier), `q1`, `q2` (0..100, +10..20 per tier for the melee families, constant 30 / 10
+  for archers and crossbowmen), `ranged` (30..100 for the units with a bow or crossbow set only, 0
+  elsewhere), `p4` (35..100 for officers, knights and mounted knights, 95 the trainer, 100 the
+  antagonists, 0 elsewhere).
 - **Falls with the tier**: the four post words `(purse, apple, beer, whistle)` - see section 5 - and
-  `p3` (officers only, 80..0).
+  `p3` (officers only, 80 down to 0).
 - **Constant per family**: `pole` (1 for the two pole-arm families), `rank` (0 soldiers, 1 officers,
-  2 knights, antagonists, merry men, trainer), `w0` (3 pole-arms, 5 swordsmen / archers / crossbowmen /
-  trainer, 7 officers, 10 knights and antagonists, 15 mounted, 1 merry men), the flags byte, the class
-  id, the two trailing words (`weapon` 0 none / 1 sword / 2 two-handed / 3 pole; `armour` 0 / 1 / 2).
+  2 knights, antagonists, merry men, trainer), `w0` (1..15, rising with the unit's strength), the flags
+  byte, the class id, the two trailing words (`weapon` 0 none / 1 sword / 2 two-handed / 3 pole;
+  `armour` 0 / 1 / 2).
 
 **No field reads as a sight range or a hearing radius**: nothing is in the 100..500 px range a cone
 would need, and no column is constant across tiers but different for archers (long sight) versus
@@ -213,113 +214,92 @@ enemies revive their own (an NPC action on a body) and tying up makes the state 
 
 ### 3.2 Sprite action ids of the combat and state animations
 
-Per-family presence (`anim_actions.py --families`; sprite-animations.md has the full tables):
+The ids, their roles and the per-family presence matrix are in sprite-animations.md ("Presence per
+family", "Ids identified by eye", "Combat, state and stealth ids"); frame counts, ticks and advances
+are read from the files by the rules given there and are not repeated here. What the presence pattern
+says about the game's rules (`anim_actions.py --families`, matched against the manual's ability table
+p. 32-33; `inferred` unless marked):
 
-| Set | ids | heroes | soldiers / officers / antagonists | knights | civilians | corpse profile |
-|---|---|---|---|---|---|---|
-| guarded walk (fight stance) | 34 36 35 37 39 38 | yes | yes (behind the raised shield) | no | yes | no |
-| hit / fall / lie / get up, carried weapon | 40 41 47 44 48 45 49 | yes | yes | yes | yes | 47 45 |
-| melee | 52 53 54 96 55-58 59-67 68 69-75 76-79 | yes (+97 98 99) | yes (+100 152 153 154) | yes | no | no |
-| hit / fall / lie / get up, fighting stance | 101 102 103 104 105 106 107 108 109 110 | yes | yes | yes | no | 106 109 |
-| bow | 85 86 87 88 90 91 89 92 93 94 | Robin, Robin (town), the lady, the moustached merry man - exactly the manual's archers | swordsmen, archers, crossbowmen, the merry men with bow / staff, the trainer; **not** halberdiers, lancers, officers, antagonists | no | no | no |
-| hit / fall / lie / get up, bow in hand | 111 112 113 114 115 116 117 | the same four | the same soldier kinds | no | no | 113 116 |
-| carried body | 118 119 120 121 | yes (the big man: 120 121 only) | yes | no | yes | yes |
-| cower / netted / laid out | 127; 133; 219 | 127 133 | 127 133 219 | 127 219 | 127 133 219 | 219 |
-| alert set | 140 141 142 143 .. 151 156 | no | yes | yes | no | no |
-| knock-out blow | 123 | **Robin and the big man only** - exactly the manual's two "punch (KO)" heroes | yes (all soldier kinds, officers, antagonists) | no | no | no |
-| stimuli reactions | 164 165 166 169 | no | yes | 166 | no | no |
-| hidden in leaves | 136 137 | yes | no | no | no | no |
-| kneel-and-cower (civilians) | 250, 158 160 159 | - | 158 160 159 | - | yes | no |
+- **Knock-out blow 123**: of the ten heroes only Robin and the big man have it, and the manual gives
+  the punch to exactly those two; all soldier kinds, officers and antagonists have it too (they knock
+  out as well); knights and civilians do not. Its block displacement puts the victim's spot 30..35 px
+  ahead (`observed`).
+- **Bow set 85..94** and its hit / fall set 111..117: the four hero archers of the manual (Robin in
+  both outfits, the lady, the moustached merry man); among the soldiers: swordsmen, archers,
+  crossbowmen, the two merry-man recruits and the trainer, never halberdiers, lancers, officers or
+  antagonists (a superset of the kinds with a non-zero ranged skill in section 2.3: the swordsman and
+  the staff recruit carry the bow animations without the skill).
+- **Search 122 / 282**: Robin and the lady, the only heroes the manual lets search; soldiers have 122
+  as well (their use of it is unknown).
+- **Pay the beggar 125**: exactly the six heroes the manual allows (not the merry men); **throw purse
+  124**: Robin only; **be given a leg up 128 / 129**: Robin, the red-clad swordsman and the moustached
+  merry man, exactly the manual's three (the helper stands 28 px behind); **pick up 126 / 248**: every
+  hero.
+- **Crouch 13 / 14 / 18 / 16**: heroes only; no soldier or civilian crouches (`observed`).
+- **Alert set 140..151, 156** and the **stimuli reactions 164 / 165 / 166 / 169**: soldiers and
+  knights only (the knights: 166 only); no hero or civilian has an alert posture.
+- **Carried body 118..121** and the laid-out pose 219 exist in the corpse profile and in the civilian
+  and soldier sets, so a carried or laid-out body keeps its own sprite.
+- **Hidden in leaves 136 / 137**: heroes only.
 
-Observed by eye (direction 4 strips of `RobinHood`, `Soldier A00`, `ManCivilianPoor`, `Longchamp Dead`,
-`anim_actions.py --sheet`; frame counts / ticks / advance from the tables):
+The state transitions the ids imply (what each id looks like is in sprite-animations.md):
 
-| id | frames | ticks | advance | what it shows | role (inferred) |
-|---|---|---|---|---|---|
-| 40 | 10 | 20-21 | 0 | flinch: the body jerks, the weapon swings up (Robin), the sword is drawn (soldier) | **hit while standing** (weapon carried) |
-| 41 | 8 | 13 | +36 | staggers and falls flat **forward** (ends face down) | knocked down forward (struck from behind) |
-| 44 | 7 | 10 | -30 | staggers and falls **backward** (ends on the back) | knocked down backward (struck from the front) |
-| 47 / 48 / 45 | 1 | 1 | 0 / disp -24 / disp -24 | lying face down / on the back with the shield on the chest / on the back, arms out | lying poses after 41 / after 44 / third pose |
-| 49 | 8-10 | 15-16 | 0 | rolls over, pushes up, stands | **get up** (comes to) |
-| 104 | 8-9 | 17-20 | 0 | stumbles back a step, shield up | hit while in the fighting stance |
-| 105 / 107 | 8 / 7 | 13 / 10 | +36 / -30 | as 41 / 44 with the weapon out | knocked down forward / backward, fighting stance |
-| 106 / 108 / 109 | 1 | 1 | | as 47 / 48 / 45 | lying poses, fighting stance |
-| 110 | 8-10 | 16 | 0 | as 49 | get up, fighting stance |
-| 111 .. 117 | 10 / 8 / 1 / 7 / 1 / 1 / 10 | 20 / 14 / 1 / 9 / 1 / 1 / 16 | 0 / +30 / 0 / -30 / 0 / 0 / 0 | the same seven with the bow in hand | hit / fall / lie / get up, bow |
-| 219 | 1 | 1 | 0 | lying stiff on the back, arms folded on the chest, weapon on the body | body laid out (after being carried / tied / a corpse; the corpse profile and the knights have it although the knights have no other lying pose beyond 47 / 48 / 45 / 106 / 108 / 109) |
-| 118 / 119 / 120 / 121 | 5 / 1 / 3 / 1 | 8 / 1 / 6 / 1 | 0 | the body is lifted by the hips until it hangs head-down / hangs over a shoulder / is set down feet first / stands limp, arms at the sides | **carried body**: pick up, carried, put down, held upright (also in the corpse profile, so bodies keep their own sprite while carried) |
-| 133 | 4 | 13 | 0 | on the back, arms and legs kicking | struggling on the ground (caught in a net, stunned) |
-| 127 | 4 | 4 | -20 | curled up, arms over the head | cower / duck (civilians), tumble (soldiers) |
-| 178 / 179 | 5 / 3 | 8 / 6 | 0 | thrown backwards through the air and lands on the back / topples forward from standing | flung (a trap, a boulder, dropped) |
-| 123 | 8 | 11-12 | 0, disp 30-35 | Robin: readies the staff and kicks high; soldier: winds up and swings the free arm | **knock-out blow** (the fist icon): of the ten heroes only Robin and the big man have it, and the manual gives the punch to exactly those two; disp = the victim's spot 30-35 px ahead |
-| 52 / 53 | 3-8 | 6-13 | 0 | weapon from carried to level / back | enter / leave the fighting stance |
-| 54 / 96 | 6 / 7-8 | 32-33 / 15 | 0 | stance idle, breathing / shifting | fight idle |
-| 55 / 56, 57 / 58 | 5-6 | 8 | +12..15 / -12..15 | one step forward / back in stance | stance footwork |
-| 35 / 38 | 12 | 12 | +36 / -36 | walking forward / backward in stance (soldier: crouched behind the shield) | guarded advance / retreat (34, 36, 37, 39: its transitions) |
-| 59 .. 66 | 6 | 8 | 0 | short thrusts and cuts | quick strikes |
-| 67, 69, 70, 79 | 6-8 | 8-10 | 0 | wider cuts | strikes |
-| 71 .. 74 | 10 | 10-13 | 0 | sweeping swings | half-circle / circle attacks (four of them: two directions x two amplitudes) |
-| 75 | 13 (Robin) / 7 | 30 / 18 | 0 | winds up over the head, huge downward blow, ends crouched | the finishing blow (infinity sign): very slow, very powerful |
-| 68, 103 | 7 / 4-6 | 15 / 13 | 0 | weapon planted vertically / shield up, held | **parry / block** |
-| 100 + 152 .. 154 | 8 / 1 / 3 / 3 | 6 / 1 / 3 / 3 | disp 50 | shield charge over 50 px | rush attack (soldiers) |
-| 97 / 98 | 4 / 5 | 4 / 5 | +20 / +25 | lunge / leap forward with the staff | hero lunge |
-| 85 / 86 | 10 / 8 | 10 / 8 | 0 | bow taken off the shoulder / slung back | draw / put away the bow |
-| 87 | 7 | 7 | 0 | nocks and draws | ready the shot |
-| 88 / 89 | 5 / 1 | 4 / 0 | 0 | aiming, bow drawn / hold | **aim** (the hold frame lasts until the click) |
-| 90 / 91, 93 / 94 | 3 / 3, 4 / 4 | 1 / 1, 1 / 1 | 0 | release, two variants each | shoot |
-| 92 | 1 | 0 | 0 | bow drawn, single frame | aim hold variant |
-| 164 | 12 | 12 | 0 | shield raised over the head, turning | protects from arrows |
-| 165 | 10 | 26 (one frame held 15) | 0 | hand to the mouth, head back | drinks (beer) |
-| 166 | 6 | 13 | 0 | bites, throws the rest away | eats (apple) |
-| 169 | 8 | 17 | 0, disp 28 | bends forward and reaches for the ground 28 px ahead | picks up the purse |
-| 158 / 159 / 160 | 5 / 1 / 5 | 5 / 1 / 7 | 0, disp -14 | bends down / stays bent / straightens | pick up / search |
-| 122, 282 | 14 / 6 | 32 / 25 | 0 | kneels and works on the ground with both hands | **search** (a body, a chest): Robin and the lady are the only heroes with 122 / 282 and the only ones the manual lets search |
-| 124 | 6 | 12 | disp 20 | hands something over, arm extended | **throw purse**: Robin only, as in the manual |
-| 125 | 7 | 15 | disp 22 | tosses a small object underarm | **pay the beggar**: exactly the six heroes the manual allows (not the merry men) |
-| 126, 248 | 11 / 5 | 18 / 10 | disp 22 | bends and picks up / crouched reach | pick up (all heroes) |
-| 128 / 129 | 6 / 7 | 14 / 13 | disp -28 | steps up onto something behind, arms raised | **be given a leg up**: Robin, the red-clad swordsman and the moustached merry man, exactly the manual's three; the helper stands 28 px behind |
-| 136 / 137 | 1 / 5 | 1 / 3 | 0 | a heap of leaves / rises out of it | hidden under leaves / comes out |
-| 250 | 6 | 10 | 0 | hands over the face | civilian panic |
-| 13 / 14 / 18, 16 | 4 / 6 / 4, 12-14 | 6 / 33 / 5, 18 | 0, 0, 0, +27 | crouch down / crouched idle / stand up, crouched walk | **crouch** posture (heroes only: no soldier or civilian crouches) |
+- hit while standing, weapon carried: 40 (a flinch; the same animation draws the weapon); in the
+  fighting stance: 104 (stumbles back a step), 102 (short flinch); bow in hand: 111;
+- knocked down: 41 forward (struck from behind; the body ends 36 px ahead) / 44 backward (struck from
+  the front; 30 px back), with the stance twins 105 / 107 and the bow twins 112 / 114;
+- lying: 47 (face down) / 48 (on the back, shield on the chest) / 45 (on the back, arms out), one frame
+  each, held by the state machine; stance twins 106 / 108 / 109, bow twins 113 / 115 / 116; 219 laid
+  out stiff (after being carried or tied; a corpse);
+- get up: 49 (stance 110, bow 117);
+- melee: 52 / 53 enter and leave the stance, 54 / 96 fight idle, 55..58 stance steps, 35 / 38 guarded
+  advance / retreat (34, 36, 37, 39 its transitions), 59..66 quick strikes, 67 / 69 / 70 / 79 wider
+  cuts, 71..74 the sweeping half-circle and circle attacks (two directions x two amplitudes), 75 the
+  finishing blow (over the head, ends crouched), 68 and 103 parry / block, 100 + 152..154 the
+  soldiers' shield charge (50 px), 97 / 98 the hero's lunges;
+- bow: 85 draw, 87 nock, 88 aim, 89 / 92 hold (until the click), 90 / 91 / 93 / 94 release, 86 put away;
+- other: 133 struggling on the back (netted), 127 cower / duck, 178 / 179 flung, 250 civilian panic,
+  158..160 bend and pick up, 165 / 166 / 169 the beer / apple / purse reactions.
 
-Timings assume the tick half of the timing word counts simulation ticks at the rate native 56 uses
-(25 per second is the scb.md hypothesis): a quick strike is 8 ticks (0.3 s), the finishing blow 30
-ticks (1.2 s), a knock-down 13 ticks plus a one-frame lying pose that the state machine holds, getting
-up 16 ticks. Frames with a zero tick half inside timed animations (e.g. the first frame of 49) are read
-as "no hold" (one tick minimum) - `hypothesis`.
+Illustrative timings (the tick half of the timing word summed over the frames; `Soldier A00` unless
+stated; sprite-animations.md "Illustrative durations and displacements"): a quick strike 8 ticks, the
+finishing blow 30 (Robin), a knock-down 13 (forward) / 10 (backward) plus the one-frame lying pose the
+state machine holds, getting up 16, the knock-out blow 12, the standing hit 40 about 20, the fight
+idle loop 32. If the tick half counts simulation ticks at the rate native 56 uses (25 per second is the
+scb.md hypothesis), a quick strike is 0.3 s and the finishing blow 1.2 s. Frames with a zero tick half
+inside timed animations (e.g. the first frame of 49) are read as "no hold" (one tick minimum) -
+`hypothesis`.
 
 ### 3.3 The melee parameter tables of `profile.cpf`
 
-**Table A** (27 blocks of a 14-word head and ten 16-word records) is indexed by the **combat class id**:
-the PC records carry a `u16` id 1..10 (a permutation of the table positions) and the SD records a class
-id 0x0b..0x1b; together they are exactly 1..27 = the 27 blocks (`inferred`, exact fit; profile.md gives
-the per-block evidence: the two pole-arm classes 0x0c and 0x0e are the only blocks whose head starts
-45 / 65 / 90 instead of 20-25 / 40-50 / 60-75, i.e. longer reach). The ten records match the manual's
-list of **nine attacks plus the block** in the manual's order (`hypothesis`, structural): rows 3 / 4,
-5 / 6 and 7 / 8 are pairs identical except for a 0 / 1 mirror flag (attack left / right, half-circle
-left / right, circle left / right), rows 0 / 1 / 2 are the three single attacks, row 9 is all zeros with
-the flag set (the block). Per row the columns read as: `[2]` and `[3]` (0..200: damage and a second
-effect, e.g. knock-out chance - row 2, the finishing blow, has 100 / 100 for Robin), `[5]` (45..100:
-hit chance), `[6]` (0 / 1 / 2 / 3 / 4 / 6: the figure class), `[8]` (mirror), `[10..12]` (angles in
-degrees: 90 / 22 / 45, 135 / 22 / 45, 45 / 135 / 45, 45 / 0 / 45: the swing's arc), `[13]` (0 / 5 / 10 / 20
-/ 40 / 80: a wind-up), `[14]` (5 / 10 / 100 / 20 / 10), `[15]` (5 / 10 / 50 / 10 / 25 / 50 / 0: rising with
-the manual's slow-and-powerful ordering - the **energy cost**). The head's words 4..10 differ per class
-(all 10 for halberdiers, 50 .. 100 for knights, 0 / 30 / 0 / 30 / 0 / 10 / 10 for officers, 10 / 10 / 70
-/ 10 / 0 / 10 / 0 for swordsmen): AI attack-choice weights is the reading. All `hypothesis`.
+**Table A** (27 blocks of a 14-word head and ten 16-word records; the column layout with example
+values is in profile.md "Stat field hypotheses") is indexed by the **combat class id**: the PC records
+carry a `u16` id 1..10 (a permutation of the table positions) and the SD records a class id
+0x0b..0x1b; together they are exactly 1..27 = the 27 blocks (`inferred`, exact fit). The head's first
+four words are rising distances (the fourth 150 in every block), and the two pole-arm classes are the
+only blocks whose first three are the widest: **melee reach bands**, longer for the pole arms. The ten
+records match the manual's list of **nine attacks plus the block** in the manual's order
+(`hypothesis`, structural): rows 3 / 4, 5 / 6 and 7 / 8 are pairs identical except for a 0 / 1 mirror
+flag (attack left / right, half-circle left / right, circle left / right), rows 0 / 1 / 2 are the three
+single attacks, row 9 is all zeros with the flag set (the block). Per row the columns read as damage
+and a second effect (0..200, e.g. a knock-out chance; the finishing blow has 100 / 100 for Robin), a
+hit chance (45..100), the figure class, the mirror flag, three angles in degrees (the swing's arc), a
+wind-up and the **energy cost** (0..50, rising with the manual's slow-and-powerful ordering; the block
+costs nothing). The head's seven weights after the distances differ per class (all equal for
+halberdiers, high for knights, mostly zero for officers): AI attack-choice weights is the reading. All
+`hypothesis`.
 
-**Table B** (four records: a word, six triplets, a word, a byte, a word, six triplets, a word) has the
-same six-triplet shape twice: `(100 100 100) (80 90 95) (60 80 90) (40 70 85) (20 60 80) (0 50 75)` and
-`(75 100 100) (60 80 90) (45 60 80) (30 40 70) (15 20 60) (0 0 50)`; the records differ only in the
-first word (250 / 400), the two closing words (100 / 75 / 10 / 20 and 100 / 100 / 10 / 10), the byte
-(1 / 0 / 1 / 0) and the middle word (400 / 300 / 400 / 400). Six rows by three columns reads as a
-percentage by (six tiers or six health bands) x (three difficulty levels); four records = four
-difficulty presets or four weapon kinds. `unknown`; listed because "knock-out chance rises with low
-health" (manual) needs exactly such a table.
+**Table B** (four records: a word, six triplets, a word, a byte, a word, six triplets, a word) holds
+two 6 x 3 percentage grids per record whose rows fall from all-100 to a last row of small values and
+whose columns rise left to right; the four records differ in five words only. Six rows by three
+columns reads as a percentage by (six tiers or six health bands) x (three difficulty levels); four
+records = four difficulty presets or four weapon kinds. `unknown`; listed because "knock-out chance
+rises with low health" (manual) needs exactly such a table.
 
-**Knock-out resistance**: `p4` (officers 35..75, knights 50..90, mounted 60..100, trainer 95,
-antagonists 100, 0 for the rest) is the one field that singles out the kinds the manual calls hard or
-impossible to knock out; `p3` (officers only, 80 falling to 0) matches "officers prefer to send their men"
-fading with rank. Both `hypothesis`.
+**Knock-out resistance**: `p4` (0 for most kinds; 35..100 for officers, knights and mounted knights,
+95 the trainer, 100 the antagonists) is the one field that singles out the kinds the manual calls hard
+or impossible to knock out; `p3` (officers only, 80 falling to 0) matches "officers prefer to send
+their men" fading with rank. Both `hypothesis`.
 
 ## 4. Movement
 
@@ -339,16 +319,20 @@ set at all, so "crouching" is a player-character posture only (`observed`).
 
 ### 4.2 Advance per frame (observed) and what it means for speed (hypothesis)
 
-| cycle | `RobinHood` | `Soldier A00` | `Guard A00` (halberdier) | `Archer00` | civilians |
-|---|---|---|---|---|---|
-| walk 6 | 4 x 22 = 88 | 2 x 22 = 44 | 2 x 22 | 2 x 22 | 2 x 22 |
-| run 7 | 5 x 12 = 60 | 3 x 12 = 36 | 3 x 12 | 3 x 12 | 3 x 12 |
-| sprint 10 | 7 x 16 = 112 | 5 x 32 = 160 | 5 x 32 | 5 x 32 | 5 x 32 |
-| sneak 16 | 27 over 14 frames / 18 ticks | - | - | - | - |
-| alert walk 143 / run 151 | - | 3 x 22 / 4 x 12 | 3 x 22 / 4 x 12 | 3 x 22 / 4 x 12 | - |
-| fight step 55 / 35 | 3 per frame | 3 per frame | 3 | 3 | - |
-| climb 20 / 21 | 3 per frame | - | - | - | - |
-| run-stop 12 / 11 | 7 6 5 4 3 2 / 7 7 7 6 5 4 | 6 6 5 4 3 2 0 / 5 4 3 | | | |
+The per-frame advance of the moving cycles is the same in every NPC profile (soldiers of every kind,
+knights, civilians) and larger in the hero profiles, so two vectors describe all 117 files
+(`observed`):
+
+| cycle | hero (`RobinHood`) | NPC (`Soldier A00` and every other) |
+|---|---|---|
+| walk 6 | 4 px per frame x 22 frames = 88 per cycle | 2 x 22 = 44 |
+| run 7 | 5 x 12 = 60 | 3 x 12 = 36 |
+| sprint 10 | 7 x 16 = 112 | 5 x 32 = 160 |
+| alert walk 143 / run 151 | - | 3 x 22 / 4 x 12 |
+| sneak 16 | 27 px over 12..14 frames and 18 ticks | - |
+| fight step 55, guarded walk 35 | 3 per frame | 3 per frame |
+| climb 20 / 21 | +-3 per frame | - |
+| run-stops 11 / 12 | decelerating, e.g. 7 6 5 4 3 2 | decelerating, e.g. 6 6 5 4 3 2 0 |
 
 Every walking, running and sprinting frame has a **zero tick half** and only the advance half set; the
 sneak cycle has both (ticks 2 2 2 2 1 1 ... and advances 1 2 2 ...); the run-stops have decreasing

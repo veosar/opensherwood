@@ -1,11 +1,15 @@
 # Sprite animation layout (`.rhs` character profiles)
 
 Status: block structure, direction order and action-id tagging **verified** on all 117
-`DATA/Characters/*.rhs`; the meaning of ~25 action ids **verified by looking** at rendered strips
-(Robin, Soldier A, Child); the rest of the ids are listed with their structure only. The per-frame
-"advance" and the per-animation displacement are **inferred** (consistent across all files, not checked
-against the running game). Container layout: `docs/formats/sprites.md`. Helper:
-`crates/opensherwood-formats/src/anim_table.rs`. Tool: `harness/tools/probe/anim_sheet.py`.
+`DATA/Characters/*.rhs`; the roles of about a hundred action ids **verified by looking** at rendered
+strips (Robin, Soldier A, a poor civilian, the child, the corpse profile), a few dozen more named from
+their table pattern (twins and second copies of seen ids), the remaining ids only by their family. The
+per-frame "advance" and the per-animation displacement are **inferred** (consistent
+across all files, not checked against the running game). This document records ids, roles, presence
+and the rules for reading timing and displacement; it does not reproduce the per-block tables (see
+"Reading rules" and Provenance). Container layout: `docs/formats/sprites.md`. Helper:
+`crates/opensherwood-formats/src/anim_table.rs`. Tools: `harness/tools/probe/anim_sheet.py`,
+`anim_actions.py`.
 
 ## Blocks of 16 directions
 
@@ -46,151 +50,187 @@ the same duration pattern and the same visual meaning in every file that has it.
 *which* ids they contain and in their order, so an engine must look animations up by id, not by index.
 An id occurs at most once per file except `180`, present twice in `Blip00.rhs` and `MerryManBow.rhs`.
 
+The ids are structural identifiers the engine must use (the scripts compare `ActionChange` parameters
+with them, `docs/original/stealth-and-combat.md` 2.5), so they are listed here with their roles. The
+per-block numbers (frame count, tick and advance halves, displacement of every block of every file)
+are *not* reproduced: the engine derives them from the player's files with the rules below, and the
+generated tables stay in the analyst workspace (ADR-0003; see Provenance).
+
+### Reading rules (what the engine derives at run time)
+
+1. **Block of an action.** Walk the sequence's animation list in steps of 16; the block whose
+   animations carry `unknown_0x0c == id` is the action, and the animation for a facing is `block start
+   + sprite index` (direction order above). A profile without the id has no such block; the engine
+   substitutes a documented fallback (`crates/opensherwood-core/src/anim.rs`) and never invents one.
+2. **Duration** of an action = the sum over its frames of the low half of the timing word ("Per-frame
+   timing word"), in ticks of that word. A frame whose low half is 0 inside an otherwise timed
+   animation is held one tick minimum (`hypothesis`). The moving cycles (walk, run, sprint and their
+   alert twins) have a zero low half on every frame and are paced by the advance instead (reading A
+   below).
+3. **Advance** of an action = the sum of the signed high halves, in screen pixels along the facing
+   (positive = forward). **Displacement** of a block = `(unknown_0x04 - origin_x, unknown_0x08 -
+   origin_y)` of the animation, a 2:1 ellipse over the 16 directions ("Per-animation displacement"):
+   the far point of the action (a climb's destination, the punch victim's spot, a lying body's extent).
+4. **Presence** is a property of the sprite file, not of the mission actor: the `.rhs` the profile
+   table names decides which ids exist (matrix below).
+
 ### Fixed prefix (all 81 humanoid profiles, blocks 0..14)
 
-| block | anims | id | frames | frame `advance` | seen (direction 4 strips) |
-|---|---|---|---|---|---|
-| 0 | 0..15 | 0 | 6 (ping-pong, durations 6,2,2,15,4,4) | 0 | stand idle, breathing |
-| 1 | 16..31 | 1 | 6..10 | 0 | idle fidget: looks around, scratches, shifts weight |
-| 2 | 32..47 | 2 | 2 (4/6) | 0 | two-frame transition, standing (Robin: weapon lifted) |
-| 3 | 48..63 | 4 | 2 (4/6) | 0 | two-frame transition, standing |
-| 4 | 64..79 | 3 | 6 or 12 | 0 | second idle (Soldier: same frames as id 0; Robin: 12-frame variant) |
-| 5 | 80..95 | 5 | 2 | 2 | walk start |
-| 6 | 96..111 | 8 | 2 | 0 | walk stop |
-| 7 | 112..127 | 6 | 22 | 2..4 | **walk** cycle, upright |
-| 8 | 128..143 | 7 | 12 | 3..5 | **run** cycle, upright, long strides |
-| 9 | 144..159 | 50 | 8 (all durations 0) | 0 | run frames with zero duration (blend/turn table?) |
-| 10 | 160..175 | 51 | 2 | 2,4 | run start |
-| 11 | 176..191 | 12 | 6..7 | 7,6,5,4,3,2 | sprint stop: decelerating skid, straightens up |
-| 12 | 192..207 | 9 | 2 | 2,4 | sprint start |
-| 13 | 208..223 | 11 | 3..6 | 5,4,3 | run stop (decelerating) |
-| 14 | 224..239 | 10 | 32 (16 for Robin) | 5..7 | **sprint**: fast run, body leaning forward |
+Every humanoid profile starts with the same fifteen ids in the same order (`observed`; the
+`anim_table` test checks it on three profiles):
 
-Robin's walk/run/sprint advances are 4/5/7, Soldier A's 2/3/5, so the hero moves faster (inferred).
+| block | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| id | 0 | 1 | 2 | 4 | 3 | 5 | 8 | 6 | 7 | 50 | 51 | 12 | 9 | 11 | 10 |
+| role | idle | fidget | transition | transition | idle 2 | walk start | walk stop | **walk** | **run** | turn table | run start | sprint stop | sprint start | run stop | **sprint** |
 
-### Per family
+Illustrative values (direction 4): the idle 0 is six frames played ping-pong over 33..35 ticks; the
+walk 6 has 22 frames, the run 7 twelve, the sprint 10 sixteen (Robin) or 32 (soldiers); the frames of
+these cycles carry no ticks and an advance of 4 / 5 / 7 px for the hero against 2 / 3 / 5 for every NPC
+(the soldiers' alert twins 143 / 151: 3 / 4), so the hero moves faster (`inferred`); the run-stops 11 /
+12 decelerate (advances from 7 down to 2, the last frames held one tick); the two-frame transitions
+and the zero-duration id 50 are probably blend / turn tables (unknown).
 
-Grouping the files by their full id sequence (`families.py`, scratch script) gives:
+### Presence per family
 
-- **Civilians** (15 sprite files: townsfolk, notables, the child, the priest, the tax collector, the wedding variant): 46 blocks. Prefix, then `34 36 35 37 39 38 40 41 47 44 48 45 49`
-  (fall / lying / get-up set), `118 119 120 121 127 133` (kneel-and-cower set: kneel down, kneeling, one
-  frame lying), `250 178 179 215 206 219 158 160 159 268 269 270`. Seen in `Child`: block 22 (id 41)
-  falls flat, 23 (47) lies still, 27 (49) gets up, 32 (127) is curled up on the ground, 37 punches.
-- **Soldiers** (Soldier A/B, Guard A/B, Archer, Crossbowman, Officer, Officier B, Guisbourne, Longchamp,
-  Scatlock, Sherif, Trainer, MerryManBow, MerryManStaff, Blip00: 124..155 blocks). Prefix, then
-  `34 36 35 37 39 38 40 41 47 44 48 45 49` at blocks 15..27, the melee set `52 53 54 96 55 56 57 58 59
-  .. 75` at blocks 28..52, `100 152 153 154 76 78 77 79 101 .. 110`, then family-specific ids (archers:
-  bow/crossbow ids 140..151 etc.).
-- **Knights** (3 files, 87 blocks): prefix, then straight to `40 41 47 44 48 45 49 52 ..` (no 34..39).
-- **Heroes** (RobinHood, RobinTown, WillScarlet, LittleJohn, Stuteley, Friar Tuck, LadyMarian,
-  MerryManA/B/C: 101..154 blocks): prefix, then the **crouch set** `13 18 14 15 17 16` at blocks 15..20
-  and `81 82 83 84` at 21..24; climbers (Robin, RobinTown, WillScarlet, Stuteley, MerryManB) add the
-  **climb set** `19 22 20 24 23 21`; jumpers (Robin, RobinTown, WillScarlet, MerryManA) add `25 27 26 28
-  30 29 31 33 32`; then the fall set `34 ..`, `42 43 46`, the melee set `52 ..` with extras `97 98 99`.
-- **Objects**: `BONUS_*` 5 blocks `190..194`; relics, coat, clover 1 block `190`; `ACCESSORIES_{Ale,
-  Apple, Coin, MoneyBag, Stone, Wasp}` 3 blocks `195 196 197`; `ACCESSORIES_Arrow` 1 block `95`;
-  `Mendicant` `0 264 265 266 267`; `Longchamp Dead` starts at `47 45 106 ...` (a corpse: no idle).
+Grouping the 117 files by their id sequence (`anim_actions.py --families`) gives five families; inside
+a family the block *order* also agrees, but the engine must not rely on it (rule 1). Files:
+**civilians** 15 (townsfolk, notables, the child, the priest, the tax collector, the wedding variant;
+46 blocks); **soldiers** (the seven soldier kinds, officers, the antagonists, the trainer, the two
+merry-man recruits, the silhouette profile; 124..155 blocks); **knights** 3 (87 blocks); **heroes** 10
+(101..154 blocks); **objects** (bonus items: five blocks of ids 190..194; relics, coat and clover: one
+block 190; the thrown accessories: three blocks 195..197; the arrow: one block 95; the mendicant `0 264
+265 266 267`; the corpse profile starts at 47 with no idle).
+
+| set | ids | heroes | soldiers | knights | civilians | corpse |
+|---|---|---|---|---|---|---|
+| fixed prefix | 0..12, 50, 51 | yes | yes | yes | yes | no |
+| crouch | 13 14 15 16 17 18, 81..84 | yes | no | no | no | no |
+| climb | 19..24 | five heroes | no | no | no | no |
+| jump / drop | 25..33 | four heroes | no | no | no | no |
+| guarded walk (fight stance) | 34..39 | yes | yes (a second copy 227..233) | no | yes | no |
+| hit / fall / lie / get up, weapon carried | 40 41 44 45 47 48 49 | yes | yes | yes | yes | 47 45 |
+| stance shuffle, crouch-to-lying | 42 43 46 | yes | no | no | no | no |
+| melee | 52..79 | yes (+97 98 99) | yes (+100 152 153 154) | yes | no | no |
+| hit / fall / lie / get up, fighting stance | 101..110 | yes | yes | yes | no | 106 109 |
+| bow | 85..94 | the four archers of the manual | swordsmen, archers, crossbowmen, merry men, trainer (not halberdiers, lancers, officers, antagonists) | no | no | no |
+| hit / fall / lie / get up, bow in hand | 111..117 | the same four | the same kinds | no | no | 113 116 |
+| carried body | 118..121 | yes (the big man: 120 121 only) | yes | no | yes | yes |
+| search, pay, pick up, leg up | 122 282; 124; 125; 126 248; 128 129 | per hero (below) | 122 | no | no | no |
+| knock-out blow | 123 | Robin and the big man only | all soldier kinds, officers, antagonists | no | no | no |
+| cower / netted / laid out | 127; 133; 219 | 127 133 | 127 133 219 | 127 219 | 127 133 219 | 219 |
+| hidden in leaves | 136 137 | yes | no | no | no | no |
+| alert set | 140..151, 156 | no | yes | yes | no | no |
+| stimuli reactions | 164 165 166 169 | no | yes | 166 | no | no |
+| bend / pick up, panic | 158 159 160; 250 | no | 158..160 (250 officers) | no | yes | no |
+| flung | 178 179 | yes | yes | no | yes | yes |
+| signal, glances, point, idle routine | 170..173; 189; 202..205; 206; 268..270 | 170..173 (two heroes) | yes | 189, 202..205 | 206, 268..270 | no |
+
+Hero-only sets not yet read: the big man's 180..189 / 199..201 / 249 / 254 (carrying walks among
+them), the red-clad swordsman's 220 / 244 / 245 / 255 / 256, the friar's 238..243, the craftsman's
+168 / 242 / 218 / 239 / 246 / 247 / 271, the lady's 251..253 / 217, merry man C's 184..188. Officers'
+and antagonists' sets equal the halberdier set.
 
 ### Ids identified by eye
 
-| id | frames | advance | seen |
-|---|---|---|---|
-| 13 | 4..5 | 0 | crouch down from standing (heroes) |
-| 14 | 6 (ping-pong 6,2,2,15,4,4) | 0 | crouched idle (heroes) |
-| 15 / 17 | 2 | 0 | crouch transitions |
-| 16 | 12..14 | 2..3 | **sneak**: crouched walk (heroes) |
-| 18 | 4..5 | 0 | stand up from the crouch |
-| 81..84 | 5..11 | mixed | crouch <-> run/stand transitions (83 = skid to a crouch) |
-| 19 | 2 | 0 | pre-climb pose, displacement radius 10 |
-| 22 | 9 | 0 | hangs on a ledge and pulls up |
-| 20 | 12 | +3 | **climb up** a wall/ladder, arms reaching; displacement radius 45 |
-| 21 | 12 | -3 | **climb down**; displacement radius 45 |
-| 24 | 9 | -10 on some frames | drops off a ledge |
-| 23 | 3 | 0 | landing, displacement |
-| 25..33 | 1..9 | 0..15 | jump / drop set: crouch, airborne single frames (26, 29), landings (27, 28, 33) |
-| 34 | 2 | 0 | pre-dive, displacement radius 10 |
-| 37 | 9 | 0 (-10) | dives forward into a tucked pose |
-| 35 / 38 | 12 | +3 / -3 | guarded walk forward / backward: fight stance with the weapon level (Robin), crouched behind the raised shield (soldiers); displacement radius 40..45 (corrected 2026-09-03; an earlier reading said "tucked pose") |
-| 36 | 8 | 0 (10) | comes out of the guarded pose |
-| 40 | 10 | 0 | **draw weapon** (Soldier: sword from the scabbard; Robin: readies the staff) |
-| 41 | 8 | 6 | **knocked down forward**: hit, staggers, falls flat (ends face down; +36 px along the facing) |
-| 44 | 7 | -7 | **knocked down backward**: collapses onto the back (-30 px) |
-| 47, 45, 48 | 1 | 0 | **lying** poses (48 has a displacement) |
-| 49 | 8..10 | 0 | **get up** from the ground |
-| 42, 43, 46 | 11, 7, 7 | 0 | stance shuffle, crouch-to-lying, lying-to-fall (heroes) |
-| 52 | 3..8 | 0 | first melee move: staff/sword swing from the idle stance |
-| 53 | 3..8 | 0 | lowers the weapon back to the idle stance |
-| 54 | 6 (3,3,12,4,4) | 0 | **fight idle**: stance with the weapon held level |
-| 55 / 56, 57 / 58 | 5..6 | +3 / -3 | stance steps forward / back (two pairs) |
-| 59..67 | 6 | 0 | individual strikes (thrust, overhead, sweep, ...) |
-| 68 | 5..8 | 0 | weapon planted vertically (guard / parry) |
-| 69..75 | 6..16 | 0 | further strikes and combos |
-| 118..121 | 5,1,3,1 | 0 | kneel down, kneeling, rise, kneeling variant (civilians and soldiers) |
-| 127 | 4 | -5 | curled up on the ground (cower) |
-| 190..197 | 1..3 | 0 | bonus/accessory item frames (ids per item family; 48 one-frame coin anims = 3 blocks x 16 directions) |
+Roles of the locomotion, crouch, climb, jump, fall and melee ids (direction 4 strips of `RobinHood`,
+`Soldier A00`, `Child`; `observed` unless marked). Frame counts and timings are read from the files
+(rules 2 and 3); a few are quoted under "Illustrative durations and displacements".
 
-Corrections from the 2026-09-03 pass (below): 35 / 38 are the guarded walk forward / backward (fight
-stance; soldiers crouched behind the raised shield), not a slid tucked pose; 41 falls *forward* and 44
-*backward*; 40 is a flinch (hit while carrying the weapon) as much as a draw.
+| id | role |
+|---|---|
+| 13 / 18 | crouch down from standing / stand up from the crouch (heroes) |
+| 14 | crouched idle (six frames ping-pong, like 0) |
+| 15 / 17 | crouch transitions (two frames) |
+| 16 | **sneak**: the crouched walk (heroes; the only crouched cycle) |
+| 81..84 | crouch <-> run / stand transitions (83 = skid to a crouch) |
+| 19 / 22 / 23 | pre-climb pose / hangs on a ledge and pulls up / landing |
+| 20 / 21 | **climb up** / **climb down** a wall or ladder (advance +-3 per frame, block displacement radius 45) |
+| 24 | drops off a ledge |
+| 25..33 | jump / drop set: crouch, airborne single frames (26, 29), landings (27, 28, 33) |
+| 34 / 36 / 37 / 39 | transitions into and out of the guarded walk (34 pre-dive, 37 dives forward into a tucked pose, 36 comes out of the guarded pose) |
+| 35 / 38 | **guarded walk** forward / backward: fight stance with the weapon level (Robin), crouched behind the raised shield (soldiers); corrected 2026-09-03 from an earlier "tucked pose" reading |
+| 40 | **draw weapon / flinch** (Soldier: sword from the scabbard; Robin: readies the staff; the same animation plays when hit while carrying the weapon) |
+| 41 / 44 | **knocked down forward** (hit from behind, ends face down) / **backward** (hit from the front, ends on the back) |
+| 47 / 48 / 45 | **lying** poses: face down / on the back, shield on the chest / on the back, arms out (one frame each; 48 and 45 carry a displacement) |
+| 49 | **get up** from the ground (rolls over, pushes up, stands) |
+| 42 / 43 / 46 | stance shuffle, crouch-to-lying, lying-to-fall (heroes) |
+| 52 / 53 | enter / leave the fighting stance (weapon from carried to level and back) |
+| 54 / 96 | **fight idle**: stance with the weapon held level, breathing / shifting |
+| 55 / 56, 57 / 58 | stance steps forward / back (two pairs) |
+| 59..67 | quick strikes (thrust, overhead, sweep, ...) |
+| 68 | weapon planted vertically: **guard / parry** |
+| 69..75 | further strikes and combos; 71..74 sweeping swings (the half-circle and circle attacks), 75 the over-the-head finishing blow |
+| 118..121 | **carried body**: lifted by the hips until it hangs head-down / hangs over a shoulder / set down feet first / stands limp (corrected 2026-09-03 from an earlier "kneel" reading; civilians and soldiers have the set too, so bodies keep their own sprite while carried) |
+| 127 | curled up on the ground, arms over the head (cower / duck; tumble for soldiers) |
+| 190..197 | bonus / accessory item frames (one to three frames per item family; the coin's 48 one-frame animations are 3 blocks x 16 directions) |
 
 ### Combat, state and stealth ids (2026-09-03, by eye on `RobinHood`, `Soldier A00`, `ManCivilianPoor`, `Longchamp Dead`)
 
-Tool: `harness/tools/probe/anim_actions.py` (`--table`, `--matrix`, `--families`, `--sheet`). The
-behavioural reading of these ids (which state plays which) is in
-`docs/original/stealth-and-combat.md`; this table records what the strips show. Frames / ticks /
-advance are direction 4 of `Soldier A00` unless a hero value differs.
+Tool: `harness/tools/probe/anim_actions.py --sheet`. The behavioural reading of these ids (which state
+plays which) is in `docs/original/stealth-and-combat.md` 2.4 and 3.2; this table records what the
+strips show. Presence per family is in the matrix above.
 
-| id | frames | ticks | advance | seen | family presence |
-|---|---|---|---|---|---|
-| 40 | 10 | 20 | 0 | flinch, weapon swings up / sword drawn | all humanoids |
-| 41 / 44 | 8 / 7 | 13 / 10 | +36 / -30 | knocked down forward (ends face down) / backward (ends on the back) | all humanoids |
-| 47 / 48 / 45 | 1 | 1 | disp 0 / -24 / -24 | lying face down / on the back, shield on the chest / on the back, arms out | all humanoids |
-| 49 | 8-10 | 15-16 | 0 | rolls over and stands up | all humanoids |
-| 101 / 102 / 103 / 104 | 9 / 4 / 4-6 / 8-9 | 23 / 4 / 13 / 17-20 | 0 | stance: steps back shield up / short flinch / shield or weapon held up (block) / stumbles | heroes, soldiers, knights |
-| 105 / 107, 106 / 108 / 109, 110 | as 41 / 44, 47 / 48 / 45, 49 | | | the same fall / lie / get-up set with the weapon out (fighting stance) | heroes, soldiers, knights |
-| 111 .. 117 | 10 / 8 / 1 / 7 / 1 / 1 / 10 | 20 / 14 / 1 / 9 / 1 / 1 / 16 | 0 / +30 / 0 / -30 / 0 / 0 / 0 | the same set with the bow in hand | the four hero archers, swordsmen, archers, crossbowmen, merry men, trainer |
-| 85 / 86 | 10 / 8 | 10 / 8 | 0 | bow off the shoulder / slung back | same |
-| 87, 88, 89, 92 | 7, 5, 1, 1 | 7, 4, 0, 0 | 0 | nock and draw, aim, aim hold, aim hold | same |
-| 90 / 91, 93 / 94 | 3 / 3, 4 / 4 | 1 | 0 | release (two variants each) | same |
-| 118 / 119 / 120 / 121 | 5 / 1 / 3 / 1 | 8 / 1 / 6 / 1 | 0 | body lifted head-down / hangs over a shoulder / set down / stands limp | heroes, soldiers, civilians, the corpse profile |
-| 122 | 14 | 32 | 0 | kneels, works on the ground with both hands | Robin, the lady, soldiers |
-| 123 | 8 | 11-12 | disp 30-35 | knock-out blow: kick (Robin) / free-arm swing (soldier) | Robin, the big man, all soldier kinds |
-| 124 / 125 / 126 | 6 / 7 / 11 | 12 / 15 / 18 | disp 20-22 | hands over / tosses underarm / bends and picks up | 124 Robin; 125 the six heroes who pay beggars; 126 all heroes |
-| 127 | 4 | 4 | -20 | curled up, arms over the head | all humanoids |
-| 128 / 129 | 6 / 7 | 14 / 13 | disp -28 | steps up onto a helper standing behind | Robin, Will, merry man A |
-| 133 | 4 | 13 | 0 | on the back, limbs kicking (netted) | heroes, soldiers, civilians |
-| 136 / 137 | 1 / 5 | 1 / 3 | 0 | heap of leaves / rises out of it | heroes |
-| 140 | 6 | 33 | disp 30 | alert idle, weapon ready | soldiers, knights |
-| 141 | 5 | 6 | 0 | straightens, hand to the helmet, peers | soldiers, knights |
-| 142 | 8 | 11 | 0 | hand to the mouth, arm thrown up (alarm) | soldiers, knights |
-| 143, 151 | 22, 12 | 0 | 3, 4 per frame | alert walk, alert run (twins of 6, 7 with the weapon ready) | soldiers, knights |
-| 144 / 146, 145 / 149, 147 / 148, 150 | 2, 2, 3 / 7, 8 | | | alert starts, stops, turn table (twins of 5 / 8, 9 / 51, 11 / 12, 50) | soldiers, knights |
-| 156 | 10 | 12 | +26, disp 35 | charging run into a strike | soldiers, knights |
-| 158 / 159 / 160 | 5 / 1 / 5 | 5 / 1 / 7 | disp -14 | bends down / bent / straightens | soldiers, civilians |
-| 164 | 12 | 12 | 0 | shield over the head, turning | soldiers |
-| 165 | 10 | 26 | 0 | drinks (frame 8 held 15 ticks) | soldiers |
-| 166 | 6 | 13 | 0 | bites and throws away | soldiers, knights |
-| 169 | 8 | 17 | disp 28 | bends forward and reaches 28 px ahead | soldiers |
-| 170 / 171 / 172 / 173 | 4 / 1 / 5 / 4 | 4 / 1 / 4 / 4 | disp 25 | raises the sword arm, holds, lowers | swordsmen, merry men, trainer, Will, merry man A |
-| 178 / 179 | 5 / 3 | 8 / 6 | 0 | flung backwards through the air / topples forward | heroes, soldiers, civilians, the corpse profile (not the knights) |
-| 189 | 8 | 9 | 0 | looks around, hands on the hips | soldiers, knights |
-| 202 .. 205 | 5 each | 8 | 0 | four near-identical hand-to-ear glances | soldiers, knights |
-| 206 | 10 | 16 | 0 | points with the outstretched arm (held 10 ticks) | soldiers, civilians |
-| 207 / 208 / 209 | 4 / 4 / 6 | 3 / 3 / 34 | 0 | hands up / crouched shield up / crouched guard idle | soldiers |
-| 215 | 5 | 0 | 0 | turn table (five zero-tick poses) | all humanoids |
-| 216 | 1 | 0 | 0 | standing straight | soldiers |
-| 219 | 1 | 1 | 0 | laid out on the back, arms folded, weapon on the body | soldiers, knights, civilians, the corpse profile |
-| 227 .. 233 | 2 / 12 / 8 / 9 / 12 / 2 / 4 | | +36 / -36 on 228 / 231 | a second copy of the guarded walk set 34..39 | soldiers |
-| 250 | 6 | 10 | 0 | hands over the face | civilians, officers |
-| 268 / 269, 270 | 2 / 2, 44 | 2 / 2, 123 | 0 | two turn steps, a long idle routine (walk steps, idle, fidget, idle) | soldiers, civilians |
+| id | role |
+|---|---|
+| 101 / 102 / 103 / 104 | fighting-stance reactions: steps back shield up / short flinch / shield or weapon held up (**block**) / stumbles back a step (**hit in the stance**) |
+| 105 / 107, 106 / 108 / 109, 110 | the fall / lie / get-up set of 41 / 44, 47 / 48 / 45, 49 with the weapon out (fighting stance) |
+| 111 .. 117 | the same set with the bow in hand (111 hit, 112 / 114 fall forward / backward, 113 / 115 / 116 lying, 117 get up) |
+| 85 / 86 | bow off the shoulder / slung back (draw / put away the bow) |
+| 87 | nocks and draws (ready the shot) |
+| 88 / 89 / 92 | **aim**: bow drawn / hold frame (held until the click) / hold variant |
+| 90 / 91, 93 / 94 | release (two variants each): **shoot** |
+| 122 / 282 | kneels and works on the ground with both hands: **search** (a body, a chest) |
+| 123 | **knock-out blow** (the fist icon): a high kick (Robin) or a free-arm swing (soldier); the block displacement, 30..35 px ahead, is the victim's spot |
+| 124 / 125 / 126, 248 | hands something over (**throw purse**) / tosses underarm (**pay the beggar**) / bends and picks up, crouched reach (**pick up**) |
+| 128 / 129 | steps up onto a helper standing 28 px behind (**be given a leg up**) |
+| 133 | on the back, limbs kicking (netted / struggling) |
+| 136 / 137 | a heap of leaves / rises out of it (**hidden under leaves**) |
+| 140 | **alert idle**: crouched forward, weapon and shield up |
+| 141 | **noticed something**: straightens, hand to the helmet, peers |
+| 142 | **raises the alarm**: hand cupped to the mouth, then the arm thrown up |
+| 143 / 151 | **alert walk / alert run**: twins of 6 / 7 with the weapon ready and a larger advance per frame |
+| 144 / 146, 145 / 149, 147 / 148, 150 | alert starts, stops and turn table: twins of 5 / 8, 9 / 51, 11 / 12, 50 |
+| 156 | charging run into a strike |
+| 158 / 159 / 160 | bends down / stays bent / straightens (pick up / search; the displacement points behind) |
+| 164 | shield raised over the head, turning (protects from arrows) |
+| 165 / 166 / 169 | drinks (beer) / bites and throws the rest away (apple) / bends forward and reaches for the ground ahead (picks up the purse) |
+| 170 / 171 / 172 / 173 | raises the sword arm, holds it up, lowers it (a signal to the company) |
+| 178 / 179 | flung backwards through the air / topples forward (a trap, a boulder, dropped) |
+| 189 | looks around, hands on the hips (a check) |
+| 202 .. 205 | four near-identical hand-to-ear glances (listens) |
+| 206 | points with the outstretched arm and holds it (scripts play it after an archer shoots) |
+| 207 / 208 / 209 | hands up / crouched shield up / crouched guard idle (a second alert idle) |
+| 215 | turn table: five zero-tick poses (every humanoid profile) |
+| 216 | standing straight |
+| 219 | laid out on the back, arms folded, weapon on the body (a body after being carried / tied; the corpse profile and the knights have it) |
+| 227 .. 233 | a second copy of the guarded walk set 34..39 (soldiers) |
+| 250 | hands over the face (civilian panic) |
+| 268 / 269, 270 | two turn steps, a long idle routine (walk steps, idle, fidget, idle) |
 
-Hero-only sets not yet read: the big man's 180-189 / 199-201 / 249 / 254 (carrying walks of 22 frames
-among them), the red-clad swordsman's 220 / 244 / 245 / 255 / 256, the friar's 238-243, the craftsman's
-168 / 242 / 218 / 239 / 246 / 247 / 271, the lady's 251-253 / 217, merry man C's 184-188. Officers' and
-antagonists' sets equal the halberdier set.
+Everything else has not been looked at; `anim_actions.py --table` lists frame counts, ticks, advances
+and displacements for every id of a profile.
 
-Everything else has not been looked at; `anim_actions.py --table` lists frame counts and advances for
-every id.
+#### Illustrative durations and displacements
+
+Unit: the low half of the timing word, summed over the frames (rule 2); one world tick per unit is the
+working reading (A below), 25 per second the `scb.md` hypothesis. The values are those of `Soldier
+A00`, direction 4, unless a hero value is given; the engine reads them from the profile and keeps only
+the first five as fallback constants for a profile without the block (`crates/opensherwood-core/src/ai.rs`).
+
+| id | ticks | id | ticks |
+|---|---|---|---|
+| 141 noticed | 6 | 142 alarm | 11 |
+| 41 knocked down forward | 13 | 49 get up | 15..16 |
+| 123 knock-out blow | 11..12 | 44 knocked down backward | 10 |
+| 0 idle, 54 fight idle, 140 alert idle | 32..35 | 47 / 48 / 45 lying | 1 (held by the state machine) |
+| 59..66 quick strikes | 8 | 75 finishing blow | 30 (Robin), 18 (soldier) |
+| 88 aim | 4, then a 0-tick hold frame (89) | 16 sneak | 18 over 12..14 frames, both halves set |
+
+Displacements: 41 advances +36 px and 44 -30 px along the facing (the body ends there); 48 and 45
+lie 24 px *behind* the feet; 123's block displacement is 30..35 px ahead (the victim's spot); 128 /
+129 point 28 px behind (the helper); 20 / 21 climb with a block radius of 45; 100 + 152..154 (shield
+charge) 50 px ahead; 169 (purse) 28 px ahead.
 
 ## Per-frame timing word
 
@@ -213,15 +253,16 @@ document measures it. Not verified in the engine. Values such as `131072` (`0x20
 ## Per-animation displacement: `unknown_0x04` / `unknown_0x08`
 
 Per animation, `(unknown_0x04 - origin_x, unknown_0x08 - origin_y)` is `(0, 0)` for 8,300 of 9,282
-blocks. Where it is not, the 16 directions of the block trace an ellipse of ratio 2:1 (e.g. radius
-40 x 19, 45 x 22, 30 x 14, 10 x 4) starting straight up at direction 0 and going clockwise. It is set on
-climbs, jumps/drops, the slid tucked pose, the stance steps and strikes of the melee set (55..79), a few
+blocks. Where it is not, the 16 directions of the block trace an ellipse of ratio 2:1 (radii from 10 x 4
+to 45 x 22) starting straight up at direction 0 and going clockwise. It is set on climbs, jumps/drops,
+the guarded walk, the stance steps and strikes of the melee set (55..79), the knock-out blow, a few
 one-frame lying poses, and also on Soldier A's idle blocks 0 and 4 (radius 30 x 14, unexplained). For
-most ids the vector points *along* the facing (direction 0 -> negative y); for ids 30 (jump landing), 45
-and 48 (lying poses, 78 files), 108, 115, 128, 129, 135, 158..160, 170..177 and 268..270 it points
-*against* it (direction 0 -> positive y), e.g. a fallen body extending behind the feet point. Inferred:
-the position change applied when the animation completes (climb/jump destination) or the offset of
-the pose from the entity position. Not verified in the engine.
+most ids the vector points *along* the facing (direction 0 -> negative y); for the lying poses 45 and 48
+(78 files), the leg-up 128 / 129, the bends 158..160 and a few others it points *against* it (direction
+0 -> positive y), e.g. a fallen body extending behind the feet point. The engine reads the sign from the
+vector itself; no per-id list is needed. Inferred: the position change applied when the animation
+completes (climb/jump destination) or the offset of the pose from the entity position. Not verified in
+the engine.
 
 ## Sequence and frame placement
 
@@ -248,9 +289,13 @@ Observation only, no executable analysis. All scripts run with `OPENSHERWOOD_GAM
 data; no image was committed.
 
 - `harness/tools/probe/anim_actions.py` (2026-09-03): `--table` / `--matrix` / `--families` print the
-  per-block action tables (id, frames, tick and advance halves, displacement) and the family grouping
-  quoted above from the files themselves; `--sheet` renders selected ids of one profile (viewed for
-  `RobinHood`, `Soldier A00`, `ManCivilianPoor`, `Longchamp Dead`, `LittleJohn` in a scratch directory).
+  per-block action tables (id, frames, tick and advance halves, displacement of every block) and the
+  family grouping; `--sheet` renders selected ids of one profile (viewed for `RobinHood`, `Soldier A00`,
+  `ManCivilianPoor`, `Longchamp Dead`, `LittleJohn` in a scratch directory). **The full per-block and
+  per-family tables live only in the ignored analyst workspace** (`re/`, `harness/out/`) and are
+  reproduced by running those probes on the player's files; this document keeps the ids, their roles,
+  the presence matrix and a few illustrative values (ADR-0003: no lookup tables copied from assets;
+  the quoted tables were removed after review 7, finding 8, on 2026-09-05).
 - `harness/tools/probe/anim_sheet.py`: `--first/--last` renders first frames in a 16-column grid (direction
   sheets); `--blocks A:B --dir 4` renders every frame of one direction per block (action strips);
   `--strip N` renders one animation. Sheets viewed: RobinHood blocks 0..89, Soldier A00 blocks 0..25
