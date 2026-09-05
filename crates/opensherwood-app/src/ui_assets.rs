@@ -44,6 +44,8 @@ pub mod ids {
     pub const SMALL_SCROLL: u32 = 133;
     /// Plain arrow cursor.
     pub const CURSOR: u32 = 284;
+    /// Load / save screens' dungeon background.
+    pub const DUNGEON_BACKGROUND: u32 = 189;
     /// Credits background (full frame) and scrolling text strip.
     pub const CREDITS_BACKGROUND: u32 = 309;
     pub const CREDITS_STRIP: u32 = 308;
@@ -179,6 +181,7 @@ pub fn load(game: &GameDir) -> UiAssets {
         cursor: pic(ids::CURSOR),
         credits_background: pic_with(ids::CREDITS_BACKGROUND, false),
         credits_strip: pic(ids::CREDITS_STRIP),
+        dungeon_background: pic_with(ids::DUNGEON_BACKGROUND, false),
         hud,
         font_button: load_font(game, "MenuButtonEnabled.bfn"),
         font_button_disabled: load_font(game, "MenuButtonDisabled.bfn"),

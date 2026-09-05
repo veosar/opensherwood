@@ -31,8 +31,13 @@ def test_menu_renders_and_hover_changes_the_frame(binary, game_dir, tmp_path):
         assert e.observe(entities=False)["ui"]["hovered"] == 0
         c1 = e.capture(path="menu_hover_play.png")
         assert c1["hash"] != c0["hash"], "hovering Play! must change the plate"
-        # Entries that are not implemented yet keep the menu open.
+        # Load opens the load screen (empty list here); Escape returns. Entries that are not
+        # implemented yet (select player, row 2) keep the menu open.
         e.step(1, pointer_click(748, 405, "left"))
+        assert e.observe(entities=False)["ui"]["screen"] == "load"
+        e.step(1, [key("escape")])
+        assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
+        e.step(1, pointer_click(748, 440, "left"))
         assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
 
 

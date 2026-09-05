@@ -60,6 +60,10 @@ pub enum MenuAction {
     Yes,
     /// Cancel a dialog.
     No,
+    /// Delete the selected save.
+    Delete,
+    /// Cancel / back.
+    Cancel,
 }
 
 impl MenuAction {
@@ -96,7 +100,8 @@ impl MenuAction {
             MenuAction::Restart => 13,
             MenuAction::Quit => 14,
             MenuAction::Yes => 15,
-            MenuAction::No => 16,
+            MenuAction::No | MenuAction::Cancel => 16,
+            MenuAction::Delete => 8,
         }
     }
 
@@ -104,11 +109,7 @@ impl MenuAction {
     fn implemented(self) -> bool {
         !matches!(
             self,
-            MenuAction::Load
-                | MenuAction::SelectPlayer
-                | MenuAction::Options
-                | MenuAction::ShowMovies
-                | MenuAction::Save
+            MenuAction::SelectPlayer | MenuAction::Options | MenuAction::ShowMovies
         )
     }
 
@@ -136,6 +137,8 @@ impl MenuAction {
             MenuAction::Quit => "quit",
             MenuAction::Yes => "yes",
             MenuAction::No => "no",
+            MenuAction::Delete => "delete",
+            MenuAction::Cancel => "cancel",
         }
     }
 }
@@ -187,6 +190,8 @@ pub struct UiAssets {
     /// Credits background (`PIC` 309, 1024x768) and text strip (`PIC` 308, 400x7659).
     pub credits_background: Option<SpriteFrame>,
     pub credits_strip: Option<SpriteFrame>,
+    /// Dungeon background of the load / save screens (`PIC` 189, 1024x512).
+    pub dungeon_background: Option<SpriteFrame>,
     /// HUD pictures, see `HudAssets`.
     pub hud: HudAssets,
     /// Fonts.
@@ -696,6 +701,214 @@ impl PauseMenu {
             .as_ref()
             .map_or(self.column.pointer, |c| c.pointer);
         draw_pointer(scene, pointer, assets.and_then(|a| a.cursor.as_ref()));
+    }
+}
+
+/// One entry of the load / save list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SaveEntry {
+    /// File name without extension (`quick`, `auto-0`, a typed name).
+    pub name: String,
+    /// World tick stored in the file.
+    pub world_tick: u64,
+}
+
+/// The load / save screen (`ui-flow.md` 6): the dungeon background, a list of saves at x = 227..610 from
+/// y = 170 (rows of `SAVE_ROW_H` px, the selected one orange), on the save screen a name field at the bottom
+/// of the list, and the button column Load-or-Save (row 4) / Delete (row 5) / Cancel (row 6). Row geometry
+/// of the list is the engine's (the original's rows were not captured); the column rows are the observed ones.
+#[derive(Debug)]
+pub struct SaveScreen {
+    column: ButtonColumn,
+    /// Whether this is the save screen (name field, Save button) or the load screen.
+    pub saving: bool,
+    /// Entries, newest first.
+    pub entries: Vec<SaveEntry>,
+    /// Selected entry.
+    pub selected: Option<usize>,
+    /// Name being typed (save screen).
+    pub name: String,
+    pointer: (i32, i32),
+}
+
+/// Height of a list row.
+pub const SAVE_ROW_H: i32 = 30;
+/// List rectangle.
+const SAVE_LIST: (i32, i32, i32, i32) = (227, 170, 383, 360);
+/// Name field rectangle (save screen).
+const SAVE_NAME_FIELD: (i32, i32, i32, i32) = (227, 545, 383, 26);
+/// Most rows that fit the list.
+const SAVE_ROWS: usize = 12;
+
+/// The outcome of the screen's input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveOutcome {
+    /// Load the named save.
+    Load(String),
+    /// Write a save with this name.
+    Save(String),
+    /// Delete the named save.
+    Delete(String),
+    /// Leave the screen.
+    Cancel,
+}
+
+impl SaveScreen {
+    /// New screen over `entries` (newest first); `default_name` fills the save field.
+    #[must_use]
+    pub fn new(
+        saving: bool,
+        entries: Vec<SaveEntry>,
+        default_name: String,
+        strings: &[String],
+    ) -> Self {
+        let first = if saving {
+            MenuAction::Save
+        } else {
+            MenuAction::Load
+        };
+        Self {
+            column: ButtonColumn::new(&[first, MenuAction::Delete, MenuAction::Cancel], 4, strings),
+            saving,
+            entries,
+            selected: None,
+            name: default_name,
+            pointer: (0, 0),
+        }
+    }
+
+    /// Apply input.
+    pub fn handle(&mut self, event: InputEvent) -> Option<SaveOutcome> {
+        match event {
+            InputEvent::KeyDown { key: Key::Escape } => return Some(SaveOutcome::Cancel),
+            InputEvent::KeyDown {
+                key: Key::Letter(c),
+            } if self.saving && self.name.len() < 24 => {
+                self.name.push(c);
+                return None;
+            }
+            InputEvent::KeyDown { key: Key::Digit(d) } if self.saving && self.name.len() < 24 => {
+                self.name.push(char::from(b'0' + d.min(9)));
+                return None;
+            }
+            InputEvent::KeyDown {
+                key: Key::Backspace,
+            } if self.saving => {
+                self.name.pop();
+                return None;
+            }
+            InputEvent::PointerMove { x256, y256 } => {
+                self.pointer = (Fixed::from_raw(x256).round(), Fixed::from_raw(y256).round());
+            }
+            InputEvent::PointerDown {
+                button: Button::Left,
+            } if hit(SAVE_LIST, self.pointer.0, self.pointer.1) => {
+                let row = ((self.pointer.1 - SAVE_LIST.1) / SAVE_ROW_H) as usize;
+                if row < self.entries.len().min(SAVE_ROWS) {
+                    self.selected = Some(row);
+                    if self.saving {
+                        self.name = self.entries[row].name.clone();
+                    }
+                }
+            }
+            _ => {}
+        }
+        let chosen = self.column.handle(event)?;
+        let selected_name = self
+            .selected
+            .and_then(|i| self.entries.get(i))
+            .map(|e| e.name.clone());
+        match chosen {
+            MenuAction::Cancel => Some(SaveOutcome::Cancel),
+            MenuAction::Delete => selected_name.map(SaveOutcome::Delete),
+            MenuAction::Load => selected_name.map(SaveOutcome::Load),
+            MenuAction::Save => {
+                let name: String = self
+                    .name
+                    .trim()
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                    .collect();
+                (!name.is_empty()).then_some(SaveOutcome::Save(name))
+            }
+            _ => None,
+        }
+    }
+
+    /// State for `observe`: the column's buttons plus one item per list row (`action` = `load`).
+    #[must_use]
+    pub fn state(&self) -> MenuState {
+        let mut items = items_to_protocol(&self.column.items);
+        for (i, e) in self.entries.iter().take(SAVE_ROWS).enumerate() {
+            items.push(UiItem {
+                action: format!("row:{}", e.name),
+                label: format!("{} (tick {})", e.name, e.world_tick),
+                rect: [
+                    SAVE_LIST.0,
+                    SAVE_LIST.1 + i as i32 * SAVE_ROW_H,
+                    SAVE_LIST.2,
+                    SAVE_ROW_H,
+                ],
+                enabled: true,
+            });
+        }
+        MenuState {
+            screen: if self.saving {
+                "save".into()
+            } else {
+                "load".into()
+            },
+            items,
+            hovered: self.selected,
+            page: None,
+        }
+    }
+
+    /// Render the frame.
+    #[must_use]
+    pub fn render(&self, assets: Option<&UiAssets>) -> Framebuffer {
+        let mut fb = Framebuffer::new(MENU_FRAME.0, MENU_FRAME.1);
+        fb.clear([0, 0, 0, 255]);
+        if let Some(bg) = assets.and_then(|a| a.dungeon_background.as_ref()) {
+            fb.blit_rgba(0, BG_Y, bg.width, bg.height, &bg.rgba);
+        }
+        let font = assets.and_then(|a| a.font_text.as_ref());
+        for (i, e) in self.entries.iter().take(SAVE_ROWS).enumerate() {
+            let y = SAVE_LIST.1 + i as i32 * SAVE_ROW_H;
+            let colour = if self.selected == Some(i) {
+                [214, 120, 30, 255]
+            } else {
+                [40, 80, 80, 255]
+            };
+            fb.fill_rect(
+                SAVE_LIST.0,
+                y + 2,
+                SAVE_LIST.0 + SAVE_LIST.2,
+                y + SAVE_ROW_H - 2,
+                colour,
+            );
+            if let Some(f) = font {
+                f.draw(&mut fb, &e.name, SAVE_LIST.0 + 8, y + 7);
+                let t = format!("{}", e.world_tick);
+                let w = f.measure(&t);
+                f.draw(&mut fb, &t, SAVE_LIST.0 + SAVE_LIST.2 - 8 - w, y + 7);
+            }
+        }
+        if self.saving {
+            let (x, y, w, h) = SAVE_NAME_FIELD;
+            fb.fill_rect(x, y, x + w, y + h, [20, 20, 20, 255]);
+            fb.fill_rect(x + 1, y + 1, x + w - 1, y + h - 1, [222, 200, 156, 255]);
+            if let Some(f) = font {
+                f.draw(&mut fb, &format!("{}_", self.name), x + 6, y + 5);
+            }
+        }
+        self.column.draw(&mut fb, assets);
+        draw_pointer(
+            &mut fb,
+            self.pointer,
+            assets.and_then(|a| a.cursor.as_ref()),
+        );
+        fb
     }
 }
 

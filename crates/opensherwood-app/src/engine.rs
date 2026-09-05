@@ -13,7 +13,8 @@ use opensherwood_core::{
 
 use crate::mission;
 use crate::ui::{
-    Briefing, Credits, HudState, MainMenu, MenuAction, PauseMenu, ProfileSummary, UiAssets,
+    Briefing, Credits, HudState, MainMenu, MenuAction, PauseMenu, ProfileSummary, SaveEntry,
+    SaveOutcome, SaveScreen, UiAssets,
 };
 use crate::ui_assets;
 use opensherwood_core::Geometry;
@@ -221,6 +222,11 @@ enum Screen {
     Pause(PauseMenu),
     /// Debriefing parchment at the end of a mission; dismissing it returns to the menu.
     Debriefing(Briefing),
+    /// Load / save screen; `from_pause` says where Cancel returns.
+    Saves {
+        screen: SaveScreen,
+        from_pause: bool,
+    },
     /// Credits.
     Credits(Credits),
 }
@@ -613,6 +619,93 @@ impl Session {
         self.artifacts.join("saves")
     }
 
+    /// The save files, newest first (by modification time).
+    fn list_saves(&self) -> Vec<SaveEntry> {
+        let Ok(dir) = std::fs::read_dir(self.saves_dir()) else {
+            return Vec::new();
+        };
+        let mut found: Vec<(std::time::SystemTime, SaveEntry)> = Vec::new();
+        for entry in dir.flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.len() as usize > limits::MAX_SAVE_BYTES {
+                continue;
+            }
+            // Only the bookkeeping is needed for the list: read the head of the file.
+            let world_tick = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| serde_json::from_str::<SaveFile>(&t).ok())
+                .map_or(0, |f| f.world_tick);
+            let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            found.push((
+                modified,
+                SaveEntry {
+                    name: name.to_string(),
+                    world_tick,
+                },
+            ));
+        }
+        found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+        found.into_iter().map(|(_, e)| e).collect()
+    }
+
+    /// Open the load (or save) screen from the main menu or the pause menu.
+    fn open_saves(&mut self, saving: bool, from_pause: bool) {
+        let _ = self.ui_assets();
+        let strings: Vec<String> = self
+            .ui_assets
+            .as_ref()
+            .map(|a| a.strings.clone())
+            .unwrap_or_default();
+        let entries = self.list_saves();
+        let default_name = format!("save-{}", entries.len() + 1);
+        self.screen = Screen::Saves {
+            screen: SaveScreen::new(saving, entries, default_name, &strings),
+            from_pause,
+        };
+        self.frame = None;
+    }
+
+    /// Leave the load / save screen the way it was entered.
+    fn leave_saves(&mut self, from_pause: bool) {
+        if from_pause && self.world.is_some() {
+            self.open_pause();
+        } else {
+            self.open_menu();
+        }
+    }
+
+    /// Load a save from any screen (the menu has no world; the pause menu holds a paused one).
+    fn load_save_any(&mut self, name: &str) -> Result<(), RpcError> {
+        if self.recording.is_some() {
+            return Err(engine_err(
+                "a replay is being recorded; stop it before loading",
+            ));
+        }
+        let path = self.saves_dir().join(format!("{name}.json"));
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| engine_err(format!("save {}: {e}", path.display())))?;
+        if text.len() > limits::MAX_SAVE_BYTES {
+            return Err(engine_err("save file too large"));
+        }
+        let file: SaveFile = serde_json::from_str(&text)
+            .map_err(|e| engine_err(format!("save {}: {e}", path.display())))?;
+        if file.format != SAVE_FORMAT {
+            return Err(engine_err(format!(
+                "save format {} is not {SAVE_FORMAT}",
+                file.format
+            )));
+        }
+        self.notice = None;
+        self.restore_snapshot(&file.snapshot)
+    }
+
     /// Write the current world as a save file (`saves/<name>.json`): the snapshot envelope with the
     /// content identity, so a load checks the game data it was made from. Quick and auto saves are
     /// modern additions (the original saves through its menu); they never run while a screen is
@@ -774,6 +867,7 @@ impl Session {
                         let _ = self.ui_assets();
                         self.screen = Screen::Credits(Credits::new(crate::window::TICK_RATE));
                     }
+                    Some(MenuAction::Load) => self.open_saves(false, false),
                     Some(other) => eprintln!("opensherwood: menu action {other:?} not implemented"),
                     None => {}
                 }
@@ -793,6 +887,55 @@ impl Session {
                     // in the VM; the next page, if any, is shown by `sync_text_screen`.
                     let _ = pages;
                     self.dismiss_text();
+                }
+            }
+            Screen::Saves { screen, from_pause } => {
+                let from_pause = *from_pause;
+                let mut outcome = None;
+                for e in events {
+                    if let Some(o) = screen.handle(*e) {
+                        outcome = Some(o);
+                        break;
+                    }
+                }
+                self.frame = None;
+                match outcome {
+                    None => {}
+                    Some(SaveOutcome::Cancel) => self.leave_saves(from_pause),
+                    Some(SaveOutcome::Save(name)) => {
+                        // Saving happens from the pause menu: write the paused world, stay paused.
+                        self.screen = Screen::World;
+                        match self.write_save(&name) {
+                            Ok(_) => self.open_pause(),
+                            Err(e) => {
+                                eprintln!("opensherwood: save failed: {}", e.message);
+                                self.open_pause();
+                            }
+                        }
+                    }
+                    Some(SaveOutcome::Delete(name)) => {
+                        let path = self.saves_dir().join(format!("{name}.json"));
+                        if let Err(e) = std::fs::remove_file(&path) {
+                            eprintln!("opensherwood: delete {}: {e}", path.display());
+                        }
+                        self.open_saves(false, from_pause);
+                    }
+                    Some(SaveOutcome::Load(name)) => {
+                        // Loading replaces the world whatever screen we came from.
+                        let had_world = self.world.is_some();
+                        self.screen = Screen::World;
+                        match self.load_save_any(&name) {
+                            Ok(()) => {}
+                            Err(e) => {
+                                eprintln!("opensherwood: load failed: {}", e.message);
+                                if had_world && from_pause {
+                                    self.open_pause();
+                                } else {
+                                    self.open_menu();
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Screen::Debriefing(b) => {
@@ -831,6 +974,8 @@ impl Session {
                 self.frame = None;
                 match chosen {
                     Some(MenuAction::Continue) => self.screen = Screen::World,
+                    Some(MenuAction::Save) => self.open_saves(true, true),
+                    Some(MenuAction::Load) => self.open_saves(false, true),
                     Some(MenuAction::Restart) => {
                         if let Some((scenario, seed)) = self.current.clone()
                             && let Err(e) = self.reset(scenario, seed)
@@ -960,6 +1105,7 @@ impl Session {
                 st.screen = "debriefing".into();
                 Some(st)
             }
+            Screen::Saves { screen, .. } => Some(screen.state()),
             Screen::Credits(c) => Some(c.state()),
         }
     }
@@ -1209,6 +1355,7 @@ impl Session {
             Screen::Pause(_) => "pause",
             Screen::Debriefing(_) => "debriefing",
             Screen::Credits(_) => "credits",
+            Screen::Saves { .. } => "saves",
         };
         h.update(kind.as_bytes());
         h.update(b"\0");
@@ -1544,6 +1691,7 @@ impl Session {
                     menu.render(self.ui_assets.as_ref())
                 }
                 Screen::Credits(c) => c.render(self.ui_assets.as_ref()),
+                Screen::Saves { screen, .. } => screen.render(self.ui_assets.as_ref()),
                 Screen::Briefing(_) | Screen::Debriefing(_) | Screen::Pause(_) | Screen::World => {
                     let in_mission = matches!(
                         self.world.as_ref().map(|w| &w.scenario),
