@@ -193,6 +193,10 @@ pub struct Session {
     debriefings_lost: Vec<String>,
     /// The mission's end has been shown (the debriefing parchment leads to the next mission or the menu).
     ended: bool,
+    /// The level's mini-map picture, when the level has one.
+    minimap: Option<crate::ui::Minimap>,
+    /// The mini-map overlay is open (session presentation state; the world keeps running).
+    minimap_open: bool,
     /// The mission ended with a loss: the debriefing leads back to the menu, not onward.
     ended_lost: bool,
     /// Mission file that follows the current one in the campaign graph (`profile.cpf` level table:
@@ -202,6 +206,8 @@ pub struct Session {
     notice: Option<(String, u32)>,
     /// A HUD press whose release has not arrived yet (swallowed when it does).
     hud_press_pending: bool,
+    /// A right click closed the mini-map and its release is still to come.
+    minimap_right_pending: bool,
     /// Next rolling auto-save slot.
     autosave_slot: u32,
     /// Player settings (loaded from `settings.json` under the artifact directory).
@@ -362,10 +368,13 @@ impl Session {
             debriefings_won: Vec::new(),
             debriefings_lost: Vec::new(),
             ended: false,
+            minimap: None,
+            minimap_open: false,
             ended_lost: false,
             next_mission: None,
             notice: None,
             hud_press_pending: false,
+            minimap_right_pending: false,
             autosave_slot: 0,
             settings: Settings::default(),
             profiles: vec![ProfileSummary::default()],
@@ -417,6 +426,7 @@ impl Session {
         self.debriefings_won.clear();
         self.debriefings_lost.clear();
         self.ended = false;
+        self.minimap_open = false;
         self.ended_lost = false;
         self.next_mission = None;
         let Some(game) = self.game.as_ref() else {
@@ -1237,12 +1247,23 @@ impl Session {
         let mut out = Vec::with_capacity(events.len());
         // A swallowed press whose release arrives in a later tick is swallowed too.
         let mut swallow_up = self.hud_press_pending;
+        let mut swallow_right_up = self.minimap_right_pending;
         for e in events {
             match *e {
                 InputEvent::PointerMove { x256, y256 } => {
                     pointer = (Fixed::from_raw(x256).round(), Fixed::from_raw(y256).round());
                     out.push(*e);
                 }
+                // A right click closes the mini-map and goes no further (ui-flow.md 9.3).
+                InputEvent::PointerDown {
+                    button: opensherwood_core::Button::Right,
+                } if self.minimap_open => {
+                    self.minimap_open = false;
+                    swallow_right_up = true;
+                }
+                InputEvent::PointerUp {
+                    button: opensherwood_core::Button::Right,
+                } if swallow_right_up => swallow_right_up = false,
                 InputEvent::PointerDown {
                     button: opensherwood_core::Button::Left,
                 } => match crate::ui::hud_hit(pointer.0, pointer.1) {
@@ -1266,6 +1287,10 @@ impl Session {
                             key: Key::Letter('s'),
                         });
                     }
+                    Some(crate::ui::HudAction::Map) => {
+                        swallow_up = true;
+                        self.minimap_open = !self.minimap_open && self.minimap.is_some();
+                    }
                     Some(crate::ui::HudAction::Consumed) => swallow_up = true,
                     None => out.push(*e),
                 },
@@ -1275,6 +1300,7 @@ impl Session {
                 _ => out.push(*e),
             }
         }
+        self.minimap_right_pending = swallow_right_up;
         self.hud_press_pending = swallow_up;
         out
     }
@@ -1282,7 +1308,7 @@ impl Session {
     /// Screen state for `observe`.
     fn ui_state(&self) -> Option<opensherwood_protocol::UiState> {
         match &self.screen {
-            Screen::World => None,
+            Screen::World => self.minimap_open.then(crate::ui::minimap_state),
             Screen::Menu(m) => Some(m.state()),
             Screen::Briefing(b) => Some(b.state()),
             Screen::Pause(p) => Some(p.state()),
@@ -1800,15 +1826,46 @@ impl Session {
                 spec.lenient_natives = self.lenient_natives;
                 spec.starting_money = i32::try_from(self.profile().money).unwrap_or(0);
                 let mut world = World::new_mission(scenario, seed, &spec)?;
+                // Optional: a level without a mini-map picture has no overlay (logged).
+                let minimap = Self::load_minimap(game, &map, ambiance);
                 let catalog = self.load_catalog(&profiles)?;
                 if !catalog.sets.is_empty() {
                     world.attach_catalog(catalog, None, None);
                 }
+                self.minimap = minimap;
                 (world, Some(bg))
             }
-            Scenario::Synthetic(_) | Scenario::Menu(_) => (World::new(scenario, seed)?, None),
+            Scenario::Synthetic(_) | Scenario::Menu(_) => {
+                self.minimap = None;
+                (World::new(scenario, seed)?, None)
+            }
         };
         Ok(loaded)
+    }
+
+    /// The level's mini-map picture (`Data/Levels/<ambiance>/<map>.min`), `None` when missing or
+    /// unreadable (logged): the overlay is presentation, not a load requirement.
+    fn load_minimap(game: &GameDir, map: &str, ambiance: &str) -> Option<crate::ui::Minimap> {
+        let logical = format!("Data/Levels/{ambiance}/{map}.min");
+        let decode = || -> Result<crate::ui::Minimap, String> {
+            let data = game.read(&logical).map_err(|e| e.to_string())?;
+            let img =
+                opensherwood_formats::image_blob::parse_file(&data).map_err(|e| e.to_string())?;
+            // The picture is a parchment scroll whose corners hold the UI colour key.
+            let frame = crate::ui_assets::keyed_frame(&img).ok_or("undecodable picture")?;
+            Ok(crate::ui::Minimap {
+                width: frame.width,
+                height: frame.height,
+                rgba: frame.rgba,
+            })
+        };
+        match decode() {
+            Ok(m) => Some(m),
+            Err(e) => {
+                eprintln!("opensherwood: {logical}: {e}; no mini-map");
+                None
+            }
+        }
     }
 
     /// Make a freshly built world the session's world: the screen is the world, the session tick
@@ -1904,6 +1961,18 @@ impl Session {
                         crate::ui::draw_hud(&mut frame, a, &hud);
                         if let Some((text, _)) = &self.notice {
                             crate::ui::draw_notice(&mut frame, a, text);
+                        }
+                        if self.minimap_open
+                            && matches!(self.screen, Screen::World)
+                            && let Some(m) = self.minimap.as_ref()
+                        {
+                            crate::ui::draw_minimap(
+                                &mut frame,
+                                m,
+                                world.camera,
+                                crate::ui::MENU_FRAME,
+                                world.map_size,
+                            );
                         }
                     }
                     match &self.screen {

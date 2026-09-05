@@ -229,3 +229,24 @@ def test_select_player_new_profile_and_selection(binary, game_dir, tmp_path):
         assert doc["profiles"][1]["difficulty"] == 2
         # The menu now shows the selected profile: its name changes the frame.
         e.capture(path="menu_marian.png")
+
+
+def test_minimap_opens_from_the_map_scroll_and_closes_on_right_click(binary, game_dir, tmp_path):
+    """HUD element 2 (ui-flow.md 9.3): the map scroll opens the mini-map overlay, a right click
+    closes it; the world keeps running underneath (an overlay, not a screen)."""
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
+        e.reset({"mission": "H01_Lin_VL"}, seed=0)
+        e.skip_briefing()
+        e.step(2)
+        assert e.observe(entities=False).get("ui") is None
+        e.capture("closed.png")
+        e.step(1, pointer_click(970, 60, "left"))
+        obs = e.observe(entities=False)
+        assert obs["ui"]["screen"] == "minimap", obs.get("ui")
+        e.capture("open.png")
+        assert (tmp_path / "closed.png").read_bytes() != (tmp_path / "open.png").read_bytes()
+        t0 = obs["tick"]
+        e.step(5)
+        assert e.observe(entities=False)["tick"] == t0 + 5
+        e.step(1, pointer_click(500, 400, "right"))
+        assert e.observe(entities=False).get("ui") is None
