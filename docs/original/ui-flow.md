@@ -301,6 +301,25 @@ retail build should be able to show the win screen through `winner` (untested, s
 | 60 | BTTN | 74x60 | Robin's eyes in leaves (HUD top-right) |
 | 61 | BTTN | 61x52 | map scroll (HUD) |
 | 251 | BTTN | 74x53 | plan / minimap scroll (HUD bottom-right) |
+| 277 / 278 | BTTN | 44x46 | gold seals: folder = load, double chevron = restart (the lost page, `combat-measurements.md` 4) |
+| 281 / 282 | BTTN | 41x41 | blue V / red X seals, second size |
+| 6 / 57 | PICC | 32x32, 9 + 10 frames | rotating arrow rings, green and red (selection / attack lock-on, *inferred*) |
+| 9 | PICC | 30x27, 10 frames | "z" sleep marks (knocked-out sign, *inferred*) |
+| 32 | PICC | 34x33, 5 frames | blue butterflies (dazed, *inferred*) |
+| 68 / 69 | PICC | 32x20, 32x32 | clouds with lightning / rain (weather or mood signs, *unknown use*) |
+| 118 | PICC | 30x27, 50 frames | sparkle bursts (pickup / knock-out stars, *inferred*) |
+| 119 / 120 | PICC | 26x26, 10 frames each | dizzy spirals |
+| 121 | PICC | 26x26, 11 frames | sun frames, then a plain shield, a lion shield and a tower shield (faction marks) |
+| 122 | PICC | 26x26, 10 frames | small star fields |
+| 134 | PICC | 32x42, 3 frames | the "O!" page marker and two hourglass frames |
+| 250 | PICC | 21x28, 9 frames | small round portraits with a pointer below (map / plan markers) |
+| 279 | PICC | 30x40, 5 frames | hourglass counters 1, 2, 3 and empty (quick-action plan steps) |
+| 39-42 | BTTN | 1 frame each | the four town / castle miniatures of the campaign map |
+| 71-74 | BTTN | 1 frame each | campaign map buttons: purse, recruit, cart, tower -> shield (production / send) |
+| 113-115 | BTTN | 4 frames | horizontal name plates with a face at the left (the team roster rows) |
+
+The portrait's action icons (bow, fist, purse) are **not** among the `DEFAULT.RES` pictures of 16..128 px (all
+exported and viewed 2026-09-05); they are probably drawn from the sprite bank or a larger composite.
 | 1 | BTTN | 43x41 | small scroll icon |
 | 2 / 3 | BTTN | 43x45 / 43x62 | kneeling / standing figure (crouch, stand up) |
 | 4 / 5 | BTTN | 26x46 / 26x54 | towers (zoom) |
