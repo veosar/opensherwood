@@ -100,19 +100,41 @@ def record(prefix, secs, dt, h=None, t0=None):
 # the time) and integrates the relative deltas with its own gain, so the OS cursor is useless as
 # feedback; the game cursor sprite is located in a screenshot instead (OpenCV template matching).
 # Keep away from the screen edges: the cursor at an edge scrolls the camera.
-CURSOR_TEMPLATE = os.path.join(rhcap.CAPDIR, "_cursor_template.png")
-CURSOR_HOTSPOT = (2, 2)  # tip of the arrow inside the template
+# The pointer changes shape (arrow on free ground, a cross where the character cannot go, ...);
+# one template per shape, cropped from earlier screenshots (captures/original/, git-ignored), with
+# the hotspot of each shape inside its template. Add a shape by saving `_cursor_<name>_template.png`
+# and its hotspot here.
+CURSOR_TEMPLATES = {
+    "arrow": ("_cursor_template.png", (2, 2)),  # tip of the arrow
+    "cross": ("_cursor_cross_template.png", (16, 13)),  # centre of the cross
+}
+CURSOR_TEMPLATE = os.path.join(rhcap.CAPDIR, CURSOR_TEMPLATES["arrow"][0])
+CURSOR_HOTSPOT = CURSOR_TEMPLATES["arrow"][1]
+_TPL_CACHE = {}
 
 
 def find_cursor(img, template=None):
+    """Best match over all known pointer shapes: ((x, y) of the hotspot, score)."""
     import cv2
     import numpy as np
 
-    tpl = template if template is not None else cv2.imread(CURSOR_TEMPLATE)
     frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-    res = cv2.matchTemplate(frame, tpl, cv2.TM_CCOEFF_NORMED)
-    _, score, _, loc = cv2.minMaxLoc(res)
-    return (loc[0] + CURSOR_HOTSPOT[0], loc[1] + CURSOR_HOTSPOT[1]), float(score)
+    if template is not None:
+        shapes = [(template, CURSOR_HOTSPOT)]
+    else:
+        shapes = []
+        for name, (fn, hs) in CURSOR_TEMPLATES.items():
+            path = os.path.join(rhcap.CAPDIR, fn)
+            if name not in _TPL_CACHE and os.path.exists(path):
+                _TPL_CACHE[name] = cv2.imread(path)
+            if name in _TPL_CACHE:
+                shapes.append((_TPL_CACHE[name], hs))
+    best = ((0, 0), 0.0)
+    for tpl, hs in shapes:
+        _, score, _, loc = cv2.minMaxLoc(cv2.matchTemplate(frame, tpl, cv2.TM_CCOEFF_NORMED))
+        if score > best[1]:
+            best = ((loc[0] + hs[0], loc[1] + hs[1]), float(score))
+    return best
 
 
 def mmove(x, y, h=None, gain=0.6, tol=2, iters=16, verbose=False):

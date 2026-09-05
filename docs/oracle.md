@@ -39,5 +39,11 @@ quantised values until the time model is established.
 
 ## Tooling on the analyst machine
 
+Black-box capture without hooks: `harness/tools/original/rhcap.py` (launch, screenshots, keys),
+`oracle_input.py` (in-mission pointer control with screenshot feedback: the game reads relative mouse deltas
+and recentres the OS cursor, so the pointer sprite is located by template matching; several pointer shapes),
+`frame_rec.py` (timestamped grey-frame recordings, median-background sprite tracking, speed fits). First
+results: `docs/original/stealth-and-combat.md` section 8.
+
 Frida (Python `frida` 17), Ghidra 12 headless (`support/analyzeHeadless.bat`, JDK 21), cnc-ddraw windowed mode
 for screenshots. Run the game from a private copy, never from the store install.

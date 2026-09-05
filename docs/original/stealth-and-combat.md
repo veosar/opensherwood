@@ -350,7 +350,9 @@ advances with ticks 0 0 0 1 1 1. Two readings of the moving frames:
   200 / 200 (the red-clad swordsman) that could be percentages of a base speed (`unknown`).
 
 Reading A is the working hypothesis (the earlier "distance-timed" note in sprite-animations.md is B);
-section 7 item 1 measures it. Either way the *ratios* are data: hero : soldier walk = 2 : 1, run
+section 7 item 1 measures it. **Measured 2026-09-05 (section 8): the advance is pixels per displayed frame, a walking
+frame lasts 46.9 ms (hero walk 85.3 px/s), the crouched cycle runs slower than one frame per walking tick
+(17.8 px/s).** Either way the *ratios* are data: hero : soldier walk = 2 : 1, run
 = 5 : 3, alert walk : patrol walk = 3 : 2.
 
 ### 4.3 Orders (manual p. 15-16, 26; ui-flow.md 9.4)
@@ -514,6 +516,147 @@ below unless stated.
 
 Everything measured goes to `docs/oracle/` as normalised numbers (no frames committed); the fields
 above then move from `hypothesis` to `observed`.
+
+## 8. Oracle measurements (2026-09-05)
+
+Black-box observation of the running original (analyst session, ADR-0003: no disassembly, debugger or
+memory inspection; screen recordings of the private copy, nothing committed). Scene: the first mission
+(`H01_Lin_VL`) directly after the briefing, camera as the game places it (Robin's start is at client
+(500..513, 392..399) with the camera centred on him), profile resolution 1024x768, zoom normal. Every
+position is a client pixel of the game window (= a map pixel at this zoom, see 8.5); every time is the
+recorder's wall clock (`time.time()`, resolution about 1 ms; sampling at 30 Hz or about 70 Hz as noted).
+
+### 8.1 Walk speed (`observed`, confidence high)
+
+Method: Robin selected through his portrait, one left click on open mud at (180,580); full-frame
+recording at 30 Hz for 8 s (`frame_rec.py`, median-background blob tracking of the feet = bottom
+centre of the sprite's blob). Raw: click at t = 0.50 s; the feet stay at (511,392) until t = 1.45 s
+(turn in place and walk start), then move in a straight line to (174,589), reached at t = 6.2 s, then
+idle. Least-squares fit of the feet over t = 1.8..6.0 s (125 samples): vx = -73.2, vy = +43.8,
+**|v| = 85.3 px/s**, residual of x around the line 2.5 px rms. Autocorrelation of the blob's width
+over the same window: stride period **1.044 s** (peak 0.56); 22 frames x 4 px = 88 px per cycle at
+85.3 px/s gives 1.03 s, consistent. Uncertainty: +-1.5 px/s (fit), +-0.03 s (period).
+
+### 8.2 Crouched walk (`observed`, confidence high)
+
+Method: key `c` (crouch), then one left click at (180,580) from the start position; 30 Hz for 13 s.
+Raw: click at 0.50 s, feet from (496,405) at 1.10 s to (316,508) at 12.96 s (still moving when the
+recording ended). Fit over 1.2..12.9 s (348 samples): vx = -15.5, vy = +8.7, **|v| = 17.8 px/s**
+(residual 3.6 px rms); shape periodicity (height and width autocorrelation, peaks 0.66-0.70)
+**1.48-1.52 s per cycle**. 27 px per cycle (the sneak table's summed advances, 4.2) at 17.8 px/s is
+1.52 s per cycle, consistent. Ratio crouched : upright walk = **0.21** (the 4.2 hypothesis of
+1.5 / 4 = 0.375 is wrong: the sneak cycle is not played one frame per walking tick, see 8.4).
+
+### 8.3 Run (double-click) (`observed`, confidence medium: one second of clean motion)
+
+Method: from (174,589) a double left click (two clicks 120 ms apart) on (513,392), a cropped recording
+(x 140..560, y 320..610) at about 70 Hz. Raw: clicks at 0.50 s; the feet leave (181,595) at 1.08 s;
+feet (222,592) at 1.15 s, (249,586) at 1.40 s, (262,576) at 1.63 s, (278,566) at 1.78 s; from 1.9 s
+on other sprites (soldiers, see 8.6) enter the crop and the track is lost. Fit over 1.10..1.85 s
+(57 samples): **|v| = 101 px/s** (0.75..1.85 s including the start: 114 px/s). Predicted by 8.4 for
+the run cycle 7 (5 px per frame): 106.7 px/s; the 16-frame sprint 10 (7 px per frame) would give
+149 px/s. So the double-click gait is **run 7** (`inferred`, one short sample; the mix of accelerating
+start frames and the loss of the track after 0.8 s bound the value to about 95..115 px/s). Ratio
+run : walk about 1.2 (1.25 predicted).
+
+### 8.4 Animation clock (`inferred` from 8.1-8.3 and the idle guards, confidence medium-high)
+
+Idle courtyard lancers (two soldiers at feet (812,302) and (796,389), never moving in this scene): a
+cropped recording at about 70 Hz (mean sample interval 14.2 ms) for 6 s shows the picture of each
+soldier changing at a **uniform 93.75 ms** (16 changes per 1.500 s; the sequence of changed-pixel
+counts repeats exactly every 16 changes, so the cycle is 1.50 +- 0.01 s and no change is skipped).
+Robin's walk: 22 frames per 1.044 s = **47.5 ms per frame**, twice as fast, and 4 px per frame =
+85.3 px/s measured (4 x 64/3 = 85.33). The reading that fits all three numbers: an animation clock of
+about **64 Hz** where a walking / running frame lasts 3 clocks (46.9 ms) and an idle frame step 6
+clocks (93.75 ms); a 21.3 Hz clock with one walking frame per tick fits the walk equally and the idle
+step as two ticks per frame. What is settled: the sprite tables' advance values are pixels per
+displayed frame, and a displayed walking frame lasts 46.9 +- 1 ms - not 40 ms (25 Hz) and not
+16.7 ms (60 Hz). Speeds under this clock: hero walk 85.3, run 106.7, sprint 149.3 px/s; soldier walk
+42.7, run 64, alert walk 64, alert run 85.3 px/s (4.2 advances x 64/3; only the hero walk, crouch and
+run were measured). The crouched cycle (14 frames, 1.50 s) runs at the idle step rate (6-7 clocks per
+frame), not the walking one.
+
+Note on the idle: the spec's "6 frames ping-pong" for action 0 would give 10 changes per cycle, the
+lancers show 16 per 1.5 s; either these guards play a different standing action (rail wait state) or
+the table reading is off. Open.
+
+### 8.5 Screen versus map pixels (`observed`)
+
+Both walks were along the screen diagonal dx : dy = -1.67 : 1 (down-left) and the speed matched the
+per-frame advance exactly in screen pixels, so at the normal zoom **1 map px = 1 screen px** with no
+direction-dependent foreshortening of the advance. A purely horizontal or vertical walk was not
+recorded (the courtyard offers no 300 px straight line free of obstacles from the start position).
+
+### 8.6 Alert reaction to running (`observed`, qualitative)
+
+Walking the diagonal (513,392) -> (174,589) at 85 px/s, 290..450 px from the two courtyard lancers,
+provoked nothing in 8 s. The double-click run back along the same line (8.3) did: within 1.5 s of
+the first running frames soldiers were converging on Robin (sprites entering the recording crop from
+t = 1.9 s); at t = 8 s five soldiers (the two courtyard lancers, one from the gate, two more from the
+right) stood around him in melee (red circles, health bars, a damage number "10" over Robin, the
+portrait showing the crossed-swords combat state); Robin was dead about 40 s later ("mission lost"
+parchment with restart / load / OK seals at (333,556), (388,556), (512,556); the restart seal goes
+straight to the briefing). Robin was at least 330 px from the nearest lancer when the run started.
+Conclusion: a running player character is detected at **>= 330 px** by standing soldiers (sight or
+noise is not separated here; the lancers were not facing him, so noise is the likelier channel), which
+rules out `RUN_NOISE_RADIUS` = 150 together with `VIEW_RANGE` = 200 as the only detection channels.
+The reaction is not the "noticed / alarm" pause of section 2.4 followed by a walk: the soldiers ran to
+him at once and the whole courtyard joined (a mission-wide alarm, `inferred`).
+
+### 8.7 Not measured (and why)
+
+- View-cone geometry (Alt-hover, `PCSIGHT`), noise radius (`NOISE`), knock-out duration and punch
+  reach, alert timeout, guard patrol speed, bow and melee tables: the 60-minute budget went into
+  making the in-mission pointer controllable (see Provenance) and into the speeds; no soldier
+  patrolled in the start view during the session (all eight visible soldiers stood in rail wait
+  states), and the only alert run ended in Robin's death. The console (F11 with the kneel icon hovered)
+  was not opened.
+- Briefing: three parchment pages, each advanced by Enter; no timer observed.
+- Repeatability: each speed is one run; the walk start was seen twice (0.9-1.0 s from click to the
+  first moving frame in both directions).
+
+### 8.8 Numbers for the implementer
+
+| Quantity | Use | Status |
+|---|---|---|
+| hero walk | 85.3 px/s (4 px per 46.9 ms frame) | observed |
+| hero crouched walk | 17.8 px/s (27 px per 1.50 s cycle) | observed |
+| hero run (double-click) | 107 px/s predicted, 101 +- 10 measured; gait = action 7 | observed / inferred |
+| hero sprint (action 10) | 149 px/s | inferred (clock) |
+| soldier walk / run / alert walk / alert run | 42.7 / 64 / 64 / 85.3 px/s | inferred (clock) |
+| displayed frame of a walking cycle | 46.9 ms (about 2.8 engine ticks at 60 Hz; the table's "1 tick" = 3 clocks of 1/64 s) | inferred |
+| idle frame step | 93.75 ms | observed |
+| click -> first moving frame | 0.9-1.0 s (turn + walk-start animation) | observed (2 samples) |
+| running detected by standing soldiers | at >= 330 px; walking at 290 px not detected | observed |
+| `ALERT_TIMEOUT_TICKS`, `KNOCK_OUT_BASE_TICKS`, `PUNCH_REACH`, `VIEW_CONE_HALF_ANGLE_256` | unchanged hypotheses | not measured |
+
+### Provenance (section 8)
+
+- Game: GOG build, `Robin Hood.exe` SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`,
+  English, run from the private copy `C:\Users\przem\source\gamedata\robinhood_oracle` (cnc-ddraw
+  windowed 1024x768 at the screen origin, `maxfps=60`, `devmode=true`, `renderer=direct3d9on12`),
+  profile "Analyst", medium difficulty, 2026-09-05.
+- Tools (all generic, `harness/tools/original/`): `rhcap.py` (launch, PrintWindow screenshots,
+  scan-code keys), `oracle_input.py` (`mmove` / `mclick`: closed-loop in-mission pointer control with
+  screenshot feedback; now matches several pointer shapes - the arrow and the "cannot go" cross - from
+  templates cropped out of earlier screenshots, because the pointer changes shape over characters and
+  blocked ground and the earlier single template lost it), `frame_rec.py` (new: mss screen-DC recording
+  of grey frames with timestamps into one .npz, median-background blob tracking, per-region change
+  timelines, speed fits). Recordings and screenshots under `harness/captures/original/` and the session
+  scratch directory, not committed.
+- Input findings: the game reads relative mouse deltas (DirectInput style) and in a mission recentres
+  the OS cursor, so only screenshot-feedback control works; the pointer at a window edge scrolls the
+  camera (one stray move scrolled to the village outside the walls; a double click on the hero's
+  portrait at (125,690) brings the camera back and selects him). Windows reported Left Ctrl and Left
+  Shift as held during the whole session (`GetAsyncKeyState`), so no chords were used; single keys
+  (`c`, `s`, Enter, Escape) and clicks worked. The game stops rendering when it loses the foreground;
+  `rhcap.focus` (Alt tap + `SetForegroundWindow`) recovers it. A screen-DC recording taken while another
+  window covers the game records that window: check the foreground before recording.
+- Analysis: `frame_rec.py track` (largest blob in a region against the per-recording median; feet =
+  median x of the lowest 5 rows), `numpy.polyfit` for the speeds, autocorrelation of the blob's width /
+  height / pixel count for the stride period, `frame_rec.py changes` for the idle frame steps.
+- Who: analyst session (a Claude agent run separately from the implementer; no engine code written in
+  it).
 
 ## Provenance
 
