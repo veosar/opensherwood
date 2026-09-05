@@ -68,7 +68,7 @@ Milestones have exit criteria that the harness can verify. A milestone is done w
 - [x] Natives the first mission needs beyond stubs: scroll pick-up, action changes, perception and knock-out state, in-mission text popups and pages presented by the app; the rest are recorded stubs whose use taints the outcome (ADR-0008)
 - [ ] Object activation, rail point events, doors, animations, remarks as real natives
 - [x] Stimuli (sight cone, run noise), alarm states, knock-out; win / lose presentation (debriefing parchments, the lost page, campaign successor)
-- [x] Melee combat as measured on the original (health, energy, the soldier's hits, the powerful blow, death, the lost page through play)
+- [x] Melee combat as measured on the original, one-on-one (health, energy, the soldier's 5-hp hits, the powerful blow, death, the lost page through play); the occasional larger blow seen once in the measurements is not modelled, several attackers on one guard are a recorded assumption
 - [ ] Sight blocking by walls, the bow, the block and the other figures, soldiers attacking on their own, items
 - [ ] An input-only replay completes the tutorial (needs a canonical input for text dismissal)
 

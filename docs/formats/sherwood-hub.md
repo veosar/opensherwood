@@ -181,7 +181,8 @@ exact matches over counts 2 / 6 / 10 / 7 and 0 / 1 / 1 / 0); the order *between*
 observable here (only their sum places `SCOT`) and is fixed by `docs/original/h01-win-path.md` section 2 as
 `.. BOOM, ZORG, SKRO, TING, SCOT` (the file's chunk order; the corpus-wide scroll-state calls and the oracle
 agree), so in H01 the block 100..=110 is the `ZORG` items and 111..=125 the scrolls; the `ZORG` and `TING`
-entries are addressed by no class of their own (they are inert `Unmodelled` slots for the engine).
+entries are addressed by no class of their own (the engine models the `ZORG` entries as pick-up items,
+`Element::Item`, since ruleset 15, `rhm.md` "`ZORG`"; the `TING` entries stay inert `Unmodelled` slots).
 
 ### 4.4 The hub under the model
 
@@ -320,7 +321,7 @@ appears).
 
 ## 7. Provenance
 
-Observation only, 2026-09-05, on the GOG English data: `harness/tools/probe/rhm_inventory.py`,
+Observation only, 2026-09-05, by the analyst agent of the lead's session (integrated by the lead), on the GOG English data: `harness/tools/probe/rhm_inventory.py`,
 `opensherwood-tools rhm` / `rhp` / `scb`, `scb_elements.py`, `scb_semantics.py --natives / --pseudo`,
 `scb_load_natives.py`, `rhm_profiles.py`, `scb_xref.py`, the harness `Engine.reset` on the release binary, two
 scratch probes in the analyst scratchpad (`scot_place.py`: per-mission implied `K` under both `SCOT` placements,
