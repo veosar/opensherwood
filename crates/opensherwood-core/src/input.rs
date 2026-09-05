@@ -46,6 +46,8 @@ pub enum Key {
     Digit(u8),
     /// Function keys 1..12.
     Function(u8),
+    /// Backspace (text fields).
+    Backspace,
 }
 
 /// One input event in logical viewport coordinates (24.8 fixed point, `x256 = x * 256`).
@@ -143,6 +145,7 @@ pub fn encode_key(key: Key, out: &mut Vec<u8>) {
         Key::Down => out.push(9),
         Key::Left => out.push(10),
         Key::Right => out.push(11),
+        Key::Backspace => out.push(12),
         Key::Letter(c) => {
             out.push(32);
             out.extend_from_slice(&(c as u32).to_le_bytes());

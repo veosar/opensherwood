@@ -459,6 +459,7 @@ impl App {
 fn map_key(code: KeyCode) -> Option<Key> {
     Some(match code {
         KeyCode::Escape => Key::Escape,
+        KeyCode::Backspace => Key::Backspace,
         KeyCode::Space => Key::Space,
         KeyCode::ShiftLeft | KeyCode::ShiftRight => Key::Shift,
         KeyCode::ControlLeft | KeyCode::ControlRight => Key::Control,
