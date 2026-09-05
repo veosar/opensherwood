@@ -5,7 +5,13 @@ Date: 2026-09-02. Status: accepted.
 Versions in force (2026-09-05, Codex review 7): protocol 6 (`reset.starting_money` and `ReplayHeader.starting_money`: the mission's starting money is a canonical input recorded in the header, playback resets with it; `UiItem.selected`; `observe.persistence_error`; replay time is the session tick: header `time:
 "session"`, checkpoints carry `world_tick`, a `session` digest and the `frame` hash, the tick-0 and terminal
 checkpoints are required and compared; `ui` observation,
-`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 11
+`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 12
+(2026-09-05, Codex review 8: the taint is dependency-closed (every low-confidence opcode, policy native, effect
+stub, lenient unknown call and engine hypothesis records its `Assumption` when taken), queued `ActionChange`
+handlers run transactionally (rolled back when the budget cuts them short, a full queue is a fault), one
+simulation budget with a cursor per phase pays for perception, transitions, attack orders and program walks,
+the native call and its result read are one instruction; the canonical input gains `Key::Semicolon`, tag
+13 after Backspace); ruleset 11
 (2026-09-05, the oracle measurements of `docs/original/stealth-and-combat.md` 8: every entity moves at the speed of
 the cycle it plays, read from the profile's table on the measured animation clock (a frame lasts its tick half plus
 one table ticks of 3 clocks at 64 Hz; hero walk 85.3 px/s, run 106.7, sneak 18.0; the fallback ratios 5 / 4 and
@@ -32,7 +38,9 @@ text dismissals draw from what the tick left) and charging instructions, argumen
 zone / scroll scan or native 204 looks at, every polygon edge tested (zones, natives 97 / 204), sequence
 elements and every stage of the path searches the script issues (initialisation, expansions, unwinding,
 smoothing, conversion); programs must have balanced parameter / argument stacks; AI locking halts an NPC's
-walk, native 160 and camera centring are computed in `i64`), hash schema 13 (the entity `heard` flag under `actors`;
+walk, native 160 and camera centring are computed in `i64`), hash schema 14 (the four simulation cursors under
+`world`, the VM's `fault` and the new assumption tags under `scripts`, the fused native's result slot in the
+program digest; schema 13: the entity `heard` flag under `actors`;
 the animation `elapsed` bytes now count clock units; schema 12: the VM's `assumptions` under `scripts`,
 its `pending_action_changes` under `scheduler`, the `ai_cursor` under `world`; schema 11: entity `team`, `ai_state`, `state_ticks`,
 `action`, `hit_points`, `knockout_resistance`, `npc_gait`, `fell_backward`, `last_seen`, `alert_origin` and
@@ -40,7 +48,9 @@ its `pending_action_changes` under `scheduler`, the `ai_cursor` under `world`; s
 the `last_ground_click` under `world`; schema 9: `scripts` and `scheduler` parts carry the VM state including sequence tokens and the
 barrier wait; frames and stacks are no longer encoded because a snapshot must be quiescent; entity `active` /
 `ai_locked` flags under `actors`, the `script` RNG stream under `rng`; schema 9 adds the player's `money`
-(natives 236 / 237) and `mission_lost` (`CheckVictoryCondition` = 2) to `scripts`), snapshot schema 14 (entity
+(natives 236 / 237) and `mission_lost` (`CheckVictoryCondition` = 2) to `scripts`), snapshot schema 15 (the
+world's `cursors` replace `ai_cursor`, the VM's `fault` replaces `faulted`, `Instr::Native` carries `dst`,
+frames hold no native result; schema 14: entity
 `heard`, animation `elapsed` in clock units; schema 13: the VM's
 `assumptions` and `pending_action_changes`, the world's `ai_cursor`, mission specs' `starting_money` and
 `assumptions`; schema 12: the stealth

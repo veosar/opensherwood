@@ -37,13 +37,31 @@
 //! (`VmState::pending_action_changes`, snapshotted and hashed) and delivered to the class bound
 //! to the actor as `ActionChange(previous, new)` exactly once: a change whose class has no
 //! handler is dropped as undeliverable, one whose handler returned (or trapped) is removed, and
-//! one the budget cut short stays at the front of the queue for the next tick.
+//! one the budget cut short stays at the front of the queue for the next tick. A queued handler
+//! runs as a *transaction* ([`Transaction`]): the script-visible state it may mutate (the VM's
+//! variables, queues, money, RNG; the entities a native touches; the selection and the camera)
+//! is captured before it runs, charged to the budget one unit per value copied, and put back
+//! when the budget cuts the handler short, so the retry on the next tick starts the handler
+//! from the state it saw the first time and no effect is applied twice. A full queue is a
+//! deterministic fault ([`Fault::ActionQueueOverflow`]), never a silent drop.
 //!
-//! Hypotheses and taint (ADR-0008). The engine runs the retail scripts over stubs and over
-//! hypotheses about the original; whenever a script-visible value depends on one, the VM records
-//! an [`Assumption`] in `VmState::assumptions` (snapshotted, hashed, validated, exposed as
-//! `ScriptObservation::assumptions` / `tainted`). `mission_won` / `mission_lost` are still
-//! recorded, but an outcome reached with a non-empty set is documented as not authoritative.
+//! Hypotheses and taint (ADR-0008, "Hypotheses and taint"). The engine runs the retail scripts
+//! over stubs and over hypotheses about the original. The taint is *dependency-closed by
+//! construction*: every source of a hypothesis is named by an [`Assumption`] variant (the
+//! registry) and recorded at the point where the engine takes the hypothesis, whether or not
+//! the script reads a value there: an opcode of low-confidence meaning executed
+//! ([`Assumption::Opcode`], [`Assumption::UnresolvedJump`]), a native whose reading is a policy
+//! ([`Assumption::Policy`], `natives::NATIVE_TAINT`), a recorded stub invoked or its fabricated
+//! result consumed ([`Assumption::StubResult`]; only the presentation-only stubs of
+//! `natives::NATIVE_TAINT` record nothing on the call), a lenient unknown native
+//! ([`Assumption::UnknownNative`]), and the engine's own hypotheses (perception, the knock-out,
+//! the profile stats, the tick rate, the scroll pickup, the zone presence at load, a walk that
+//! completed without arriving, the `ActionChange` parameter order, the campaign graph, the
+//! lenient asset fallbacks). The set is snapshotted, hashed, validated and exposed as
+//! `ScriptObservation::assumptions` / `tainted`; it only grows (a rolled-back transaction keeps
+//! what it recorded). `mission_won` / `mission_lost` are still recorded, but an outcome reached
+//! with a non-empty set is not authoritative; one reached with an empty set depended on no
+//! hypothesis the engine knows of.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -148,15 +166,20 @@ pub enum BinOp {
     FixedMul,
     /// `0x25`: `a < b` (integers).
     Lt,
-    /// `0x26` and `0x24`: `a >= b`.
+    /// `0x26`: `a >= b` (medium).
     Ge,
+    /// `0x24`: `a >= b` by its Desperados name (**low**: the direction is not determinable
+    /// from the data); executing one records [`Assumption::Opcode`]`(0x24)`.
+    GeLow,
     /// `0x27`: `a > b`.
     Gt,
-    /// `0x28`: `a != b`.
+    /// `0x28`: `a != b` (**low**: `>=` is the alternative); executing one records
+    /// [`Assumption::Opcode`]`(0x28)`.
     Ne,
     /// `0x29`: `a == b` (integers or handles).
     Eq,
-    /// `0x2b`: `a < b` on fixed-point values.
+    /// `0x2b`: `a < b` on fixed-point values (**low**, one use); executing one records
+    /// [`Assumption::Opcode`]`(0x2b)`.
     FixedLt,
 }
 
@@ -175,6 +198,19 @@ impl BinOp {
             BinOp::Ne => 10,
             BinOp::Eq => 11,
             BinOp::FixedLt => 12,
+            BinOp::GeLow => 13,
+        }
+    }
+
+    /// The bytecode opcode this operator reads with **low** confidence, if any: the hypothesis
+    /// source [`Assumption::Opcode`] names (`docs/formats/scb.md`, "Opcode hypotheses").
+    #[must_use]
+    pub fn low_confidence_opcode(self) -> Option<u8> {
+        match self {
+            BinOp::GeLow => Some(0x24),
+            BinOp::Ne => Some(0x28),
+            BinOp::FixedLt => Some(0x2b),
+            _ => None,
         }
     }
 
@@ -187,7 +223,7 @@ impl BinOp {
             BinOp::And => a & b,
             BinOp::FixedMul => (Fixed::from_raw(a) * Fixed::from_raw(b)).raw(),
             BinOp::Lt => i32::from(a < b),
-            BinOp::Ge => i32::from(a >= b),
+            BinOp::Ge | BinOp::GeLow => i32::from(a >= b),
             BinOp::Gt => i32::from(a > b),
             BinOp::Ne => i32::from(a != b),
             BinOp::Eq => i32::from(a == b),
@@ -195,6 +231,12 @@ impl BinOp {
         }
     }
 }
+
+/// The bytecode opcodes whose reading is of low confidence and whose execution records
+/// [`Assumption::Opcode`]: `0x24` / `0x28` / `0x2b` ([`BinOp::low_confidence_opcode`]) and
+/// `0x14` (a float immediate rounded to 24.8 fixed point: the original computes in `f32`).
+/// A jump to `0xffff` (`0x0e`, two occurrences) is [`Assumption::UnresolvedJump`].
+pub const LOW_CONFIDENCE_OPCODES: [u8; 4] = [0x14, 0x24, 0x28, 0x2b];
 
 /// One instruction. The translator keeps one instruction per bytecode quad so that jump targets
 /// are the original quad indices.
@@ -212,6 +254,10 @@ pub enum Instr {
     },
     /// End of function (`0x04`) or return (`0x06`).
     Return,
+    /// A jump to the unresolved label `0xffff` (`0x0e`, two occurrences in the corpus): leaves
+    /// the function like [`Instr::Return`] (**low** confidence) and records
+    /// [`Assumption::UnresolvedJump`].
+    LeaveUnresolved,
     /// Set the return value of the current function (`0x07`).
     SetResult {
         /// Value.
@@ -246,17 +292,18 @@ pub enum Instr {
         /// Value.
         src: Slot,
     },
-    /// Call engine function `id` with `argc` pushed arguments (`0x0c`).
+    /// Call engine function `id` with `argc` pushed arguments (`0x0c`) and store its result in
+    /// `dst` when the bytecode reads one (`0x0d` directly after the call: the translator fuses
+    /// the two quads into this one instruction and leaves a [`Instr::Nop`] in the reader's
+    /// place, so there is no instruction that consumes a result its own call did not produce).
+    /// `Program::validate` refuses a `dst` on a native whose signature leaves no value.
     Native {
         /// Native id.
         id: u32,
         /// Arguments to pop.
         argc: u32,
-    },
-    /// Read the result of the preceding native call (`0x0d`).
-    GetNativeResult {
-        /// Destination.
-        dst: Slot,
+        /// Where the result goes, if the script reads it.
+        dst: Option<Slot>,
     },
     /// Unconditional jump (`0x0e`).
     Jump {
@@ -333,7 +380,7 @@ impl Instr {
             Instr::GetCallResult { .. } => 8,
             Instr::PushArg { .. } => 9,
             Instr::Native { .. } => 10,
-            Instr::GetNativeResult { .. } => 11,
+            Instr::LeaveUnresolved => 11,
             Instr::Jump { .. } => 12,
             Instr::JumpIf { .. } => 13,
             Instr::Move { .. } => 14,
@@ -496,9 +543,11 @@ impl Program {
     /// each starting with the `Enter` of its frame sizes, jumps inside their function, parameter
     /// reads and call arities against the function table, slot indices inside their blocks,
     /// native / call arities within [`MAX_STACK`], every native call of a known id with the
-    /// argument count of its signature and every native result read directly after a call
-    /// that leaves one (`natives::NATIVE_SIGNATURES`; an unknown id is unconstrained, it traps
-    /// or is recorded at run time), balanced parameter and argument stacks in every function
+    /// argument count of its signature and a result slot only on a native whose signature
+    /// leaves a value (`natives::NATIVE_SIGNATURES`; an unknown id is unconstrained, it traps
+    /// or is recorded at run time; the call and its result read are one instruction, so no
+    /// control flow can reach a result read without its call), balanced parameter and
+    /// argument stacks in every function
     /// ([`check_stack_balance`]), bindings inside the tables, and element and location
     /// coordinates within `+-MAX_LOCATION_COORD`. The translator performs the same checks
     /// earlier for diagnostics; this is the trust boundary (a snapshot embeds the program).
@@ -592,38 +641,12 @@ impl Program {
                 };
                 let target_ok = |t: u32| (f.address as usize..end).contains(&(t as usize));
                 let ok = match *ins {
-                    Instr::Nop | Instr::Return => true,
+                    Instr::Nop | Instr::Return | Instr::LeaveUnresolved => true,
                     Instr::Enter { locals, temps } => locals == f.locals && temps == f.temps,
                     Instr::SetResult { src }
                     | Instr::PushParam { src }
                     | Instr::PushArg { src } => slot_ok(src),
                     Instr::LoadParam { dst, index } => slot_ok(dst) && index < f.param_count,
-                    Instr::GetNativeResult { dst } => {
-                        let after =
-                            pc.checked_sub(1)
-                                .and_then(|p| c.code.get(p))
-                                .and_then(|prev| match *prev {
-                                    Instr::Native { id, .. } => Some(id),
-                                    _ => None,
-                                });
-                        match after {
-                            Some(id) => {
-                                if crate::natives::native_signature(id)
-                                    .is_some_and(|sig| !sig.has_result)
-                                {
-                                    return Err(format!(
-                                        "class {ci} instruction {pc} reads the result of native {id}, which has none"
-                                    ));
-                                }
-                            }
-                            None => {
-                                return Err(format!(
-                                    "class {ci} instruction {pc} reads a native result without a native call before it"
-                                ));
-                            }
-                        }
-                        slot_ok(dst)
-                    }
                     Instr::GetCallResult { dst }
                     | Instr::LoadInt { dst, .. }
                     | Instr::LoadFixed { dst, .. } => slot_ok(dst),
@@ -633,16 +656,21 @@ impl Program {
                                 .get(function as usize)
                                 .is_some_and(|callee| callee.param_count == argc)
                     }
-                    Instr::Native { id, argc } => {
-                        if let Some(sig) = crate::natives::native_signature(id)
-                            && sig.arity != argc
-                        {
-                            return Err(format!(
-                                "class {ci} instruction {pc} calls native {id} with {argc} arguments; its signature takes {}",
-                                sig.arity
-                            ));
+                    Instr::Native { id, argc, dst } => {
+                        if let Some(sig) = crate::natives::native_signature(id) {
+                            if sig.arity != argc {
+                                return Err(format!(
+                                    "class {ci} instruction {pc} calls native {id} with {argc} arguments; its signature takes {}",
+                                    sig.arity
+                                ));
+                            }
+                            if dst.is_some() && !sig.returns_value {
+                                return Err(format!(
+                                    "class {ci} instruction {pc} reads the result of native {id}, which has none"
+                                ));
+                            }
                         }
-                        argc as usize <= MAX_STACK
+                        argc as usize <= MAX_STACK && dst.is_none_or(slot_ok)
                     }
                     Instr::Jump { target } => target_ok(target),
                     Instr::JumpIf { cond, target } => slot_ok(cond) && target_ok(target),
@@ -808,7 +836,7 @@ fn check_stack_balance(code: &[Instr], start: usize, end: usize) -> Result<(), u
                 }
                 args -= argc;
             }
-            Instr::Return => {
+            Instr::Return | Instr::LeaveUnresolved => {
                 if (params, args) != (0, 0) {
                     return Err(pc);
                 }
@@ -843,7 +871,7 @@ fn encode_slot(e: &mut Encoder, s: Slot) {
 fn encode_instr(e: &mut Encoder, ins: &Instr) {
     e.u8(ins.tag());
     match *ins {
-        Instr::Nop | Instr::Return => {}
+        Instr::Nop | Instr::Return | Instr::LeaveUnresolved => {}
         Instr::Enter { locals, temps } => {
             e.u32(locals).u32(temps);
         }
@@ -857,9 +885,18 @@ fn encode_instr(e: &mut Encoder, ins: &Instr) {
         Instr::Call { function, argc } => {
             e.u32(function).u32(argc);
         }
-        Instr::GetCallResult { dst } | Instr::GetNativeResult { dst } => encode_slot(e, dst),
-        Instr::Native { id, argc } => {
+        Instr::GetCallResult { dst } => encode_slot(e, dst),
+        Instr::Native { id, argc, dst } => {
             e.u32(id).u32(argc);
+            match dst {
+                Some(d) => {
+                    e.u8(1);
+                    encode_slot(e, d);
+                }
+                None => {
+                    e.u8(0);
+                }
+            }
         }
         Instr::Jump { target } => {
             e.u32(target);
@@ -908,11 +945,6 @@ pub struct Frame {
     pub result: i32,
     /// Return value of the last call made from this frame.
     pub call_result: i32,
-    /// Result of the last native call made from this frame.
-    pub native_result: i32,
-    /// Id of the native that produced `native_result` (0 before any call).
-    #[serde(default)]
-    pub last_native: u32,
 }
 
 /// A queued `ProcessMessage` (natives 43 / 44 / 109 / 110), delivered on the next tick.
@@ -1069,14 +1101,34 @@ pub struct UnknownCall {
     pub args: Vec<i32>,
 }
 
-/// A hypothesis or a stub value a script-visible outcome depended on (module documentation,
-/// "Hypotheses and taint"; ADR-0008). Recorded once per kind in `VmState::assumptions`.
+/// The registry of hypothesis sources (module documentation, "Hypotheses and taint";
+/// ADR-0008): one variant per source, recorded in `VmState::assumptions` at the point where the
+/// engine takes the hypothesis (once per kind and id). The set is complete by construction:
+/// every place in the core that reads a low-confidence opcode, a policy native, a stub, a
+/// lenient unknown native or one of the engine's own hypotheses records its variant, so a VM
+/// whose set is empty took no hypothesis the engine knows of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Assumption {
-    /// The script consumed the result of a recorded stub (policy value or 0), or called one of
-    /// the never-win stubs (`natives::NEVER_WIN_STUBS`).
+    /// The script depended on the recorded stub `id`: an effectful stub was invoked (its
+    /// documented effect is not modelled; `natives::NATIVE_TAINT`, `Taint::Effect`) or a
+    /// stub's fabricated result (0 or a policy value) was consumed. The presentation-only
+    /// stubs (`Taint::Presentation`) record nothing on the call; reading their result, if any,
+    /// still records this.
     StubResult(u32),
+    /// The implemented native `id` was called, and the engine's reading of its row is a policy
+    /// rather than an observation (`natives::NATIVE_TAINT`, `Taint::Policy`: 98, 128, 140, 245
+    /// and the rest of the policy list).
+    Policy(u32),
+    /// An instruction of a low-confidence opcode was executed ([`LOW_CONFIDENCE_OPCODES`]:
+    /// `0x24` read as `>=`, `0x28` as `!=`, `0x2b` as a fixed-point `<`, `0x14` rounded to
+    /// 24.8).
+    Opcode(u8),
+    /// A jump to the unresolved label `0xffff` left its function ([`Instr::LeaveUnresolved`]).
+    UnresolvedJump,
+    /// An unknown native was called in lenient mode and answered with a fabricated 0
+    /// (`MissionSpec::lenient_natives`).
+    UnknownNative(u32),
     /// The stealth layer's perception hypotheses (the view cone's geometry and the noticed /
     /// alarm sequence a sighting starts) changed script-visible state: an alert action id of
     /// an actor alerted by sight reached an `ActionChange` handler. The noise channel (a
@@ -1092,6 +1144,19 @@ pub enum Assumption {
     /// tick reading of the scripts' time unit. The animation clock is measured (`anim.rs`);
     /// the scripts' unit is not, so the reading stays a hypothesis.
     TickRate,
+    /// `IsTaken` fired: the pickup radius ([`SCROLL_PICKUP_RADIUS`]) and the rule that a
+    /// non-zero result takes the scroll are hypotheses.
+    ScrollPickup,
+    /// A zone callback fired on the first scan for a character standing inside the zone at
+    /// load (presence starts empty: hypothesis).
+    ZoneAtLoad,
+    /// A sequence barrier was released by a walk that completed without arriving (the path
+    /// failed, the actor was ordered elsewhere, deactivated or died): the original presumably
+    /// waits for the arrival (`docs/formats/scb.md`, "Engine notes").
+    WalkCompletion,
+    /// An `ActionChange(previous, new)` was delivered: the parameter order is a hypothesis
+    /// (the actor classes compare the second parameter with 141).
+    ActionChangeOrder,
     /// The campaign graph hypothesis chose a successor mission (recorded by the app).
     CampaignGraph,
     /// A profile index or sprite fell back to a default under `OPENSHERWOOD_LENIENT_ASSETS`
@@ -1109,6 +1174,68 @@ impl Assumption {
             Assumption::TickRate => e.u8(5),
             Assumption::CampaignGraph => e.u8(6),
             Assumption::LenientAssets => e.u8(7),
+            Assumption::Policy(id) => e.u8(8).u32(id),
+            Assumption::Opcode(op) => e.u8(9).u8(op),
+            Assumption::UnresolvedJump => e.u8(10),
+            Assumption::UnknownNative(id) => e.u8(11).u32(id),
+            Assumption::ScrollPickup => e.u8(12),
+            Assumption::ZoneAtLoad => e.u8(13),
+            Assumption::WalkCompletion => e.u8(14),
+            Assumption::ActionChangeOrder => e.u8(15),
+        };
+    }
+
+    /// Whether a snapshot may carry this assumption: a `StubResult` names a stub, a `Policy` a
+    /// policy native, an `Opcode` a low-confidence opcode, an `UnknownNative` an id without a
+    /// row (and only in lenient mode).
+    fn well_formed(self, lenient: bool) -> Result<(), String> {
+        use crate::natives::{NativeStatus, Taint, native_status, native_taint};
+        match self {
+            Assumption::StubResult(id) if native_status(id) != NativeStatus::Stub => Err(format!(
+                "vm assumption names native {id}, which is not a stub"
+            )),
+            Assumption::Policy(id)
+                if !matches!(native_taint(id), Some(Taint::Policy | Taint::Branch)) =>
+            {
+                Err(format!(
+                    "vm assumption names native {id}, which is not a policy native"
+                ))
+            }
+            Assumption::Opcode(op) if !LOW_CONFIDENCE_OPCODES.contains(&op) => Err(format!(
+                "vm assumption names opcode {op:#04x}, which is not of low confidence"
+            )),
+            Assumption::UnknownNative(id) if native_status(id) != NativeStatus::Unknown => {
+                Err(format!("vm assumption names native {id}, which is known"))
+            }
+            Assumption::UnknownNative(_) if !lenient => {
+                Err("vm assumption names an unknown native without lenient mode".into())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Why the script is faulted (`VmState::fault`, sticky, hashed): a deterministic condition
+/// under which the engine stopped running the script as written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fault {
+    /// An unknown native was called in strict mode (the callback stopped there).
+    UnknownNative(u32),
+    /// A native was called with an argument count that differs from its signature (the
+    /// callback stopped there).
+    ArityMismatch(u32),
+    /// The action change queue was full when a change arrived: the exactly-once delivery can
+    /// no longer be honoured, so the script is faulted rather than the change dropped.
+    ActionQueueOverflow,
+}
+
+impl Fault {
+    fn encode(self, e: &mut Encoder) {
+        match self {
+            Fault::UnknownNative(id) => e.u8(1).u32(id),
+            Fault::ArityMismatch(id) => e.u8(2).u32(id),
+            Fault::ActionQueueOverflow => e.u8(3),
         };
     }
 }
@@ -1163,8 +1290,40 @@ pub struct Counters {
     pub out_of_action_true: u64,
     /// Native calls whose argument count differed from the signature (a trap), by id.
     pub arity_mismatches: BTreeMap<u32, u64>,
-    /// Action changes dropped because the queue was full.
-    pub action_changes_dropped: u64,
+    /// Queued callbacks rolled back because the budget cut them short (each is retried whole
+    /// on the next tick).
+    pub transactions_rolled_back: u64,
+}
+
+/// The script-visible state a queued callback may mutate, captured before it runs and put back
+/// when the budget cuts it short (module documentation, "Action changes"). The VM part is a
+/// copy of every mutable field but the program, the digest, the path table, the presence sets
+/// and the queue itself; the world part is the entities the callback's natives touched (captured
+/// lazily through [`World::vm_touch_entity`]), the selection and the camera. Never serialised:
+/// a snapshot is quiescent, no transaction is open between callbacks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transaction {
+    class_vars: Vec<Vec<i32>>,
+    mission_vars: Vec<i32>,
+    objectives: Vec<Objective>,
+    debriefing: Option<i32>,
+    messages: Vec<Message>,
+    sequences: Vec<Sequence>,
+    texts: Vec<TextRequest>,
+    next_text_id: u64,
+    camera_target: Option<(i32, i32)>,
+    money: i32,
+    patches: BTreeSet<i32>,
+    actions: BTreeMap<i32, i32>,
+    attributes: Vec<Attribute>,
+    states: BTreeMap<i32, i32>,
+    inactive_elements: BTreeSet<i32>,
+    unknown_calls: Vec<UnknownCall>,
+    rng: Rng,
+    /// Entities touched by the callback, by index, as they were before it ran.
+    entities: BTreeMap<usize, crate::world::Entity>,
+    selected: Option<crate::world::EntityId>,
+    camera: (i32, i32),
 }
 
 /// Run-time state of the VM (part of [`World`], of the snapshot and of the hash).
@@ -1223,8 +1382,10 @@ pub struct VmState {
     /// Lenient natives (`MissionSpec::lenient_natives`): an unknown native is a recorded no-op
     /// instead of a trap.
     pub lenient: bool,
-    /// An unknown native was called in strict mode: the callback was stopped (sticky).
-    pub faulted: bool,
+    /// The script is faulted (sticky): the first deterministic condition under which the engine
+    /// stopped running it as written ([`Fault`]); `None` while it runs as written.
+    #[serde(default)]
+    pub fault: Option<Fault>,
     /// Unknown native calls in lenient mode, in order, with their arguments (bounded).
     pub unknown_calls: Vec<UnknownCall>,
     /// The hypotheses and stub values the script-visible state depended on so far (module
@@ -1250,6 +1411,9 @@ pub struct VmState {
     /// Diagnostics (not serialised, not hashed).
     #[serde(skip)]
     pub counters: Counters,
+    /// The open transaction of a queued callback (only while one runs; never serialised).
+    #[serde(skip)]
+    pub transaction: Option<Transaction>,
 }
 
 impl VmState {
@@ -1287,7 +1451,7 @@ impl VmState {
             scroll_presence: BTreeSet::new(),
             paths,
             lenient,
-            faulted: false,
+            fault: None,
             unknown_calls: Vec::new(),
             assumptions: BTreeSet::new(),
             pending_action_changes: Vec::new(),
@@ -1297,7 +1461,97 @@ impl VmState {
             param_stack: Vec::new(),
             budget: WORK_BUDGET_PER_TICK,
             counters: Counters::default(),
+            transaction: None,
         }
+    }
+
+    /// The script is faulted (`fault` is set).
+    #[must_use]
+    pub fn faulted(&self) -> bool {
+        self.fault.is_some()
+    }
+
+    /// Mark the script faulted with `fault` unless it already is (the first fault is kept).
+    pub fn set_fault(&mut self, fault: Fault) {
+        if self.fault.is_none() {
+            self.fault = Some(fault);
+        }
+    }
+
+    /// Record a hypothesis source (module documentation, "Hypotheses and taint").
+    pub fn assume(&mut self, assumption: Assumption) {
+        self.assumptions.insert(assumption);
+    }
+
+    /// Capture the mutable VM part of a [`Transaction`], charging one work unit per value
+    /// copied first; `None` (nothing copied, the budget zero) when the copy does not fit.
+    fn capture(&mut self) -> Option<Transaction> {
+        let sequences: usize = self
+            .sequences
+            .iter()
+            .map(|s| 1 + s.elements.len() + s.tokens.len())
+            .sum();
+        let unknown: usize = self.unknown_calls.iter().map(|c| 1 + c.args.len()).sum();
+        let cost = self.class_vars.iter().map(Vec::len).sum::<usize>()
+            + self.mission_vars.len()
+            + self.objectives.len()
+            + self.messages.len()
+            + sequences
+            + self.texts.len()
+            + self.patches.len()
+            + self.actions.len()
+            + self.attributes.len()
+            + self.states.len()
+            + self.inactive_elements.len()
+            + unknown
+            + 8;
+        if !charge(self, cost as u64) {
+            return None;
+        }
+        Some(Transaction {
+            class_vars: self.class_vars.clone(),
+            mission_vars: self.mission_vars.clone(),
+            objectives: self.objectives.clone(),
+            debriefing: self.debriefing,
+            messages: self.messages.clone(),
+            sequences: self.sequences.clone(),
+            texts: self.texts.clone(),
+            next_text_id: self.next_text_id,
+            camera_target: self.camera_target,
+            money: self.money,
+            patches: self.patches.clone(),
+            actions: self.actions.clone(),
+            attributes: self.attributes.clone(),
+            states: self.states.clone(),
+            inactive_elements: self.inactive_elements.clone(),
+            unknown_calls: self.unknown_calls.clone(),
+            rng: self.rng.clone(),
+            entities: BTreeMap::new(),
+            selected: None,
+            camera: (0, 0),
+        })
+    }
+
+    /// Put the VM part of a transaction back (the assumptions recorded meanwhile stay: the
+    /// taint only grows).
+    fn roll_back(&mut self, t: &Transaction) {
+        self.class_vars.clone_from(&t.class_vars);
+        self.mission_vars.clone_from(&t.mission_vars);
+        self.objectives.clone_from(&t.objectives);
+        self.debriefing = t.debriefing;
+        self.messages.clone_from(&t.messages);
+        self.sequences.clone_from(&t.sequences);
+        self.texts.clone_from(&t.texts);
+        self.next_text_id = t.next_text_id;
+        self.camera_target = t.camera_target;
+        self.money = t.money;
+        self.patches.clone_from(&t.patches);
+        self.actions.clone_from(&t.actions);
+        self.attributes.clone_from(&t.attributes);
+        self.states.clone_from(&t.states);
+        self.inactive_elements.clone_from(&t.inactive_elements);
+        self.unknown_calls.clone_from(&t.unknown_calls);
+        self.rng = t.rng.clone();
     }
 
     /// Check every invariant a snapshot must satisfy (`program_count` is the number of rail
@@ -1454,13 +1708,10 @@ impl VmState {
             return Err("vm assumption set too large".into());
         }
         for a in &self.assumptions {
-            if let Assumption::StubResult(id) = a
-                && crate::natives::native_status(*id) != crate::natives::NativeStatus::Stub
-            {
-                return Err(format!(
-                    "vm assumption names native {id}, which is not a stub"
-                ));
-            }
+            a.well_formed(self.lenient)?;
+        }
+        if self.transaction.is_some() {
+            return Err("vm snapshot is not quiescent (a transaction is open)".into());
         }
         if self.pending_action_changes.len() > MAX_QUEUE {
             return Err("vm action change queue too long".into());
@@ -1475,8 +1726,9 @@ impl VmState {
         self.rng.validate()
     }
 
-    /// Whether any script-visible outcome depended on a hypothesis or a stub value: a won or
-    /// lost mission of a tainted VM is not authoritative (ADR-0008).
+    /// Whether the script executed over any hypothesis source of the registry ([`Assumption`]):
+    /// a won or lost mission of a tainted VM is not authoritative (ADR-0008). The set is
+    /// complete by construction, so `false` means no known hypothesis was taken.
     #[must_use]
     pub fn tainted(&self) -> bool {
         !self.assumptions.is_empty()
@@ -1533,7 +1785,16 @@ impl VmState {
                 None => e.u8(0),
             };
         }
-        e.u8(u8::from(self.lenient)).u8(u8::from(self.faulted));
+        e.u8(u8::from(self.lenient));
+        match self.fault {
+            Some(f) => {
+                e.u8(1);
+                f.encode(e);
+            }
+            None => {
+                e.u8(0);
+            }
+        }
         e.u32(self.unknown_calls.len() as u32);
         for c in &self.unknown_calls {
             e.u32(c.id).u32(c.args.len() as u32);
@@ -1906,7 +2167,7 @@ impl World {
             sequence_active: !vm.sequences.is_empty(),
             camera_target: vm.camera_target,
             debriefing: vm.debriefing,
-            faulted: vm.faulted,
+            faulted: vm.faulted(),
             lenient: vm.lenient,
             unknown_calls: vm.unknown_calls.len(),
             actor_elements: (0..self.entities.len() as u32)
@@ -1956,7 +2217,8 @@ impl World {
     /// Queue an action change of the actor of `class`: `(previous, new)` sprite action ids
     /// (`crate::ai::action_id`; the parameter order is a hypothesis, `docs/formats/scb.md`).
     /// `World::simulate` queues every change it detects, then calls
-    /// [`World::vm_deliver_action_changes`]; a full queue drops the change (counted).
+    /// [`World::vm_deliver_action_changes`]; a full queue faults the script
+    /// ([`Fault::ActionQueueOverflow`]): the change is not delivered and the fault is sticky.
     pub(crate) fn vm_queue_action_change(&mut self, class: u32, previous: i32, new: i32) {
         if let Some(vm) = self.vm.as_mut() {
             if vm.pending_action_changes.len() < MAX_QUEUE {
@@ -1966,16 +2228,18 @@ impl World {
                     new,
                 });
             } else {
-                inc(&mut vm.counters.action_changes_dropped);
+                vm.set_fault(Fault::ActionQueueOverflow);
             }
         }
     }
 
     /// Deliver the queued action changes in order within what the tick's budget has left, each
     /// exactly once: a change whose class has no `ActionChange` is dropped as undeliverable,
-    /// one whose handler returned or trapped is removed, and one the budget cut short stays at
-    /// the front for the next tick (`vm_tick` delivers the leftovers before `Hourglass`). An
-    /// alert or knock-out action reaching a handler records the corresponding assumption.
+    /// one whose handler returned or trapped is removed, and one the budget cut short is rolled
+    /// back ([`Transaction`]) and stays at the front for the next tick (`vm_tick` delivers the
+    /// leftovers before `Hourglass`), where the handler runs again from the start over the
+    /// state it saw the first time. An alert or knock-out action reaching a handler records
+    /// the corresponding assumption; every delivery records the parameter-order hypothesis.
     pub(crate) fn vm_deliver_action_changes(&mut self) {
         let mut done = 0usize;
         loop {
@@ -2010,22 +2274,77 @@ impl World {
                     }
                 })
                 .unwrap_or(false);
+            // Open the transaction (the capture is charged; when it does not fit the delivery
+            // waits for the next tick like an exhausted handler).
+            let captured = self.vm.as_mut().and_then(VmState::capture);
+            let Some(mut txn) = captured else {
+                if let Some(vm) = self.vm.as_mut() {
+                    inc(&mut vm.counters.budget_aborts);
+                }
+                break;
+            };
+            txn.selected = self.selected;
+            txn.camera = self.camera;
             if let Some(vm) = self.vm.as_mut() {
+                vm.transaction = Some(txn);
                 let ids = [change.previous, change.new];
                 if !heard && ids.iter().any(|&a| ALERT_ACTIONS.contains(&(a as u32))) {
-                    vm.assumptions.insert(Assumption::Perception);
+                    vm.assume(Assumption::Perception);
                 }
                 if ids.iter().any(|&a| KNOCK_OUT_ACTIONS.contains(&(a as u32))) {
-                    vm.assumptions.insert(Assumption::KnockOut);
+                    vm.assume(Assumption::KnockOut);
                 }
+                vm.assume(Assumption::ActionChangeOrder);
             }
             match self.vm_invoke(change.class, function, &[change.previous, change.new]) {
-                CallOutcome::Exhausted => break,
-                CallOutcome::Returned(_) | CallOutcome::Aborted => done += 1,
+                CallOutcome::Exhausted => {
+                    self.vm_roll_back();
+                    break;
+                }
+                CallOutcome::Returned(_) | CallOutcome::Aborted => {
+                    if let Some(vm) = self.vm.as_mut() {
+                        vm.transaction = None;
+                    }
+                    done += 1;
+                }
             }
         }
         if let Some(vm) = self.vm.as_mut() {
             vm.pending_action_changes.drain(..done);
+        }
+    }
+
+    /// Put the open transaction back: the VM's mutable state, the entities the callback
+    /// touched, the selection and the camera (counted in `transactions_rolled_back`).
+    fn vm_roll_back(&mut self) {
+        let Some(vm) = self.vm.as_mut() else {
+            return;
+        };
+        let Some(t) = vm.transaction.take() else {
+            return;
+        };
+        vm.roll_back(&t);
+        inc(&mut vm.counters.transactions_rolled_back);
+        for (i, e) in t.entities {
+            if let Some(slot) = self.entities.get_mut(i) {
+                *slot = e;
+            }
+        }
+        self.selected = t.selected;
+        self.camera = t.camera;
+    }
+
+    /// A native is about to mutate entity `i`: when a transaction is open, keep a copy of the
+    /// entity as it is now so the change can be rolled back. Every native that writes an entity
+    /// calls this first (`natives.rs`, `vm_walk`, `vm_teleport`).
+    pub(crate) fn vm_touch_entity(&mut self, i: usize) {
+        let Some(e) = self.entities.get(i) else {
+            return;
+        };
+        if let Some(t) = self.vm.as_mut().and_then(|vm| vm.transaction.as_mut())
+            && !t.entities.contains_key(&i)
+        {
+            t.entities.insert(i, e.clone());
         }
     }
 
@@ -2193,6 +2512,7 @@ impl World {
                 inc(&mut vm.counters.budget_aborts);
             }
         }
+        let at_load = self.tick == 0;
         for (class, entity, inside) in events {
             if self.vm_out_of_work() {
                 return;
@@ -2204,6 +2524,11 @@ impl World {
             if let Some(vm) = self.vm.as_mut() {
                 if inside {
                     vm.zone_presence.insert((class, entity));
+                    if at_load {
+                        // Presence starts empty: a character inside at load enters on the
+                        // first scan (hypothesis).
+                        vm.assume(Assumption::ZoneAtLoad);
+                    }
                 } else {
                     vm.zone_presence.remove(&(class, entity));
                 }
@@ -2276,6 +2601,10 @@ impl World {
             if !near {
                 continue;
             }
+            // The pickup radius and the take-on-non-zero rule are hypotheses.
+            if let Some(vm) = self.vm.as_mut() {
+                vm.assume(Assumption::ScrollPickup);
+            }
             let taken = matches!(self.vm_is_taken(class, actor), Some(v) if v != 0);
             if taken && let Some(vm) = self.vm.as_mut() {
                 vm.inactive_elements.insert(handle);
@@ -2302,6 +2631,20 @@ impl World {
             } else {
                 i += 1;
             }
+        }
+    }
+
+    /// Whether a walk token completed for a reason other than the arrival (the failure cases
+    /// of [`SeqToken::Walk`]: hypothesis).
+    fn walk_completed_without_arrival(&self, token: SeqToken) -> bool {
+        match token {
+            SeqToken::Walk { entity, x, y } => {
+                let Some(e) = self.entities.get(entity as usize) else {
+                    return true;
+                };
+                !e.alive || !e.active || (e.x.round(), e.y.round()) != (x, y)
+            }
+            SeqToken::Animation { .. } => false,
         }
     }
 
@@ -2349,12 +2692,22 @@ impl World {
                 }
                 SeqWait::Ticks(_) | SeqWait::None => {}
             }
+            // A barrier released by a walk that did not arrive rests on the completion
+            // hypothesis (`SeqToken::Walk`).
+            let walk_without_arrival = seq.wait == SeqWait::Barrier
+                && seq
+                    .tokens
+                    .iter()
+                    .any(|&t| self.walk_completed_without_arrival(t));
             let el = {
                 let Some(vm) = self.vm.as_mut() else {
                     return true;
                 };
                 if !charge(vm, 1) {
                     return false;
+                }
+                if walk_without_arrival {
+                    vm.assume(Assumption::WalkCompletion);
                 }
                 let Some(seq) = vm.sequences.get_mut(i) else {
                     return true;
@@ -2512,6 +2865,12 @@ impl World {
                         return CallOutcome::Returned(v);
                     }
                 }
+                Instr::LeaveUnresolved => {
+                    vm.assume(Assumption::UnresolvedJump);
+                    if let Some(v) = pop_frame(vm) {
+                        return CallOutcome::Returned(v);
+                    }
+                }
                 Instr::SetResult { src } => {
                     let v = read(vm, src);
                     if let Some(f) = vm.frames.last_mut() {
@@ -2563,7 +2922,7 @@ impl World {
                     }
                     advance(vm);
                 }
-                Instr::Native { id, argc } => {
+                Instr::Native { id, argc, dst } => {
                     let args = pop_n(&mut vm.arg_stack, argc as usize, &mut vm.counters);
                     advance(vm);
                     let Some(r) = self.native_call(id, &args) else {
@@ -2575,23 +2934,14 @@ impl World {
                         }
                         return CallOutcome::Aborted;
                     };
-                    if let Some(f) = self.vm.as_mut().and_then(|vm| vm.frames.last_mut()) {
-                        f.native_result = r;
-                        f.last_native = id;
+                    if let (Some(dst), Some(vm)) = (dst, self.vm.as_mut()) {
+                        // A stub's value (0 or a policy value) consumed by the script taints
+                        // the outcome (a presentation-only stub included).
+                        if crate::natives::native_status(id) == crate::natives::NativeStatus::Stub {
+                            vm.assume(Assumption::StubResult(id));
+                        }
+                        write(vm, dst, r);
                     }
-                }
-                Instr::GetNativeResult { dst } => {
-                    let (v, id) = vm
-                        .frames
-                        .last()
-                        .map_or((0, 0), |f| (f.native_result, f.last_native));
-                    // A stub's value (0 or a policy value) consumed by the script taints the
-                    // outcome.
-                    if crate::natives::native_status(id) == crate::natives::NativeStatus::Stub {
-                        vm.assumptions.insert(Assumption::StubResult(id));
-                    }
-                    write(vm, dst, v);
-                    advance(vm);
                 }
                 Instr::Jump { target } => jump(vm, target),
                 Instr::JumpIf { cond, target } => {
@@ -2611,6 +2961,8 @@ impl World {
                     advance(vm);
                 }
                 Instr::LoadFixed { dst, value } => {
+                    // The original computes in `f32`; the 24.8 rounding is the engine's.
+                    vm.assume(Assumption::Opcode(0x14));
                     write(vm, dst, value.raw());
                     advance(vm);
                 }
@@ -2625,6 +2977,9 @@ impl World {
                     advance(vm);
                 }
                 Instr::Binary { op, dst, a, b } => {
+                    if let Some(opcode) = op.low_confidence_opcode() {
+                        vm.assume(Assumption::Opcode(opcode));
+                    }
                     let v = op.apply(read(vm, a), read(vm, b));
                     write(vm, dst, v);
                     advance(vm);
@@ -2692,8 +3047,6 @@ fn push_frame(vm: &mut VmState, class: u32, function: u32, params: Vec<i32>) -> 
         params,
         result: 0,
         call_result: 0,
-        native_result: 0,
-        last_native: 0,
     });
     true
 }
@@ -2915,10 +3268,8 @@ pub(crate) mod tests {
         v.push(Instr::Native {
             id,
             argc: args.len() as u32,
+            dst: result,
         });
-        if let Some(dst) = result {
-            v.push(Instr::GetNativeResult { dst });
-        }
         v
     }
 
@@ -2984,7 +3335,11 @@ pub(crate) mod tests {
             },
             Instr::PushArg { src: tv(0) },
             Instr::PushArg { src: cv(0) },
-            Instr::Native { id: 1, argc: 2 },
+            Instr::Native {
+                id: 1,
+                argc: 2,
+                dst: None,
+            },
         ];
         let mut victory = native(2, &[5], Some(tv(0)), 0);
         victory.push(Instr::LoadInt {
@@ -3123,10 +3478,17 @@ pub(crate) mod tests {
         post.extend(native(32, &[], None, 0));
         post.extend(native(211, &[], Some(tv(0)), 0));
         post.push(Instr::PushArg { src: tv(0) });
-        post.push(Instr::Native { id: 95, argc: 1 });
-        post.push(Instr::GetNativeResult { dst: tv(1) });
+        post.push(Instr::Native {
+            id: 95,
+            argc: 1,
+            dst: Some(tv(1)),
+        });
         post.push(Instr::PushArg { src: tv(1) });
-        post.push(Instr::Native { id: 34, argc: 1 });
+        post.push(Instr::Native {
+            id: 34,
+            argc: 1,
+            dst: None,
+        });
         post.extend(native(31, &[], None, 0));
         let level = class("StartUp", 0, &[("PostInitialize", 0, false, 0, 4, post)]);
         let mut w = mission_world(0, Some(program(vec![level], 0)));
@@ -3307,7 +3669,7 @@ pub(crate) mod tests {
         );
         assert_eq!(vm.class_vars[0][8], 0, "re-activated");
         assert_eq!(vm.counters.unknown_natives.get(&999), Some(&1));
-        assert!(!vm.faulted && vm.lenient);
+        assert!(!vm.faulted() && vm.lenient);
         assert_eq!(
             vm.unknown_calls,
             vec![UnknownCall {
@@ -3362,7 +3724,7 @@ pub(crate) mod tests {
         );
         let mut w = mission_world(0, Some(program(vec![level], 0)));
         let vm = w.vm.as_ref().unwrap();
-        assert!(vm.faulted && !vm.lenient);
+        assert!(vm.faulted() && !vm.lenient);
         assert_eq!(vm.class_vars[0], vec![1, 0, 0]);
         assert_eq!(vm.counters.traps, 1);
         assert_eq!(vm.counters.unknown_natives.get(&999), Some(&1));
@@ -3967,6 +4329,7 @@ pub(crate) mod tests {
                 p.classes[0].code[1] = Instr::Native {
                     id: 999,
                     argc: MAX_STACK as u32 + 1,
+                    dst: None,
                 }
             },
             "instruction 1 out of range",
@@ -4016,8 +4379,6 @@ pub(crate) mod tests {
                     params: vec![],
                     result: 0,
                     call_result: 0,
-                    native_result: 0,
-                    last_native: 0,
                 });
             },
             "quiescent",
@@ -4337,12 +4698,12 @@ pub(crate) mod tests {
         w.step(&[]);
         let vm = w.vm.as_ref().unwrap();
         assert_eq!(vm.class_vars[0], vec![1, 1]);
-        // 15 units of dispatch (12 instructions, 3 arguments), the edges for native 97, one per
+        // 13 units of dispatch (10 instructions, 3 arguments), the edges for native 97, one per
         // entity (hero and three guards) plus the edges of the one player character for 204.
         let used = WORK_BUDGET_PER_TICK - vm.budget;
-        assert_eq!(used, 15 + edges + (4 + edges));
-        // Too little for native 97: nothing is scanned, the result is 0 and the callback aborts
-        // at its next instruction with the budget at zero.
+        assert_eq!(used, 13 + edges + (4 + edges));
+        // Too little for native 97: nothing is scanned, its result is 0 (stored by the fused
+        // call) and the callback aborts at its next instruction with the budget at zero.
         let aborts = vm.counters.budget_aborts;
         let vm = w.vm.as_mut().unwrap();
         vm.class_vars[0] = vec![5, 5];
@@ -4353,19 +4714,19 @@ pub(crate) mod tests {
         );
         let vm = w.vm.as_ref().unwrap();
         assert_eq!(vm.budget, 0);
-        assert_eq!(vm.class_vars[0], vec![5, 5], "nothing stored");
+        assert_eq!(vm.class_vars[0], vec![0, 5], "97 answered 0, 204 never ran");
         assert!(vm.counters.budget_aborts > aborts);
         assert_quiescent(&w);
         // Enough for native 97 and the dispatch up to 204, not for 204's first entity.
         let vm = w.vm.as_mut().unwrap();
         vm.class_vars[0] = vec![5, 5];
-        vm.budget = 8 + edges + 5;
+        vm.budget = 7 + edges + 5;
         assert_eq!(
             w.vm_callback(0, callbacks::HOURGLASS, &[1]),
             Some(CallOutcome::Exhausted)
         );
         let vm = w.vm.as_ref().unwrap();
-        assert_eq!(vm.class_vars[0], vec![1, 5]);
+        assert_eq!(vm.class_vars[0], vec![1, 0]);
         assert_eq!(vm.budget, 0);
         assert_quiescent(&w);
         assert_round_trips(&w);
@@ -4398,13 +4759,21 @@ pub(crate) mod tests {
             value: 5,
         });
         init.extend([Instr::PushArg { src: tv(0) }; 3]);
-        init.push(Instr::Native { id: 999, argc: 1 });
-        init.push(Instr::Native { id: 86, argc: 2 });
+        init.push(Instr::Native {
+            id: 999,
+            argc: 1,
+            dst: None,
+        });
+        init.push(Instr::Native {
+            id: 86,
+            argc: 2,
+            dst: None,
+        });
         init.extend(native(31, &[], None, 0));
         let level = class("StartUp", 0, &[("Initialize", 0, false, 0, 1, init)]);
         let w = mission_world(0, Some(program(vec![level], 0)));
         let vm = w.vm.as_ref().unwrap();
-        assert!(vm.faulted);
+        assert!(vm.faulted());
         assert_eq!(vm.counters.traps, 1);
         assert!(
             vm.sequences.is_empty(),
@@ -4430,8 +4799,11 @@ pub(crate) mod tests {
                 function: 1,
                 argc: 1,
             },
-            Instr::Native { id: 3, argc: 1 },
-            Instr::GetNativeResult { dst: cv(0) },
+            Instr::Native {
+                id: 3,
+                argc: 1,
+                dst: Some(cv(0)),
+            },
         ];
         let inner = vec![
             Instr::LoadParam {
@@ -4538,7 +4910,7 @@ pub(crate) mod tests {
         let w = mission_world(2, Some(program(vec![level], 2)));
         let vm = w.vm.as_ref().unwrap();
         assert!(
-            !vm.faulted && vm.counters.traps == 0 && vm.counters.faults == 0,
+            !vm.faulted() && vm.counters.traps == 0 && vm.counters.faults == 0,
             "{:?}",
             vm.counters
         );
@@ -4751,7 +5123,7 @@ pub(crate) mod tests {
         let w = mission_world(0, Some(program(vec![level, scroll], 0)));
         let vm = w.vm.as_ref().unwrap();
         assert_eq!(vm.class_vars[1], vec![1, 1]);
-        assert!(!vm.faulted);
+        assert!(!vm.faulted());
     }
 
     /// Natives 93 / 94 / 133: sixteen directions on the 256-unit facing, direction 0 = facing 0
@@ -4768,7 +5140,7 @@ pub(crate) mod tests {
         let level = class("StartUp", 4, &[("Initialize", 0, false, 0, 4, init)]);
         let w = mission_world(2, Some(program(vec![level], 2)));
         let vm = w.vm.as_ref().unwrap();
-        assert!(!vm.faulted);
+        assert!(!vm.faulted());
         assert_eq!(vm.class_vars[0], vec![5, 12, 0, 15]);
         assert_eq!(w.entities[1].facing256, 80);
         assert_eq!(
@@ -4798,7 +5170,11 @@ pub(crate) mod tests {
             b: tv(1),
         });
         hourglass.push(Instr::PushArg { src: tv(2) });
-        hourglass.push(Instr::Native { id: 237, argc: 1 });
+        hourglass.push(Instr::Native {
+            id: 237,
+            argc: 1,
+            dst: None,
+        });
         let level = class(
             "StartUp",
             1,
@@ -4875,9 +5251,9 @@ pub(crate) mod tests {
     }
 
     /// The taint model (ADR-0008, "Hypotheses and taint"): a stub's result consumed by the
-    /// script, a never-win stub called, a wait executed and the `Hourglass` time read each
-    /// record an assumption; the set is observable, hashed, snapshotted and validated, and a
-    /// won mission stays recorded but tainted.
+    /// script, an effect stub called (read or not), a wait executed and the `Hourglass` time
+    /// read each record an assumption; the set is observable, hashed, snapshotted and
+    /// validated, and a won mission stays recorded but tainted.
     #[test]
     fn stub_results_and_hypotheses_taint_the_outcome() {
         // Initialize: n235(3) (result ignored); cv0 = n221(1); n178(3); cv1 = n253(27);
@@ -4914,22 +5290,25 @@ pub(crate) mod tests {
         );
         let mut w = mission_world(1, Some(program(vec![level], 1)));
         let vm = w.vm.as_ref().unwrap();
-        assert!(!vm.faulted && vm.counters.traps == 0);
+        assert!(!vm.faulted() && vm.counters.traps == 0);
         assert_eq!(vm.class_vars[0], vec![0, 1, 0]);
-        // After load: 221 and 253 were consumed, 178 is a never-win stub, 235 and 20 were not
-        // consumed; the wait of PostInitialize ran at load under the tick-rate reading.
+        // After load: every stub called is recorded, read or not (20, 178 and 235 are effect
+        // stubs whose result, if any, was not consumed; 221 and 253 were consumed); the wait
+        // of PostInitialize ran at load under the tick-rate reading.
         assert_eq!(
             vm.assumptions.iter().copied().collect::<Vec<_>>(),
             vec![
+                Assumption::StubResult(20),
                 Assumption::StubResult(178),
                 Assumption::StubResult(221),
+                Assumption::StubResult(235),
                 Assumption::StubResult(253),
                 Assumption::TickRate
             ]
         );
         let obs = w.script_observation().unwrap();
         assert!(obs.tainted);
-        assert_eq!(obs.assumptions.len(), 4);
+        assert_eq!(obs.assumptions.len(), 6);
         w.step(&[]);
         let vm = w.vm.as_ref().unwrap();
         assert!(vm.mission_won && vm.tainted(), "won, but not authoritative");
@@ -4946,7 +5325,7 @@ pub(crate) mod tests {
         assert_ne!(v.hashes().get("scripts"), h.get("scripts"));
         let json = serde_json::to_string(&w.snapshot(None)).unwrap();
         assert!(
-            json.contains("\"assumptions\":[{\"stub_result\":178},"),
+            json.contains("\"assumptions\":[{\"stub_result\":20},{\"stub_result\":178},"),
             "{json}"
         );
         assert!(json.contains("\"tick_rate\""));
@@ -5004,9 +5383,13 @@ pub(crate) mod tests {
             )
         };
         with(native(237, &[5], None, 0)).validate().unwrap();
-        let err = with(vec![Instr::Native { id: 237, argc: 0 }])
-            .validate()
-            .unwrap_err();
+        let err = with(vec![Instr::Native {
+            id: 237,
+            argc: 0,
+            dst: None,
+        }])
+        .validate()
+        .unwrap_err();
         assert!(
             err.contains("native 237") && err.contains("takes 1"),
             "{err}"
@@ -5020,10 +5403,11 @@ pub(crate) mod tests {
             .unwrap_err();
         assert!(err.contains("237") && err.contains("has none"), "{err}");
         with(native(236, &[], Some(cv(0)), 0)).validate().unwrap();
-        let err = with(vec![Instr::GetNativeResult { dst: cv(0) }])
+        // The result slot is checked like any slot.
+        let err = with(native(236, &[], Some(cv(7)), 0))
             .validate()
             .unwrap_err();
-        assert!(err.contains("without a native call"), "{err}");
+        assert!(err.contains("out of range"), "{err}");
         // Unknown ids carry no signature: any count passes validation (they trap or are
         // recorded at run time).
         with(native(999, &[1, 2, 3], Some(cv(0)), 0))
@@ -5036,7 +5420,7 @@ pub(crate) mod tests {
         assert_eq!(w.native_call(237, &[1, 2]), None);
         let vm = w.vm.as_ref().unwrap();
         assert_eq!(vm.money, 5, "the missing argument did not default to 0");
-        assert!(vm.faulted);
+        assert!(vm.faulted());
         assert_eq!(vm.counters.arity_mismatches.get(&237), Some(&2));
         assert_eq!(w.native_call(237, &[7]), Some(0));
         assert_eq!(w.vm.as_ref().unwrap().money, 7);
@@ -5044,7 +5428,11 @@ pub(crate) mod tests {
         let mut w = mission_world(0, None);
         w.vm = Some(VmState::new(
             with(vec![
-                Instr::Native { id: 237, argc: 0 },
+                Instr::Native {
+                    id: 237,
+                    argc: 0,
+                    dst: None,
+                },
                 Instr::LoadInt {
                     dst: cv(0),
                     value: 1,
@@ -5181,5 +5569,734 @@ pub(crate) mod tests {
         assert!(vm.pending_action_changes.is_empty());
         assert!(vm.assumptions.is_empty());
         w.validate().unwrap();
+    }
+    /// A level whose `Initialize` is `init` and whose `CheckVictoryCondition` returns 1 at
+    /// once: the win depends on whatever `init` executed.
+    fn win_after(init: Vec<Instr>, guards: usize, lenient: bool) -> World {
+        let victory = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::SetResult { src: tv(0) },
+        ];
+        let level = class(
+            "StartUp",
+            2,
+            &[
+                ("Initialize", 0, false, 0, 4, init),
+                ("CheckVictoryCondition", 0, true, 0, 4, victory),
+            ],
+        );
+        mission_world_with(guards, Some(program(vec![level], guards as u32)), lenient)
+    }
+
+    /// The taint survives a JSON snapshot restored into a fresh world (same hashes, same
+    /// observation) and a snapshot taken after the win.
+    fn assert_taint_round_trips(w: &World, expected: &[Assumption]) {
+        let obs = w.script_observation().unwrap();
+        assert_eq!(obs.assumptions, expected);
+        assert_eq!(obs.tainted, !expected.is_empty());
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
+        let snap: crate::world::Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = mission_world(0, None);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.hashes(), w.hashes());
+        assert_eq!(w2.script_observation().unwrap().assumptions, expected);
+    }
+
+    /// Finding 1 of Codex review 8: every source of the registry taints a win that branches
+    /// on it, on the point where the hypothesis is taken (the call, the instruction), whether
+    /// or not a value is read; a program over observed natives and presentation stubs only
+    /// wins untainted.
+    #[test]
+    fn every_hypothesis_source_taints_a_win_that_depends_on_it() {
+        let binary = |op: BinOp| {
+            vec![
+                Instr::LoadInt {
+                    dst: tv(0),
+                    value: 3,
+                },
+                Instr::LoadInt {
+                    dst: tv(1),
+                    value: 2,
+                },
+                Instr::Binary {
+                    op,
+                    dst: cv(0),
+                    a: tv(0),
+                    b: tv(1),
+                },
+            ]
+        };
+        let cases: Vec<(&str, Vec<Instr>, bool, Vec<Assumption>)> = vec![
+            (
+                "0x24",
+                binary(BinOp::GeLow),
+                false,
+                vec![Assumption::Opcode(0x24)],
+            ),
+            (
+                "0x28",
+                binary(BinOp::Ne),
+                false,
+                vec![Assumption::Opcode(0x28)],
+            ),
+            (
+                "0x2b",
+                binary(BinOp::FixedLt),
+                false,
+                vec![Assumption::Opcode(0x2b)],
+            ),
+            ("0x26 is medium", binary(BinOp::Ge), false, vec![]),
+            (
+                "0x14",
+                vec![Instr::LoadFixed {
+                    dst: cv(0),
+                    value: Fixed::from_int(1),
+                }],
+                false,
+                vec![Assumption::Opcode(0x14)],
+            ),
+            (
+                "0xffff",
+                vec![Instr::LeaveUnresolved],
+                false,
+                vec![Assumption::UnresolvedJump],
+            ),
+            (
+                "policy 128",
+                native(128, &[0], Some(cv(0)), 0),
+                false,
+                vec![Assumption::Policy(128)],
+            ),
+            (
+                "policy 98",
+                native(98, &[0, -1], Some(cv(0)), 0),
+                false,
+                vec![Assumption::Policy(98)],
+            ),
+            (
+                "policy 140",
+                native(140, &[1, 1], None, 0),
+                false,
+                vec![Assumption::Policy(140)],
+            ),
+            (
+                "policy 245",
+                native(245, &[], Some(cv(0)), 0),
+                false,
+                vec![Assumption::Policy(245)],
+            ),
+            (
+                "policy 161",
+                native(161, &[10], Some(cv(0)), 0),
+                false,
+                vec![Assumption::Policy(161)],
+            ),
+            (
+                "lenient unknown",
+                native(999, &[1], Some(cv(0)), 0),
+                true,
+                vec![Assumption::UnknownNative(999)],
+            ),
+            (
+                "effect stub without a result",
+                native(186, &[4, 1], None, 0),
+                false,
+                vec![Assumption::StubResult(186)],
+            ),
+            (
+                "effect stub collected in a sequence",
+                {
+                    let mut v = native(30, &[], None, 0);
+                    v.extend(native(49, &[1, 5], None, 0));
+                    v.extend(native(31, &[], None, 0));
+                    v
+                },
+                false,
+                vec![Assumption::StubResult(49)],
+            ),
+            (
+                "stub result consumed",
+                native(221, &[1], Some(cv(0)), 0),
+                false,
+                vec![Assumption::StubResult(221)],
+            ),
+            (
+                "presentation stubs",
+                {
+                    let mut v = native(149, &[3], None, 0);
+                    v.extend(native(243, &[1], None, 0));
+                    v.extend(native(69, &[1, 61], None, 0));
+                    v
+                },
+                false,
+                vec![],
+            ),
+            (
+                "branch 240 on a non-actor element",
+                native(240, &[2], Some(cv(0)), 0),
+                false,
+                vec![Assumption::Policy(240)],
+            ),
+            (
+                "branch 240 on an actor",
+                native(240, &[1], Some(cv(0)), 0),
+                false,
+                vec![],
+            ),
+            (
+                "211 with a single player character",
+                native(211, &[], Some(cv(0)), 0),
+                false,
+                vec![],
+            ),
+            (
+                "56 outside a sequence",
+                native(56, &[10], None, 0),
+                false,
+                vec![Assumption::TickRate],
+            ),
+            (
+                "observed natives only",
+                {
+                    let mut v = native(1, &[3, 4], None, 0);
+                    v.extend(native(2, &[3], Some(cv(0)), 0));
+                    v.extend(native(113, &[1], None, 0));
+                    v.extend(native(160, &[0, 0], Some(cv(1)), 0));
+                    v
+                },
+                false,
+                vec![],
+            ),
+        ];
+        for (name, init, lenient, expected) in cases {
+            let mut w = win_after(init, 1, lenient);
+            let vm = w.vm.as_ref().unwrap();
+            assert!(!vm.faulted(), "{name}");
+            assert_eq!(
+                vm.assumptions.iter().copied().collect::<Vec<_>>(),
+                expected,
+                "{name}: after load"
+            );
+            w.step(&[]);
+            let vm = w.vm.as_ref().unwrap();
+            assert!(vm.mission_won, "{name}");
+            assert_eq!(vm.tainted(), !expected.is_empty(), "{name}");
+            assert_taint_round_trips(&w, &expected);
+        }
+        // Which player character is the main one is a policy only with several of them.
+        let init = native(211, &[], Some(cv(0)), 0);
+        let mut spec = two_heroes_spec();
+        let level = class("StartUp", 1, &[("Initialize", 0, false, 0, 4, init)]);
+        spec.script = Some(Program {
+            classes: vec![level],
+            elements: vec![Element::Actor(0), Element::Actor(1)],
+            locations: vec![Location::Point { x: 200, y: 200 }],
+            wait_scale: (2, 1),
+        });
+        let w = World::new_mission(Scenario::Mission("T".into()), 9, &spec).unwrap();
+        assert_taint_round_trips(&w, &[Assumption::Policy(211)]);
+        // Malformed assumptions are refused by `validate`.
+        let mut w = win_after(vec![], 0, false);
+        w.step(&[]);
+        let h = w.hashes();
+        for (bad, needle) in [
+            (Assumption::Policy(3), "not a policy"),
+            (Assumption::Policy(999), "not a policy"),
+            (Assumption::StubResult(3), "not a stub"),
+            (Assumption::Opcode(0x19), "not of low confidence"),
+            (Assumption::UnknownNative(3), "which is known"),
+            (Assumption::UnknownNative(999), "without lenient"),
+        ] {
+            let mut snap = w.snapshot(None);
+            snap.world.vm.as_mut().unwrap().assumptions.insert(bad);
+            let err = w.restore(&snap).unwrap_err();
+            assert!(err.contains(needle), "{bad:?}: {err}");
+        }
+        assert_eq!(w.hashes(), h);
+    }
+
+    /// A mission with two player characters at (100, 100) and (150, 100).
+    fn two_heroes_spec() -> MissionSpec {
+        let hero = |x: i32| ActorSpec {
+            profile: "RobinHood".into(),
+            team: Team::Player,
+            x,
+            y: 100,
+            facing256: 0,
+            patrol: vec![],
+            program: vec![],
+            active: true,
+            hit_points: 100,
+            knockout_resistance: 0,
+        };
+        MissionSpec {
+            map: MapInfo {
+                width: 1000,
+                height: 800,
+            },
+            geometry: Geometry {
+                boundary: vec![(0, 0), (1000, 0), (1000, 800), (0, 800)],
+                obstacles: vec![],
+                areas: Vec::new(),
+            },
+            actors: vec![hero(100), hero(150)],
+            script: None,
+            rails: Vec::new(),
+            lenient_natives: false,
+            starting_money: 0,
+            assumptions: BTreeSet::new(),
+        }
+    }
+
+    /// The engine's own hypotheses record their source when they change script-visible
+    /// state: a scroll pickup, a zone entered by a character standing inside at load, a
+    /// barrier released by a walk that did not arrive, and (in
+    /// `action_changes_reach_the_actors_class`) the `ActionChange` parameter order.
+    #[test]
+    fn engine_hypotheses_record_their_source() {
+        // Scroll pickup: the hero stands on the scroll (element 1 without guards).
+        let taken = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::SetResult { src: tv(0) },
+        ];
+        let level = class("StartUp", 0, &[]);
+        let mut scroll = class("Scroll", 0, &[("IsTaken", 1, true, 0, 4, taken)]);
+        scroll.element = Some(1);
+        let mut w = mission_world(0, Some(program(vec![level, scroll], 0)));
+        w.entities[0].x = Fixed::from_int(700);
+        w.entities[0].y = Fixed::from_int(700);
+        w.step(&[]);
+        assert_taint_round_trips(&w, &[Assumption::ScrollPickup]);
+        // A zone entered on the first scan by a character standing inside at load; the same
+        // zone entered later records nothing of the kind.
+        let level = class("StartUp", 0, &[]);
+        let mut zone = class("Zone", 1, &[("EnterZone", 1, false, 0, 4, vec![])]);
+        zone.zone = Some(1);
+        let inside = |x: i32| {
+            let mut w = mission_world(0, Some(program(vec![level.clone(), zone.clone()], 0)));
+            w.entities[0].x = Fixed::from_int(x);
+            w.entities[0].y = Fixed::from_int(500);
+            w
+        };
+        let mut w = inside(500);
+        w.step(&[]);
+        assert!(w.vm.as_ref().unwrap().zone_presence.contains(&(1, 0)));
+        assert_taint_round_trips(&w, &[Assumption::ZoneAtLoad]);
+        let mut w = inside(100);
+        for _ in 0..3 {
+            w.step(&[]);
+        }
+        w.entities[0].x = Fixed::from_int(500);
+        w.step(&[]);
+        assert!(w.vm.as_ref().unwrap().zone_presence.contains(&(1, 0)));
+        assert_taint_round_trips(&w, &[]);
+        // A walk in a sequence: the guard is deactivated on tick 1, the barrier releases on
+        // the completion hypothesis and the text after it appears.
+        let mut post = native(30, &[], None, 0);
+        post.extend(native(45, &[1, 0, 0], None, 0));
+        post.extend(native(32, &[], None, 0));
+        post.extend(native(203, &[5], None, 0));
+        post.extend(native(31, &[], None, 0));
+        let hourglass = vec![
+            Instr::LoadParam {
+                dst: tv(0),
+                index: 0,
+            },
+            Instr::LoadInt {
+                dst: tv(1),
+                value: 1,
+            },
+            Instr::Binary {
+                op: BinOp::Eq,
+                dst: tv(2),
+                a: tv(0),
+                b: tv(1),
+            },
+            Instr::JumpIf {
+                cond: tv(2),
+                target: 6,
+            },
+            Instr::Return,
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::PushArg { src: tv(0) },
+            Instr::Native {
+                id: 113,
+                argc: 1,
+                dst: None,
+            },
+        ];
+        // Hourglass first: its jump target is an index of its own code.
+        let level = class(
+            "StartUp",
+            0,
+            &[
+                ("Hourglass", 1, false, 0, 4, hourglass),
+                ("PostInitialize", 0, false, 0, 4, post.clone()),
+            ],
+        );
+        let mut w = mission_world(1, Some(program(vec![level], 1)));
+        // The hero stands far away: nothing but the script moves the guard.
+        w.entities[0].x = Fixed::from_int(900);
+        w.entities[0].y = Fixed::from_int(700);
+        assert!(w.entities[1].target.is_some(), "the walk started at load");
+        for _ in 0..3 {
+            w.step(&[]);
+        }
+        let vm = w.vm.as_ref().unwrap();
+        assert!(!w.entities[1].active);
+        assert_eq!(vm.pending_texts(), vec![5], "the barrier released");
+        assert!(vm.assumptions.contains(&Assumption::WalkCompletion));
+        assert!(vm.assumptions.contains(&Assumption::TickRate), "Hourglass");
+        w.validate().unwrap();
+        // The same walk left to arrive records no completion hypothesis.
+        let level = class("StartUp", 0, &[("PostInitialize", 0, false, 0, 4, post)]);
+        let mut w = mission_world(1, Some(program(vec![level], 1)));
+        w.entities[0].x = Fixed::from_int(900);
+        w.entities[0].y = Fixed::from_int(700);
+        let mut ticks = 0;
+        while w.vm.as_ref().unwrap().pending_texts().is_empty() {
+            w.step(&[]);
+            ticks += 1;
+            assert!(ticks < 1000, "never arrived");
+        }
+        assert_eq!(
+            (w.entities[1].x.round(), w.entities[1].y.round()),
+            (200, 200)
+        );
+        assert!(
+            !w.vm
+                .as_ref()
+                .unwrap()
+                .assumptions
+                .contains(&Assumption::WalkCompletion)
+        );
+    }
+
+    /// The guard classes and world of the transaction tests: `guards` soldiers in the hero's
+    /// sight (the hero at (420, 300), the guards at (300 + 100 i, 300) facing +x), each with
+    /// an `ActionChange` handler `body` on 3 class variables.
+    fn noticing_world(level: Class, body: &[Instr], guards: usize) -> World {
+        let mut classes = vec![level];
+        for g in 0..guards {
+            let mut guard = class(
+                &format!("Guard{g}"),
+                3,
+                &[("ActionChange", 2, false, 0, 4, body.to_vec())],
+            );
+            guard.element = Some(1 + g as u32);
+            classes.push(guard);
+        }
+        let mut w = mission_world(guards, Some(program(classes, guards as u32)));
+        w.entities[0].x = Fixed::from_int(420);
+        w.entities[0].y = Fixed::from_int(300);
+        w
+    }
+
+    /// Finding 3 of Codex review 8: a queued handler the budget cuts short is rolled back
+    /// (class variables, money, mission variables, the entity a native moved) and retried
+    /// whole on the next tick, so no effect is applied twice; the rollback is deterministic
+    /// across a snapshot.
+    #[test]
+    fn a_queued_handler_cut_short_is_rolled_back_and_retried_whole() {
+        // ActionChange: cv2 += 1; n237(77); n96(hero, location 0); n1(3, 9); spin.
+        let mut body = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::Binary {
+                op: BinOp::Add,
+                dst: cv(2),
+                a: cv(2),
+                b: tv(0),
+            },
+        ];
+        body.extend(native(237, &[77], None, 0));
+        body.extend(native(96, &[0, 0], None, 0));
+        body.extend(native(1, &[3, 9], None, 0));
+        let spin = 1 + body.len() as u32;
+        body.push(Instr::Jump { target: spin });
+        let level = class("StartUp", 0, &[]);
+        let mut w = noticing_world(level, &body, 1);
+        let unchanged = |w: &World, tick: u64| {
+            let vm = w.vm.as_ref().unwrap();
+            assert_eq!(
+                vm.class_vars[1][2], 0,
+                "tick {tick}: the increment was rolled back"
+            );
+            assert_eq!(vm.money, 0, "tick {tick}: the money was rolled back");
+            assert_eq!(vm.mission_vars[3], 0, "tick {tick}");
+            assert_eq!(
+                (w.entities[0].x.round(), w.entities[0].y.round()),
+                (420, 300),
+                "tick {tick}: the teleport was rolled back"
+            );
+            assert_eq!(
+                vm.pending_action_changes.len(),
+                1,
+                "tick {tick}: retried whole"
+            );
+            assert!(vm.transaction.is_none());
+        };
+        w.step(&[]);
+        assert_eq!(w.entities[1].ai_state, crate::ai::AiState::Noticed);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.counters.transactions_rolled_back, 1);
+        assert_eq!(vm.budget, 0);
+        assert!(vm.assumptions.contains(&Assumption::ActionChangeOrder));
+        unchanged(&w, 0);
+        w.validate().unwrap();
+        let snap = w.snapshot(None);
+        for t in 1..5 {
+            w.step(&[]);
+            unchanged(&w, t);
+            assert_eq!(
+                w.vm.as_ref().unwrap().counters.transactions_rolled_back,
+                1 + t
+            );
+        }
+        // Deterministic from the snapshot.
+        let mut w2 = mission_world(0, None);
+        w2.restore(&snap).unwrap();
+        for _ in 1..5 {
+            w2.step(&[]);
+        }
+        assert_eq!(w2.hashes(), w.hashes());
+        assert_quiescent(&w);
+    }
+
+    /// A backlog held back by spinning message handlers survives a snapshot taken in the
+    /// middle of it: after the restore both worlds deliver every change exactly once, on the
+    /// same tick, with the same hashes.
+    #[test]
+    fn a_backlog_of_action_changes_restores_mid_way_and_delivers_once() {
+        // Level: Initialize sends message 1 to the hero (the level handles it);
+        // ProcessMessage: while cv0 < 3 { cv0 += 1; resend; spin }.
+        let init = native(43, &[0, 1], None, 0);
+        let mut handler = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 3,
+            },
+            Instr::Binary {
+                op: BinOp::Lt,
+                dst: tv(1),
+                a: cv(0),
+                b: tv(0),
+            },
+            Instr::JumpIf {
+                cond: tv(1),
+                target: 5,
+            },
+            Instr::Return,
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::Binary {
+                op: BinOp::Add,
+                dst: cv(0),
+                a: cv(0),
+                b: tv(0),
+            },
+        ];
+        handler.extend(native(43, &[0, 1], None, 0));
+        let spin = 1 + handler.len() as u32;
+        handler.push(Instr::Jump { target: spin });
+        // The handler comes first in the table so that its jump targets are its own indices.
+        let level = class(
+            "StartUp",
+            1,
+            &[
+                ("ProcessMessage", 3, false, 0, 4, handler),
+                ("Initialize", 0, false, 0, 4, init),
+            ],
+        );
+        // Guards: ActionChange: cv0 += 1.
+        let body = vec![
+            Instr::LoadInt {
+                dst: tv(0),
+                value: 1,
+            },
+            Instr::Binary {
+                op: BinOp::Add,
+                dst: cv(0),
+                a: cv(0),
+                b: tv(0),
+            },
+        ];
+        let mut w = noticing_world(level, &body, 2);
+        // Ticks 0 and 1: the message spins the budget away, both guards notice on tick 0 and
+        // their changes wait.
+        w.step(&[]);
+        w.step(&[]);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.class_vars[0][0], 2);
+        assert_eq!(vm.pending_action_changes.len(), 2, "both changes wait");
+        assert_eq!(vm.class_vars[1][0] + vm.class_vars[2][0], 0);
+        assert_eq!(vm.counters.transactions_rolled_back, 0, "never started");
+        w.validate().unwrap();
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
+        let snap: crate::world::Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = mission_world(0, None);
+        w2.restore(&snap).unwrap();
+        assert_eq!(w2.vm.as_ref().unwrap().pending_action_changes.len(), 2);
+        // Tick 2 spins once more; on tick 3 the handler returns and the backlog is delivered,
+        // once per change, in both worlds.
+        for world in [&mut w, &mut w2] {
+            world.step(&[]);
+            assert_eq!(world.vm.as_ref().unwrap().pending_action_changes.len(), 2);
+            world.step(&[]);
+            let vm = world.vm.as_ref().unwrap();
+            assert!(vm.pending_action_changes.is_empty());
+            assert_eq!((vm.class_vars[1][0], vm.class_vars[2][0]), (1, 1));
+        }
+        assert_eq!(w.hashes(), w2.hashes());
+        for _ in 0..5 {
+            w.step(&[]);
+            w2.step(&[]);
+        }
+        assert_eq!(w.hashes(), w2.hashes());
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(
+            (vm.class_vars[1][0], vm.class_vars[2][0]),
+            (1, 1),
+            "never twice"
+        );
+    }
+
+    /// A full action change queue is a deterministic, sticky, hashed fault
+    /// (`Fault::ActionQueueOverflow`), never a silent drop.
+    #[test]
+    fn a_full_action_change_queue_faults_the_script() {
+        let level = class("StartUp", 0, &[]);
+        let mut guard = class("Guard", 0, &[("ActionChange", 2, false, 0, 4, vec![])]);
+        guard.element = Some(1);
+        let mut w = mission_world(1, Some(program(vec![level, guard], 1)));
+        // Spend the tick's budget so nothing is delivered while the queue fills.
+        w.vm.as_mut().unwrap().budget = 0;
+        for _ in 0..MAX_QUEUE {
+            w.vm_queue_action_change(1, 0, 6);
+        }
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.pending_action_changes.len(), MAX_QUEUE);
+        assert!(!vm.faulted());
+        let before = w.hashes();
+        w.vm_queue_action_change(1, 6, 0);
+        let vm = w.vm.as_ref().unwrap();
+        assert_eq!(vm.fault, Some(Fault::ActionQueueOverflow));
+        assert!(vm.faulted());
+        assert_eq!(vm.pending_action_changes.len(), MAX_QUEUE);
+        assert_ne!(w.hashes().get("scripts"), before.get("scripts"));
+        assert!(w.script_observation().unwrap().faulted);
+        // Sticky: a later trap keeps the first fault; the fault survives a snapshot.
+        w.native_call(999, &[]);
+        assert_eq!(
+            w.vm.as_ref().unwrap().fault,
+            Some(Fault::ActionQueueOverflow)
+        );
+        w.validate().unwrap();
+        let json = serde_json::to_string(&w.snapshot(None)).unwrap();
+        assert!(
+            json.contains("\"fault\":\"action_queue_overflow\""),
+            "{json}"
+        );
+        let snap: crate::world::Snapshot = serde_json::from_str(&json).unwrap();
+        let mut w2 = mission_world(0, None);
+        w2.restore(&snap).unwrap();
+        assert_eq!(
+            w2.vm.as_ref().unwrap().fault,
+            Some(Fault::ActionQueueOverflow)
+        );
+        assert_eq!(w2.hashes(), w.hashes());
+        // The other faults name their native.
+        let mut w = mission_world(0, Some(program(vec![class("StartUp", 0, &[])], 0)));
+        assert_eq!(w.native_call(237, &[]), None);
+        assert_eq!(
+            w.vm.as_ref().unwrap().fault,
+            Some(Fault::ArityMismatch(237))
+        );
+        let mut w = mission_world(0, Some(program(vec![class("StartUp", 0, &[])], 0)));
+        assert_eq!(w.native_call(999, &[]), None);
+        assert_eq!(
+            w.vm.as_ref().unwrap().fault,
+            Some(Fault::UnknownNative(999))
+        );
+    }
+
+    /// Finding 6 of Codex review 8: the native call and its result read are one instruction,
+    /// so no jump can reach a result read without its call: a jump that lands after a fused
+    /// native leaves the destination slot untouched, and a result slot is validated like any
+    /// slot and refused on a native that leaves no value (`native_arity_is_validated_and_never_defaults`).
+    #[test]
+    fn a_jump_past_a_fused_native_reads_no_result() {
+        // Initialize: cv0 = 5; if cv1 goto L; cv0 = n236(); L: (the Nop of the fused read).
+        let init = vec![
+            Instr::LoadInt {
+                dst: cv(0),
+                value: 5,
+            },
+            Instr::JumpIf {
+                cond: cv(1),
+                target: 4,
+            },
+            Instr::Native {
+                id: 236,
+                argc: 0,
+                dst: Some(cv(0)),
+            },
+            Instr::Nop,
+        ];
+        let level = class("StartUp", 2, &[("Initialize", 0, false, 0, 4, init)]);
+        let mut p = program(vec![level], 0);
+        p.validate().unwrap();
+        let w = mission_world(0, Some(p.clone()));
+        assert_eq!(
+            w.vm.as_ref().unwrap().class_vars[0],
+            vec![0, 0],
+            "the call ran: money 0"
+        );
+        // With the branch taken (cv1 set before Initialize by hand), the slot keeps its value.
+        let mut w = mission_world(0, None);
+        let mut vm = VmState::new(p.clone(), vec![], 9, false);
+        vm.class_vars[0][1] = 1;
+        vm.budget = WORK_BUDGET_AT_LOAD;
+        w.vm = Some(vm);
+        assert_eq!(
+            w.vm_callback(0, callbacks::INITIALIZE, &[]),
+            Some(CallOutcome::Returned(0))
+        );
+        assert_eq!(w.vm.as_ref().unwrap().class_vars[0], vec![5, 1]);
+        // A stub's result is a taint on the fused instruction, an observed native's is not.
+        p.classes[0].code[3] = Instr::Native {
+            id: 221,
+            argc: 0,
+            dst: Some(cv(0)),
+        };
+        assert!(p.validate().unwrap_err().contains("takes 1"));
+        p.classes[0].code[3] = Instr::Native {
+            id: 236,
+            argc: 0,
+            dst: Some(cv(0)),
+        };
+        p.classes[0].code[4] = Instr::Native {
+            id: 221,
+            argc: 1,
+            dst: Some(cv(1)),
+        };
+        assert!(
+            p.validate()
+                .unwrap_err()
+                .contains("stacks are not balanced")
+        );
     }
 }

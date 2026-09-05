@@ -441,10 +441,11 @@ never for a run heard (ADR-0008, "Hypotheses and taint").
   (core) and `test_walk_run_and_sneak_speeds_match_the_measurements` (H01, within 5 % over 120 ticks).
 - **Perception** (item 2). Every enemy soldier (`BORG` actor) that is alive, active, not AI-locked (natives
   134 / 135: a locked AI perceives nothing, section 2.5) and on his feet tests every player character each
-  tick, in entity order from a round-robin cursor (`World::ai_cursor`, snapshotted) and within the layer's
-  per-tick work budget (`AI_WORK_PER_TICK` = 2^24, shared with the path searches the alert states issue: one
-  unit per entity pre-indexed, one per entity inspected, one per soldier / player character pair tested; a
-  scan the budget cuts short resumes next tick where it stopped): a **view cone** of half angle
+  tick, in entity order from a round-robin cursor (`World::cursors.perception`, snapshotted) and within the
+  world's per-tick simulation budget (`SIM_WORK_PER_TICK` = 2^24, shared with the state transitions, the
+  attack orders, the waypoint programs and every path search they issue: one unit per entity pre-indexed,
+  one per soldier inspected, one per soldier / player character pair tested; a scan the budget cuts short
+  resumes next tick where it stopped): a **view cone** of half angle
   `VIEW_CONE_HALF_ANGLE_256` = 32 (45 degrees) and range `VIEW_RANGE` = 250 map px, the range over
   `CROUCH_VIEW_DIVISOR` = 2 for a crouched character; and a **noise radius** `RUN_NOISE_RADIUS` = 350 px
   around the soldier within which a running character is heard whatever he faces. Occluders and walls do not
@@ -475,10 +476,11 @@ never for a run heard (ADR-0008, "Hypotheses and taint").
 
 - **Perception** (item 2). Every enemy soldier (`BORG` actor) that is alive, active, not AI-locked (natives
   134 / 135: a locked AI perceives nothing, section 2.5) and on his feet tests every player character each
-  tick, in entity order from a round-robin cursor (`World::ai_cursor`, snapshotted) and within the layer's
-  per-tick work budget (`AI_WORK_PER_TICK` = 2^24, shared with the path searches the alert states issue: one
-  unit per entity pre-indexed, one per entity inspected, one per soldier / player character pair tested; a
-  scan the budget cuts short resumes next tick where it stopped): a **view cone** of half angle
+  tick, in entity order from a round-robin cursor (`World::cursors.perception`, snapshotted) and within the
+  world's per-tick simulation budget (`SIM_WORK_PER_TICK` = 2^24, shared with the state transitions, the
+  attack orders, the waypoint programs and every path search they issue: one unit per entity pre-indexed,
+  one per soldier inspected, one per soldier / player character pair tested; a scan the budget cuts short
+  resumes next tick where it stopped): a **view cone** of half angle
   `VIEW_CONE_HALF_ANGLE_256` = 32 (45 degrees) and range `VIEW_RANGE` = 200 map px, the range over
   `CROUCH_VIEW_DIVISOR` = 2 for a crouched character; and a **noise radius** `RUN_NOISE_RADIUS` = 150 px
   around the soldier within which a running character is heard whatever he faces. Occluders and walls do not

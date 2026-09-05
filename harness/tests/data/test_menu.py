@@ -255,6 +255,11 @@ def test_minimap_toggles_from_the_map_scroll_and_ignores_right_clicks(binary, ga
         assert e.observe(entities=False)["ui"]["screen"] == "minimap"
         e.step(1, pointer_click(970, 60, "left"))
         assert e.observe(entities=False).get("ui") is None
+        # The `;` key toggles it too.
+        e.step(1, [key("semicolon"), key("semicolon", "key_up", 1)])
+        assert e.observe(entities=False)["ui"]["screen"] == "minimap"
+        e.step(1, [key("semicolon"), key("semicolon", "key_up", 1)])
+        assert e.observe(entities=False).get("ui") is None
 
 
 def test_profiles_persist_across_sessions_and_survive_a_fresh_or_corrupt_store(binary, game_dir, tmp_path):

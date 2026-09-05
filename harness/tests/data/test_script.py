@@ -120,10 +120,15 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
         assert not vm["sequence_active"]
         hero = _hero(e)
         assert vm["camera_target"] == [(hero["x"] + 128) // 256, (hero["y"] + 128) // 256]
-        # Nothing depended on a stub or a hypothesis yet (the world has not ticked): the briefing
-        # is authoritative.
+        # The taint is dependency-closed (ADR-0008, "Hypotheses and taint"; Codex review 8): the
+        # level's `Initialize` already took hypotheses at load, before any tick, so the mission is
+        # tainted from the start: it locks doors (effect stubs 186 / 191), hides an actor (198),
+        # locks AI (policy native 134: the halting is a low-confidence reading) and sets action
+        # availability (policy native 196: stored, not modelled). The briefing pages themselves
+        # (natives 26 / 30 / 203 / 32 / 34 / 95 / 211 / 31) add nothing.
+        AT_LOAD = [{"stub_result": 186}, {"stub_result": 191}, {"stub_result": 198}, {"policy": 134}, {"policy": 196}]
         sc = e.observe(entities=False)["script"]
-        assert sc["tainted"] is False and sc["assumptions"] == []
+        assert sc["tainted"] is True and sc["assumptions"] == AT_LOAD, sc["assumptions"]
         # Nothing left to dismiss: Enter in the world is not a page dismissal.
         e.step(1, key_press("enter"))
         assert e.observe(entities=False).get("ui") is None
@@ -137,11 +142,21 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
         assert not vm["mission_won"]
         sc = e.observe(entities=False)["script"]
         assert sc["objectives"][0]["done"] is False
-        # The taint of a normal run (ADR-0008, "Hypotheses and taint"): the steward objective polls
-        # the purse object's "taken" predicate (stub 235) and a wait / the Hourglass time was consumed
-        # under the 25-versus-60 tick reading; neither perception nor a knock-out reached the script.
+        # The taint of a normal run: the archery training plays animations (49 / 51) and shoots (59),
+        # the steward objective polls the purse object's "taken" predicate (stub 235), the scroll
+        # states are read and written (193 / 194: low-confidence rows), a wait / the Hourglass time
+        # was consumed under the 25-versus-60 tick reading, a sequence walk completed without
+        # arriving (the sergeant walks to an archer's spot) and `ActionChange` handlers ran (the
+        # parameter order is a hypothesis); neither perception nor a knock-out reached the script.
         assert sc["tainted"] is True
-        assert sc["assumptions"] == [{"stub_result": 235}, "tick_rate"], sc["assumptions"]
+        assert sc["assumptions"] == [
+            {"stub_result": 49}, {"stub_result": 51}, {"stub_result": 59},
+            {"stub_result": 186}, {"stub_result": 191}, {"stub_result": 198}, {"stub_result": 235},
+            {"policy": 134}, {"policy": 193}, {"policy": 194}, {"policy": 196},
+            "tick_rate", "walk_completion", "action_change_order",
+        ], sc["assumptions"]
+        assert "perception" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
+        assert vm["fault"] is None and vm["counters"]["transactions_rolled_back"] == 0
 
 
 def test_first_mission_script_is_deterministic_across_processes(binary, game_dir, tmp_path):
@@ -230,6 +245,11 @@ def test_mission_replay_round_trip_from_the_first_page(binary, game_dir, tmp_pat
         after = e.observe(entities=False)
         assert after["tick"] == final["tick"] and after.get("ui") is None
         assert e.capture()["hash"] == final_frame
+        # The taint travels with the state: the assumptions are in the `scripts` hash the checkpoints
+        # compare, and playback ends with the recording's set (tainted from load, see
+        # `test_first_mission_briefing_sequence_then_camera_on_the_hero`).
+        assert final["script"]["tainted"] is True
+        assert after["script"]["assumptions"] == final["script"]["assumptions"]
         # The same replay from the file, with divergence reporting off, still matches everything.
         played = e.replay_play(path="replays/h01_from_first_page.jsonl", stop_on_divergence=False)
         assert played["first_divergence"] is None and played["checkpoints_ok"] == rec["checkpoints"]

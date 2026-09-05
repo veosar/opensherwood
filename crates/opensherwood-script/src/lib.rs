@@ -3,16 +3,22 @@
 //! no state: it maps opcodes, applies the calling convention, resolves the mission's index spaces
 //! and validates every reference (`docs/formats/scb.md`).
 //!
-//! Choices for the low-confidence rows of the spec (each pinned by a test below):
-//! `0x24` is `>=` (its Desperados name), `0x28` is `!=`, `0x2b` is a fixed-point `<`, a jump to
-//! `0xffff` (two occurrences, an unresolved `break` in a switch) returns from the function, and
-//! `0x14` immediates are rounded to 24.8 fixed point.
+//! Choices for the low-confidence rows of the spec (each pinned by a test below, and each a
+//! hypothesis source the VM records when the instruction executes: `vm::Assumption::Opcode`,
+//! `UnresolvedJump`): `0x24` is `>=` (its Desperados name; `BinOp::GeLow`, distinct from the
+//! medium-confidence `0x26`), `0x28` is `!=`, `0x2b` is a fixed-point `<`, a jump to `0xffff`
+//! (two occurrences, an unresolved `break` in a switch) leaves the function
+//! (`Instr::LeaveUnresolved`), and `0x14` immediates are rounded to 24.8 fixed point.
 //!
 //! Native call sites are checked against the core's signature table
 //! (`opensherwood_core::natives::NATIVE_SIGNATURES`): a known native called with another number
-//! of pushes than its arity, or a `0x0d` after a native that leaves no result (or after anything
-//! but a `0x0c`), is a translation error. `Program::validate` repeats the check in the core; here
-//! it names the class and quad.
+//! of pushes than its arity, or a `0x0d` after a native that leaves no value (or after anything
+//! but a `0x0c`), is a translation error. A `0x0c` followed by its `0x0d` is fused into one
+//! `Instr::Native` carrying the result slot, and the `0x0d` quad becomes a `Nop` so that the
+//! quad indices stay the instruction indices; a jump whose target is a `0x0d` quad is a
+//! translation error (the corpus never does it, and the fused instruction has no separate
+//! reader to land on: such a jump would skip the call). `Program::validate` repeats the
+//! signature checks in the core; here they name the class and quad.
 
 use std::collections::BTreeMap;
 
@@ -66,6 +72,10 @@ pub struct TranslateReport {
     pub unbound_classes: Vec<String>,
     /// Native call sites per id.
     pub native_calls: BTreeMap<u32, usize>,
+    /// Call sites that read the result of a native the retail corpus never reads a result of
+    /// (`NativeSignature::read_in_corpus` false while `returns_value` holds), per id: a
+    /// diagnostic, not an error (the value is the native's contract).
+    pub unobserved_result_reads: BTreeMap<u32, usize>,
     /// Largest immediate passed to native 3 (element by index), if any.
     pub max_element_immediate: Option<i32>,
 }
@@ -372,21 +382,27 @@ fn translate_class(
             temps: f.size_of_tempor / 4,
         });
     }
-    // Jump targets, to check that no argument push straddles one.
+    // Jump targets, to check that no argument push straddles one and that none lands on a
+    // native result read (`0x0d`), which is fused into the call before it.
     let mut targets = vec![false; c.quads.len()];
-    for q in &c.quads {
-        match q.opcode {
-            0x0e if q.a != 0xffff => {
-                if let Some(t) = targets.get_mut(usize::from(q.a)) {
-                    *t = true;
-                }
+    for (pc, q) in c.quads.iter().enumerate() {
+        let target = match q.opcode {
+            0x0e if q.a != 0xffff => Some(usize::from(q.a)),
+            0x0f => Some(q.c as usize),
+            _ => None,
+        };
+        if let Some(t) = target {
+            if c.quads.get(t).is_some_and(|q| q.opcode == 0x0d) {
+                return Err(quad_err(
+                    ci,
+                    c,
+                    pc,
+                    format!("jump target {t} is a native result read"),
+                ));
             }
-            0x0f => {
-                if let Some(t) = targets.get_mut(q.c as usize) {
-                    *t = true;
-                }
+            if let Some(flag) = targets.get_mut(t) {
+                *flag = true;
             }
-            _ => {}
         }
     }
     let mut code = Vec::with_capacity(c.quads.len());
@@ -538,7 +554,9 @@ fn translate_class(
                 pushed_args += 1;
                 Instr::PushArg { src: slot(q.a)? }
             }
-            // 0x0c: native call `a` (high); arity = pushes since the last native call.
+            // 0x0c: native call `a` (high); arity = pushes since the last native call. A 0x0d
+            // directly after it (every read of the corpus is) is fused into the call as its
+            // result slot; that native must leave a value.
             0x0c => {
                 let id = u32::from(q.a);
                 *report.native_calls.entry(id).or_insert(0) += 1;
@@ -550,7 +568,8 @@ fn translate_class(
                 }
                 let argc = pushed_args;
                 pushed_args = 0;
-                if let Some(sig) = native_signature(id)
+                let sig = native_signature(id);
+                if let Some(sig) = sig
                     && sig.arity != argc
                 {
                     return Err(quad_err(
@@ -563,39 +582,47 @@ fn translate_class(
                         ),
                     ));
                 }
-                Instr::Native { id, argc }
+                let read = c.quads.get(pc + 1).filter(|next| next.opcode == 0x0d);
+                let dst = match read {
+                    Some(next) => {
+                        if let Some(sig) = sig {
+                            if !sig.returns_value {
+                                return Err(quad_err(
+                                    ci,
+                                    c,
+                                    pc + 1,
+                                    format!("reads the result of native {id}, which has none"),
+                                ));
+                            }
+                            if !sig.read_in_corpus {
+                                *report.unobserved_result_reads.entry(id).or_insert(0) += 1;
+                            }
+                        }
+                        Some(slot(next.a)?)
+                    }
+                    None => None,
+                };
+                Instr::Native { id, argc, dst }
             }
-            // 0x0d: read the native result (high); it directly follows the call (every one of
-            // the corpus does) and that native must leave a result.
+            // 0x0d: read the native result (high): fused into the 0x0c before it, which must
+            // exist; the quad itself becomes a no-op (no jump targets it, checked above).
             0x0d => {
                 let call = pc.checked_sub(1).and_then(|p| c.quads.get(p));
-                match call {
-                    Some(prev) if prev.opcode == 0x0c => {
-                        let id = u32::from(prev.a);
-                        if native_signature(id).is_some_and(|s| !s.has_result) {
-                            return Err(quad_err(
-                                ci,
-                                c,
-                                pc,
-                                format!("reads the result of native {id}, which has none"),
-                            ));
-                        }
-                    }
-                    _ => {
-                        return Err(quad_err(
-                            ci,
-                            c,
-                            pc,
-                            "reads a native result without a native call before it",
-                        ));
-                    }
+                if call.is_none_or(|prev| prev.opcode != 0x0c) {
+                    return Err(quad_err(
+                        ci,
+                        c,
+                        pc,
+                        "reads a native result without a native call before it",
+                    ));
                 }
-                Instr::GetNativeResult { dst: slot(q.a)? }
+                Instr::Nop
             }
-            // 0x0e: jump to quad `a` (high); `0xffff` is an unresolved label: leave the function.
+            // 0x0e: jump to quad `a` (high); `0xffff` is an unresolved label: leave the function
+            // (low; the VM records `Assumption::UnresolvedJump`).
             0x0e => {
                 if q.a == 0xffff {
-                    Instr::Return
+                    Instr::LeaveUnresolved
                 } else {
                     Instr::Jump {
                         target: target(u32::from(q.a))?,
@@ -642,7 +669,8 @@ fn translate_class(
                     0x1d => BinOp::Or,
                     0x1e => BinOp::And,
                     0x22 => BinOp::FixedMul,
-                    0x24 | 0x26 => BinOp::Ge,
+                    0x24 => BinOp::GeLow,
+                    0x26 => BinOp::Ge,
                     0x25 => BinOp::Lt,
                     0x27 => BinOp::Gt,
                     0x28 => BinOp::Ne,
@@ -701,7 +729,7 @@ pub fn fixed_of_f32(v: f32) -> opensherwood_core::Fixed {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opensherwood_core::vm::{SeqWait, callbacks};
+    use opensherwood_core::vm::{Assumption, SeqWait, callbacks};
     use opensherwood_core::{
         ActorSpec, Fixed, Geometry, MapInfo, MissionSpec, Scenario, Team, World,
     };
@@ -931,9 +959,24 @@ mod tests {
         // Quad 0 is the prologue.
         assert_eq!(
             program.classes[1].code[15],
-            Instr::Native { id: 132, argc: 2 }
+            Instr::Native {
+                id: 132,
+                argc: 2,
+                dst: None
+            }
         );
-        assert_eq!(program.classes[1].code[7], Instr::Native { id: 3, argc: 1 });
+        assert_eq!(
+            program.classes[1].code[7],
+            Instr::Native {
+                id: 3,
+                argc: 1,
+                dst: Some(Slot {
+                    space: Space::Temp,
+                    index: 1
+                })
+            }
+        );
+        assert_eq!(program.classes[1].code[8], Instr::Nop, "the fused 0x0d");
         let w = world(program);
         assert_eq!(
             w.vm.as_ref().unwrap().class_vars[1][0],
@@ -975,10 +1018,21 @@ mod tests {
         let program = translate(&script, &binding()).unwrap();
         assert_eq!(
             program.classes[0].code[12],
-            Instr::Return,
-            "0x0e 0xffff returns"
+            Instr::LeaveUnresolved,
+            "0x0e 0xffff leaves the function"
         );
         let w = world(program);
+        // Every low-confidence reading executed is a recorded hypothesis source.
+        assert_eq!(
+            w.script_observation().unwrap().assumptions,
+            vec![
+                Assumption::Opcode(0x14),
+                Assumption::Opcode(0x24),
+                Assumption::Opcode(0x28),
+                Assumption::Opcode(0x2b),
+                Assumption::UnresolvedJump,
+            ]
+        );
         let vars = &w.vm.as_ref().unwrap().class_vars[0];
         assert_eq!(vars[0], 1, "0x24 is >=: 3 >= 2");
         assert_eq!(vars[1], 0, "0x24 is >=: 2 >= 3");
@@ -1153,5 +1207,86 @@ mod tests {
         assert_eq!(map_element_count("Lincoln"), Some(49));
         assert_eq!(map_element_count("Croisement03"), Some(19));
         assert_eq!(map_element_count("sherwood"), None);
+    }
+    /// A native call and its `0x0d` are one instruction (finding 6 of Codex review 8): a jump
+    /// whose target is the `0x0d` quad is refused, whether it comes straight from a `0x0e`,
+    /// from one arm of an `0x0f` whose other arm runs the call (divergent predecessors), or
+    /// from the back edge of a loop whose entry is the read; a jump to the `0x0c` itself is
+    /// fine, and the `0x0d` quad translates to a `Nop`.
+    #[test]
+    fn jumps_into_a_native_result_read_are_refused() {
+        // Initialize: t0 = 1; t1 = n2(t0); L: ...; the call is quads 3 (push) 4 (0x0c) 5 (0x0d).
+        let body = |jump: Quad| {
+            vec![
+                q(0x13, TV, 0, 1),     // 1
+                jump,                  // 2
+                q(0x0b, TV, 0, 0),     // 3
+                q(0x0c, 2, 0, 0),      // 4
+                q(0x0d, TV + 4, 0, 0), // 5
+                q(0x01, 0, 0, 0),      // 6
+            ]
+        };
+        let script = |jump: Quad| Script {
+            version: 1.5,
+            classes: vec![class(
+                "StartUp",
+                0,
+                &[("Initialize", 0, 0, 0, 8, body(jump))],
+            )],
+        };
+        let refused = |jump: Quad| {
+            let err = translate(&script(jump), &binding()).unwrap_err();
+            assert!(
+                matches!(err, TranslateError::Quad { quad: 2, .. })
+                    && err.to_string().contains("result read"),
+                "{err}"
+            );
+        };
+        // Direct jump into the reader.
+        refused(q(0x0e, 5, 0, 0));
+        // Divergent predecessors: one arm falls into the call, the other jumps to the read.
+        refused(q(0x0f, TV, 0, 5));
+        // A jump to the call is fine; the read becomes a no-op, the call carries the slot.
+        let program = translate(&script(q(0x0e, 3, 0, 0)), &binding()).unwrap();
+        assert_eq!(
+            program.classes[0].code[4],
+            Instr::Native {
+                id: 2,
+                argc: 1,
+                dst: Some(Slot {
+                    space: Space::Temp,
+                    index: 1
+                })
+            }
+        );
+        assert_eq!(program.classes[0].code[5], Instr::Nop);
+        // Loop entry: the back edge targets the read.
+        let looping = vec![
+            q(0x0b, TV, 0, 0),     // 1
+            q(0x0c, 2, 0, 0),      // 2
+            q(0x0d, TV + 4, 0, 0), // 3
+            q(0x0f, TV + 4, 0, 3), // 4: while (t1) goto 3
+        ];
+        let script = Script {
+            version: 1.5,
+            classes: vec![class("StartUp", 0, &[("Initialize", 0, 0, 0, 8, looping)])],
+        };
+        let err = translate(&script, &binding()).unwrap_err();
+        assert!(
+            matches!(err, TranslateError::Quad { quad: 4, .. })
+                && err.to_string().contains("result read"),
+            "{err}"
+        );
+        // The report tells a read the corpus never made from the contract.
+        let (_, report) =
+            translate_with_report(&script_with(native(2, &[1], Some(TV))), &binding()).unwrap();
+        assert!(report.unobserved_result_reads.is_empty());
+    }
+
+    fn script_with(body: Vec<Quad>) -> Script {
+        Script {
+            version: 1.5,
+            classes: vec![class("StartUp", 1, &[("Initialize", 0, 0, 0, 8, body)])],
+        }
     }
 }

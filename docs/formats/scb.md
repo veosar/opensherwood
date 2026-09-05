@@ -626,7 +626,8 @@ the `script` observation's `actor_elements` lists the element handle of every en
 
 Signatures, action changes and taint (2026-09-05, ruleset 10, hash schema 12 / snapshot schema 13, Codex review
 7): the arity column above is the one signature table of the engine (`natives.rs`, `NATIVE_SIGNATURES`: `id ->
-arity, has_result` for every implemented and stub id; the corpus has exactly one arity per id and reads a
+arity, has_result` for every implemented and stub id, since ruleset 12 `returns_value` and `read_in_corpus`,
+see below; the corpus has exactly one arity per id and reads a
 result either always or never, and every `0x0d` directly follows its `0x0c` in all 39 files, 20079 reads). The
 translator refuses a call site whose push count differs and a result read after a native without one;
 `Program::validate` repeats both checks (a snapshot cannot smuggle a mismatch in) and the dispatcher traps a
@@ -645,6 +646,37 @@ steward objective polls) and `tick_rate` on its first tick; the tactical mission
 banner stubs (178 / 223), the town missions 222 / 235 and the campaign flags 195 / 253. The starting money is
 `MissionSpec::starting_money` (100 by default), applied before `Initialize`: H10 holds 100000 right after
 its load and nothing overwrites it.
+
+Taint registry, transactional action changes, one simulation budget, fused native calls (2026-09-05, ruleset
+12, hash schema 14 / snapshot schema 15, Codex review 8): the taint is dependency-closed by construction. The
+sources are the variants of `vm::Assumption`, recorded where the hypothesis is taken whether or not a value is
+read: `{"opcode": op}` when an instruction of a low-confidence opcode executes (0x24 as `>=`, distinct in the
+IR from 0x26; 0x28 as `!=`; 0x2b as a fixed-point `<`; 0x14 rounded to 24.8) and `"unresolved_jump"` for the
+0xffff jump; `{"policy": id}` on every call of an implemented native whose reading is a policy (`natives.rs`,
+`NATIVE_TAINT`: 8, 44, 45, 64, 93, 94, 98, 110, 128, 133, 134, 135, 140, 159, 161, 193, 194, 196, 204, 245;
+111 / 211 / 250 only with several player characters, 240 only for a non-actor element); `{"stub_result": id}`
+on every call of a stub with an unmodelled effect (the former never-win list included) and on every
+consumed stub result, except that 62, 69, 149, 150 and 243 (an expression, a remark, a level sound, the
+cutscene highlight: presentation the scripts cannot read back) record nothing on the call;
+`{"unknown_native": id}` on every lenient unknown call; and the engine's own hypotheses `scroll_pickup`,
+`zone_at_load`, `walk_completion` (a barrier released by a walk that did not arrive), `action_change_order`,
+next to `perception`, `knock_out`, `profile_stats`, `tick_rate` (native 56 outside a sequence records it
+too), `campaign_graph`, `lenient_assets`. Every retail mission is therefore tainted from its load-time
+callbacks (H01's `Initialize` locks doors and hides actors through effect stubs 186 / 191 / 197 / 198 and
+sets action availability and AI locks through policy natives 196 / 134). Queued `ActionChange` handlers run
+as transactions: the VM's mutable state is captured (charged one unit per value copied) and the entities
+the handler's natives touch, the selection and the camera are captured as touched; a handler the budget
+cuts short is rolled back and retried whole next tick, a full queue faults the script
+(`fault = "action_queue_overflow"`; `faulted` is derived from `fault`, which also names an unknown native or
+an arity mismatch). The stealth layer and the waypoint programs share one simulation budget per tick
+(`world::SIM_WORK_PER_TICK`, 2^24) with a persisted cursor per phase (`World::cursors`: perception, states,
+attacks, programs); a search the budget cannot pay changes nothing and is planned first next tick. The
+signature table gained a column: `returns_value` (the row's `-> result`, the contract the dispatcher honours
+and `Program::validate` checks) is kept apart from `read_in_corpus` (a 0x0d follows the call in the retail
+scripts; equal for every id today). A 0x0c and the 0x0d after it are one IR instruction (`Instr::Native {
+id, argc, dst }`; the 0x0d quad becomes a no-op so quad indices stay instruction indices), and a jump whose
+target is a 0x0d quad is refused at translation: no control flow reaches a result read without its call,
+and frames hold no native result.
 
 ## Cross-references
 

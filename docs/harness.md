@@ -31,8 +31,8 @@ Example session:
 ```
 
 Coordinates are logical pixels in 24.8 fixed point (`x256 = x * 256`). Keys are `"escape"`, `"enter"`,
-`"space"`, `"up"` ... for the named keys, `{"letter": "c"}`, `{"digit": 1}`, `{"function": 11}` for the others
-(`opensherwood_core::input::Key`).
+`"space"`, `"up"` ... `"backspace"`, `"semicolon"` (the original's mini-map shortcut) for the named keys,
+`{"letter": "c"}`, `{"digit": 1}`, `{"function": 11}` for the others (`opensherwood_core::input::Key`).
 
 ## Orders and movement modes
 
@@ -74,10 +74,15 @@ character within 350 px is heard whatever the soldier faces and he charges at on
 A knocked-out soldier is out of action for `KNOCK_OUT_BASE_TICKS` (600) scaled by `(100 - p4) / 100`; `p4` >=
 100 makes the blow fail. All of it is in the snapshot, validated and hashed (`actors`); `validate` holds the
 layer's invariants (`dead` only with `alive` false, a timer exactly in the timed states, attack orders from a
-player character to an enemy soldier, alert states on enemy soldiers only). Perception and the path searches
-the alert states issue share one per-tick work budget (`ai::AI_WORK_PER_TICK`, 2^24: every entity inspected
-and every soldier / player character pair tested costs one unit, a search its `nav.rs` units); when it runs
-out mid-scan the world's `ai_cursor` (in the snapshot and the `world` hash) marks where the next tick resumes.
+player character to an enemy soldier, alert states on enemy soldiers only). The whole simulation besides the
+script shares one per-tick work budget (`world::SIM_WORK_PER_TICK`, 2^24): a pre-index pass (one unit per
+entity), then perception (one per soldier inspected and per soldier / player character pair tested), the
+state transitions (one per human), the attack orders (one per attacker, the victim found in the index) and
+the guards' waypoint programs (one per idle guard), every path search any of them issues drawing from the
+same budget (its `nav.rs` units, capped per search at `world::ORDER_SEARCH_WORK`). Each phase walks its
+entities from its own cursor (the snapshot's `cursors: {perception, states, attacks, programs}`, in the
+`world` hash); when the budget runs out the cursor marks where the next tick resumes, and a search it
+could not pay changes nothing (the guard keeps his instruction, the attacker his order).
 
 ## Replays
 
@@ -147,23 +152,35 @@ shown), `mission_won`, `mission_lost` (`CheckVictoryCondition` returned 1 / 2; b
 `faulted` (an unknown native stopped a callback), `lenient` and `unknown_calls` (see below),
 `actor_elements` (the script element handle of every entity by entity index, -1 for entities the script
 cannot address: the handle native 3 returns, so a test can aim at the actor a script polls), and the taint of
-ADR-0008 ("Hypotheses and taint"): `tainted` (a script-visible value depended on a stub's result or an engine
-hypothesis, so `mission_won` / `mission_lost` are not authoritative) with `assumptions`, the recorded
-`{"stub_result": id}` / `"perception"` / `"knock_out"` / `"profile_stats"` / `"tick_rate"` /
-`"campaign_graph"` / `"lenient_assets"` entries in canonical order (snapshotted and hashed; a normal run of the
-first mission carries `{"stub_result": 235}` and `"tick_rate"` from its first tick after the briefing). The app dismisses
+ADR-0008 ("Hypotheses and taint"): `tainted` (the script executed over a hypothesis source, so `mission_won`
+/ `mission_lost` are not authoritative) with `assumptions`, the recorded entries in canonical order
+(snapshotted and hashed). The set is dependency-closed by construction (Codex review 8): every source is a
+variant of the registry `vm::Assumption`, recorded where the hypothesis is taken whether or not the script
+reads a value there, so `tainted: false` means no known hypothesis was taken. The entries:
+`{"stub_result": id}` (a stub with an unmodelled effect was called, or a stub's fabricated result consumed;
+the presentation-only stubs 62 / 69 / 149 / 150 / 243 record nothing on the call), `{"policy": id}` (an
+implemented native whose reading is a policy, `natives::NATIVE_TAINT`), `{"opcode": op}` (an instruction of
+a low-confidence opcode executed: 0x14, 0x24, 0x28, 0x2b), `"unresolved_jump"`, `{"unknown_native": id}`
+(lenient mode), `"perception"`, `"knock_out"`, `"profile_stats"`, `"tick_rate"`, `"scroll_pickup"`,
+`"zone_at_load"`, `"walk_completion"`, `"action_change_order"`, `"campaign_graph"`, `"lenient_assets"`.
+Under this model every retail mission is tainted from its load-time callbacks on (the first mission's
+`Initialize` calls effect stubs and policy natives: `test_first_mission_briefing_sequence_then_camera_on_the_hero`
+pins the exact set at load and after 600 ticks). The app dismisses
 the text at the front of the queue through `World::vm_dismiss_text` when the briefing parchment closes (one
 dismissal per page, on Enter, Escape or a click on the page). Tests dismiss pages the same way, with canonical
 input: `Engine.skip_briefing()` sends Enter once per page (one session tick each, recorded by an active
 replay). `debug.vm` is inspection only and cannot dismiss a page.
 
 `debug.vm` (counters, objectives, pending texts, scrolls with positions and activity); in a mission `F1` writes `saves/quick.json` under the artifact directory and `F5` loads it (the snapshot envelope with the content identity; refused while a screen or notice is shown or a replay is recorded), and every 3600 world ticks a rolling auto save `saves/auto-<0..4>.json` is written returns `{present, classes, elements, locations, objectives, texts, mission_won,
-mission_lost, money, sequence_active, sequences, faulted, lenient, unknown_calls, pending_messages, camera_target, debriefing,
-mission_vars, counters, rng_draws}` (`money` is the script's integer of natives 236 / 237); `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
+mission_lost, tainted, assumptions, money, sequence_active, sequences, faulted, fault, lenient, unknown_calls, pending_messages, camera_target, debriefing,
+mission_vars, counters, rng_draws}` (`money` is the script's integer of natives 236 / 237; `fault` is the
+sticky reason behind `faulted`: `{"unknown_native": id}`, `{"arity_mismatch": id}` or
+`"action_queue_overflow"`, `null` while the script runs as written); `counters` holds `instructions`, `callbacks`, `budget_aborts`, `faults`,
 `traps`, `messages_delivered`, `messages_dropped`, `unknown_natives`, `stub_natives`,
 `objective_done_before_added`, `out_of_action_true` (native 90 calls that reported an actor knocked out or
 dead), `arity_mismatches` (`{id: count}` of native calls trapped because their argument count differed from the
-signature table) and `action_changes_dropped` (action changes lost to a full queue). Its only mutations, `debug.vm {"win": true}` and `{"lose": true}`, mark the mission won or lost: a documented
+signature table) and `transactions_rolled_back` (queued `ActionChange` handlers the budget cut short, rolled
+back and retried whole next tick; a full queue is the `action_queue_overflow` fault, never a drop). Its only mutations, `debug.vm {"win": true}` and `{"lose": true}`, mark the mission won or lost: a documented
 harness shortcut used only by the end-of-mission flow tests (`test_mission_won_shows_the_debriefing_then_the_menu`, `test_mission_lost_shows_the_lost_debriefing_then_the_menu`),
 because no mission can be won yet through play; it is not a player action and no other test may use it.
 

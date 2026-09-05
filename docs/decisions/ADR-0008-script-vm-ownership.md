@@ -50,7 +50,10 @@ settled before any interpreter is written: a VM living above core cannot be snap
   the native signature table, the action-change queue, the assumption set and the stealth layer's cursor);
   ruleset 11, snapshot schema 14 and hash schema 13 (2026-09-05, the oracle measurements applied: speeds
   from the profiles' cycles on the measured animation clock, the animation state's `elapsed` in clock
-  units, the noise channel's immediate charge and the entity `heard` flag).
+  units, the noise channel's immediate charge and the entity `heard` flag); ruleset 12, snapshot schema
+  15 and hash schema 14 (2026-09-05, Codex review 8: the dependency-closed taint registry, transactional
+  action-change delivery with the queue overflow as a fault, one simulation budget with a cursor per
+  phase, the native call fused with its result read).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
 - **What is authoritative and what is not.** `VmState::counters` (instructions, callbacks, budget aborts,
   faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
@@ -75,48 +78,89 @@ settled before any interpreter is written: a VM living above core cannot be snap
   smoothed output points; `world.rs`: the conversion of the final path, allocated fallibly). An exhausted
   budget stops the tick deterministically (the running callback is aborted, later phases wait for the next
   tick, undelivered messages stay queued ahead of new ones) and is counted; it is part of the ruleset because
-  it changes what a tick does. Player and rail-program orders use their own per-order budget
-  (`world::ORDER_SEARCH_WORK`). Navigation has no fail-open entry point: `World::try_ensure_nav` is the only
-  way to rebuild a missing grid and every caller handles its error.
+  it changes what a tick does. The rest of the simulation (the stealth layer's perception, state
+  transitions and attack orders, and the walks the guards' waypoint programs and legacy patrols issue)
+  draws from **one simulation budget per tick** (`world::SIM_WORK_PER_TICK`, 2^24): a pre-index pass
+  charged one unit per entity, then each phase walks its own entity list from a persisted cursor
+  (`World::cursors`: perception, states, attacks, programs; snapshotted, hashed under `world`,
+  validated) charging one unit per entity plus the path searches it issues, each capped at
+  `world::ORDER_SEARCH_WORK`; exhaustion leaves the cursor on the entity not served so the next tick
+  starts there (a search the budget could not pay changes nothing: the guard keeps his instruction, the
+  attacker his order, a soldier whose alert ended keeps one more tick of it). Only the player's own click
+  orders keep a per-order budget of `ORDER_SEARCH_WORK`, one per click. Navigation has no fail-open
+  entry point: `World::try_ensure_nav` is the only way to rebuild a missing grid and every caller
+  handles its error.
 - **Trust boundary.** `Program::validate` in core is self-sufficient (functions in table order from address 0
   with their prologue, jumps inside their function, parameter reads and call arities against the table,
   arities within the stack limit, every native call site of a known id with the argument count of the one
-  signature table `natives::NATIVE_SIGNATURES` (`id -> arity, has_result`, derived from the arity column of the
-  spec's rows) and every native result read directly after a call that leaves one, aggregate code / vertex
-  bounds, element and location coordinates within `+-2^20`); the translator's checks are earlier diagnostics.
+  signature table `natives::NATIVE_SIGNATURES` (`id -> arity, returns_value, read_in_corpus`: the arity and
+  the `-> result` contract from the spec's rows, the corpus observation of a `0x0d` kept as its own column)
+  and a result slot only on a native that leaves a value, aggregate code / vertex bounds, element and location
+  coordinates within `+-2^20`); the translator's checks are earlier diagnostics. The native call and its
+  result read are **one IR instruction** (`Instr::Native { id, argc, dst }`): the translator fuses a `0x0c`
+  with the `0x0d` after it (the `0x0d` quad becomes a `Nop` so quad indices stay instruction indices) and
+  refuses a jump whose target is a `0x0d` quad, so no control flow can reach a result read without the
+  call that produces it (Codex review 8, finding 6); frames hold no native result.
   The dispatcher checks the signature again: a call whose argument count differs traps like an unknown native
   (`counters.arity_mismatches`), so a required argument never defaults to 0. `World::validate` also requires
   the gameplay and `script` RNG streams to derive from the world seed with their assigned ids (1 and 2), and
   the stealth layer's invariants (`Dead` and `alive` agree, timed states carry their timer, attack orders go
   from a player character to an enemy soldier, alert states belong to enemy soldiers).
-- **Hypotheses and taint.** The retail scripts run over recorded stubs and over engine hypotheses (the
-  view cone and the noticed / alarm sequence a sighting starts, the profile stats `p0` / `p4`, the
-  25-versus-60 reading of the scripts' time unit, the campaign graph, the lenient asset fallbacks); the
+- **Hypotheses and taint.** The retail scripts run over recorded stubs and over engine hypotheses; the
   movement speeds, the animation clock and the noise channel (a running character heard from 330 px and
   more, the soldiers charging at once) are measured (`docs/original/stealth-and-combat.md` 8) and record
-  nothing. Whenever a script-visible value depends on a hypothesis, the VM records an
-  `vm::Assumption` in `VmState::assumptions` (a `BTreeSet`, snapshotted, hashed under `scripts`, validated:
-  a `StubResult` must name a stub): `StubResult(id)` when the script consumes a stub's result
-  (`GetNativeResult` after a policy-valued or zero-valued stub) or calls a never-win stub
-  (`natives::NEVER_WIN_STUBS`); `Perception` / `KnockOut` when the stealth layer changed script-visible state
-  (an alert action id of an actor alerted by sight, never of one alerted by a run heard (`Entity::heard`),
-  or a knock-out action id delivered to `ActionChange`, native 90 reporting a knock-out, 128 refusing
-  one); `ProfileStats` when a blow consulted the knock-out resistance; `TickRate` when a native-56 wait ran
-  or `Hourglass` read its time (the animation clock being measured says nothing about the unit the
-  scripts count in); `CampaignGraph` when the app's successor rule picked the next mission
-  (`World::record_assumption`); `LenientAssets` when the app built the spec with a fallback
-  (`MissionSpec::assumptions`). `mission_won` / `mission_lost` stay recorded, but `ScriptObservation::tainted`
-  (the set is non-empty) marks the outcome as **not authoritative**: it proves consistency with the
-  hypotheses, not the original's behaviour, until the oracle captures of `stealth-and-combat.md` section 7
-  settle them. Strict mode keeps trapping unknown ids; the taint is what strict mode says about the known
-  ones. In a normal run of the first mission the set holds `StubResult(235)` (the purse object's "taken"
-  predicate the steward objective polls) and `TickRate` from the first tick after the briefing.
-- **Action changes are delivered exactly once.** Every change of an actor's reported action id is queued in
-  `VmState::pending_action_changes` (snapshotted, hashed under `scheduler`, validated) and delivered to the
-  class bound to the actor within what the tick's budget left; a change whose class has no handler is
-  dropped as undeliverable, one whose handler returned (or trapped: it would fail the same way again) is
-  removed, one the budget cut short (`CallOutcome::Exhausted`) stays at the front and is delivered at the
-  start of the next tick, after the messages and before `Hourglass`.
+  nothing. The taint is **dependency-closed by construction** (Codex review 8, finding 1): the sources are
+  a registry, the `vm::Assumption` enum, and every place in the core that takes a hypothesis records its
+  variant in `VmState::assumptions` (a `BTreeSet`, snapshotted, hashed under `scripts`, validated:
+  every entry must be well formed for its source) at the point where the hypothesis is taken, whether or
+  not the script reads a value there: it is conservative, not a data-flow analysis. The sources:
+  `Opcode(op)` when an instruction of a low-confidence opcode executes (`vm::LOW_CONFIDENCE_OPCODES`:
+  `0x24` read as `>=`, `0x28` as `!=`, `0x2b` as a fixed-point `<`, `0x14` rounded to 24.8; the translator
+  keeps `0x24` apart from the medium-confidence `0x26` as `BinOp::GeLow`) and `UnresolvedJump` when a jump
+  to `0xffff` leaves its function (`Instr::LeaveUnresolved`); `Policy(id)` on every call of an
+  implemented native whose reading is a policy rather than an observation (`natives::NATIVE_TAINT`,
+  `Taint::Policy`: 8, 44, 45, 64, 93, 94, 98, 110, 128, 133, 134, 135, 140, 159, 161, 193, 194, 196, 204,
+  245, each with its choice named in the table; the `Taint::Branch` rows 111 / 211 / 250 record it only
+  with more than one player character and 240 only for a non-actor element); `StubResult(id)` on every
+  call of a recorded stub with an effect the engine does not model (`Taint::Effect`, the never-win stubs
+  included) and whenever a stub's fabricated result is consumed (the result slot of the fused native);
+  only the stubs proven presentation-only record nothing on the call (`Taint::Presentation`: 62 an
+  expression, 69 a remark before a dialogue line, 149 / 150 a level sound, 243 the cutscene highlight,
+  each justified in the table); `UnknownNative(id)` on every lenient unknown call; `Perception` /
+  `KnockOut` when the stealth layer changed script-visible state (an alert action id of an actor alerted
+  by sight, never of one alerted by a run heard (`Entity::heard`), or a knock-out action id delivered to
+  `ActionChange`, native 90 reporting a knock-out, 128 refusing one); `ProfileStats` when a blow consulted
+  the knock-out resistance; `TickRate` when a native-56 wait ran (in a sequence or outside one) or
+  `Hourglass` read its time; `ScrollPickup` when `IsTaken` fired (the pickup radius and the
+  take-on-non-zero rule); `ZoneAtLoad` when a zone callback fired on the first scan for a character
+  standing inside at load; `WalkCompletion` when a barrier was released by a walk that did not arrive;
+  `ActionChangeOrder` on every `ActionChange` delivery (the parameter order); `CampaignGraph` when the
+  app's successor rule picked the next mission (`World::record_assumption`); `LenientAssets` when the app
+  built the spec with a fallback (`MissionSpec::assumptions`). The set only grows (a rolled-back
+  transaction keeps what it recorded). `mission_won` / `mission_lost` stay recorded, but
+  `ScriptObservation::tainted` (the set is non-empty) marks the outcome as **not authoritative**: it
+  proves consistency with the hypotheses, not the original's behaviour, until the oracle captures of
+  `stealth-and-combat.md` section 7 settle them; an outcome with an empty set took no hypothesis the
+  engine knows of. Strict mode keeps trapping unknown ids; the taint is what strict mode says about the
+  known ones. Under this model the retail missions are tainted from their load-time callbacks on (the
+  first mission's `Initialize` locks doors and hides actors through effect stubs and sets action
+  availability and AI locks through policy natives), which is the honest reading until those rows are
+  implemented or observed.
+- **Action changes are delivered exactly once, transactionally.** Every change of an actor's reported
+  action id is queued in `VmState::pending_action_changes` (snapshotted, hashed under `scheduler`,
+  validated) and delivered to the class bound to the actor within what the tick's budget left; a change
+  whose class has no handler is dropped as undeliverable, one whose handler returned (or trapped: it
+  would fail the same way again) is removed. A queued handler runs as a transaction (`vm::Transaction`,
+  Codex review 8, finding 3): before it starts, the VM's mutable state (class and mission variables,
+  objectives, queues, sequences, texts, money, patches, attributes, states, the script RNG) is captured
+  at one work unit per value copied, and the entities its natives touch (`World::vm_touch_entity`), the
+  selection and the camera are captured as they are touched; one the budget cut short
+  (`CallOutcome::Exhausted`) is rolled back to that capture and stays at the front to be delivered at
+  the start of the next tick, after the messages and before `Hourglass`, running whole from the state it
+  saw the first time. A capture that does not fit the budget waits like an exhausted handler. A full
+  queue is a deterministic fault (`VmState::fault = ActionQueueOverflow`, sticky, hashed; `faulted` is
+  now derived from `fault`, which also names an unknown native or an arity mismatch), never a silent
+  drop.
 - **Campaign money.** `MissionSpec::starting_money` (100 by default) is applied to `VmState::money` before
   `Initialize` runs, so a script that sets it (H10's native 237) wins and nothing overwrites it afterwards;
   the app seeds it from the player's profile at load, never at install.
