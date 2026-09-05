@@ -429,18 +429,28 @@ hit of 5 hp landing two swings in three at a swing every ~5.3 s, the energy cost
 soldier hit regained in ~4 s, two per powerful blow regained one per ~0.9 s), the powerful blow's 50 hp
 and its resolution ~0.95 s after the order, the fighting distance of 52 px, the attack order being a
 left click on the enemy, the halberdier standing his ground, the bars' geometry and colours, the damage
-numbers' rise and the loss on the hero's death are **measured**; the view cone (angle, range, the crouch
-divisor), the noticed -> alarm sequence a sighting starts, the alert timeout, the return, the knock-out
+numbers' rise and the loss on the hero's death, and (`h01-measurements-2.md`, the second oracle session)
+the view cone's geometry (a sector of 80 degrees bound to the facing with an elliptical reach of 270 px
+along x and 196 px along y), the pick-up gesture (a click on the item or the scroll orders the walk; a
+passing walk or a ground order beside the item takes nothing), the arrival on an item (0..8 px) and the
+stoop of 0.6..0.7 s before the take, the stop about 18 px short of a scroll and the pause of 0.7 s before
+its page, and the arrows' stack as the record's `unknown_b` are **measured**; the rear radius of the
+sight (a hero noticed at 40..60 px from behind, one event) and the crouch divisor, the noticed -> alarm
+sequence a sighting starts, the alert timeout, the return, the knock-out
 timer, the punch's arc, the profile's `p4`, the hero's click attacks never landing against a soldier, the
 powerful blow's one-in-three chance, the post-bound behaviour of every soldier kind but the halberdier,
-the melee action ids and the loss when another player character survives stay **hypotheses**. The
+the melee action ids, the loss when another player character survives, the money a purse holds and an
+unknown item kind's effect, and what makes a scroll vanish after its reading stay **hypotheses**. The
 script VM records each hypothesis where it first changes the state (ADR-0008, "Hypotheses and taint";
-Codex review 9): `Assumption::SightCone` for a sighting, `NoiseRadius` for a run heard from beyond the
+Codex review 9): `Assumption::SightCone` for a sighting the rear radius or the crouch divisor decided (a
+standing character seen inside the measured cone records nothing), `NoiseRadius` for a run heard from beyond the
 measured 330 px (never within it), `AlertPolicy` for the alert sequence a sighting starts and the
 re-plan, `AlertTimeout` for the timeout and the return (the charge on a heard run is measured and
 records nothing of its own; the timeout it stores is recorded before the state changes: Codex review
 10), `AttackPolicy(Reach | Block | HitChance | PostBound | MultiParty)` and `KnockOut` for the melee's
-and the blow's hypotheses, `CombatActions` / `HeroDeathLoss` as before.
+and the blow's hypotheses, `CombatActions` / `HeroDeathLoss` as before, `ItemPickup` for a purse's or an
+unknown kind's take (an arrow pile's records nothing), `ScrollPickup` for a scroll its handler's non-zero
+result deactivated (the reading itself records nothing).
 
 - **Speeds** (item 5). Every moving entity covers per world tick the speed of the cycle it plays
   (`Entity::effective_speed`, `AnimSet::cycle_speed`): the cycle's summed `advance` over its duration
@@ -463,22 +473,56 @@ and the blow's hypotheses, `CombatActions` / `HeroDeathLoss` as before.
   attack orders, the waypoint programs, the movement, the animation and the action scan, every path
   search drawing from its phase's grant: one unit per entity pre-indexed, one per soldier inspected, one
   per soldier / player character pair tested; a scan the grant cuts short resumes next tick where it
-  stopped, and no phase can starve another): a **view cone** of half angle
-  `VIEW_CONE_HALF_ANGLE_256` = 32 (45 degrees) and range `VIEW_RANGE` = 250 map px, the range over
-  `CROUCH_VIEW_DIVISOR` = 2 for a crouched character; and a **noise radius** `RUN_NOISE_RADIUS` = 350 px
-  around the soldier within which a running character is heard whatever he faces. Occluders and walls do not
-  block sight; walking and sneaking make no noise; civilians perceive nothing. The noise radius is
-  `measured` as a lower bound (8.6: heard at >= 330 px; 350 is the engine's choice above it), the
-  silence of a walk at 290 px is `observed`; the cone's angle, its range (below 290 px for a soldier not
-  facing the character, 8.6; 250 keeps it beyond the rails' check-for radii) and the crouch divisor are
-  `hypothesis` (item 7.2 measures them); the geometry (a sector test on a 4096-scaled sine table,
-  `ai::in_view_cone`) is pinned by `view_cone_geometry`.
+  stopped, and no phase can starve another): a **view cone** bound to the soldier's facing, of half
+  angle `VIEW_CONE_HALF_ANGLE_256` = 28 (39.4 degrees; the Alt overlay of the archery sergeant drew a
+  sector of about 80 degrees, `h01-measurements-2.md` 6) with an **elliptical reach** of `VIEW_RANGE` =
+  270 map px along the screen x axis and 270 x `VIEW_Y_COMPRESSION` (18 / 25 = 0.72) = 194 px along y
+  (the y offset weighs 25 / 18 before the range test; whether the compression is the game's distance
+  metric or a projected drawing is not separated, the engine applies it as the metric), both over
+  `CROUCH_VIEW_DIVISOR` = 2 for a crouched character; a **rear radius** `REAR_SIGHT_RADIUS` = 50 px
+  (25 crouched) within which a soldier notices a player character whatever he faces; and a **noise
+  radius** `RUN_NOISE_RADIUS` = 350 px around the soldier within which a running character is heard
+  whatever he faces. Occluders and walls do not block sight; walking and sneaking make no noise;
+  civilians perceive nothing. The cone's angle, its reach and its binding to the facing are `measured`
+  (one actor, one frame, confidence medium; the archers facing north never noticed a hero 60..110 px
+  behind them over minutes: section 3 of the same document); the rear radius is a `hypothesis` from one
+  event (a walking hero noticed within 3 s at 40..60 px from behind an archer; the archers' turns while
+  shooting are the alternative) and the crouch divisor a `hypothesis`, both recorded as
+  `Assumption::SightCone` when they decide a sighting; the noise radius is `measured` as a lower bound
+  (8.6: heard at >= 330 px; 350 is the engine's choice above it), the silence of a walk at 290 px is
+  `observed`. The geometry (a sector test on a 4096-scaled sine table over the elliptical reach,
+  `ai::in_view_cone`) is pinned by `view_cone_geometry` (facing +x: seen 250 px ahead, not 250 px
+  behind; facing north: seen at 180 px, not at 200) and the rear radius by
+  `rear_radius_and_crouch_divisor_are_the_hypotheses_the_sighting_records`; on the first mission the
+  hero stands on the gatehouse walkway behind the training archers unnoticed for 3000 ticks
+  (`test_robin_on_the_walkway_behind_the_archers_stays_unnoticed`).
+- **Pick-ups and scrolls** (`h01-measurements-2.md` 1, `measured` unless marked). The pointer over an
+  active item or scroll is the hand (the hit area is the sprite: `PICKUP_HIT_HALF_WIDTH` = 6 either
+  side of the record's position and `PICKUP_HIT_HEIGHT` = 14 above it, the position being the sprite's
+  bottom edge; the scroll's height is taken over from the item's); a left click on it orders the
+  selected player character onto it (`Entity::pickup`), and the take is bound to the order: a walk that
+  passes an item or a ground order beside it takes nothing. An item: the walk aims at the item, the feet
+  arrive within `ITEM_TAKE_RADIUS` = 8 px, the character stands `STOOP_TICKS` = 40 (0.6..0.7 s; in the
+  idle pose, the profiles' pick-up action 126 / 158..160 has no block in the animation set yet), then
+  the item vanishes and the counters change: an arrow pile adds `unknown_b` to the arrows (the badge
+  digit of the hand pointer, `measured`), a purse adds `PURSE_MONEY_PER_STACK` = 25 per stack unit to
+  the money and one purse (`hypothesis`, `Assumption::ItemPickup`), an unknown kind only disappears
+  (`hypothesis`, the same source). A scroll: the walk aims `SCROLL_STOP_DISTANCE` = 18 px short of it,
+  the character arrives within `SCROLL_ARRIVAL_RADIUS` = 24 px, pauses `SCROLL_PAUSE_TICKS` = 42 (0.7 s),
+  then `IsTaken` runs on the class bound to the scroll and its page follows; a non-zero result
+  deactivates the scroll (`hypothesis`, `Assumption::ScrollPickup`: observed, the tutorial scrolls stay
+  and the training-start scroll vanishes; the `SKRO` record's `flags5` bit 0 as "stays after reading" is
+  the analyst's hypothesis, not modelled). The pause is the entity's `pickup_ticks` (snapshotted,
+  hashed). Pinned by `items_are_taken_on_a_click_and_native_235_reads_it`,
+  `scrolls_are_read_by_an_order_after_the_pause_and_vanish_when_taken` (core) and, on the first mission,
+  `test_clicking_an_arrow_pile_walks_robin_there_and_takes_it`, `test_a_pickup_replays_through_the_stoop`
+  and `test_clicking_a_scroll_stops_short_of_it_and_pauses_before_its_text`.
 - **Alert states** (item 1 / 3). Two entries. **Heard** (`measured`, 8.6): a soldier who hears a running
   character charges at once, `patrol` -> `alerted` on the same tick with the alert run 151 to the position
   of the noise, no reaction animation (the entity's `heard` flag marks the alert as the measured channel;
   whether the whole courtyard joined because each soldier heard the run or because the alarm propagates
   is not separated by the measurement: the engine has no propagation, every soldier within the radius
-  hears for himself). **Seen** (`hypothesis`, the cone is not measured): `patrol` (the rail program, actions
+  hears for himself). **Seen** (the cone `measured`, the sequence a `hypothesis`): `patrol` (the rail program, actions
   0 / 6 / 7) -> `noticed` (141, plays for the animation's length: 11 table ticks = 31 world ticks on the
   soldier profiles; the soldier stops and remembers where he perceived the character and where he stood)
   -> `alarm` (142, 19 table ticks = 54 world ticks) -> `alerted`. Both then: `alerted` runs to the last

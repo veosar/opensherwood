@@ -852,30 +852,31 @@ def test_two_powerful_blows_kill_the_soldier_the_script_polls(binary, game_dir, 
         assert _entity(e, robin_index)["in_combat"]
 
 
-# The first mission's pick-up items (`ZORG` records, elements 100..=110 of the corrected element
-# table, `docs/original/h01-win-path.md` 2; the kind / stack reading of `docs/formats/rhm.md`):
-# element -> (x, y, kind, stack). Kind 0 is read as arrows and 9 as a purse; 8 and 10 stay unknown.
-H01_ITEMS = {
-    100: (2199, 1092, "arrows", 2),
-    101: (2596, 722, "arrows", 3),
-    102: (1586, 270, "arrows", 4),
-    103: (192, 1078, "arrows", 5),
-    104: (520, 1386, {"unknown_a": 8}, 2),
-    105: (572, 1388, "purse", 3),
-    106: (2445, 801, {"unknown_a": 8}, 1),
-    107: (301, 1226, {"unknown_a": 8}, 1),
-    108: (2029, 1008, "purse", 2),
-    109: (1874, 962, {"unknown_a": 8}, 1),
-    110: (135, 340, {"unknown_a": 10}, 1),
-}
-# The level's `Initialize` deactivates these seven (the scripts hand them out later).
-H01_ITEMS_HIDDEN_AT_LOAD = {102, 104, 105, 106, 108, 109, 110}
-# Placeholder discs of the renderer (`opensherwood-render`, `palette::ITEM_*`).
-ITEM_PURSE_RGB = (240, 190, 40)
+# The first mission's pick-up items are the `ZORG` records bound as elements 100..=110 of the corrected
+# element table (`docs/original/h01-win-path.md` 2; the items precede the scrolls). The tests read every
+# position, kind and stack from the player's file through `observe.script.items` / `debug.vm {"element": i}`
+# at run time and act on two records by element id: the arrow pile on the gatehouse walkway (100, the one
+# the archery-yard measurements used) and the steward's purse of objective 3 (105). No table of the
+# file's contents lives here (ADR-0003).
+WALKWAY_PILE = 100
+STEWARDS_PURSE = 105
+STEWARD_TIP_SCROLL = 120
+# The measured constants of `crates/opensherwood-core/src/world.rs` (`docs/original/h01-measurements-2.md` 1).
+STOOP_TICKS = 40
+SCROLL_PAUSE_TICKS = 42
+SCROLL_STOP_DISTANCE = 18
+ITEM_TAKE_RADIUS = 8
 
 
 def _items(e):
     return {it["element"]: it for it in e.observe(entities=False)["script"]["items"]}
+
+
+def _element(e, element):
+    """One entry of the script's element table (`debug.vm {"element": i}`), read from the player's file."""
+    rec = e.call("debug.vm", {"element": element})["element"]
+    assert rec is not None, element
+    return rec
 
 
 def _dismiss_pages(e, max_pages=5):
@@ -890,49 +891,69 @@ def _dismiss_pages(e, max_pages=5):
     return pages
 
 
+def _click_pickup(e, x, y):
+    """Left click on the sprite of a pick-up whose record sits at map (x, y): 3 px right of and 2 px
+    above the base point, inside the 12 x 14 px hit area (`h01-measurements-2.md` 1.1)."""
+    cam = _scroll_to(e, x, y)
+    e.step(1, pointer_click(x - cam[0] + 3, y - cam[1] - 2, "left"))
+    return cam
+
+
 def _walk_pickup(e, robin_index, max_ticks):
-    """Step until Robin's pick-up order is resolved (taken or dropped), dismissing any page a
-    scroll on the way shows; returns the ticks stepped."""
+    """Step until Robin's pick-up order is resolved (taken, read or dropped), dismissing any page a
+    reading shows; returns (ticks stepped, ticks at which the walk arrived or None)."""
+    arrived = None
     for t in range(max_ticks):
         e.step(1)
         _dismiss_pages(e)
-        if _entity(e, robin_index)["pickup"] is None:
-            return t + 1
+        r = _entity(e, robin_index)
+        if arrived is None and r["target"] is None:
+            arrived = t + 1
+        if r["pickup"] is None:
+            return t + 1, arrived
     raise AssertionError("the pick-up order never resolved")
 
 
 def test_first_mission_lists_its_items_and_the_tip_scrolls_are_active(binary, game_dir, tmp_path):
-    """H01 (`docs/original/h01-win-path.md` 2, `docs/formats/rhm.md` "ZORG"): the eleven pick-up
-    items are listed in `observe.script.items` with their positions, kinds and stacks; the level's
-    `Initialize` deactivates the seven the scripts hand out later and leaves four lying about
-    (three arrow piles and an unknown kind); with the items before the scrolls, the servant's
-    scroll (113) and the two beggar-tip scrolls (120 / 121) are active after load. Nobody has taken
-    anything: native 235 reads 0 everywhere, Robin starts with 0 arrows and 0 purses."""
+    """H01 (`docs/original/h01-win-path.md` 2, `docs/formats/rhm.md` "ZORG"): the eleven pick-up items
+    are listed in `observe.script.items` with positions, kinds and stacks read from the file: four arrow
+    piles, two purses with money, four of the unread kind 8 and one of kind 10, every stack in 1..=5; the
+    level's `Initialize` deactivates the seven the scripts hand out later (both purses among them) and
+    leaves four lying about (three arrow piles and a kind-8 item); with the items before the scrolls, the
+    servant's scroll (113) and the two beggar-tip scrolls (120 / 121) are active after load. Nobody has
+    taken anything: native 235 reads 0 everywhere, Robin starts with 0 arrows and 0 purses."""
+    from collections import Counter
+
     with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
         e.reset({"mission": "H01_Lin_VL"}, seed=1)
         items = _items(e)
-        assert sorted(items) == sorted(H01_ITEMS)
-        for element, (x, y, kind, stack) in H01_ITEMS.items():
-            it = items[element]
-            assert (it["x"], it["y"], it["kind"], it["stack"]) == (x, y, kind, stack), it
-            assert it["taken"] is False
-            assert it["active"] == (element not in H01_ITEMS_HIDDEN_AT_LOAD), it
-        assert e.call("debug.vm", {"element": 105})["element"] == {
-            "kind": "item", "x": 572, "y": 1388, "item_kind": "purse", "stack": 3,
-        }
+        assert sorted(items) == list(range(100, 111)), sorted(items)
+        key = lambda it: it["kind"] if isinstance(it["kind"], str) else f"unknown_a {it['kind']['unknown_a']}"  # noqa: E731
+        kinds = Counter(key(it) for it in items.values())
+        assert kinds == {"arrows": 4, "purse": 2, "unknown_a 8": 4, "unknown_a 10": 1}, kinds
+        assert all(1 <= it["stack"] <= 5 and not it["taken"] for it in items.values())
+        active = Counter(key(it) for it in items.values() if it["active"])
+        assert active == {"arrows": 3, "unknown_a 8": 1}, active
+        # The two records the tests act on, by element id: the walkway pile and the steward's purse.
+        pile = _element(e, WALKWAY_PILE)
+        assert pile["kind"] == "item" and pile["item_kind"] == "arrows" and items[WALKWAY_PILE]["active"]
+        assert (pile["x"], pile["y"], pile["stack"]) == (items[WALKWAY_PILE]["x"], items[WALKWAY_PILE]["y"], items[WALKWAY_PILE]["stack"])
+        purse = _element(e, STEWARDS_PURSE)
+        assert purse["kind"] == "item" and purse["item_kind"] == "purse" and not items[STEWARDS_PURSE]["active"]
         scrolls = {s["element"]: s["active"] for s in e.call("debug.vm")["scrolls"]}
         assert scrolls[113] and scrolls[120] and scrolls[121], scrolls
         robin = _hero(e)
-        assert (robin["arrows"], robin["purses"], robin["pickup"]) == (0, 0, None)
+        assert (robin["arrows"], robin["purses"], robin["pickup"], robin["pickup_ticks"]) == (0, 0, None, 0)
 
 
 def test_clicking_an_arrow_pile_walks_robin_there_and_takes_it(binary, game_dir, tmp_path):
-    """H01: a left click on the arrow pile at the archery yard (element 100, 2 arrows, about 390 px
-    from the start) orders the selected Robin onto it (`pickup` names the item, the walk aims at
-    it); within the scroll radius the pile is taken: `arrows` rises by the stack, the item is
-    inactive and taken, the HUD's arrow counter changes and the item's disc disappears from the
-    frame; a snapshot taken mid-walk restores to the same hashes. The pickup is a hypothesis
-    (`item_pickup` recorded)."""
+    """H01 (`docs/original/h01-measurements-2.md` 1, measured): a ground order beside the arrow pile on
+    the gatehouse walkway (element 100, about 390 px from the start) walks Robin next to it and takes
+    nothing; a left click on the pile's sprite orders him onto it (`pickup` names the item, the walk aims
+    at it), his feet arrive within 8 px of the record, he stands the stoop of 40 ticks (`pickup_ticks`),
+    then the pile is taken: `arrows` rises by the stack, the item is inactive and taken, the HUD's arrow
+    counter changes and the pile's picture disappears from the frame. The arrows' take is measured and
+    records no `item_pickup`; a snapshot taken mid-stoop restores to the same hashes."""
     with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=600) as e:
         e.reset({"mission": "H01_Lin_VL"}, seed=1)
         e.skip_briefing()
@@ -940,12 +961,21 @@ def test_clicking_an_arrow_pile_walks_robin_there_and_takes_it(binary, game_dir,
         robin_index = next(i for i, x in enumerate(obs["entities"]) if x["kind"] == "player")
         _click_map(e, *_pos(obs["entities"][robin_index]))
         assert e.observe(entities=False)["selected"] is not None
-        x, y, _, stack = H01_ITEMS[100]
+        pile = _element(e, WALKWAY_PILE)
+        x, y, stack = pile["x"], pile["y"], pile["stack"]
+        # A ground order 14 px west of the pile (outside its sprite): the walk ends beside it and
+        # nothing is taken.
+        _click_map(e, x - 14, y)
+        robin = _entity(e, robin_index)
+        assert robin["pickup"] is None and robin["target"] is not None
+        _walk_until_arrived(e, robin_index, 900)
+        robin = _entity(e, robin_index)
+        assert abs(_pos(robin)[0] - x) < 40 and abs(_pos(robin)[1] - y) < 40, _pos(robin)
+        assert robin["arrows"] == 0 and _items(e)[WALKWAY_PILE]["active"], "a passing walk takes nothing"
         cam = _scroll_to(e, x, y)
         e.capture("item_before.png")
         before = tmp_path / "item_before.png"
-        # The pile's picture (the `BONUS_Arrows` bank, block 190 + stack - 1) is drawn at the item:
-        # remembered as a crop, compared after the take.
+        # The pile's picture is drawn at the item: remembered as a crop, compared after the take.
         from PIL import Image
 
         with Image.open(before) as im:
@@ -953,21 +983,37 @@ def test_clicking_an_arrow_pile_walks_robin_there_and_takes_it(binary, game_dir,
         # The counter under the bow icon reads 0 (`ui-flow.md` 9.3 element 4): remember its crop.
         with Image.open(before) as im:
             counter_before = im.convert("RGB").crop((90, 724, 130, 748)).tobytes()
-        e.step(1, pointer_click(x - cam[0] + 3, y - cam[1] - 2, "left"))
+        _click_pickup(e, x, y)
         robin = _entity(e, robin_index)
-        assert robin["pickup"] == 100 and robin["target"] is not None, robin
+        assert robin["pickup"] == WALKWAY_PILE and robin["target"] is not None, robin
+        assert robin["pickup_ticks"] == 0
         assert abs(robin["target"][0] / 256 - x) < 2 and abs(robin["target"][1] / 256 - y) < 2
-        e.step(60)
-        assert _entity(e, robin_index)["pickup"] == 100, "still walking to it"
+        # The arrival: the feet within 8 px of the record, the stoop starts.
+        for _ in range(200):
+            e.step(1)
+            if _entity(e, robin_index)["target"] is None:
+                break
+        robin = _entity(e, robin_index)
+        assert robin["target"] is None, "the walk to the pile never ended"
+        rx, ry = _pos(robin)
+        assert (rx - x) ** 2 + (ry - y) ** 2 <= ITEM_TAKE_RADIUS**2, (rx, ry)
+        assert robin["pickup"] == WALKWAY_PILE and robin["pickup_ticks"] == STOOP_TICKS, robin
+        assert robin["arrows"] == 0 and _items(e)[WALKWAY_PILE]["active"], "not taken before the stoop"
+        # Mid-stoop: the pause is authoritative (snapshotted, hashed).
+        e.step(STOOP_TICKS // 2)
+        robin = _entity(e, robin_index)
+        assert robin["pickup_ticks"] == STOOP_TICKS - STOOP_TICKS // 2 and robin["arrows"] == 0
         snap = e.snapshot()
-        ticks = _walk_pickup(e, robin_index, 600)
+        e.step(STOOP_TICKS - STOOP_TICKS // 2 - 1)
+        assert _entity(e, robin_index)["arrows"] == 0, "the last tick of the stoop"
+        e.step(1)
         robin = _entity(e, robin_index)
         assert robin["arrows"] == stack and robin["purses"] == 0, robin
-        assert robin["target"] is None, "the walk ends at the pile"
-        it = _items(e)[100]
+        assert robin["pickup"] is None and robin["pickup_ticks"] == 0
+        it = _items(e)[WALKWAY_PILE]
         assert it["taken"] and not it["active"], it
         vm = e.call("debug.vm")
-        assert "item_pickup" in vm["assumptions"], vm["assumptions"]
+        assert "item_pickup" not in vm["assumptions"], "the arrows' take is measured"
         assert vm["money"] == 100, "arrows are not money"
         cam = e.observe(entities=False)["camera"]
         e.capture("item_after.png")
@@ -978,24 +1024,94 @@ def test_clicking_an_arrow_pile_walks_robin_there_and_takes_it(binary, game_dir,
         with Image.open(after) as im:
             counter_after = im.convert("RGB").crop((90, 724, 130, 748)).tobytes()
         assert counter_after != counter_before, "the arrow counter changed"
-        # Restore mid-walk and step the same ticks: the same hashes.
+        # Restore mid-stoop and step the same ticks: the same take, the same hashes.
         h1 = e.step(5)["hashes"]["total"]
         e.restore(snapshot_id=snap["id"])
-        assert _entity(e, robin_index)["pickup"] == 100 and _entity(e, robin_index)["arrows"] == 0
-        for _ in range(ticks):
-            e.step(1)
-            _dismiss_pages(e)
+        robin = _entity(e, robin_index)
+        assert robin["pickup"] == WALKWAY_PILE and robin["pickup_ticks"] == STOOP_TICKS - STOOP_TICKS // 2
+        assert robin["arrows"] == 0 and _items(e)[WALKWAY_PILE]["active"]
+        e.step(STOOP_TICKS - STOOP_TICKS // 2)
+        assert _entity(e, robin_index)["arrows"] == stack
         h2 = e.step(5)["hashes"]["total"]
         assert h1 == h2
-        assert _entity(e, robin_index)["arrows"] == stack
+
+
+def test_a_pickup_replays_through_the_stoop(binary, game_dir, tmp_path):
+    """The pick-up order, the walk, the stoop and the take recorded as a `ReplayV1` from the first
+    briefing page and played back: no divergence at any checkpoint (one falls inside the stoop), the same
+    hashes and counters at the end."""
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=600) as e:
+        e.reset({"mission": "H01_Lin_VL"}, seed=1)
+        e.replay_start(checkpoint_every=20)
+        e.skip_briefing()
+        obs = e.observe()
+        robin_index = next(i for i, x in enumerate(obs["entities"]) if x["kind"] == "player")
+        _click_map(e, *_pos(obs["entities"][robin_index]))
+        pile = _element(e, WALKWAY_PILE)
+        _click_pickup(e, pile["x"], pile["y"])
+        assert _entity(e, robin_index)["pickup"] == WALKWAY_PILE
+        ticks, arrived = _walk_pickup(e, robin_index, 900)
+        assert arrived is not None and ticks == arrived + STOOP_TICKS, (ticks, arrived)
+        assert _entity(e, robin_index)["arrows"] == pile["stack"]
+        e.step(10)
+        total = e.observe(entities=False)["hashes"]["total"]
+        e.replay_stop(path="pickup.jsonl")
+        played = e.call("replay.play", {"path": "pickup.jsonl"})
+        assert played.get("first_divergence") is None, played
+        assert e.observe(entities=False)["hashes"]["total"] == total
+        robin = _entity(e, robin_index)
+        assert robin["arrows"] == pile["stack"] and robin["pickup"] is None
+        assert _items(e)[WALKWAY_PILE]["taken"]
+
+
+def test_robin_on_the_walkway_behind_the_archers_stays_unnoticed(binary, game_dir, tmp_path):
+    """H01 (`docs/original/h01-measurements-2.md` 3, observed): the arrow pile lies on the gatehouse
+    walkway 60..110 px south of the training archers, who face north; a hero there is behind their
+    facing-bound cone and beyond the rear radius, and stays unnoticed for minutes. Robin takes the pile
+    and stands there for 3000 ticks: no soldier within 300 px leaves `patrol`, no sighting is recorded."""
+    import math
+
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=900) as e:
+        e.reset({"mission": "H01_Lin_VL"}, seed=1)
+        e.skip_briefing()
+        obs = e.observe()
+        robin_index = next(i for i, x in enumerate(obs["entities"]) if x["kind"] == "player")
+        _click_map(e, *_pos(obs["entities"][robin_index]))
+        pile = _element(e, WALKWAY_PILE)
+        _click_pickup(e, pile["x"], pile["y"])
+        _walk_pickup(e, robin_index, 900)
+        robin = _entity(e, robin_index)
+        assert robin["arrows"] == pile["stack"]
+        rx, ry = _pos(robin)
+        soldiers = [
+            i
+            for i, x in enumerate(obs["entities"])
+            if x["kind"] == "guard" and x["team"] == "enemy" and x["alive"] and x["active"]
+        ]
+        near = [i for i in soldiers if math.hypot(_pos(obs["entities"][i])[0] - rx, _pos(obs["entities"][i])[1] - ry) < 300]
+        assert len(near) >= 5, "the archery yard is within 300 px of the walkway"
+        # Somebody behind whom he stands: at least one soldier north of him facing away (north).
+        archers = [i for i in near if _pos(obs["entities"][i])[1] < ry and _facing_vector(obs["entities"][i]["facing256"])[1] < 0]
+        assert archers, "no archer faces north with Robin behind him"
+        states = set()
+        for _ in range(100):
+            e.step(30)
+            o = e.observe()
+            for i in near:
+                states.add(o["entities"][i]["ai_state"])
+            assert o["entities"][robin_index]["alive"] and not o["hero_dead"]
+        assert states == {"patrol"}, states
+        sc = e.observe(entities=False)["script"]
+        assert "sight_cone" not in sc["assumptions"] and "alert_policy" not in sc["assumptions"], sc["assumptions"]
 
 
 def test_taking_the_stewards_purse_completes_the_third_objective(binary, game_dir, tmp_path):
-    """H01 objective 3 (`docs/original/h01-win-path.md` 3 / 4.2): the steward-tip scroll (120 at
-    (941,1192)) adds the objective and its cutscene's message 3 activates the purse items 104 / 105;
-    a click on the steward's purse (105, a purse of stack 3 at (572,1388)) walks Robin there and
-    takes it: the mission's money rises by the purse policy, Robin's purse counter by one, and the
-    level's `Hourglass` reads native 235 = 1 on it and completes objective 3 (`n27(3)`)."""
+    """H01 objective 3 (`docs/original/h01-win-path.md` 3 / 4.2): the steward-tip scroll (120) adds the
+    objective and its cutscene's message 3 activates the purse items 104 / 105; a click on the steward's
+    purse (105, a purse with money) walks Robin onto it and, after the stoop, takes it: the mission's
+    money rises by the purse policy, Robin's purse counter by one (the amount is the hypothesis
+    `item_pickup` records), and the level's `Hourglass` reads native 235 = 1 on it and completes
+    objective 3 (`n27(3)`)."""
     with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=900) as e:
         e.reset({"mission": "H01_Lin_VL"}, seed=1)
         e.skip_briefing()
@@ -1003,9 +1119,13 @@ def test_taking_the_stewards_purse_completes_the_third_objective(binary, game_di
         robin_index = next(i for i, x in enumerate(obs["entities"]) if x["kind"] == "player")
         _click_map(e, *_pos(obs["entities"][robin_index]))
         money_at_start = e.call("debug.vm")["money"]
-        assert not _items(e)[105]["active"], "the purse lies hidden until the tip"
-        # Walk onto the tip scroll; its cutscene shows a page, then message 3 reveals the purses.
-        _click_map(e, 941, 1192)
+        assert not _items(e)[STEWARDS_PURSE]["active"], "the purse lies hidden until the tip"
+        # Read the tip scroll (a click on it: the walk, the pause, its cutscene's page), then message 3
+        # reveals the purses.
+        tip = _element(e, STEWARD_TIP_SCROLL)
+        assert tip["kind"] == "scroll"
+        _click_pickup(e, tip["x"], tip["y"])
+        assert _entity(e, robin_index)["pickup"] == STEWARD_TIP_SCROLL
         objective_added = False
         for _ in range(1500):
             e.step(1)
@@ -1013,21 +1133,23 @@ def test_taking_the_stewards_purse_completes_the_third_objective(binary, game_di
             sc = e.observe(entities=False)["script"]
             if any(o["index"] == 3 for o in sc["objectives"]):
                 objective_added = True
-            if objective_added and _items(e)[105]["active"]:
+            if objective_added and _items(e)[STEWARDS_PURSE]["active"]:
                 break
         assert objective_added, "the tip scroll did not add objective 3"
-        assert _items(e)[105]["active"] and _items(e)[104]["active"]
+        assert _items(e)[STEWARDS_PURSE]["active"] and _items(e)[104]["active"]
         assert not any(o["index"] == 3 and o["done"] for o in sc["objectives"])
-        # Click the purse: the walk with the pick-up intent, the take, the money and the counter.
-        x, y, _, stack = H01_ITEMS[105]
-        _click_map(e, x, y)
-        assert _entity(e, robin_index)["pickup"] == 105
-        _walk_pickup(e, robin_index, 1800)
+        # Click the purse: the walk with the pick-up intent, the stoop, the take, the money and the
+        # counter.
+        purse = _element(e, STEWARDS_PURSE)
+        _click_pickup(e, purse["x"], purse["y"])
+        assert _entity(e, robin_index)["pickup"] == STEWARDS_PURSE
+        ticks, arrived = _walk_pickup(e, robin_index, 1800)
+        assert arrived is not None and ticks == arrived + STOOP_TICKS
         robin = _entity(e, robin_index)
         assert robin["purses"] == 1 and robin["arrows"] == 0, robin
         vm = e.call("debug.vm")
-        assert vm["money"] == money_at_start + 25 * stack, vm["money"]
-        assert _items(e)[105]["taken"]
+        assert vm["money"] == money_at_start + 25 * purse["stack"], vm["money"]
+        assert _items(e)[STEWARDS_PURSE]["taken"]
         # Hourglass polls native 235 on the purse every tick: objective 3 done within a few ticks.
         for _ in range(5):
             e.step(1)

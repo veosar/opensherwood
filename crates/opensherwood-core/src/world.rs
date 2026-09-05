@@ -21,8 +21,8 @@ use crate::input::{Button, InputEvent, Key, button_tag, encode_key};
 use crate::nav::{DEFAULT_SEARCH_WORK, NavError, NavGrid};
 use crate::rng::Rng;
 use crate::vm::{
-    Assumption, ItemKind, PURSE_MONEY_PER_STACK, Program, SCRIPT_RNG_STREAM, SCROLL_PICKUP_RADIUS,
-    ScriptObservation, VmState, charge_budget,
+    Assumption, ItemKind, PURSE_MONEY_PER_STACK, Program, SCRIPT_RNG_STREAM, ScriptObservation,
+    VmState, charge_budget,
 };
 
 /// Stable entity identifier (index + generation).
@@ -236,22 +236,38 @@ pub struct Entity {
     #[serde(default)]
     pub heard: bool,
     /// Arrows carried (player characters; the portrait's arrow counter, 0 at a mission's start:
-    /// `combat-measurements.md` 2). Gathered from arrow items ([`crate::vm::ItemKind::Arrows`]).
+    /// `combat-measurements.md` 2). Gathered from arrow items ([`crate::vm::ItemKind::Arrows`]:
+    /// the stack per pile, measured, `docs/original/h01-measurements-2.md` 1.3).
     #[serde(default)]
     pub arrows: i32,
     /// Purses picked up (player characters; the portrait's purse counter): one per purse item
-    /// taken ([`crate::vm::ItemKind::Purse`]).
+    /// taken ([`crate::vm::ItemKind::Purse`]; hypothesis, [`Assumption::ItemPickup`]).
     #[serde(default)]
     pub purses: i32,
-    /// The pick-up item (element handle) this player character was ordered onto by a left
-    /// click on it: the walk is towards the item, and [`World::resolve_pickups`] takes the
-    /// item when he comes within [`crate::vm::SCROLL_PICKUP_RADIUS`]. Cleared by any other
-    /// order and when the item is gone.
+    /// The pick-up (the element handle of an item or a scroll) this player character was
+    /// ordered onto by a left click on it: the walk is towards it and
+    /// [`World::resolve_pickups`] takes the item (or reads the scroll) when the walk arrives
+    /// and the pause ([`Entity::pickup_ticks`]) has run. The take is bound to the order: a
+    /// walk that merely passes an item, or a ground order beside it, takes nothing (measured,
+    /// `docs/original/h01-measurements-2.md` 1.2). Cleared by any other order and when the
+    /// pick-up is gone.
     #[serde(default)]
     pub pickup: Option<i32>,
+    /// Ticks left of the pause between the arrival at the pick-up and the take: the stoop
+    /// over an item ([`STOOP_TICKS`]) or the pause before a scroll's page
+    /// ([`SCROLL_PAUSE_TICKS`]); 0 while the walk is under way and whenever `pickup` is
+    /// `None`.
+    #[serde(default)]
+    pub pickup_ticks: u32,
 }
 
 impl Entity {
+    /// Drop the pick-up order and its pause.
+    pub(crate) fn clear_pickup(&mut self) {
+        self.pickup = None;
+        self.pickup_ticks = 0;
+    }
+
     /// Distance covered per world tick: the speed of the movement cycle the entity plays in its
     /// state, posture and gait (`ai::wanted_animation`: walk 6, run 7, sneak 16, the alert walk
     /// 143 and run 151 of an alerted soldier, or the documented fallback block), read from the
@@ -714,11 +730,100 @@ pub const SYNTHETIC_GUARD_SPEED: Fixed = Fixed::from_raw(182);
 pub const MAX_STATE_TICKS: u32 = 1 << 24;
 /// Largest number of arrows or purses a snapshot may give one character.
 pub const MAX_PICKUP_COUNT: i32 = 1 << 20;
-/// A left click within this many map pixels of an active pick-up item's position is a click on
-/// the item: the selected player character walks to it and takes it (hypothesis: the
-/// original's hit test is the item's sprite, `docs/original/ui-flow.md` 9.4 "click on it";
-/// the engine draws items as small discs of about this size).
-pub const ITEM_CLICK_RADIUS: i32 = 12;
+/// Half width in map pixels of a pick-up's hit area: the sprite itself, about 12 x 14 px
+/// rising from the record's position, which is the sprite's bottom edge (measured for items,
+/// `docs/original/h01-measurements-2.md` 1.1: a pointer 8 px under the sprite shows the walk
+/// arrow); a scroll's parchment is about as wide (1.5), its height taken over. A left click
+/// inside the area, with the hand pointer, orders the selected player character onto the
+/// pick-up ([`World::pickup_at_pointer`]).
+pub const PICKUP_HIT_HALF_WIDTH: i32 = 6;
+/// Height in map pixels of a pick-up's hit area above the record's position
+/// ([`PICKUP_HIT_HALF_WIDTH`]).
+pub const PICKUP_HIT_HEIGHT: i32 = 14;
+/// A walk ordered onto an item arrives with the feet within this many map pixels of the
+/// item's position (measured 0..8 px: the character covers the sprite,
+/// `h01-measurements-2.md` 1.4); a walk that ends farther away (the item unreachable, the
+/// character blocked) takes nothing.
+pub const ITEM_TAKE_RADIUS: i32 = 8;
+/// Ticks of the stoop between the arrival at an item and the take (measured 0.6..0.7 s, 40
+/// ticks at 60 Hz; `h01-measurements-2.md` 1.2 / 1.4). The character stands in the idle pose
+/// meanwhile: the profiles' pick-up action (126 for the heroes, 158..160 for the others,
+/// `sprite-animations.md`) has no block in the animation set yet.
+pub const STOOP_TICKS: u32 = 40;
+/// A walk ordered onto a scroll aims this many map pixels short of the scroll, on the line
+/// from the character to it (measured: the character stops about 18 px short of the base,
+/// `h01-measurements-2.md` 1.4).
+pub const SCROLL_STOP_DISTANCE: i32 = 18;
+/// A walk ordered onto a scroll counts as arrived within this many map pixels of the scroll:
+/// the measured stop ([`SCROLL_STOP_DISTANCE`]) plus the walk's tolerance (the navigation
+/// cell, `nav::CELL`, when the exact stop point is not walkable); farther away the order is
+/// dropped unread.
+pub const SCROLL_ARRIVAL_RADIUS: i32 = SCROLL_STOP_DISTANCE + crate::nav::CELL - 2;
+/// Ticks of the pause between the arrival at a scroll and its page (`IsTaken`): measured
+/// 0.7..0.8 s after the character stopped, 42 ticks at 60 Hz (`h01-measurements-2.md` 1.4).
+pub const SCROLL_PAUSE_TICKS: u32 = 42;
+/// Largest pick-up pause a snapshot may carry ([`Entity::pickup_ticks`]).
+pub const MAX_PICKUP_TICKS: u32 = if STOOP_TICKS > SCROLL_PAUSE_TICKS {
+    STOOP_TICKS
+} else {
+    SCROLL_PAUSE_TICKS
+};
+
+/// What a pick-up order aims at ([`Entity::pickup`]): the position, the arrival tolerance,
+/// the pause and what the take does.
+struct PickupTarget {
+    x: i32,
+    y: i32,
+    arrival_radius: i32,
+    pause_ticks: u32,
+    kind: PickupKind,
+}
+
+/// An item (its kind and stack) or a scroll.
+enum PickupKind {
+    Item(ItemKind, u16),
+    Scroll,
+}
+
+/// The pick-up `handle` names while it can still be taken: an active item not yet taken, or
+/// an active scroll.
+fn pickup_target(vm: &VmState, handle: i32) -> Option<PickupTarget> {
+    if let Some((x, y, kind, stack)) = vm.item(handle) {
+        let live = vm.element_active(handle) && !vm.taken_items.contains(&handle);
+        return live.then_some(PickupTarget {
+            x,
+            y,
+            arrival_radius: ITEM_TAKE_RADIUS,
+            pause_ticks: STOOP_TICKS,
+            kind: PickupKind::Item(kind, stack),
+        });
+    }
+    let (x, y) = vm.scroll(handle)?;
+    vm.element_active(handle).then_some(PickupTarget {
+        x,
+        y,
+        arrival_radius: SCROLL_ARRIVAL_RADIUS,
+        pause_ticks: SCROLL_PAUSE_TICKS,
+        kind: PickupKind::Scroll,
+    })
+}
+
+/// The point `distance` map pixels short of `to` on the line from `from` to `to` (`from`
+/// itself when the two are closer than that).
+#[must_use]
+pub fn stop_short(from: (Fixed, Fixed), to: (Fixed, Fixed), distance: i32) -> (Fixed, Fixed) {
+    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+    let len = i64::from(Fixed::length(dx, dy).raw());
+    let short = i64::from(distance.max(0)) * 256;
+    if len <= short {
+        return from;
+    }
+    let back = |end: Fixed, d: Fixed| {
+        let v = i64::from(end.raw()) - i64::from(d.raw()) * short / len;
+        Fixed::from_raw(v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32)
+    };
+    (back(to.0, dx), back(to.1, dy))
+}
 
 /// The half extents an obstacle entity stores: their magnitudes, clamped to
 /// [`MAX_OBSTACLE_HALF_EXTENT`] (the form `validate` accepts; the index and the collision
@@ -1167,8 +1272,9 @@ impl ObstacleIndex {
 /// (the soldier a held left button locked a figure onto), the `return_pending` AI state, the
 /// assumption registry grew by `alert_timeout` and `attack_policy: multi_party`, the VM's
 /// `fault` by `call_stack_overflow`; obstacle half extents, entity sizes and the obstacle
-/// index's cell occupancy are bounded).
-pub const SNAPSHOT_VERSION: u32 = 19;
+/// index's cell occupancy are bounded; 20: the measured pick-ups and view cone (ruleset 17):
+/// entity `pickup_ticks`, `pickup` may name a scroll, the VM's `scroll_presence` is gone).
+pub const SNAPSHOT_VERSION: u32 = 20;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -1286,6 +1392,7 @@ impl World {
                 arrows: 0,
                 purses: 0,
                 pickup: None,
+                pickup_ticks: 0,
             });
         }
         // The original opens a mission with the camera on the hero.
@@ -1531,6 +1638,7 @@ impl World {
             arrows: 0,
             purses: 0,
             pickup: None,
+            pickup_ticks: 0,
         });
         entities.push(Entity {
             id: id(1),
@@ -1576,6 +1684,7 @@ impl World {
             arrows: 0,
             purses: 0,
             pickup: None,
+            pickup_ticks: 0,
         });
         let obstacles: &[(i32, i32, i32, i32)] = if map.is_some() {
             &[]
@@ -1627,6 +1736,7 @@ impl World {
                 arrows: 0,
                 purses: 0,
                 pickup: None,
+                pickup_ticks: 0,
             });
         }
         let geometry = Geometry::default();
@@ -1965,14 +2075,23 @@ impl World {
                 ));
             }
             if let Some(h) = e.pickup {
-                let item = self.vm.as_ref().and_then(|vm| vm.item(h));
-                if e.kind != EntityKind::Player || item.is_none() {
+                let known = self
+                    .vm
+                    .as_ref()
+                    .is_some_and(|vm| vm.item(h).is_some() || vm.scroll(h).is_some());
+                if e.kind != EntityKind::Player || !known {
                     return Err(format!(
                         "entity {:?} has a pick-up order on {h}, which is not a pick-up item \
-                         it can take",
+                         or scroll it can take",
                         e.id
                     ));
                 }
+            }
+            if e.pickup_ticks > MAX_PICKUP_TICKS || (e.pickup.is_none() && e.pickup_ticks != 0) {
+                return Err(format!(
+                    "entity {:?} has a pick-up pause of {} ticks with the order {:?}",
+                    e.id, e.pickup_ticks, e.pickup
+                ));
             }
             if e.ai_state == AiState::Fighting
                 && !(e.kind == EntityKind::Player
@@ -2168,47 +2287,69 @@ impl World {
         self.rng.validate()
     }
 
-    /// Apply the events of one tick (in order) and advance the simulation by one tick.
+    /// Apply the events of one tick (in order) and advance the simulation by one tick: the
+    /// camera, the script scheduler, the simulation phases, then the pick-up orders (so an
+    /// arrival counts on its own tick and the pause runs exactly its ticks).
     pub fn step(&mut self, events: &[InputEvent]) {
         for e in events {
             self.apply(*e);
         }
         self.scroll();
         self.vm_tick();
-        self.resolve_pickups();
         self.simulate();
+        self.resolve_pickups();
         self.tick = self.tick.saturating_add(1);
     }
 
-    /// The active pick-up item under the pointer (within [`ITEM_CLICK_RADIUS`] of its position;
-    /// the nearest one, ties broken by the lower handle), if the world runs a script.
+    /// The active pick-up (an item or a scroll) under the pointer, if the world runs a
+    /// script: the hit area is the sprite, [`PICKUP_HIT_HALF_WIDTH`] either side of the
+    /// record's position and [`PICKUP_HIT_HEIGHT`] above it (the position is the sprite's
+    /// bottom edge). The nearest one to the pointer wins, ties broken by the lower handle.
     #[must_use]
-    pub fn item_at_pointer(&self) -> Option<i32> {
+    pub fn pickup_at_pointer(&self) -> Option<i32> {
         let vm = self.vm.as_ref()?;
         let (px, py) = self.pointer_in_map();
         let (px, py) = (i64::from(px.round()), i64::from(py.round()));
-        let radius = i64::from(ITEM_CLICK_RADIUS);
-        vm.items()
+        let hit = |handle: i32, x: i32, y: i32| -> Option<(i64, i32)> {
+            let (dx, dy) = (px - i64::from(x), py - i64::from(y));
+            let inside = dx.abs() <= i64::from(PICKUP_HIT_HALF_WIDTH)
+                && (-i64::from(PICKUP_HIT_HEIGHT)..=0).contains(&dy);
+            inside.then_some((dx * dx + dy * dy, handle))
+        };
+        let items = vm
+            .items()
             .into_iter()
             .filter(|it| it.active)
-            .filter_map(|it| {
-                let (dx, dy) = (px - i64::from(it.x), py - i64::from(it.y));
-                let d2 = dx * dx + dy * dy;
-                (d2 <= radius * radius).then_some((d2, it.element))
-            })
-            .min()
-            .map(|(_, handle)| handle)
+            .filter_map(|it| hit(it.element, it.x, it.y));
+        let scrolls = vm
+            .program
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match *e {
+                crate::vm::Element::Scroll { x, y } if vm.element_active(i as i32) => {
+                    hit(i as i32, x, y)
+                }
+                _ => None,
+            });
+        items.chain(scrolls).min().map(|(_, handle)| handle)
     }
 
-    /// Player characters ordered onto a pick-up item ([`Entity::pickup`]) take it when they
-    /// come within [`SCROLL_PICKUP_RADIUS`] of it (the same approach rule as the scrolls'; the
-    /// manual's "click on it" gesture, the radius and the effects are hypotheses:
-    /// [`Assumption::ItemPickup`]): arrows add their stack to the character's `arrows`, a purse
-    /// adds [`PURSE_MONEY_PER_STACK`] per stack unit to the mission's money and one purse to
-    /// the character's `purses`, an unknown kind only disappears. The item is marked taken
-    /// (native 235) and deactivated (it is no longer drawn or pickable), and the walk ends
-    /// there. An order whose item vanished (deactivated by the script, taken by another
-    /// character) or whose walk ended short of it is dropped.
+    /// Player characters ordered onto a pick-up ([`Entity::pickup`]: a click on an item or a
+    /// scroll, `World::left_click`) take it when the walk arrives, after a pause. The take is
+    /// bound to the order, never to proximity: a walk that merely passes an item or a ground
+    /// order beside it takes nothing (measured, `docs/original/h01-measurements-2.md` 1.2). An
+    /// **item**: the walk aims at the item, the feet arrive within [`ITEM_TAKE_RADIUS`] of its
+    /// position, the character stoops for [`STOOP_TICKS`] (in the idle pose), then the item
+    /// vanishes and the counters change: arrows add their stack to `arrows` (measured), a
+    /// purse adds [`PURSE_MONEY_PER_STACK`] per stack unit to the mission's money and one
+    /// purse to `purses`, an unknown kind only disappears (both hypotheses,
+    /// [`Assumption::ItemPickup`]); the item is marked taken (native 235) and deactivated. A
+    /// **scroll**: the walk aims [`SCROLL_STOP_DISTANCE`] short of it, the character arrives
+    /// within [`SCROLL_ARRIVAL_RADIUS`], pauses [`SCROLL_PAUSE_TICKS`], then the scroll is
+    /// read ([`World::vm_read_scroll`]: `IsTaken`, and the page it shows). An order whose
+    /// pick-up vanished (deactivated by the script, taken by another character), whose
+    /// character can no longer take it, or whose walk ended short of it is dropped.
     fn resolve_pickups(&mut self) {
         if self.vm.is_none() {
             return;
@@ -2217,57 +2358,74 @@ impl World {
             let Some(handle) = self.entities[i].pickup else {
                 continue;
             };
-            let e = &self.entities[i];
-            let item = self.vm.as_ref().and_then(|vm| {
-                let (x, y, kind, stack) = vm.item(handle)?;
-                (vm.element_active(handle) && !vm.taken_items.contains(&handle))
-                    .then_some((x, y, kind, stack))
-            });
-            let Some((x, y, kind, stack)) = item else {
-                self.entities[i].pickup = None;
+            let target = self.vm.as_ref().and_then(|vm| pickup_target(vm, handle));
+            let Some(target) = target else {
+                self.entities[i].clear_pickup();
                 continue;
             };
-            if !(e.alive && e.active && e.kind == EntityKind::Player) {
-                self.entities[i].pickup = None;
+            let e = &self.entities[i];
+            let can_take = e.alive
+                && e.active
+                && e.kind == EntityKind::Player
+                && e.ai_state == AiState::Patrol;
+            if !can_take {
+                self.entities[i].clear_pickup();
                 continue;
             }
-            let dx = i64::from(e.x.round()) - i64::from(x);
-            let dy = i64::from(e.y.round()) - i64::from(y);
-            if dx * dx + dy * dy > SCROLL_PICKUP_RADIUS * SCROLL_PICKUP_RADIUS {
-                if e.target.is_none() {
-                    // The walk ended short of the item (unreachable, cancelled by a state).
-                    self.entities[i].pickup = None;
+            if e.pickup_ticks == 0 {
+                if e.target.is_some() {
+                    // Still walking.
+                    continue;
+                }
+                let dx = i64::from(e.x.round()) - i64::from(target.x);
+                let dy = i64::from(e.y.round()) - i64::from(target.y);
+                let radius = i64::from(target.arrival_radius);
+                if dx * dx + dy * dy > radius * radius {
+                    // The walk ended short of the pick-up (unreachable, blocked, cancelled).
+                    self.entities[i].clear_pickup();
+                } else {
+                    // Arrived: the stoop or the pause starts.
+                    self.entities[i].pickup_ticks = target.pause_ticks.max(1);
                 }
                 continue;
             }
-            let Some(vm) = self.vm.as_mut() else { return };
-            vm.assume(Assumption::ItemPickup);
-            vm.taken_items.insert(handle);
-            if vm.inactive_elements.len() < crate::vm::MAX_QUEUE * 16 {
-                vm.inactive_elements.insert(handle);
+            self.entities[i].pickup_ticks -= 1;
+            if self.entities[i].pickup_ticks > 0 {
+                continue;
             }
-            match kind {
-                ItemKind::Arrows => {
-                    let e = &mut self.entities[i];
-                    e.arrows = e
-                        .arrows
-                        .saturating_add(i32::from(stack))
-                        .min(MAX_PICKUP_COUNT);
+            match target.kind {
+                PickupKind::Item(kind, stack) => {
+                    let Some(vm) = self.vm.as_mut() else { return };
+                    vm.taken_items.insert(handle);
+                    if vm.inactive_elements.len() < crate::vm::MAX_QUEUE * 16 {
+                        vm.inactive_elements.insert(handle);
+                    }
+                    match kind {
+                        ItemKind::Arrows => {
+                            let e = &mut self.entities[i];
+                            e.arrows = e
+                                .arrows
+                                .saturating_add(i32::from(stack))
+                                .min(MAX_PICKUP_COUNT);
+                        }
+                        ItemKind::Purse => {
+                            vm.assume(Assumption::ItemPickup);
+                            vm.money = vm.money.saturating_add(
+                                PURSE_MONEY_PER_STACK.saturating_mul(i32::from(stack)),
+                            );
+                            let e = &mut self.entities[i];
+                            e.purses = e.purses.saturating_add(1).min(MAX_PICKUP_COUNT);
+                        }
+                        ItemKind::Unknown(_) => vm.assume(Assumption::ItemPickup),
+                    }
+                    self.entities[i].clear_pickup();
                 }
-                ItemKind::Purse => {
-                    vm.money = vm
-                        .money
-                        .saturating_add(PURSE_MONEY_PER_STACK.saturating_mul(i32::from(stack)));
-                    let e = &mut self.entities[i];
-                    e.purses = e.purses.saturating_add(1).min(MAX_PICKUP_COUNT);
-                }
-                ItemKind::Unknown(_) => {}
+                PickupKind::Scroll => match self.vm_read_scroll(handle, i) {
+                    // The tick's budget was spent before the handler could start: next tick.
+                    None => self.entities[i].pickup_ticks = 1,
+                    Some(_) => self.entities[i].clear_pickup(),
+                },
             }
-            let e = &mut self.entities[i];
-            e.pickup = None;
-            e.target = None;
-            e.path.clear();
-            e.gait = Gait::Walk;
         }
     }
 
@@ -2443,24 +2601,26 @@ impl World {
         }
         self.entities[i].attack_target = None;
         self.entities[i].figure = None;
-        self.entities[i].pickup = None;
-        // A click on a pick-up item (`docs/original/ui-flow.md` 9.4, the tutorial's "click on
-        // it"): the character walks to the item and `resolve_pickups` takes it on arrival.
-        if let Some(handle) = self.item_at_pointer() {
+        self.entities[i].clear_pickup();
+        // A click on a pick-up (the hand pointer over an item or a scroll: measured,
+        // `docs/original/h01-measurements-2.md` 1.2): the character walks to the item, or to
+        // a point short of the scroll, and `resolve_pickups` takes it after the pause.
+        if let Some(handle) = self.pickup_at_pointer() {
             self.last_ground_click = None;
-            let (x, y) = self
-                .vm
-                .as_ref()
-                .and_then(|vm| vm.item(handle))
-                .map_or(target, |(x, y, _, _)| {
-                    (Fixed::from_int(x), Fixed::from_int(y))
-                });
-            self.plan_path(i, (x, y));
+            let Some(pt) = self.vm.as_ref().and_then(|vm| pickup_target(vm, handle)) else {
+                return;
+            };
+            let e = &self.entities[i];
+            let at = (Fixed::from_int(pt.x), Fixed::from_int(pt.y));
+            let to = match pt.kind {
+                PickupKind::Item(..) => at,
+                PickupKind::Scroll => stop_short((e.x, e.y), at, SCROLL_STOP_DISTANCE),
+            };
+            self.plan_path(i, to);
             let e = &mut self.entities[i];
             e.gait = Gait::Walk;
-            if e.target.is_some() {
-                e.pickup = Some(handle);
-            }
+            e.pickup = Some(handle);
+            e.pickup_ticks = 0;
             return;
         }
         let double = self.last_ground_click.is_some_and(|c| {
@@ -2501,7 +2661,7 @@ impl World {
                 e.gait = Gait::Walk;
                 e.attack_target = None;
                 e.figure = None;
-                e.pickup = None;
+                e.clear_pickup();
             }
             _ => self.selected = None,
         }
@@ -2516,7 +2676,7 @@ impl World {
         let e = &mut self.entities[i];
         e.attack_target = Some(id);
         e.figure = figure;
-        e.pickup = None;
+        e.clear_pickup();
     }
 
     /// Player character `i` leaves his fight on the player's order; his foe stands his ground
@@ -3098,6 +3258,7 @@ impl World {
                 .u8(u8::from(e.heard))
                 .i32(e.arrows)
                 .i32(e.purses)
+                .u32(e.pickup_ticks)
                 .u32(e.wait_ticks)
                 .u32(e.patrol_index)
                 .u32(e.patrol.len() as u32);
@@ -3411,7 +3572,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "9d7d8304430b9f0498d4acfe6e28c361db6adf21b6e3825c467a5557b29e6392";
+        "4f3ce8a754064331e3837fc4b223e386ad4cfc32b386702bb421c30517ba7f4d";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -3533,6 +3694,9 @@ mod tests {
         let mut w = base.clone();
         w.entities[1].heard = true;
         variants.push(("heard", w));
+        let mut w = base.clone();
+        w.entities[0].pickup_ticks = 7;
+        variants.push(("pickup_ticks", w));
         let mut w = base.clone();
         w.cursors.perception = 1;
         variants.push(("cursors.perception", w));

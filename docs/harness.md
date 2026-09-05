@@ -40,13 +40,17 @@ The documented rules of `docs/original/ui-flow.md` 9.4, all through canonical in
 character selects him, a left click on the ground orders the selected player character to **walk** there, a
 second left click within 20 ticks and 8 map pixels of the first (`DOUBLE_CLICK_TICKS`, `DOUBLE_CLICK_DISTANCE`)
 makes that order a **run**; a **right click** on the selected character cancels his order, a right click anywhere
-else deselects. A left click within 12 map px of an active **pick-up item** (`docs/formats/rhm.md` "`ZORG`": the
-placeholder disc the engine draws for it, gold for a purse, brown for arrows, grey for an unknown kind) orders the
-selected player character to walk to it (`observe` entities carry `pickup` = the item's element handle while the
-order stands); within 24 map px of it (the scroll pickup radius) the item is taken: arrows add their stack to the
-entity's `arrows`, a purse adds 25 per stack unit to the script's money and one to the entity's `purses`, an
-unknown kind only disappears; the item deactivates and native 235 reads it as taken. The gesture, the radius and
-the amounts are hypotheses (`item_pickup` in `observe.script.assumptions`). The HUD's portrait draws the selected
+else deselects. A left click on the sprite of an active **pick-up item** or **scroll** (`docs/formats/rhm.md`
+"`ZORG`"; the hit area is 12 x 14 map px above the record's position, measured `docs/original/h01-measurements-2.md`
+1) orders the selected player character onto it (`observe` entities carry `pickup` = the element handle while the
+order stands and `pickup_ticks` = the ticks left of the pause after the arrival, 0 while walking): an item is
+taken when the walk arrived within 8 px of it and the stoop of 40 ticks ran (arrows add their stack to the
+entity's `arrows`: measured; a purse adds 25 per stack unit to the script's money and one to the entity's
+`purses`, an unknown kind only disappears: hypotheses, `item_pickup` in `observe.script.assumptions`); the item
+deactivates and native 235 reads it as taken. A scroll is read when the walk arrived about 18 px short of it and
+the pause of 42 ticks ran: its class's `IsTaken` fires and the page it shows follows (`ui.screen` `briefing`); a
+non-zero result deactivates the scroll (`scroll_pickup`). The take is bound to the order: a walk that passes an
+item or a ground order beside it takes nothing, and a scroll is never read by walking onto it. The HUD's portrait draws the selected
 character's `arrows` and `purses` under the bow and purse icon positions (`ui-flow.md` 9.3 element 4). `c` crouches the selected player character, `s` stands him up. `observe` entities carry `gait`
 (`walk` / `run`: the mode of the current order, `walk` again once it ends) and `posture` (`standing` /
 `crouched`). Speeds: every entity moves at the speed of the animation cycle it plays, read from its profile's
@@ -226,8 +230,10 @@ the presentation-only stubs 62 / 69 / 149 / 150 / 243 record nothing on the call
 implemented native whose reading is a policy, `natives::NATIVE_TAINT`), `{"opcode": op}` (an instruction of
 a low-confidence opcode executed: 0x14, 0x24, 0x28, 0x2b), `"unresolved_jump"`, `{"unknown_native": id}`
 (lenient mode), and the engine's own rules, each recorded where it first changes authoritative state
-whether or not a script handler exists (Codex review 9): `"sight_cone"` (the view cone decided a sighting
-that changed a soldier's state), `"noise_radius"` (a run heard from beyond the measured 330 px bound and
+whether or not a script handler exists (Codex review 9): `"sight_cone"` (the rear radius of 50 px or the
+crouch divisor decided a sighting that changed a soldier's state; the cone itself, a sector of 80 degrees
+bound to the facing with an elliptical reach of 270 x 194 px, is measured and a standing character seen
+inside it records nothing), `"noise_radius"` (a run heard from beyond the measured 330 px bound and
 within the engine's 350 px; within the bound the noise channel is measured and records nothing),
 `"alert_policy"` (the noticed -> alarm -> search sequence a sighting starts, the re-plan while
 searching), `"alert_timeout"` (the alert timeout and the return to the post, recorded before a heard
@@ -237,8 +243,10 @@ untainted), `{"attack_policy": "reach" | "block" | "hit_chance" | "post_bound" |
 swing timed with the engine's jitter; a soldier standing his ground; a second attacker waiting at reach
 because a soldier fights one at a time), `"knock_out"` (the blow felled or failed to fell a
 victim, native 90 / 128 reported it, or its action id reached a handler), `"profile_stats"`,
-`"tick_rate"`, `"scroll_pickup"`, `"item_pickup"` (a pick-up item was taken: the click gesture, the radius,
-the kind / stack reading and the purse amount), `"zone_at_load"`, `"walk_completion"`, `"action_change_order"`,
+`"tick_rate"`, `"scroll_pickup"` (a scroll's `IsTaken` returned non-zero and the scroll was deactivated: what
+makes a scroll vanish after its reading; the reading itself is measured), `"item_pickup"` (a purse or an item
+of an unknown kind was taken: the purse amount and the unknown kind's effect; an arrow pile's take is measured
+and records nothing), `"zone_at_load"`, `"walk_completion"`, `"action_change_order"`,
 `"campaign_graph"`, `"lenient_assets"`. Every fight is therefore tainted from its first swing and every
 sighting from the tick it changed a state; a win reached through a heard charge is tainted by
 `alert_timeout` alone, the hearing within the bound and the charge itself recording nothing

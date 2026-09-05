@@ -60,11 +60,15 @@
 //! `natives::NATIVE_TAINT` record nothing on the call), a lenient unknown native
 //! ([`Assumption::UnknownNative`]), and the engine's own hypotheses, each recorded by the rule
 //! itself at the point where it first mutates authoritative state, independent of any callback
-//! or later consumer (Codex review 9, finding 1): the view cone ([`Assumption::SightCone`]), the
+//! or later consumer (Codex review 9, finding 1): the unmeasured part of the sight (the rear
+//! radius and the crouch divisor, [`Assumption::SightCone`]; the cone itself is measured), the
 //! unmeasured part of the noise radius ([`Assumption::NoiseRadius`]), the alert sequence a
 //! sighting starts ([`Assumption::AlertPolicy`]), the alert timeout and the return to the post
 //! ([`Assumption::AlertTimeout`]), the attack policy ([`Assumption::AttackPolicy`]), the knock-out
-//! policy ([`Assumption::KnockOut`]), the profile stats, the tick rate, the scroll pickup, the
+//! policy ([`Assumption::KnockOut`]), the profile stats, the tick rate, a scroll's fate after
+//! its reading ([`Assumption::ScrollPickup`]; the order, the approach and the pause are
+//! measured), a purse's amount or an unknown item kind's effect ([`Assumption::ItemPickup`];
+//! the order, the stoop and the arrows' stack are measured), the
 //! zone presence at load, a walk that completed without arriving, the `ActionChange` parameter
 //! order, the campaign graph, the lenient asset fallbacks. The set is snapshotted, hashed,
 //! validated and exposed as `ScriptObservation::assumptions` / `tainted`; it only grows (a
@@ -118,8 +122,6 @@ pub const MAX_CODE: usize = 1 << 20;
 /// Handle value meaning "none" (element, location, path): `n6(-1)`, `n3(-1)` in the scripts.
 pub const NONE_HANDLE: i32 = -1;
 
-/// Distance (map pixels) within which a player character picks up a scroll (hypothesis).
-pub const SCROLL_PICKUP_RADIUS: i64 = 24;
 /// Bit set in a location value that packs an actor position (see [`location_of_point`]).
 pub const LOCATION_POINT_BIT: i32 = 1 << 30;
 /// RNG stream id of the `script` stream (the gameplay stream is 1).
@@ -475,8 +477,9 @@ pub enum Element {
         y: i32,
     },
     /// A pick-up item (`ZORG`, the executable's "Bonus" chunk; `docs/formats/rhm.md`) at a map
-    /// position: a purse, a bundle of arrows or another kind, with its stack size. Taken by a
-    /// player character ordered onto it (`World::resolve_pickups`); native 235 reads whether it
+    /// position (the sprite's base point): a purse, a bundle of arrows or another kind, with
+    /// its stack size. Taken by a player character ordered onto it by a click on the item
+    /// (`World::resolve_pickups`: the walk, the stoop, the take); native 235 reads whether it
     /// was taken, 113 / 114 hide and show it like any other non-actor element.
     Item {
         /// Map x.
@@ -485,8 +488,9 @@ pub enum Element {
         y: i32,
         /// What the item is (the record's `unknown_a`).
         kind: ItemKind,
-        /// Stack size (the record's `unknown_b`, 1..=5: the bonus animation block `189 + b`
-        /// of the item's sprite, read as the number of pieces in the pile: hypothesis).
+        /// Stack size (the record's `unknown_b`, 1..=5): observed as the digit of the hand
+        /// pointer's badge over the item and, for arrows, as what the counter receives
+        /// (`docs/original/h01-measurements-2.md` 1.1 / 1.3).
         stack: u16,
     },
     /// A script polygon: location index.
@@ -512,7 +516,9 @@ pub enum ItemKind {
 
 /// Money a purse item holds per stack unit (`Element::Item` of kind [`ItemKind::Purse`]): a
 /// policy, not a measurement (the corpus never states a purse's worth; its only money increment
-/// is the +25 of one ambush handler). Every pickup records [`Assumption::ItemPickup`].
+/// is the +25 of one ambush handler; no purse with money was taken in the oracle sessions,
+/// `docs/original/h01-measurements-2.md` 1.3). Taking a purse records
+/// [`Assumption::ItemPickup`].
 pub const PURSE_MONEY_PER_STACK: i32 = 25;
 
 impl ItemKind {
@@ -1227,11 +1233,15 @@ pub enum Assumption {
     /// An unknown native was called in lenient mode and answered with a fabricated 0
     /// (`MissionSpec::lenient_natives`).
     UnknownNative(u32),
-    /// The view cone's geometry (`ai::VIEW_CONE_HALF_ANGLE_256`, `VIEW_RANGE`,
-    /// `CROUCH_VIEW_DIVISOR`: hypotheses, `docs/original/stealth-and-combat.md` 7.2) decided
-    /// that a soldier saw a player character and his state changed on it (he noticed him, or
-    /// an alert of his was refreshed by the sighting). Recorded by the stealth layer where the
-    /// sighting first mutates the state, whether or not any script handler exists.
+    /// The unmeasured part of the sight decided that a soldier saw a player character and his
+    /// state changed on it (he noticed him, or an alert of his was refreshed by the sighting):
+    /// the rear radius (`ai::REAR_SIGHT_RADIUS`, a hypothesis from one event) or the crouch
+    /// divisor (`ai::CROUCH_VIEW_DIVISOR`, a hypothesis). The cone itself (half angle, the
+    /// elliptical reach, the binding to the facing: `ai::VIEW_CONE_HALF_ANGLE_256`,
+    /// `ai::VIEW_RANGE`, `ai::VIEW_Y_COMPRESSION`) is measured
+    /// (`docs/original/h01-measurements-2.md` 6) and a standing character seen inside it
+    /// records nothing. Recorded by the stealth layer where the sighting first mutates the
+    /// state, whether or not any script handler exists.
     SightCone,
     /// A running player character was heard from beyond the measured bound of the noise
     /// radius (`ai::NOISE_MEASURED_RADIUS`, 330 px: soldiers detected a run from at least that
@@ -1264,8 +1274,13 @@ pub enum Assumption {
     /// tick reading of the scripts' time unit. The animation clock is measured (`anim.rs`);
     /// the scripts' unit is not, so the reading stays a hypothesis.
     TickRate,
-    /// `IsTaken` fired: the pickup radius ([`SCROLL_PICKUP_RADIUS`]) and the rule that a
-    /// non-zero result takes the scroll are hypotheses.
+    /// `IsTaken` returned non-zero and the scroll was deactivated (the take-on-non-zero rule,
+    /// `World::resolve_pickups`): what makes a scroll vanish after its reading is a
+    /// hypothesis (observed: the tutorial scrolls stay, the training-start scroll vanishes;
+    /// the `SKRO` record's `flags5` bit 0 as "stays after reading" is the analyst's
+    /// hypothesis, not modelled). The reading itself (a click on the scroll orders the walk,
+    /// the stop about 18 px short, the pause before the page) is measured
+    /// (`docs/original/h01-measurements-2.md` 1.2 / 1.4) and records nothing.
     ScrollPickup,
     /// A zone callback fired on the first scan for a character standing inside the zone at
     /// load (presence starts empty: hypothesis).
@@ -1291,11 +1306,13 @@ pub enum Assumption {
     /// raised `hero_dead` (the loss): measured for a lone hero only (`combat-measurements.md`
     /// 4).
     HeroDeathLoss,
-    /// A pick-up item was taken (`World::resolve_pickups`): the gesture (a left click on the
-    /// item orders the walk, the item is taken within [`SCROLL_PICKUP_RADIUS`] like a scroll),
-    /// the reading of the record (`ItemKind::from_field`, the stack as a count) and the
-    /// effects (arrows per stack, [`PURSE_MONEY_PER_STACK`], one purse per purse item) are
-    /// hypotheses; native 235 reading the taken flag records `Policy(235)` itself.
+    /// A purse or an item of an unknown kind was taken (`World::resolve_pickups`): the money a
+    /// purse holds ([`PURSE_MONEY_PER_STACK`] per stack unit) and the purse counter's rise,
+    /// and an unknown kind's effect (it only disappears), are hypotheses (no such item was
+    /// taken in the oracle sessions, `docs/original/h01-measurements-2.md` 1.3 / 8). The
+    /// gesture (a click on the item orders the walk), the take on arrival after the stoop and
+    /// an arrow pile adding its stack (`unknown_b`) to the arrows are measured and record
+    /// nothing; native 235 reading the taken flag records `Policy(235)` itself.
     ItemPickup,
 }
 
@@ -1564,10 +1581,6 @@ pub struct VmState {
     pub inactive_elements: BTreeSet<i32>,
     /// `(class, entity)` pairs currently inside the class's zone.
     pub zone_presence: BTreeSet<(u32, u32)>,
-    /// `(class, entity)` pairs currently within pickup range of the class's scroll (so `IsTaken`
-    /// fires once per approach when the handler declines the pickup).
-    #[serde(default)]
-    pub scroll_presence: BTreeSet<(u32, u32)>,
     /// Handles of the pick-up items ([`Element::Item`]) a player character took (sticky: native
     /// 235 reads it; the item is also deactivated, so a later 114 shows a taken item again
     /// without un-taking it).
@@ -1644,7 +1657,6 @@ impl VmState {
             states: BTreeMap::new(),
             inactive_elements: BTreeSet::new(),
             zone_presence: BTreeSet::new(),
-            scroll_presence: BTreeSet::new(),
             taken_items: BTreeSet::new(),
             paths,
             lenient,
@@ -1807,7 +1819,6 @@ impl VmState {
             || self.patches.len() > MAX_QUEUE
             || self.actions.len() > MAX_QUEUE
             || self.zone_presence.len() > MAX_QUEUE * 16
-            || self.scroll_presence.len() > MAX_QUEUE * 16
             || self.taken_items.len() > MAX_QUEUE * 16
             || self.arg_stack.len() > MAX_QUEUE
             || self.param_stack.len() > MAX_QUEUE
@@ -1878,11 +1889,6 @@ impl VmState {
         for &(c, e) in &self.zone_presence {
             if c as usize >= self.program.classes.len() || e as usize >= entity_count {
                 return Err("vm zone presence out of range".into());
-            }
-        }
-        for &(c, e) in &self.scroll_presence {
-            if c as usize >= self.program.classes.len() || e as usize >= entity_count {
-                return Err("vm scroll presence out of range".into());
             }
         }
         if self
@@ -2070,10 +2076,6 @@ impl VmState {
         for (c, en) in &self.zone_presence {
             e.u32(*c).u32(*en);
         }
-        e.u32(self.scroll_presence.len() as u32);
-        for (c, en) in &self.scroll_presence {
-            e.u32(*c).u32(*en);
-        }
         e.u32(self.pending_action_changes.len() as u32);
         for c in &self.pending_action_changes {
             e.u32(c.class).i32(c.previous).i32(c.new);
@@ -2153,6 +2155,27 @@ impl VmState {
     #[must_use]
     pub fn element_active(&self, handle: i32) -> bool {
         !self.inactive_elements.contains(&handle)
+    }
+
+    /// The scroll `handle`, if the table holds one: its position.
+    #[must_use]
+    pub fn scroll(&self, handle: i32) -> Option<(i32, i32)> {
+        match self.element(handle)? {
+            Element::Scroll { x, y } => Some((x, y)),
+            _ => None,
+        }
+    }
+
+    /// The first class bound to the scroll `handle` (the class whose `IsTaken` a reading
+    /// calls), if any.
+    #[must_use]
+    pub fn scroll_class(&self, handle: i32) -> Option<u32> {
+        self.scroll(handle)?;
+        self.program
+            .classes
+            .iter()
+            .position(|c| c.element == Some(handle as u32))
+            .map(|i| i as u32)
     }
 
     /// The pick-up item `handle`, if the table holds one: `(x, y, kind, stack)`.
@@ -2461,8 +2484,8 @@ impl World {
         }
     }
 
-    /// Hook: a scroll bound to a class was taken by `actor` (element handle). Not triggered by
-    /// the engine yet.
+    /// Hook: a scroll bound to a class was read by `actor` (element handle); triggered by
+    /// [`World::vm_read_scroll`] at the end of the reading pause of a pick-up order.
     pub fn vm_is_taken(&mut self, class: u32, actor: i32) -> Option<i32> {
         self.vm_event(class, callbacks::IS_TAKEN, &[actor])
     }
@@ -2665,8 +2688,9 @@ impl World {
 
     /// One tick of the script scheduler (called by `step` before the entities move): deliver
     /// the messages queued before this tick, the action changes left over from the previous
-    /// tick, `Hourglass(tick)` on every class, zone transitions of the player characters,
-    /// scroll pickups, the active sequences, then `CheckVictoryCondition`. The tick's work budget is granted here and nowhere else; every
+    /// tick, `Hourglass(tick)` on every class, zone transitions of the player characters, the
+    /// active sequences, then `CheckVictoryCondition` (a scroll's `IsTaken` fires from
+    /// `World::resolve_pickups`, after this, at the end of the reading pause). The tick's work budget is granted here and nowhere else; every
     /// phase stops when it is spent; undelivered messages stay queued (ahead of those sent this
     /// tick) for the next tick.
     pub(crate) fn vm_tick(&mut self) {
@@ -2711,10 +2735,6 @@ impl World {
             return;
         }
         self.vm_zones();
-        if self.vm_out_of_work() {
-            return;
-        }
-        self.vm_scrolls();
         if self.vm_out_of_work() {
             return;
         }
@@ -2826,74 +2846,32 @@ impl World {
         }
     }
 
-    /// `IsTaken` for every player character coming within pickup range of an active scroll bound to
-    /// a class. A handler that returns non-zero takes the scroll (it becomes inactive); one that
-    /// returns zero leaves it, and the character has to walk away and back to try again. The pickup
-    /// radius is a hypothesis (`SCROLL_PICKUP_RADIUS`); the original's rule is not observed yet.
-    fn vm_scrolls(&mut self) {
-        let Some(vm) = self.vm.as_ref() else { return };
-        let mut budget = vm.budget;
-        let mut exhausted = false;
-        let mut events: Vec<(u32, u32, i32, bool)> = Vec::new();
-        'scan: for (ci, c) in vm.program.classes.iter().enumerate() {
-            let Some(handle) = c.element else { continue };
-            let Some(Element::Scroll { x, y }) = vm.program.elements.get(handle as usize) else {
-                continue;
-            };
-            let active = !vm.inactive_elements.contains(&(handle as i32));
-            for (ei, e) in self.entities.iter().enumerate() {
-                // One unit per entity looked at.
-                if budget == 0 {
-                    exhausted = true;
-                    break 'scan;
-                }
-                budget -= 1;
-                if e.kind != EntityKind::Player || !e.alive || !e.active {
-                    continue;
-                }
-                let dx = i64::from(e.x.round()) - i64::from(*x);
-                let dy = i64::from(e.y.round()) - i64::from(*y);
-                let near =
-                    active && dx * dx + dy * dy <= SCROLL_PICKUP_RADIUS * SCROLL_PICKUP_RADIUS;
-                let was = vm.scroll_presence.contains(&(ci as u32, ei as u32));
-                if near != was {
-                    events.push((ci as u32, ei as u32, handle as i32, near));
-                }
-            }
+    /// A player character's reading of the scroll `handle` (`World::resolve_pickups`, at the
+    /// end of the pause of a pick-up order on the scroll): `IsTaken(actor)` on the first class
+    /// bound to the scroll. A handler that returns non-zero takes the scroll (it becomes
+    /// inactive; the take-on-non-zero rule is a hypothesis, [`Assumption::ScrollPickup`]); one
+    /// that returns zero leaves it, and a new order reads it again. A scroll no class is bound
+    /// to is read to no effect. `None` when the tick's budget was spent before the handler
+    /// could start (the caller retries next tick); `Some(taken)` otherwise (a handler the
+    /// budget cut short or that trapped is consumed, like a queued `ActionChange`).
+    pub(crate) fn vm_read_scroll(&mut self, handle: i32, entity: usize) -> Option<bool> {
+        let vm = self.vm.as_ref()?;
+        let Some(class) = vm.scroll_class(handle) else {
+            return Some(false);
+        };
+        if self.vm_out_of_work() {
+            return None;
         }
-        if let Some(vm) = self.vm.as_mut() {
-            vm.budget = budget;
-            if exhausted {
-                inc(&mut vm.counters.budget_aborts);
-            }
+        let actor = self.vm.as_ref().map_or(NONE_HANDLE, |vm| {
+            vm.program.element_of_entity(entity as u32)
+        });
+        let taken = matches!(self.vm_is_taken(class, actor), Some(v) if v != 0);
+        if taken && let Some(vm) = self.vm.as_mut() {
+            // What makes a scroll vanish after its reading is a hypothesis.
+            vm.assume(Assumption::ScrollPickup);
+            vm.inactive_elements.insert(handle);
         }
-        for (class, entity, handle, near) in events {
-            if self.vm_out_of_work() {
-                return;
-            }
-            let actor = self
-                .vm
-                .as_ref()
-                .map_or(NONE_HANDLE, |vm| vm.program.element_of_entity(entity));
-            if let Some(vm) = self.vm.as_mut() {
-                if near {
-                    vm.scroll_presence.insert((class, entity));
-                } else {
-                    vm.scroll_presence.remove(&(class, entity));
-                }
-            }
-            if !near {
-                continue;
-            }
-            // The pickup radius and the take-on-non-zero rule are hypotheses.
-            if let Some(vm) = self.vm.as_mut() {
-                vm.assume(Assumption::ScrollPickup);
-            }
-            let taken = matches!(self.vm_is_taken(class, actor), Some(v) if v != 0);
-            if taken && let Some(vm) = self.vm.as_mut() {
-                vm.inactive_elements.insert(handle);
-            }
-        }
+        Some(taken)
     }
 
     /// Advance every sequence this tick: each runs until its own wait (ticks, a text page or a
@@ -3884,8 +3862,43 @@ pub(crate) mod tests {
         w.validate().unwrap();
     }
 
+    /// A left click on a pick-up (item or scroll) with the pointer at map `(x, y)` (the
+    /// camera is at the origin in `mission_world`).
+    pub(crate) fn click_at(w: &mut World, x: i32, y: i32) {
+        w.step(&[
+            InputEvent::PointerMove {
+                x256: x * 256,
+                y256: y * 256,
+            },
+            InputEvent::PointerDown {
+                button: Button::Left,
+            },
+            InputEvent::PointerUp {
+                button: Button::Left,
+            },
+        ]);
+    }
+
+    /// Step `w` until the hero's pick-up order is resolved; returns the steps taken.
+    fn steps_until_resolved(w: &mut World, bound: u32) -> u32 {
+        let mut ticks = 0;
+        while w.entities[0].pickup.is_some() {
+            w.step(&[]);
+            ticks += 1;
+            assert!(ticks < bound, "the pick-up order never resolved");
+        }
+        ticks
+    }
+
+    /// Scrolls are read by an order (`docs/original/h01-measurements-2.md` 1.2 / 1.4,
+    /// measured): standing on a scroll or walking past it reads nothing; a click on the scroll
+    /// walks the hero to about 18 px short of it, the pause of `SCROLL_PAUSE_TICKS` follows,
+    /// then `IsTaken` runs once; a handler that declines leaves the scroll for another order,
+    /// one that accepts takes it (the take-on-non-zero rule records `ScrollPickup`); an
+    /// inactive scroll is not clickable.
     #[test]
-    fn scrolls_fire_is_taken_once_per_approach_and_vanish_when_taken() {
+    fn scrolls_are_read_by_an_order_after_the_pause_and_vanish_when_taken() {
+        use crate::world::{SCROLL_PAUSE_TICKS, SCROLL_STOP_DISTANCE};
         // IsTaken(actor): cv0 += 1; returns cv1 (0 = leave the scroll, 1 = take it).
         let body = vec![
             Instr::LoadInt {
@@ -3904,39 +3917,101 @@ pub(crate) mod tests {
         let mut scroll = class("Scroll", 2, &[("IsTaken", 1, true, 0, 4, body)]);
         scroll.element = Some(2); // the scroll at (700, 700) of `program`
         let mut w = mission_world(1, Some(program(vec![level, scroll], 1)));
+        let reads = |w: &World| w.vm.as_ref().unwrap().class_vars[1][0];
         w.step(&[]);
         assert_eq!(w.vm.as_ref().unwrap().class_vars[1], vec![0, 0]);
-        // Walk in: the handler runs once and declines; standing still does not repeat it.
+        // Standing on the scroll reads nothing: the reading is bound to an order.
         w.entities[0].x = Fixed::from_int(700);
         w.entities[0].y = Fixed::from_int(710);
-        w.step(&[]);
-        w.step(&[]);
-        assert_eq!(w.vm.as_ref().unwrap().class_vars[1][0], 1);
+        for _ in 0..60 {
+            w.step(&[]);
+        }
+        assert_eq!(reads(&w), 0);
+        // Select the hero; a ground order beside the scroll (20 px east of it) reads nothing
+        // either, though he ends within the old approach radius.
+        click_at(&mut w, 700, 710);
+        assert_eq!(w.selected, Some(w.entities[0].id));
+        click_at(&mut w, 720, 712);
+        assert_eq!(w.entities[0].pickup, None);
+        assert!(w.entities[0].target.is_some());
+        for _ in 0..100 {
+            w.step(&[]);
+        }
+        assert!(w.entities[0].target.is_none());
+        assert_eq!(reads(&w), 0);
+        // From 100 px north: the order on the scroll (the pointer 5 px above its base, inside
+        // the sprite) walks him to 18 px short of it; the handler runs once, SCROLL_PAUSE_TICKS
+        // after the arrival, and declines: the scroll stays.
+        w.entities[0].x = Fixed::from_int(700);
+        w.entities[0].y = Fixed::from_int(600);
+        click_at(&mut w, 700, 695);
+        assert_eq!(w.entities[0].pickup, Some(2));
+        assert!(w.entities[0].target.is_some());
+        let mut arrived_after = None;
+        let mut ticks = 0u32;
+        while w.entities[0].pickup.is_some() {
+            w.step(&[]);
+            ticks += 1;
+            if arrived_after.is_none() && w.entities[0].target.is_none() {
+                arrived_after = Some(ticks);
+                assert_eq!(w.entities[0].pickup_ticks, SCROLL_PAUSE_TICKS);
+            }
+            assert!(ticks < 600, "the reading never happened");
+        }
+        assert_eq!(ticks, arrived_after.unwrap() + SCROLL_PAUSE_TICKS);
+        assert_eq!(reads(&w), 1);
+        let short = Fixed::length(
+            w.entities[0].x - Fixed::from_int(700),
+            w.entities[0].y - Fixed::from_int(700),
+        )
+        .round();
+        assert!(
+            (SCROLL_STOP_DISTANCE - 4..=SCROLL_STOP_DISTANCE + 6).contains(&short),
+            "stopped {short} px short"
+        );
         assert!(!w.vm.as_ref().unwrap().inactive_elements.contains(&2));
-        // Leave, accept next time: the scroll is taken and inactive.
-        w.entities[0].x = Fixed::from_int(100);
-        w.step(&[]);
+        assert!(
+            !w.vm
+                .as_ref()
+                .unwrap()
+                .assumptions
+                .contains(&Assumption::ScrollPickup),
+            "a declined reading takes no hypothesis"
+        );
+        // Accept next time: the scroll is taken and inactive, the rule recorded.
         w.vm.as_mut().unwrap().class_vars[1][1] = 1;
-        w.entities[0].x = Fixed::from_int(700);
-        w.step(&[]);
-        assert_eq!(w.vm.as_ref().unwrap().class_vars[1][0], 2);
+        click_at(&mut w, 700, 695);
+        assert_eq!(w.entities[0].pickup, Some(2));
+        steps_until_resolved(&mut w, 600);
+        assert_eq!(reads(&w), 2);
         assert!(w.vm.as_ref().unwrap().inactive_elements.contains(&2));
-        // An inactive scroll never fires again.
-        w.entities[0].x = Fixed::from_int(100);
-        w.step(&[]);
-        w.entities[0].x = Fixed::from_int(700);
-        w.step(&[]);
-        assert_eq!(w.vm.as_ref().unwrap().class_vars[1][0], 2);
+        assert!(
+            w.vm.as_ref()
+                .unwrap()
+                .assumptions
+                .contains(&Assumption::ScrollPickup)
+        );
+        // An inactive scroll is not clickable: the click is a ground order.
+        click_at(&mut w, 700, 695);
+        assert_eq!(w.entities[0].pickup, None);
+        assert!(w.entities[0].target.is_some());
+        for _ in 0..60 {
+            w.step(&[]);
+        }
+        assert_eq!(reads(&w), 2);
         w.validate().unwrap();
     }
 
-    /// Pick-up items: a left click on an active item walks the selected hero to it, the item
-    /// is taken within the scroll radius (arrows add their stack, a purse its money and one
-    /// purse, an unknown kind only disappears), native 235 reads the taken flag and records
-    /// its policy, the pickup records its hypothesis, a ground order cancels a pickup under
-    /// way, a deactivated item is not clickable, and the state round-trips.
+    /// Pick-up items (`docs/original/h01-measurements-2.md` 1, measured): a left click on an
+    /// active item walks the selected hero onto it, the stoop of `STOOP_TICKS` follows the
+    /// arrival, then the item is taken (arrows add their stack, a purse its money and one
+    /// purse, an unknown kind only disappears: the purse and the unknown kind record
+    /// `ItemPickup`, the arrows nothing); a walk that ends beside an item takes nothing;
+    /// native 235 reads the taken flag and records its policy; a ground order cancels a
+    /// pickup under way; a deactivated item is not clickable; the state round-trips.
     #[test]
     fn items_are_taken_on_a_click_and_native_235_reads_it() {
+        use crate::world::STOOP_TICKS;
         // Hourglass: cv0 = n235(1); cv1 = n235(2)
         let mut hourglass = native(235, &[1], Some(cv(0)), 0);
         hourglass.extend(native(235, &[2], Some(cv(1)), 0));
@@ -3994,19 +4069,37 @@ pub(crate) mod tests {
         assert!(items.iter().all(|it| it.active && !it.taken));
         assert_eq!(items[1].kind, ItemKind::Arrows);
         assert_eq!((items[1].x, items[1].y, items[1].stack), (100, 130, 2));
-        // Select the hero, then click the arrows 30 px below him: a walk with the pickup
-        // intent, taken on the way in.
+        // Select the hero. A ground order 40 px past the arrows (outside their sprite) walks
+        // him over the pile and takes nothing: the take is bound to the order.
         click(&mut w, 100, 100);
         assert_eq!(w.selected, Some(w.entities[0].id));
-        click(&mut w, 104, 134);
+        click(&mut w, 100, 170);
+        assert_eq!(w.entities[0].pickup, None);
+        for _ in 0..80 {
+            w.step(&[]);
+        }
+        assert!(w.entities[0].target.is_none());
+        assert_eq!(w.entities[0].arrows, 0);
+        assert!(w.script_observation().unwrap().items[1].active);
+        // A click on the arrows' sprite (4 px above the base): the walk with the pickup
+        // intent aims at the item; the stoop follows the arrival and the take ends it.
+        click(&mut w, 104, 126);
         assert_eq!(w.entities[0].pickup, Some(2));
-        assert!(w.entities[0].target.is_some());
+        assert_eq!(w.entities[0].pickup_ticks, 0);
+        let mut arrived_after = None;
         let mut ticks = 0;
         while w.entities[0].pickup.is_some() {
             w.step(&[]);
             ticks += 1;
+            if arrived_after.is_none() && w.entities[0].target.is_none() {
+                arrived_after = Some(ticks);
+                assert_eq!(w.entities[0].pickup_ticks, STOOP_TICKS);
+                assert_eq!(w.entities[0].arrows, 0, "not yet taken");
+            }
             assert!(ticks < 200, "the arrows were never taken");
         }
+        assert_eq!(ticks, arrived_after.unwrap() + STOOP_TICKS);
+        assert_eq!(w.entities[0].pickup_ticks, 0);
         assert_eq!(w.entities[0].arrows, 2);
         assert_eq!(w.entities[0].purses, 0);
         assert!(w.entities[0].target.is_none(), "the walk ends at the item");
@@ -4019,9 +4112,11 @@ pub(crate) mod tests {
         let items = w.script_observation().unwrap().items;
         assert!(!items[1].active && items[1].taken);
         assert!(items[0].active && !items[0].taken);
-        assert_taint_round_trips(&w, &[Assumption::Policy(235), Assumption::ItemPickup]);
+        // The arrows' take is measured: only the native's policy is recorded.
+        assert_taint_round_trips(&w, &[Assumption::Policy(235)]);
         // The purse: a walk of 280 px; a ground click on the way cancels the pickup, a second
-        // click on the purse renews it; the purse adds its money and one purse.
+        // click on the purse renews it; the purse adds its money and one purse (the amount is
+        // the hypothesis `ItemPickup` records).
         click(&mut w, 300, 300);
         assert_eq!(w.entities[0].pickup, Some(1));
         for _ in 0..20 {
@@ -4043,6 +4138,7 @@ pub(crate) mod tests {
         assert_eq!(w.entities[0].arrows, 2);
         w.step(&[]);
         assert_eq!(w.vm.as_ref().unwrap().class_vars[0], vec![1, 1]);
+        assert_taint_round_trips(&w, &[Assumption::Policy(235), Assumption::ItemPickup]);
         // A deactivated item is neither drawn nor clickable; an unknown kind is taken with
         // no effect.
         w.vm.as_mut().unwrap().inactive_elements.insert(3);
@@ -4050,9 +4146,9 @@ pub(crate) mod tests {
             x256: 100 * 256,
             y256: 200 * 256,
         }]);
-        assert_eq!(w.item_at_pointer(), None);
+        assert_eq!(w.pickup_at_pointer(), None);
         w.vm.as_mut().unwrap().inactive_elements.remove(&3);
-        assert_eq!(w.item_at_pointer(), Some(3));
+        assert_eq!(w.pickup_at_pointer(), Some(3));
         click(&mut w, 100, 200);
         assert_eq!(w.entities[0].pickup, Some(3));
         let mut ticks = 0;
@@ -5015,9 +5111,13 @@ pub(crate) mod tests {
         assert_eq!(w2.hashes(), w.hashes());
     }
 
+    /// A scroll's reading draws from what the tick left of the budget: a handler the budget
+    /// cuts short ran once and is consumed (the scroll stays, no refill); when the budget is
+    /// spent before the handler can start (an `Hourglass` that spins) the reading waits, one
+    /// tick at a time, until a tick has work left.
     #[test]
-    fn simultaneous_is_taken_callbacks_share_one_tick_budget() {
-        // Three scrolls at one spot, each with an `IsTaken` that counts its call and spins.
+    fn a_scroll_reading_draws_from_the_ticks_remaining_budget() {
+        // IsTaken: counts its call and spins. Hourglass: spins while cv0 of the level is set.
         let handler = vec![
             Instr::LoadInt {
                 dst: tv(0),
@@ -5031,54 +5131,76 @@ pub(crate) mod tests {
             },
             Instr::Jump { target: 3 },
         ];
-        let level = class("StartUp", 0, &[("Initialize", 0, false, 0, 0, vec![])]);
-        let mut classes = vec![level];
-        let mut elements = vec![Element::Actor(0)];
-        for i in 0..3u32 {
-            let mut c = class(
-                &format!("Scroll{i}"),
-                1,
-                &[("IsTaken", 1, true, 0, 1, handler.clone())],
-            );
-            elements.push(Element::Scroll { x: 700, y: 700 });
-            c.element = Some(1 + i);
-            classes.push(c);
-        }
+        let hourglass = vec![
+            Instr::JumpIf {
+                cond: cv(0),
+                target: 2,
+            },
+            Instr::Return,
+            Instr::Jump { target: 2 },
+        ];
+        let level = class(
+            "StartUp",
+            1,
+            &[
+                ("Initialize", 0, false, 0, 0, vec![]),
+                ("Hourglass", 1, false, 0, 1, hourglass),
+            ],
+        );
+        let mut scroll = class("Scroll", 1, &[("IsTaken", 1, true, 0, 1, handler)]);
+        scroll.element = Some(1);
         let program = Program {
-            classes,
-            elements,
+            classes: vec![level, scroll],
+            elements: vec![Element::Actor(0), Element::Scroll { x: 700, y: 700 }],
             locations: vec![],
             wait_scale: (2, 1),
         };
         let mut w = mission_world(0, Some(program));
+        let reads = |w: &World| w.vm.as_ref().unwrap().class_vars[1][0];
         w.entities[0].x = Fixed::from_int(700);
-        w.entities[0].y = Fixed::from_int(705);
-        let counts = |w: &World| -> Vec<i32> {
-            (1..4)
-                .map(|c| w.vm.as_ref().unwrap().class_vars[c][0])
-                .collect()
-        };
+        w.entities[0].y = Fixed::from_int(640);
+        click_at(&mut w, 700, 640);
+        click_at(&mut w, 700, 695);
+        assert_eq!(w.entities[0].pickup, Some(1));
+        // The tick of the reading (the pause's last tick) with fresh counters.
+        let mut ticks = 0;
+        while w.entities[0].pickup_ticks != 1 {
+            w.step(&[]);
+            ticks += 1;
+            assert!(ticks < 600, "the pause never ran out");
+        }
         w.vm.as_mut().unwrap().counters = Counters::default();
         w.step(&[]);
+        assert_eq!(w.entities[0].pickup, None);
         let vm = w.vm.as_ref().unwrap();
-        assert_eq!(counts(&w), vec![1, 0, 0], "one handler per exhausted tick");
+        assert_eq!(reads(&w), 1, "the handler ran once");
         assert!(
             vm.counters.instructions <= WORK_BUDGET_PER_TICK,
-            "{} instructions: the callbacks did not share one budget",
+            "{} instructions: the reading did not share the tick's budget",
             vm.counters.instructions
         );
         assert_eq!(vm.budget, 0);
+        assert!(!vm.inactive_elements.contains(&1), "cut short: not taken");
         assert_quiescent(&w);
         // The hooks draw from what the tick left: nothing left, nothing runs, no refill.
-        assert_eq!(w.vm_is_taken(2, 0), None);
+        assert_eq!(w.vm_is_taken(1, 0), None);
         assert_eq!(w.vm.as_ref().unwrap().budget, 0);
-        assert_eq!(counts(&w), vec![1, 0, 0]);
-        // The scrolls whose handler could not start fire on the following ticks, one per tick.
+        assert_eq!(reads(&w), 1);
+        // A second order with the Hourglass spinning: the pause runs out but the reading
+        // waits (the pause stays at one tick) until the Hourglass yields the budget again.
+        click_at(&mut w, 700, 695);
+        assert_eq!(w.entities[0].pickup, Some(1));
+        w.vm.as_mut().unwrap().class_vars[0][0] = 1;
+        for _ in 0..200 {
+            w.step(&[]);
+        }
+        assert_eq!(w.entities[0].pickup, Some(1));
+        assert_eq!(w.entities[0].pickup_ticks, 1);
+        assert_eq!(reads(&w), 1);
+        w.vm.as_mut().unwrap().class_vars[0][0] = 0;
         w.step(&[]);
-        assert_eq!(counts(&w), vec![1, 1, 0]);
-        w.step(&[]);
-        assert_eq!(counts(&w), vec![1, 1, 1]);
-        assert!(w.vm.as_ref().unwrap().counters.instructions <= 3 * WORK_BUDGET_PER_TICK);
+        assert_eq!(reads(&w), 2);
+        assert_eq!(w.entities[0].pickup, None);
         assert_round_trips(&w);
     }
 
@@ -6005,10 +6127,12 @@ pub(crate) mod tests {
             }]
         );
         assert_eq!(vm.class_vars[1], vec![0, 0, 0]);
-        // The sighting is recorded where it changed the guard's state, before any handler ran
-        // (finding 1 of Codex review 9); the delivery adds the parameter-order hypothesis.
+        // The alert sequence the sighting started is recorded where it changed the guard's
+        // state, before any handler ran (finding 1 of Codex review 9); the sighting itself is
+        // inside the measured cone (a standing hero 120 px ahead) and records nothing; the
+        // delivery adds the parameter-order hypothesis.
         assert!(
-            vm.assumptions.contains(&Assumption::SightCone)
+            !vm.assumptions.contains(&Assumption::SightCone)
                 && vm.assumptions.contains(&Assumption::AlertPolicy)
                 && !vm.assumptions.contains(&Assumption::ActionChangeOrder),
             "{:?}",
@@ -6051,8 +6175,8 @@ pub(crate) mod tests {
         );
         w.validate().unwrap();
         // A class without a handler: its changes are dropped as undeliverable and no handler
-        // runs, but the sighting itself is a hypothesis the engine took, so the set names it
-        // (the view cone and the alert sequence it started) and nothing else.
+        // runs, but the alert sequence the sighting started is a hypothesis the engine took,
+        // so the set names it and nothing else (the sighting is inside the measured cone).
         let level = class("StartUp", 0, &[]);
         let mut guard = class("Guard", 0, &[]);
         guard.element = Some(1);
@@ -6065,7 +6189,7 @@ pub(crate) mod tests {
         assert!(vm.pending_action_changes.is_empty());
         assert_eq!(
             vm.assumptions.iter().copied().collect::<Vec<_>>(),
-            vec![Assumption::SightCone, Assumption::AlertPolicy]
+            vec![Assumption::AlertPolicy]
         );
         w.validate().unwrap();
     }
@@ -6559,7 +6683,8 @@ pub(crate) mod tests {
     /// `action_changes_reach_the_actors_class`) the `ActionChange` parameter order.
     #[test]
     fn engine_hypotheses_record_their_source() {
-        // Scroll pickup: the hero stands on the scroll (element 1 without guards).
+        // A scroll taken by its handler's non-zero result: the hero, 60 px north of the
+        // scroll (element 1 without guards), is ordered onto it.
         let taken = vec![
             Instr::LoadInt {
                 dst: tv(0),
@@ -6572,8 +6697,12 @@ pub(crate) mod tests {
         scroll.element = Some(1);
         let mut w = mission_world(0, Some(program(vec![level, scroll], 0)));
         w.entities[0].x = Fixed::from_int(700);
-        w.entities[0].y = Fixed::from_int(700);
-        w.step(&[]);
+        w.entities[0].y = Fixed::from_int(640);
+        click_at(&mut w, 700, 640);
+        click_at(&mut w, 700, 695);
+        assert_eq!(w.entities[0].pickup, Some(1));
+        steps_until_resolved(&mut w, 600);
+        assert!(w.vm.as_ref().unwrap().inactive_elements.contains(&1));
         assert_taint_round_trips(&w, &[Assumption::ScrollPickup]);
         // A zone entered on the first scan by a character standing inside at load; the same
         // zone entered later records nothing of the kind.
