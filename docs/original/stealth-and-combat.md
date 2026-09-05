@@ -144,34 +144,34 @@ absence); the oracle measurement in section 7 decides.
 
 ### 2.4 The alert animation set (sprite data, observed by eye)
 
-All soldier and knight profiles carry a second locomotion set whose frame
-counts, tick patterns and advances mirror the prefix set (walk 6 / run 7 / sprint 10 and their starts and
-stops) but with the weapon held ready and larger strides:
+All soldier and knight profiles carry a second locomotion set that mirrors the patrol set (walk / run /
+sprint with their starts, stops and turn tables) but with the weapon held ready and larger strides; the
+frame counts, tick patterns and per-frame advances are read from the player's `.rhs` at run time
+(`docs/formats/sprite-animations.md`, "Reading rules"), only the roles are recorded here:
 
-| id | frames | ticks | advance | seen (`Soldier A00`, direction 4) | prefix twin |
-|---|---|---|---|---|---|
-| 140 | 6 | 33 | 0 | alert idle: crouched forward, sword and shield up | 0 |
-| 141 | 5 | 6 | 0 | **noticed something**: straightens, hand to the helmet, peers | - |
-| 142 | 8 | 11 | 0 | **raises the alarm**: hand cupped to the mouth, then the arm thrown up | - |
-| 143 | 22 | 0 | 3 / frame (66) | alert walk, weapon ready (normal walk is 2 / frame) | 6 |
-| 144 / 146 | 2 | 1 | 4 / 0 | alert walk start / stop | 5 / 8 |
-| 151 | 12 | 0 | 4 / frame (48) | alert run (normal run is 3 / frame) | 7 |
-| 145 / 149 / 147 / 148 / 150 | 2 / 2 / 3 / 7 / 8 | | | run starts and stops, turn table | 9 / 51 / 11 / 12 / 50 |
-| 156 | 10 | 12 | 26 | charge: runs the last steps into a strike | - |
-| 170 .. 173 | 4 / 1 / 5 / 4 | 4 / 1 / 4 / 4 | 0 | raises the sword arm and holds it up, lowers it (a signal to the company: the executable names a patrol coordination call); swordsmen, the merry men, the trainer and two heroes only | - |
-| 189 | 8 | 9 | 0 | looks around, hands on hips (a check) | - |
-| 202 .. 205 | 5 each | 8 | 0 | four near-identical short "listens / glances" (hand to the ear, small turn) | - |
-| 206 | 10 | 16 (one frame held 10) | 0 | points with the arm outstretched, holds, lowers (scripts play 206 with native 49 right after an archer shoots: "there!") | - |
-| 209 | 6 | 34 | 0 | second alert idle, crouched behind the shield | 0 |
+| id | role (`Soldier A00`, direction 4) | patrol twin |
+|---|---|---|
+| 140 | alert idle: crouched forward, sword and shield up | 0 |
+| 141 | **noticed something**: straightens, hand to the helmet, peers | - |
+| 142 | **raises the alarm**: hand cupped to the mouth, then the arm thrown up | - |
+| 143 | alert walk, weapon ready (faster than the patrol walk) | 6 |
+| 144 / 146 | alert walk start / stop | 5 / 8 |
+| 151 | alert run (faster than the patrol run) | 7 |
+| 145 / 149 / 147 / 148 / 150 | run starts and stops, turn table | 9 / 51 / 11 / 12 / 50 |
+| 156 | charge: runs the last steps into a strike | - |
+| 170 .. 173 | raises the sword arm and holds it up, lowers it (a signal to the company; swordsmen, the merry men, the trainer and two heroes only) | - |
+| 189 | looks around, hands on hips (a check) | - |
+| 202 .. 205 | four near-identical short listens / glances (hand to the ear, small turn) | - |
+| 206 | points with the arm outstretched, holds, lowers (scripts play it after an archer shoots) | - |
+| 209 | second alert idle, crouched behind the shield | 0 |
 
-Reading (`inferred`): the engine has at least two AI postures for soldiers - the patrol posture (prefix
-set: 0, 6, 7, 10) and the **alerted / fighting posture** (140, 143, 151) that moves faster (3 and 4 px
-per frame against 2 and 3), with 141 and 142 as the transition animations that match the manual's
-question-mark and exclamation-mark emoticons. The scripts confirm 141 as a state change the engine
-reports to the script: every archer class of `H01` sends message 2 to the level from
-`ActionChange(_, 141)` (scb.md), which ends the archery training - i.e. "an archer noticed something" ends
-the tutorial scene. Status of the 141 = noticed reading: `inferred` (animation content + script use);
-the exact trigger (sight, noise, both) is `unknown`.
+Reading (`inferred`): the engine has at least two AI postures for soldiers - the patrol posture (0, 6, 7,
+10) and the **alerted / fighting posture** (140, 143, 151) that moves faster, with 141 and 142 as the
+transition animations that match the manual's question-mark and exclamation-mark emoticons. The scripts
+confirm 141 as a state change the engine reports to the script: every archer class of `H01` sends
+message 2 to the level from `ActionChange(_, 141)` (scb.md), which ends the archery training, i.e. "an
+archer noticed something" ends the tutorial scene. Status of the 141 = noticed reading: `inferred`
+(animation content + script use); the exact trigger (sight, noise, both) is `unknown`.
 
 ### 2.5 Script natives that touch perception and AI state (from scb.md, with the new uses)
 
