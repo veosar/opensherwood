@@ -1077,15 +1077,20 @@ pub enum Assumption {
     /// The script consumed the result of a recorded stub (policy value or 0), or called one of
     /// the never-win stubs (`natives::NEVER_WIN_STUBS`).
     StubResult(u32),
-    /// The stealth layer's perception hypotheses (view cone, noise radius, alert states) changed
-    /// script-visible state: an alert action id reached an `ActionChange` handler.
+    /// The stealth layer's perception hypotheses (the view cone's geometry and the noticed /
+    /// alarm sequence a sighting starts) changed script-visible state: an alert action id of
+    /// an actor alerted by sight reached an `ActionChange` handler. The noise channel (a
+    /// running character heard, the soldiers charging at once) is measured and records
+    /// nothing (`Entity::heard`).
     Perception,
     /// The knock-out hypotheses changed script-visible state: native 90 reported a knocked-out
     /// actor, native 128 refused one, or a knock-out action id reached an `ActionChange`.
     KnockOut,
     /// The profile stat hypotheses (`p0` hit points, `p4` knock-out resistance) were consulted.
     ProfileStats,
-    /// A script wait or the `Hourglass` time was consumed under the 25-versus-60 tick reading.
+    /// A script wait (native 56) or the `Hourglass` time was consumed under the 25-versus-60
+    /// tick reading of the scripts' time unit. The animation clock is measured (`anim.rs`);
+    /// the scripts' unit is not, so the reading stays a hypothesis.
     TickRate,
     /// The campaign graph hypothesis chose a successor mission (recorded by the app).
     CampaignGraph,
@@ -1121,7 +1126,8 @@ pub struct ActionChange {
 }
 
 /// Action ids of the alert states (`crate::ai::actions`) whose delivery records
-/// [`Assumption::Perception`].
+/// [`Assumption::Perception`] unless the actor was alerted through the measured noise channel
+/// (`Entity::heard`).
 const ALERT_ACTIONS: [u32; 5] = [140, 141, 142, 143, 151];
 /// Action ids of the knock-out (`crate::ai::actions`) whose delivery records
 /// [`Assumption::KnockOut`].
@@ -1991,9 +1997,22 @@ impl World {
             if self.vm_out_of_work() {
                 break;
             }
+            // The actor bound to the class: an alert it reached through the measured noise
+            // channel is not a hypothesis (`Entity::heard`).
+            let heard = self
+                .vm
+                .as_ref()
+                .and_then(|vm| {
+                    let handle = vm.program.classes.get(change.class as usize)?.element?;
+                    match vm.program.elements.get(handle as usize)? {
+                        Element::Actor(i) => self.entities.get(*i as usize).map(|e| e.heard),
+                        _ => None,
+                    }
+                })
+                .unwrap_or(false);
             if let Some(vm) = self.vm.as_mut() {
                 let ids = [change.previous, change.new];
-                if ids.iter().any(|&a| ALERT_ACTIONS.contains(&(a as u32))) {
+                if !heard && ids.iter().any(|&a| ALERT_ACTIONS.contains(&(a as u32))) {
                     vm.assumptions.insert(Assumption::Perception);
                 }
                 if ids.iter().any(|&a| KNOCK_OUT_ACTIONS.contains(&(a as u32))) {

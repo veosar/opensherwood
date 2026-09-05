@@ -395,6 +395,7 @@ def test_mission_won_shows_the_debriefing_then_the_menu(binary, game_dir, tmp_pa
         e.skip_briefing()
         e.step(5)
         assert not e.call("debug.vm", {})["mission_won"]
+        money_at_win = e.call("debug.vm", {})["money"]
         e.call("debug.vm", {"win": True})
         e.step(1)
         ui = e.observe(entities=False)["ui"]
@@ -411,6 +412,12 @@ def test_mission_won_shows_the_debriefing_then_the_menu(binary, game_dir, tmp_pa
         assert obs.get("ui") is None or obs["ui"]["screen"] == "briefing"
         # The successor rule is a hypothesis (ADR-0008): the new world is tainted from tick 0.
         assert vm["tainted"] and any("ampaign" in str(x) for x in vm["assumptions"]), vm["assumptions"]
+        # Campaign money: the won mission's money became the profile's, and seeds the successor.
+        import json
+
+        doc = json.loads((tmp_path / "profiles.json").read_text())
+        assert doc["profiles"][doc["selected"]]["money"] == money_at_win
+        assert vm["money"] == money_at_win
 
 
 def test_mission_lost_shows_the_lost_debriefing_then_the_menu(binary, game_dir, tmp_path):

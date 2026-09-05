@@ -175,6 +175,9 @@ def test_options_sound_sliders_apply_and_persist(binary, game_dir, tmp_path):
         ui = e.observe(entities=False)["ui"]
         assert ui["screen"] == "options_sounds"
         assert any(it["action"] == "slider:2" and it["label"].endswith(" 10") for it in ui["items"])
+        e.step(1, pointer_click(226 - 42 + 10, 520, "left"))  # left of the first cell: mute (0)
+        ui = e.observe(entities=False)["ui"]
+        assert any(it["action"] == "slider:2" and it["label"].endswith(" 0") for it in ui["items"]), ui
         e.step(1, pointer_click(226 + 42 * 4 + 10, 520, "left"))  # music slider, fifth cell
         ui = e.observe(entities=False)["ui"]
         assert any(it["action"] == "slider:2" and it["label"].endswith(" 5") for it in ui["items"]), ui
@@ -211,7 +214,7 @@ def test_select_player_new_profile_and_selection(binary, game_dir, tmp_path):
         e.step(1, pointer_click(748, 440, "left"))  # Select player (row 2)
         ui = e.observe(entities=False)["ui"]
         assert ui["screen"] == "select_player"
-        assert [it["action"] for it in ui["items"] if it["action"].startswith("row:")] == ["row:Player"]
+        assert [it["action"] for it in ui["items"] if it["action"].startswith("row:")] == ["row:0"]
         e.step(1, pointer_click(748, 522, "left"))  # New (row 4)
         assert e.observe(entities=False)["ui"]["screen"] == "new_player"
         e.step(1, letters("marian"))
@@ -220,8 +223,8 @@ def test_select_player_new_profile_and_selection(binary, game_dir, tmp_path):
         ui = e.observe(entities=False)["ui"]
         assert ui["screen"] == "select_player"
         rows = [it for it in ui["items"] if it["action"].startswith("row:")]
-        assert [r["action"] for r in rows] == ["row:Player", "row:marian"]
-        assert rows[1]["enabled"], "the new profile is selected"
+        assert [r["label"] for r in rows] == ["Player", "marian"]
+        assert rows[1]["selected"] and all(r["enabled"] for r in rows), "the new profile is selected"
         e.step(1, pointer_click(748, 481, "left"))  # Select (row 3)
         assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
         doc = json.loads((tmp_path / "profiles.json").read_text())
@@ -250,3 +253,82 @@ def test_minimap_opens_from_the_map_scroll_and_closes_on_right_click(binary, gam
         assert e.observe(entities=False)["tick"] == t0 + 5
         e.step(1, pointer_click(500, 400, "right"))
         assert e.observe(entities=False).get("ui") is None
+
+
+def test_profiles_persist_across_sessions_and_survive_a_fresh_or_corrupt_store(binary, game_dir, tmp_path):
+    """The artifact directory is created on the first write; a second session reads the list back;
+    a corrupt or oversized profiles.json is ignored (default profile) instead of failing startup;
+    out-of-range values are clamped."""
+    import json
+
+    fresh = tmp_path / "fresh" / "deeper"
+    with Engine(binary=binary, game_dir=game_dir, artifacts=fresh) as e:
+        e.reset({"menu": "main"}, seed=0)
+        e.step(1, pointer_click(748, 440, "left"))  # Select player
+        e.step(1, pointer_click(748, 522, "left"))  # New
+        e.step(1, letters("tuck"))
+        e.step(1, pointer_click(480, 542, "left"))  # V seal
+        e.step(1, pointer_click(748, 481, "left"))  # Select
+        assert (fresh / "profiles.json").is_file()
+    with Engine(binary=binary, game_dir=game_dir, artifacts=fresh) as e:
+        e.reset({"menu": "main"}, seed=0)
+        e.step(1, pointer_click(748, 440, "left"))
+        rows = [it for it in e.observe(entities=False)["ui"]["items"] if it["action"].startswith("row:")]
+        assert [r["label"] for r in rows] == ["Player", "tuck"] and rows[1]["selected"]
+    # Clamping and a bad selection index.
+    (fresh / "profiles.json").write_text(json.dumps({
+        "format": 1, "selected": 99,
+        "profiles": [{"name": "  x" * 20, "difficulty": 9, "money": -5, "score": 1, "spared_lives": 300,
+                      "progress": 200, "game_length": "y" * 100}, {"name": "   ", "difficulty": 0, "money": 0,
+                      "score": 0, "spared_lives": 0, "progress": 0, "game_length": ""}]}))
+    with Engine(binary=binary, game_dir=game_dir, artifacts=fresh) as e:
+        e.reset({"menu": "main"}, seed=0)
+        e.step(1, pointer_click(748, 440, "left"))
+        rows = [it for it in e.observe(entities=False)["ui"]["items"] if it["action"].startswith("row:")]
+        assert len(rows) == 1 and len(rows[0]["label"]) <= 16 and rows[0]["selected"]
+    (fresh / "profiles.json").write_text("{ not json")
+    with Engine(binary=binary, game_dir=game_dir, artifacts=fresh) as e:
+        e.reset({"menu": "main"}, seed=0)
+        e.step(1, pointer_click(748, 440, "left"))
+        rows = [it for it in e.observe(entities=False)["ui"]["items"] if it["action"].startswith("row:")]
+        assert [r["label"] for r in rows] == ["Player"]
+
+
+def test_rename_edits_the_row_inline(binary, game_dir, tmp_path):
+    """Rename turns the selected row into an edit field (ui-flow.md 5); Enter commits, Escape cancels."""
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path) as e:
+        e.reset({"menu": "main"}, seed=0)
+        e.step(1, pointer_click(748, 440, "left"))  # Select player
+        e.step(1, pointer_click(748, 563, "left"))  # Rename (row 5)
+        ui = e.observe(entities=False)["ui"]
+        assert ui["screen"] == "rename_player", ui
+        assert not any(it["action"] == "yes" for it in ui["items"]), "no parchment seals for a rename"
+        e.step(1, letters("s"))
+        ui = e.observe(entities=False)["ui"]
+        assert [it["label"] for it in ui["items"] if it["action"].startswith("row:")] == ["Players"]
+        e.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": "escape"}])
+        ui = e.observe(entities=False)["ui"]
+        assert ui["screen"] == "select_player"
+        assert [it["label"] for it in ui["items"] if it["action"].startswith("row:")] == ["Player"]
+        e.step(1, pointer_click(748, 563, "left"))
+        e.step(1, letters("s"))
+        e.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": "enter"}])
+        ui = e.observe(entities=False)["ui"]
+        assert ui["screen"] == "select_player"
+        assert [it["label"] for it in ui["items"] if it["action"].startswith("row:")] == ["Players"]
+
+
+def test_reset_starting_money_overrides_the_profile(binary, game_dir, tmp_path):
+    """`reset {"starting_money": n}` seeds the mission with n (replays record the value used)."""
+    with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
+        e.call("reset", {"scenario": {"mission": "H01_Lin_VL"}, "seed": 0, "starting_money": 777})
+        rec = e.replay_start()
+        e.skip_briefing()
+        assert e.call("debug.vm", {})["money"] == 777
+        e.step(3)
+        out = e.replay_stop()
+        assert '"starting_money":777' in out["jsonl"].replace(" ", ""), out["jsonl"][:400]
+        # Playback resets with the recorded value, whatever the profile says: the header check
+        # after the reset passes and the money is the recorded one.
+        e.call("replay.play", {"jsonl": out["jsonl"]})
+        assert e.call("debug.vm", {})["money"] == 777

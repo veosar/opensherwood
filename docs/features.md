@@ -33,18 +33,21 @@ fheroes2, VCMI) and by what the original executable already contains (developer 
 - **Movement modes.** The manual's mouse rules (`docs/original/ui-flow.md` 9.4): left click selects a character
   or walks the selected one to the ground point, a double click (second press within 20 ticks and 8 px) runs
   there, a right click on the selected character cancels his order and a right click elsewhere deselects; `c`
-  / `s` crouch / stand. Running uses the run block (action 7) at twice the walking speed, crouching the
-  crouched idle and sneak blocks (14 / 16) at half speed; both speeds are hypotheses (the table's per-frame
-  advance is a distance per frame). Gait, posture and the double-click memory are in the snapshot and hash.
-  Not yet: distance-timed walk cycles, the run / sprint distinction (ids 7 / 10), crouch transitions
-  (13 / 18), multi-selection.
+  / `s` crouch / stand. Every character moves at the speed of the cycle it plays, read from its profile's
+  animation table on the measured animation clock (`docs/original/stealth-and-combat.md` 8: the hero walks at
+  85.3 px/s, runs (action 7) at 106.7, sneaks (14 / 16) at 18.0; soldiers walk at 42.7 and run at 64, alerted
+  64 / 85.3); a frame lasts its tick half plus one table ticks of 46.875 ms. Gait, posture and the
+  double-click memory are in the snapshot and hash. Not yet: per-frame stepping of the movement, the sprint
+  (id 10), crouch transitions (13 / 18), multi-selection.
 - **Stealth layer** (`docs/original/stealth-and-combat.md` "Engine", `crates/opensherwood-core/src/ai.rs`).
   Every enemy soldier that is alive, active, unlocked and on his feet perceives the player characters: a view
-  cone (half angle 45 degrees, range 200 px, halved for a crouched character; occluders ignored) and a noise
-  radius (a running character within 150 px is heard whatever the soldier faces). A stimulus takes him from
-  his patrol through *noticed* (action 141) and *alarm* (142) to *alerted*: he runs (151) to the last seen
-  position with the weapon ready (140 / 143 idle / walk), keeps searching while he sees the character, and
-  5 s after the last sighting walks back to where the alert took him from and resumes his program. Every
+  cone (half angle 45 degrees, range 250 px, halved for a crouched character; occluders ignored; a hypothesis)
+  and a noise radius (a running character within 350 px is heard whatever the soldier faces; measured: the
+  original detects a run from 330 px and more). A run heard makes him charge at once (*alerted*, the alert
+  run 151, as the original does); a sighting takes him from his patrol through *noticed* (action 141) and
+  *alarm* (142) to *alerted*. Alerted, he runs (151) to the last seen position with the weapon ready (140 /
+  143 idle / walk), keeps searching while he sees or hears the character, and 5 s after the last stimulus
+  walks back to where the alert took him from and resumes his program. Every
   action-id change of an actor with a script class fires `ActionChange(previous, new)` (the first mission's
   archery training ends when an archer notices something). A left click on an enemy with a character
   selected is an attack order: the character walks into reach (32 px) and, if his profile has the knock-out

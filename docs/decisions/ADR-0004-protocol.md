@@ -2,10 +2,16 @@
 
 Date: 2026-09-02. Status: accepted.
 
-Versions in force (2026-09-05, Codex review 7): protocol 5 (replay time is the session tick: header `time:
+Versions in force (2026-09-05, Codex review 7): protocol 6 (`reset.starting_money` and `ReplayHeader.starting_money`: the mission's starting money is a canonical input recorded in the header, playback resets with it; `UiItem.selected`; `observe.persistence_error`; replay time is the session tick: header `time:
 "session"`, checkpoints carry `world_tick`, a `session` digest and the `frame` hash, the tick-0 and terminal
 checkpoints are required and compared; `ui` observation,
-`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 10 (Codex
+`menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 11
+(2026-09-05, the oracle measurements of `docs/original/stealth-and-combat.md` 8: every entity moves at the speed of
+the cycle it plays, read from the profile's table on the measured animation clock (a frame lasts its tick half plus
+one table ticks of 3 clocks at 64 Hz; hero walk 85.3 px/s, run 106.7, sneak 18.0; the fallback ratios 5 / 4 and
+27 / 128 for units without a cycle), timed states last their animation on that clock, a running character is heard
+from 350 px and the soldier charges at once without the noticed / alarm pause, the view range is 250 px, and an alert
+reached through the measured noise channel records no `perception` assumption); ruleset 10 (Codex
 review 7: native call sites must match the signature table (a wrong argument count refuses the program at load and
 traps at dispatch; a required argument never defaults), action changes are queued and delivered to `ActionChange`
 exactly once (an exhausted tick delivers them next tick), the stealth layer charges every entity its perception
@@ -17,8 +23,8 @@ soldiers perceive the player characters through a view cone and a noise radius a
 states, a left click on an enemy is an attack order and the knock-out blow from behind puts the victim out of
 action for a timer scaled by his resistance, natives 85 / 87 / 90 / 128 / 240 read these states and 140 sets
 the gait of program walks, `ActionChange` fires on every action-id change; ruleset 8: movement modes: a
-left click on the ground walks, a double click runs at twice the walking speed, `c` / `s` crouch / stand at half
-speed, a right click cancels / deselects; ruleset 7: script VM: `Initialize` /
+left click on the ground walks, a double click runs, `c` / `s` crouch / stand, a right click cancels / deselects;
+ruleset 7: script VM: `Initialize` /
 `PostInitialize` at load, `Hourglass` and `CheckVictoryCondition` every tick, sequences, messages, zone events;
 hidden player characters start inactive; native 32 is a barrier over walk / animation completion tokens; one
 work budget per tick, granted only at the start of the tick (the load-time run has its own; event hooks and
@@ -26,14 +32,16 @@ text dismissals draw from what the tick left) and charging instructions, argumen
 zone / scroll scan or native 204 looks at, every polygon edge tested (zones, natives 97 / 204), sequence
 elements and every stage of the path searches the script issues (initialisation, expansions, unwinding,
 smoothing, conversion); programs must have balanced parameter / argument stacks; AI locking halts an NPC's
-walk, native 160 and camera centring are computed in `i64`), hash schema 12 (the VM's `assumptions` under `scripts`,
+walk, native 160 and camera centring are computed in `i64`), hash schema 13 (the entity `heard` flag under `actors`;
+the animation `elapsed` bytes now count clock units; schema 12: the VM's `assumptions` under `scripts`,
 its `pending_action_changes` under `scheduler`, the `ai_cursor` under `world`; schema 11: entity `team`, `ai_state`, `state_ticks`,
 `action`, `hit_points`, `knockout_resistance`, `npc_gait`, `fell_backward`, `last_seen`, `alert_origin` and
 `attack_target` under `actors`; schema 10: entity `gait` / `posture` tags under `actors`,
 the `last_ground_click` under `world`; schema 9: `scripts` and `scheduler` parts carry the VM state including sequence tokens and the
 barrier wait; frames and stacks are no longer encoded because a snapshot must be quiescent; entity `active` /
 `ai_locked` flags under `actors`, the `script` RNG stream under `rng`; schema 9 adds the player's `money`
-(natives 236 / 237) and `mission_lost` (`CheckVictoryCondition` = 2) to `scripts`), snapshot schema 13 (the VM's
+(natives 236 / 237) and `mission_lost` (`CheckVictoryCondition` = 2) to `scripts`), snapshot schema 14 (entity
+`heard`, animation `elapsed` in clock units; schema 13: the VM's
 `assumptions` and `pending_action_changes`, the world's `ai_cursor`, mission specs' `starting_money` and
 `assumptions`; schema 12: the stealth
 layer's entity fields and the actor specs' `hit_points` / `knockout_resistance`; schema 11: entity `gait` /

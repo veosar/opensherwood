@@ -708,6 +708,7 @@ mod tests {
             anim.animations.push(vec![FrameSpec {
                 frame,
                 duration: 1,
+                advance: 0,
                 offset_x: -4,
                 offset_y: -8,
             }]);

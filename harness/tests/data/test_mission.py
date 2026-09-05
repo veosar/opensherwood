@@ -138,8 +138,9 @@ def _hero(e):
 
 def test_double_click_runs_and_c_s_crouch_and_stand(binary, game_dir):
     """H01 (Lincoln), `docs/original/ui-flow.md` 9.4: a left click on the ground walks, a double
-    click runs (twice as far in the same ticks, the run animation block), `c` crouches Robin (the
-    crouched idle / sneak blocks, half speed) and `s` stands him up. Every action is canonical input."""
+    click runs (the run animation block, 5 / 4 of the walking speed: `docs/original/stealth-and-combat.md`
+    8.3), `c` crouches Robin (the crouched idle / sneak blocks, a fifth of the walking speed, 8.2)
+    and `s` stands him up. Every action is canonical input."""
     covered = {}
     for mode in ("walk", "run"):
         with Engine(binary=binary, game_dir=game_dir, timeout=120) as e:
@@ -157,7 +158,7 @@ def test_double_click_runs_and_c_s_crouch_and_stand(binary, game_dir):
             p = _hero(e)
             covered[mode] = abs(p["x"] - start["x"]) + abs(p["y"] - start["y"])
             covered[mode + "_anim"] = p["anim"]["animation"]
-    assert covered["run"] > covered["walk"] * 3 // 2, covered
+    assert covered["walk"] * 11 // 10 < covered["run"] < covered["walk"] * 14 // 10, covered
     assert covered["run_anim"] != covered["walk_anim"], "running uses another animation block"
 
     with Engine(binary=binary, game_dir=game_dir, timeout=120) as e:
@@ -254,56 +255,109 @@ def _walk_until_arrived(e, index_of_player, max_ticks, watch=None):
     raise AssertionError("the order never ended")
 
 
-def test_running_past_a_soldier_is_noticed_then_the_alarm(binary, game_dir):
-    """H01 (Lincoln), `docs/original/stealth-and-combat.md` "Engine": a running Robin inside a
-    soldier's noise radius (or view cone) is noticed (`ai_state` `noticed`, action 141) and the
-    soldier raises the alarm (`alarm`, 142), then searches (`alerted`). The nearest soldier to the
-    start is an archer of the training scene, whose `ActionChange(_, 141)` ends the archery
-    training loop (`docs/formats/scb.md`, H01)."""
+def test_running_near_a_soldier_alerts_him_at_once_from_afar(binary, game_dir):
+    """H01 (Lincoln), `docs/original/stealth-and-combat.md` 8.6 (measured): a running Robin is
+    heard by soldiers not facing him from 330 px and more, and they charge at once (`ai_state`
+    `alerted`, the alert run 151, no `noticed` / `alarm` pause). The nearest soldier to the
+    start, an archer of the training scene about 270 px away, hears the first running tick and
+    charges; a soldier 370 px away, beyond the noise radius for the whole run, stays on patrol."""
+    import math
+
     with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
         e.reset({"mission": "H01_Lin_VL"}, seed=0)
         e.skip_briefing()
         obs = e.observe()
         robin_index = next(i for i, x in enumerate(obs["entities"]) if x["kind"] == "player")
+        rx, ry = _pos(obs["entities"][robin_index])
         gi, guard = _nearest_soldier(e)
         assert guard["ai_state"] == "patrol" and guard["action"] == 0
-        rx, ry = _pos(obs["entities"][robin_index])
         gx, gy = _pos(guard)
-        # Run to the point 60 px short of the soldier on the straight line from Robin: well inside
-        # the 150 px noise radius whatever the soldier faces.
-        import math
-
-        d = math.hypot(gx - rx, gy - ry)
-        tx, ty = round(gx - (gx - rx) / d * 60), round(gy - (gy - ry) / d * 60)
+        near = math.hypot(gx - rx, gy - ry)
+        assert 250 < near < 300, near
+        # A soldier out of earshot: more than 350 px from Robin's start and from every point of a
+        # 150 px run west of it.
+        soldiers = [
+            (i, x)
+            for i, x in enumerate(obs["entities"])
+            if x["kind"] == "guard" and x["team"] == "enemy" and x["alive"] and x["active"] and i != gi
+        ]
+        far = [(i, x) for i, x in soldiers if 360 < math.hypot(_pos(x)[0] - rx, _pos(x)[1] - ry) < 400]
+        fi, far_guard = min(far, key=lambda ix: math.hypot(_pos(ix[1])[0] - rx, _pos(ix[1])[1] - ry))
+        tx, ty = rx - 150, ry
+        assert math.hypot(_pos(far_guard)[0] - tx, _pos(far_guard)[1] - ty) > 360
         _click_map(e, rx, ry)
         assert e.observe(entities=False)["selected"] is not None
         _click_map(e, tx, ty)
         cam = e.observe(entities=False)["camera"]
         e.step(1, pointer_click(tx - cam[0], ty - cam[1], "left"))
         assert _entity(e, robin_index)["gait"] == "run"
-        states = []
-        for _ in range(600):
-            e.step(1)
-            g = _entity(e, gi)
-            if not states or states[-1] != g["ai_state"]:
-                states.append(g["ai_state"])
-            if g["ai_state"] == "alerted":
-                break
-        assert states[:4] == ["patrol", "noticed", "alarm", "alerted"], states
+        # The tick of the double click: the archer heard the run and is already charging.
         g = _entity(e, gi)
+        assert g["ai_state"] == "alerted" and g["heard"] is True, g
+        assert g["gait"] == "run" and g["target"] is not None
         assert g["last_seen"] is not None and g["alert_origin"] is not None
-        assert g["action"] in (140, 143, 151), g["action"]
+        assert g["action"] == 151, g["action"]
+        states = {"alerted"}
+        for _ in range(120):
+            e.step(1)
+            states.add(_entity(e, gi)["ai_state"])
+            assert _entity(e, fi)["ai_state"] == "patrol", "out of earshot"
+        assert "noticed" not in states and "alarm" not in states, states
         vm = e.call("debug.vm")
         assert not vm["faulted"] and vm["counters"]["traps"] == 0
         # The taint (ADR-0008, "Hypotheses and taint"): the run's first tick already recorded the
-        # steward objective's stub and the tick rate; `perception` is recorded only when an alert
-        # action id reaches an `ActionChange` handler, and the class of this soldier (the last
-        # element of the soldier range, not one of the archery-training classes) has none, so the
-        # script never saw the alert and no `perception` / `knock_out` entry appears.
+        # steward objective's stub and the tick rate; the alert action ids of a soldier alerted
+        # through the measured noise channel (`heard`) record no `perception`, whether or not
+        # his class handles `ActionChange`.
         sc = e.observe(entities=False)["script"]
         assert sc["tainted"], sc
         assert {"stub_result": 235} in sc["assumptions"] and "tick_rate" in sc["assumptions"]
         assert "perception" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
+
+
+def _path_length(e, index, ticks, every=10):
+    """Distance a character covers over `ticks` ticks, sampled every `every` ticks (map px)."""
+    import math
+
+    total = 0.0
+    last = _pos(_entity(e, index))
+    for _ in range(ticks // every):
+        e.step(every)
+        p = _pos(_entity(e, index))
+        total += math.hypot(p[0] - last[0], p[1] - last[1])
+        last = p
+    return total
+
+
+def test_walk_run_and_sneak_speeds_match_the_measurements(binary, game_dir):
+    """H01 (Lincoln), `docs/original/stealth-and-combat.md` 8.1-8.3 (measured): Robin walks at
+    85.3 px/s, runs (double click, action 7) at 101 +- 10 px/s (106.7 from the table) and sneaks
+    at 17.8 px/s, along the analyst's line from the start (down-left across the courtyard).
+    Asserted within 5 % over 120 ticks (2 s at 60 Hz) against the table-derived values."""
+    expected = {"walk": 85.33, "run": 106.67, "sneak": 18.0}
+    for mode, px_per_s in expected.items():
+        with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
+            e.reset({"mission": "H01_Lin_VL"}, seed=0)
+            e.skip_briefing()
+            obs = e.observe()
+            robin_index = next(i for i, x in enumerate(obs["entities"]) if x["kind"] == "player")
+            rx, ry = _pos(obs["entities"][robin_index])
+            tx, ty = rx - 326, ry + 185
+            _click_map(e, rx, ry)
+            if mode == "sneak":
+                e.step(1, key_press({"letter": "c"}))
+            _click_map(e, tx, ty)
+            if mode == "run":
+                cam = e.observe(entities=False)["camera"]
+                e.step(1, pointer_click(tx - cam[0], ty - cam[1], "left"))
+            p = _entity(e, robin_index)
+            assert p["target"] is not None
+            assert p["gait"] == ("run" if mode == "run" else "walk")
+            assert p["posture"] == ("crouched" if mode == "sneak" else "standing")
+            covered = _path_length(e, robin_index, 120)
+            assert _entity(e, robin_index)["target"] is not None, "arrived before the 120 ticks were up"
+            want = px_per_s * 2.0
+            assert abs(covered - want) <= want * 0.05, (mode, covered, want)
 
 
 def test_a_crouched_approach_from_behind_is_not_noticed(binary, game_dir):
@@ -336,7 +390,8 @@ def test_knock_out_from_behind_puts_the_soldier_out_of_action(binary, game_dir):
     """H01: the soldier the level script polls with native 90 every tick (its `Hourglass` tests
     element 87 first, `docs/formats/scb.md` H01 notes) stands at a corridor post facing away from
     the corridor. Robin runs to a staging point down the corridor, sneaks behind him and is
-    ordered onto him with a left click: Robin plays the knock-out blow (123), the soldier goes
+    ordered onto him with a left click (the approach walks: a run would be heard from 350 px,
+    `docs/original/stealth-and-combat.md` 8.6): Robin plays the knock-out blow (123), the soldier goes
     down (41), lies knocked out (47) while native 90 reports him out of action (`debug.vm`
     counter `out_of_action_true` grows), then gets up (49) and stands again, and the script's
     reaction gives the girl her running gait (native 140)."""
@@ -359,15 +414,13 @@ def test_knock_out_from_behind_puts_the_soldier_out_of_action(binary, game_dir):
         rx, ry = _pos(obs["entities"][robin_index])
         _click_map(e, rx, ry)
         _click_map(e, *staging)
-        cam = e.observe(entities=False)["camera"]
-        e.step(1, pointer_click(staging[0] - cam[0], staging[1] - cam[1], "left"))
-        assert _entity(e, robin_index)["gait"] == "run"
-        for _ in range(60):
+        assert _entity(e, robin_index)["gait"] == "walk", "a walk makes no noise"
+        for _ in range(120):
             e.step(50)
             if _entity(e, robin_index)["target"] is None:
                 break
         assert _entity(e, robin_index)["target"] is None, "never reached the staging point"
-        assert _entity(e, vi)["ai_state"] == "patrol", "the run was out of his earshot"
+        assert _entity(e, vi)["ai_state"] == "patrol", "the walk stayed out of his cone"
         e.step(1, key_press({"letter": "c"}))
         _click_map(e, *behind)
         seen = _walk_until_arrived(e, robin_index, 1200, watch=vi)
@@ -410,7 +463,8 @@ def test_knock_out_from_behind_puts_the_soldier_out_of_action(binary, game_dir):
                 got_up = True
                 break
         assert got_up, _entity(e, vi)["ai_state"]
-        e.step(60)
+        # Getting up (action 49) lasts 24 table ticks = 68 world ticks on the animation clock.
+        e.step(80)
         v = _entity(e, vi)
         assert v["ai_state"] in ("patrol", "returning", "noticed", "alarm", "alerted"), v["ai_state"]
         assert e.call("debug.vm")["counters"]["out_of_action_true"] >= before + 1

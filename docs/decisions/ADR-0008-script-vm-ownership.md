@@ -47,7 +47,10 @@ settled before any interpreter is written: a VM living above core cannot be snap
   the `script` RNG stream) and entities gain `active` / `ai_locked` flags; ruleset 6, snapshot schema 9 and
   hash schema 8 (2026-09-02, Codex review 5); ruleset 7 for the budget scope and charges below (Codex review 6,
   canonical bytes unchanged); ruleset 10, snapshot schema 13 and hash schema 12 (2026-09-05, Codex review 7:
-  the native signature table, the action-change queue, the assumption set and the stealth layer's cursor).
+  the native signature table, the action-change queue, the assumption set and the stealth layer's cursor);
+  ruleset 11, snapshot schema 14 and hash schema 13 (2026-09-05, the oracle measurements applied: speeds
+  from the profiles' cycles on the measured animation clock, the animation state's `elapsed` in clock
+  units, the noise channel's immediate charge and the entity `heard` flag).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
 - **What is authoritative and what is not.** `VmState::counters` (instructions, callbacks, budget aborts,
   faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
@@ -87,15 +90,20 @@ settled before any interpreter is written: a VM living above core cannot be snap
   the stealth layer's invariants (`Dead` and `alive` agree, timed states carry their timer, attack orders go
   from a player character to an enemy soldier, alert states belong to enemy soldiers).
 - **Hypotheses and taint.** The retail scripts run over recorded stubs and over engine hypotheses (the
-  stealth constants, the profile stats `p0` / `p4`, the 25-versus-60 tick reading, the campaign graph, the
-  lenient asset fallbacks). Whenever a script-visible value depends on one, the VM records an
+  view cone and the noticed / alarm sequence a sighting starts, the profile stats `p0` / `p4`, the
+  25-versus-60 reading of the scripts' time unit, the campaign graph, the lenient asset fallbacks); the
+  movement speeds, the animation clock and the noise channel (a running character heard from 330 px and
+  more, the soldiers charging at once) are measured (`docs/original/stealth-and-combat.md` 8) and record
+  nothing. Whenever a script-visible value depends on a hypothesis, the VM records an
   `vm::Assumption` in `VmState::assumptions` (a `BTreeSet`, snapshotted, hashed under `scripts`, validated:
   a `StubResult` must name a stub): `StubResult(id)` when the script consumes a stub's result
   (`GetNativeResult` after a policy-valued or zero-valued stub) or calls a never-win stub
   (`natives::NEVER_WIN_STUBS`); `Perception` / `KnockOut` when the stealth layer changed script-visible state
-  (an alert or knock-out action id delivered to `ActionChange`, native 90 reporting a knock-out, 128 refusing
+  (an alert action id of an actor alerted by sight, never of one alerted by a run heard (`Entity::heard`),
+  or a knock-out action id delivered to `ActionChange`, native 90 reporting a knock-out, 128 refusing
   one); `ProfileStats` when a blow consulted the knock-out resistance; `TickRate` when a native-56 wait ran
-  or `Hourglass` read its time; `CampaignGraph` when the app's successor rule picked the next mission
+  or `Hourglass` read its time (the animation clock being measured says nothing about the unit the
+  scripts count in); `CampaignGraph` when the app's successor rule picked the next mission
   (`World::record_assumption`); `LenientAssets` when the app built the spec with a fallback
   (`MissionSpec::assumptions`). `mission_won` / `mission_lost` stay recorded, but `ScriptObservation::tainted`
   (the set is non-empty) marks the outcome as **not authoritative**: it proves consistency with the
