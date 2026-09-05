@@ -2581,29 +2581,17 @@ impl Session {
                 }))
             }
             "debug.vm" => {
-                // Inspection only: text pages are dismissed through the briefing screen with
-                // canonical input (Enter / click), never from here. `win` is the one documented
-                // harness shortcut (the end-of-mission flow test; `docs/harness.md`).
+                // Inspection only: nothing here mutates the world. Text pages are dismissed
+                // through the briefing screen with canonical input, a mission is won or lost
+                // through play (`harness/tests/data/test_win.py`).
                 #[derive(serde::Deserialize, Default)]
                 struct P {
-                    /// Mark the mission won (harness shortcut for the end-of-mission flow).
-                    #[serde(default)]
-                    win: bool,
-                    /// Mark the mission lost (the same shortcut for the loss flow).
-                    #[serde(default)]
-                    lose: bool,
                     /// Describe one entry of the element table (native 3's index space).
                     #[serde(default)]
                     element: Option<i32>,
                 }
                 let p: P = params(p)?;
                 self.world()?;
-                if (p.win || p.lose)
-                    && let Some(vm) = self.world.as_mut().and_then(|w| w.vm.as_mut())
-                {
-                    vm.mission_won |= p.win;
-                    vm.mission_lost |= p.lose;
-                }
                 let world = self.world()?;
                 let Some(vm) = world.vm.as_ref() else {
                     return ok(json!({ "present": false }));
