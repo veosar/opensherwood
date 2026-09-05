@@ -218,6 +218,9 @@ pub struct UiAssets {
     pub seal_ok: Vec<SpriteFrame>,
     /// Red X seal (`BTTN` 146) states.
     pub seal_cancel: Vec<SpriteFrame>,
+    /// Gold load seal (`BTTN` 277, 44x46) and restart seal (`BTTN` 278) of the lost page.
+    pub seal_load: Vec<SpriteFrame>,
+    pub seal_restart: Vec<SpriteFrame>,
     /// Arrow cursor (`PIC` 284).
     pub cursor: Option<SpriteFrame>,
     /// Credits background (`PIC` 309, 1024x768) and text strip (`PIC` 308, 400x7659).
@@ -2005,9 +2008,10 @@ impl Briefing {
 }
 
 /// Seals of the lost page (`combat-measurements.md` 4): restart centred (333,556), load (388,556),
-/// OK (517,547); rectangles of the 41x44 seal pictures around those centres.
-const SEAL_LOST_RESTART: (i32, i32, i32, i32) = (313, 534, 41, 44);
-const SEAL_LOST_LOAD: (i32, i32, i32, i32) = (368, 534, 41, 44);
+/// OK (517,547); rectangles of the 44x46 gold seals (`BTTN` 278 / 277) and the 41x44 V seal around
+/// those centres.
+const SEAL_LOST_RESTART: (i32, i32, i32, i32) = (311, 533, 44, 46);
+const SEAL_LOST_LOAD: (i32, i32, i32, i32) = (366, 533, 44, 46);
 const SEAL_LOST_OK: (i32, i32, i32, i32) = (497, 525, 41, 44);
 
 /// What the player chose on the lost page.
@@ -2023,8 +2027,8 @@ pub enum LostOutcome {
 
 /// The lost page (`combat-measurements.md` 4): the paused, green-tinted world with the HUD, the
 /// vertical parchment at (264,148) with the level's lost text from y 244, and three seals at the
-/// bottom edge. The restart and load seal pictures (gold, a double chevron and a folder) are not
-/// identified in the UI archive yet: plain gold discs with the first letter stand in.
+/// bottom edge: the gold restart (`BTTN` 278, double chevron) and load (`BTTN` 277, folder) seals and
+/// the blue V.
 #[derive(Debug)]
 pub struct LostPage {
     /// The lost debriefing text.
@@ -2139,12 +2143,12 @@ impl LostPage {
                 &seal.rgba,
             );
         }
-        for (r, letter) in [(SEAL_LOST_RESTART, "R"), (SEAL_LOST_LOAD, "L")] {
-            let (cx, cy) = (r.0 + r.2 / 2, r.1 + r.3 / 2);
-            disc(scene, cx, cy, 18, [172, 132, 40, 255]);
-            disc(scene, cx, cy, 15, [214, 170, 62, 255]);
-            if let Some(f) = a.font_text.as_ref() {
-                f.draw_centered(scene, letter, cx, cy - f.height() as i32 / 2);
+        for (r, seals) in [
+            (SEAL_LOST_RESTART, &a.seal_restart),
+            (SEAL_LOST_LOAD, &a.seal_load),
+        ] {
+            if let Some(seal) = seals.get(1).or(seals.first()) {
+                scene.blit_rgba(r.0, r.1, seal.width, seal.height, &seal.rgba);
             }
         }
         if let Some(font) = a.font_debrief.as_ref() {
@@ -2155,14 +2159,6 @@ impl LostPage {
             }
         }
         draw_pointer(scene, self.pointer, a.cursor.as_ref());
-    }
-}
-
-/// A filled disc.
-fn disc(fb: &mut Framebuffer, cx: i32, cy: i32, r: i32, c: [u8; 4]) {
-    for dy in -r..=r {
-        let half = ((r * r - dy * dy) as f64).sqrt() as i32;
-        fb.fill_rect(cx - half, cy + dy, cx + half + 1, cy + dy + 1, c);
     }
 }
 
