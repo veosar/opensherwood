@@ -1,0 +1,60 @@
+# Codex adversarial review 12: commits bce71e5..73e91d4 (2026-09-06)
+
+Disposition in `2026-09-06-codex-review-12-disposition.md`.
+
+No—review 11 is not fully closed. The exact stack-overflow and second-attacker cases were fixed, but hostile variants still violate the stated guarantees.
+
+1. **CRITICAL — Clean-room finding 1 remains open, and this range adds more asset-derived tables.** The disposition explicitly leaves reachable history unresolved at [review-11-disposition.md:9](/C:/Users/przem/source/repos/opensherwood/docs/decisions/reviews/2026-09-06-codex-review-11-disposition.md:9), despite the repository-wide “ever” rule at [docs/legal.md:20](/C:/Users/przem/source/repos/opensherwood/docs/legal.md:20). The new layer specification contains H01-specific area/coordinate, door/script-call, and route tables at [layers-and-doors.md:94](/C:/Users/przem/source/repos/opensherwood/docs/formats/layers-and-doors.md:94), [layers-and-doors.md:274](/C:/Users/przem/source/repos/opensherwood/docs/formats/layers-and-doors.md:274), and [layers-and-doors.md:363](/C:/Users/przem/source/repos/opensherwood/docs/formats/layers-and-doors.md:363). Those exceed ADR-0003’s allowance for small factual vectors and fall under its prohibition on asset lookup tables at [ADR-0003:39](/C:/Users/przem/source/repos/opensherwood/docs/decisions/ADR-0003-clean-room-roles.md:39). The allegedly paraphrased manual section also retains quoted action phrases at [layers-and-doors.md:293](/C:/Users/przem/source/repos/opensherwood/docs/formats/layers-and-doors.md:293). Provenance is present and I found no new designer names, but provenance does not permit copied tables or text.
+
+   **Fix:** obtain maintainer approval and rewrite every reachable branch/tag containing prohibited material; replace these H01 tables with aggregates, derivation procedures, and only the minimum isolated test vectors. Paraphrase the quoted manual phrases without quotation marks.
+
+2. **CRITICAL — Budget exhaustion still commits callback effects and permits an untainted win.** Ordinary callbacks call `vm_transact(..., false)` at [vm.rs:3079](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/vm.rs:3079), and `CallOutcome::Exhausted` therefore commits at [vm.rs:3110](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/vm.rs:3110). A hostile `Hourglass` can execute `if cv0 == 0 { cv0 = 1; loop forever }`: tick one exhausts after committing `cv0`; tick two returns immediately, after which `CheckVictoryCondition` reads `1` at [vm.rs:2748](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/vm.rs:2748). No assumption is recorded and no fault is raised, so the win is reported authoritative. The new test at [vm.rs:7220](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/vm.rs:7220) covers stack-overflow `Aborted`, not `Exhausted`.
+
+   Causes are also lost: a message is removed before its callback at [vm.rs:2702](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/vm.rs:2702), and an exhausted scroll handler becomes `Some(false)` and is consumed at [vm.rs:2869](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/vm.rs:2869).
+
+   **Fix:** define one transactional exhaustion policy. Either rollback and retry/retain the cause—message, zone transition, scroll read—or snapshot a resumable callback and its transaction. Add conditional-Hourglass, message, zone, and scroll exhaustion regressions through snapshot and ReplayV1.
+
+3. **HIGH — Fresh stimuli belonging to skipped entities are still lost.** Perception constructs a tick-local vector at [ai.rs:1000](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/ai.rs:1000). When one entity’s transition exhausts, only that entity’s stimulus is copied into `pending_stimulus`, followed by an immediate break at [ai.rs:1085](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/ai.rs:1085). Fresh stimuli already discovered for every later entity disappear. The regression at [ai.rs:3287](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/ai.rs:3287) uses one guard and cannot expose this suffix loss.
+
+   **Fix:** merge every fresh stimulus into authoritative pending state before state traversal, then clear an entity’s pending stimulus only after its transition completes. Test at least three guards, with the middle transition exhausting and the last guard’s one-tick run ending before retry; cover snapshot, hash, and replay continuation.
+
+4. **HIGH — Fight teardown is not atomic, so production stepping can create a nonreciprocal fight.** Validation now correctly requires reciprocity at [world.rs:2201](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:2201), but `fight_tick` ends only the current fighter at [ai.rs:1584](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/ai.rs:1584). `end_fight` can spend the remaining phase grant planning a guard’s return at [ai.rs:1764](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/ai.rs:1764), after which traversal breaks before reaching the partner.
+
+   A valid hostile snapshot can contain a distant reciprocal pair, preceded in state order by a full-cap return search. The first fighter detaches and exhausts the remaining grant; the other remains `Fighting` with a now-nonfighting foe. The resulting tick-boundary world fails its own restore validation.
+
+   **Fix:** detach both live partners atomically before any budgeted return planning. Represent the guard’s route as `ReturnPending` separately. Add a full-quota regression that validates and snapshot/restores after every step.
+
+5. **HIGH — A pickup timer can take an item remotely without a canonical pickup order.** Validation only checks that `pickup` names some item/scroll and that the timer is globally bounded at [world.rs:2087](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:2087). It accepts a far-away Patrol player with `pickup = Some(active_item)`, `pickup_ticks = 1`, and no target/path. `resolve_pickups` checks distance only when the timer is zero; a nonzero timer decrements and takes immediately at [world.rs:2400](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:2400).
+
+   This is not snapshot-only: script teleport clears path but not pickup state at [natives.rs:1344](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/natives.rs:1344), so a returned callback can move a stooping character across the map and the item still disappears.
+
+   **Fix:** cancel pickup state on every movement/teleport replacement, recheck immobility and distance on every pause tick, and validate exact per-kind timers, active/untaken targets, target/path phase, actor state, and proximity. Add hostile snapshot and mid-stoop teleport tests.
+
+6. **HIGH — The Alt cone is both observationally wrong and cross-platform nondeterministic.** The measurement records a translucent green filled sector, yellow curved pointer, and sprite hotspot at [h01-measurements-2.md:171](/C:/Users/przem/source/repos/opensherwood/docs/original/h01-measurements-2.md:171). The implementation instead explicitly chooses a yellow outline and omits the pointer at [ui.rs:2325](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/ui.rs:2325). Hovering delegates to a feet-radius core hit test at [world.rs:2565](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:2565), which the test acknowledges at [test_menu.py:413](/C:/Users/przem/source/repos/opensherwood/harness/tests/data/test_menu.py:413).
+
+   The ellipse boundary also uses `f64`, `powi`, `sqrt`, and rounding at [ui.rs:2352](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/ui.rs:2352). Replay checkpoints treat the framebuffer hash as authoritative at [ADR-0004:149](/C:/Users/przem/source/repos/opensherwood/docs/decisions/ADR-0004-protocol.md:149), so platform-dependent floating-point pixels can cause replay divergence.
+
+   **Fix:** rasterize the filled ellipse sector entirely with integer/fixed-point arithmetic; render the asset-backed Alt pointer; perform alpha/sprite-bound hover testing in the asset-aware layer. Add pixel and cross-platform ReplayV1 tests with Alt held.
+
+7. **MEDIUM — Pickup hit testing still is not sprite-bound.** One approximate rectangle is applied to every item and scroll at [world.rs:2338](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:2338). Inclusive `abs(dx) <= 6` and `-14..=0` produce a 13×15 area, not the approximately 12×14 observed at [h01-measurements-2.md:37](/C:/Users/przem/source/repos/opensherwood/docs/original/h01-measurements-2.md:37). It also ignores varying animation frames, anchors, and transparent pixels; the scroll height is explicitly “taken over” rather than measured at [world.rs:739](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:739).
+
+   **Fix:** derive deterministic hit masks or bounds from the loaded current frame, pass normalized hit metadata into core through the mission specification/content fingerprint, and keep tests synthetic or data-derived at runtime—never as committed asset tables.
+
+8. **MEDIUM — Review-11 test-depth finding is only partially closed.** Real ReplayV1 pickup and fight tests were added, and pause/figure-target coverage is meaningful. However:
+
+   - The successor still accepts any non-H01 mission at [test_win.py:97](/C:/Users/przem/source/repos/opensherwood/harness/tests/data/test_win.py:97).
+   - The minimap test checks only green, one cross, one camera corner, and a far guard—and even accepts black instead of grey—at [test_menu.py:251](/C:/Users/przem/source/repos/opensherwood/harness/tests/data/test_menu.py:251). It does not verify red enemies, marker movement, both camera bounds, or taken/inactive disappearance.
+   - Pending-stimulus coverage invokes a private reduced budget directly at [ai.rs:3315](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/ai.rs:3315), with no ReplayV1 or skipped-suffix case.
+   - The cone test merely counts yellow pixels at [test_menu.py:419](/C:/Users/przem/source/repos/opensherwood/harness/tests/data/test_menu.py:419).
+
+   **Fix:** document and assert the exact successor; use a synthetic blank minimap for every color/state transition; construct a production-quota stimulus exhaustion fixture; add Alt-held replay checkpoints and measured geometry/fill assertions.
+
+9. **LOW — Documentation synchronization is still incomplete.** [world.rs:754](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:754) says the pickup action has no animation block, while [anim.rs:149](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/anim.rs:149) and [ai.rs:646](/C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/ai.rs:646) now select it.
+
+   **Fix:** update the stale constant documentation and distinguish the authoritative timer from the presentation animation’s actual duration.
+
+The version and direct hash wiring are present: ruleset 18, snapshot 21, hash schema 20; `figure_target`, pickup timer/handle, and pending-stimulus channel are hashed. The failures above are semantic and coverage failures rather than missing serialization fields.
+
+`git diff --check` and `python -B scripts/check_no_assets.py` passed, though the scanner explicitly cannot detect copied text or numeric tables. Build/test execution was unavailable in the read-only sandbox. The required [cross-agent-review](/C:/Users/przem/source/repos/opensherwood/.agents/skills/cross-agent-review/SKILL.md) was attempted, but Claude failed with `ConnectionRefused`.
+
+**Verdict: redesign.**

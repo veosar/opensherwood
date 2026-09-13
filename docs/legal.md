@@ -22,12 +22,13 @@ obtained by analysing the files of a legally purchased GOG copy for the purpose 
    the rule covers everything: bytes, pixels, text strings, audio, video, thumbnails, save games.
    Reference screenshots for visual tests are generated locally from the player's own copy and are
    never pushed. Only hashes, metrics and synthetic fixtures may be committed.
-2. **Clean room.** Output of decompilers or disassemblers never enters the repository. Analysis of the
-   original executable is done in the private `re/` directory (git-ignored). What may be committed is
-   *knowledge*: file format specifications, behaviour descriptions, constants, algorithms described
-   in our own words, and tests that check our implementation against observable behaviour of the
-   original. Every spec file in `docs/formats/` records how the knowledge was obtained (see
-   "Provenance").
+2. **Two-tier wall (ADR-0009).** The original executable is decompiled for interoperability by analysts in the
+   private `re/` directory (git-ignored). Output of decompilers or disassemblers never enters the repository,
+   nor do line-by-line paraphrases, the binary's identifiers or strings, value tables copied from it, or game
+   text. What may be committed is *knowledge*: file format specifications, behaviour descriptions, constants,
+   algorithms described in our own words, and tests that check our implementation against observable behaviour
+   of the original. Implementers work only from those specifications and never read the decompilation of the
+   subsystem they implement. Every spec records how the knowledge was obtained (see "Provenance").
 3. **No trademarks in the project name.** The project is called OpenSherwood. The game title is used
    only descriptively ("an engine for the data files of Robin Hood: The Legend of Sherwood").
 4. **GPLv3.** All code and documentation in this repository is licensed under the GNU General Public
@@ -44,10 +45,11 @@ methods produced each part of the spec:
 
 - **Observation**: hexdumps, statistics and experiments on data files (fully clean).
 - **Behavioural testing**: running the original game with modified inputs or data and observing the result.
-- **Static analysis notes**: reading the original executable in a disassembler to understand a
-  behaviour. The notes are rewritten in prose and pseudocode in the analyst's own words; no
-  decompiler output is committed. Contributors who do this must not also write the corresponding
-  engine code from that output in the same sitting; write the spec first, then implement from the spec.
+- **Decompilation** (the primary method since ADR-0009): reading the original executable in Ghidra to
+  understand a behaviour completely. The specification is written in prose and mathematics in the analyst's
+  own words, with function addresses as provenance; no decompiler output or transcribed pseudocode is
+  committed. Whoever analyses a subsystem does not write its engine code; a separate session implements from
+  the reviewed spec.
 - **Community knowledge**: public documentation from the modding community (cite the URL).
 
 ## Legal basis

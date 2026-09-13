@@ -1,6 +1,8 @@
 # ADR-0003: Analyst / implementer separation
 
-Date: 2026-09-02. Status: accepted. Supersedes the "private `re/` directory" idea from the first brief.
+Date: 2026-09-02. Status: accepted; the analyst role is widened by ADR-0009 (2026-09-13: decompilation is the
+analysts' primary method, the wall and the "never commit" list stand). Supersedes the "private `re/` directory"
+idea from the first brief.
 
 ## Problem
 

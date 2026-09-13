@@ -31,8 +31,10 @@ Thumbs.db
 # --- Local-only state
 /.env
 /.local/
-/re/                      # private reverse-engineering workspace (Ghidra projects, decompiler output) - NEVER committed
-/goldens/                 # locally generated reference screenshots (contain game imagery) - NEVER committed
+# private reverse-engineering workspace (Ghidra projects, decompiler output) - NEVER committed
+/re/
+# locally generated reference screenshots (contain game imagery) - NEVER committed
+/goldens/
 /harness/goldens/
 /harness/captures/
 # derived images anywhere (screenshots, decoded sheets): keep them local
