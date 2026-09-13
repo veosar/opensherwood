@@ -5,7 +5,7 @@
 //     -scriptPath <repo>/scripts/ghidra -postScript ExportInventory.java <out dir>
 //@category OpenSherwood
 import ghidra.app.script.GhidraScript;
-import ghidra.program.model.address.Address;
+import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.symbol.*;
 import java.io.*;

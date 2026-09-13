@@ -1,5 +1,11 @@
 # Roadmap
 
+**Since 2026-09-13 (ADR-0009)** the milestones below are reached by rebuilding each subsystem from a behaviour
+specification derived from the decompiled executable: the script VM and its natives first, then navigation
+(path graph, layers, doors, lifts), AI and combat, movement and camera, campaign and the camp, HUD and menus,
+saves. A milestone counts as verified when its missions are won through canonical input with a recorded replay
+and no assumption is left on the winning path.
+
 Milestones have exit criteria that the harness can verify. A milestone is done when its checklist is green in CI
 (synthetic tests) and on a machine with game data (data tests). Dates are not promised.
 
