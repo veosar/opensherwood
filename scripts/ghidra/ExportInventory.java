@@ -12,11 +12,20 @@ import java.io.*;
 import java.util.*;
 
 public class ExportInventory extends GhidraScript {
+
+    /** The output directory must be inside the analysis root (a directory named `re`); anything else is refused. */
+    static File analysisOut(String[] args, int index) throws IOException {
+        File out = new File(args.length > index ? args[index] : "re/out").getCanonicalFile();
+        for (File p = out; p != null; p = p.getParentFile()) {
+            if (p.getName().equals("re")) { out.mkdirs(); return out; }
+        }
+        throw new IOException("refusing to write outside the analysis root (a directory named re): " + out);
+    }
+
     @Override
     public void run() throws Exception {
         String[] args = getScriptArgs();
-        File outDir = new File(args.length > 0 ? args[0] : "re/out");
-        outDir.mkdirs();
+        File outDir = analysisOut(args, 0);
         try (PrintWriter w = new PrintWriter(new FileWriter(new File(outDir, "inventory.tsv")))) {
             w.println("address\tsize\tname\tcallers\tcallees\tstring_refs\tfirst_string");
             FunctionIterator it = currentProgram.getFunctionManager().getFunctions(true);
@@ -43,6 +52,7 @@ public class ExportInventory extends GhidraScript {
                         + "\t" + strings + "\t" + first);
             }
         }
+        if (monitor.isCancelled()) throw new IOException("cancelled: the output is incomplete");
         println("inventory written to " + outDir);
     }
 }

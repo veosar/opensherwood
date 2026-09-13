@@ -14,10 +14,14 @@ any reasonable time, and every review said so.
 
 ## Decision
 
-1. **The executable is analysed with a decompiler (Ghidra).** Analysts read the decompiled code until they
-   understand each subsystem completely and write what it does into behaviour specifications under `docs/`.
-   The legal basis is the interoperability exception (`docs/legal.md`): the aim is a program that interoperates
-   with the player's own data files.
+1. **The executable is analysed with a decompiler (Ghidra), as far as interoperability requires.** Analysts
+   read the decompiled code of a subsystem to the extent needed to make the player's own files (maps, mission
+   scripts, profiles, saves) behave as the game expects, and write what it does into behaviour specifications
+   under `docs/`. Every specification opens with a **necessity record**: the interoperability target, the
+   information that data observation and black-box testing could not settle, the scope read and the stopping
+   condition. The legal basis and its limits are in `docs/legal.md` (Directive 2009/24/EC art. 5-6, the Polish
+   act art. 75-76); the maintainer keeps the acquisition record and the store terms privately; the workflow is
+   to be assessed by counsel before a release.
 2. **Two-tier wall, enforced by session separation.**
    - *Analysts* work in the git-ignored `re/` workspace (Ghidra project, exported decompilation, notes). Their
      only deliverable is a specification: behaviour in prose and mathematics, state machines, tables of format
@@ -27,8 +31,15 @@ any reasonable time, and every review said so.
      tables of values copied from its memory or data segments, game text.
    - *Implementers* write original Rust from the specifications. They never open `re/`. A session that has read
      decompilation for a subsystem does not implement that subsystem.
-   - *Codex* reviews both sides: a spec against `re/` (allowed for the reviewer: is every claim backed by an
-     address, is anything transcribed, what is missing) and code against the spec.
+   - *Reviewers* are two distinct roles. A *spec reviewer* may read `re/` and checks a specification (evidence,
+     transcription, completeness, the expression filter); its output is corrections to the specification only,
+     never code, patches or translated algorithms. An *implementation reviewer* checks code against the cleared
+     specification and never reads `re/`. One session does not hold both roles for the same subsystem.
+   - *Handoffs.* Implementer sessions are started fresh (no inherited analyst context, tool output, notes or
+     memory carrying decompilation), receive only cleared specifications, and route every question back through
+     a specification amendment. Exposure is tracked per subsystem in the spec's identity block; `.gitignore` is
+     not access control, so implementer briefs forbid `re/` explicitly and exposure through helper routines
+     counts.
 3. **Language: Rust stays** (ADR-0001). The original is MSVC 6 C++; matching its language buys nothing: fidelity
    comes from the specifications, and the existing harness, formats, determinism model and CI are kept.
 4. **What changes in the code base.** The harness (JSON-RPC, replays, snapshots, hashes, the pytest suites),
@@ -38,9 +49,26 @@ any reasonable time, and every review said so.
    campaign and camp, HUD and menus, saves. The `Assumption` registry (ADR-0008) becomes the list of what is
    still unverified; a verified rule removes its variant. The end state is the full campaign playable through
    canonical input, with a recorded replay per mission, and no assumption left in a winning path.
-5. **Gate.** `scripts/check_no_assets.py` refuses Ghidra project files and text that looks like decompiler
-   output; Codex reviews every specification before implementation starts on it; the specification template
-   (`docs/original/SPEC-TEMPLATE.md`) is mandatory.
+5. **Expression filter** (conservative project policy, not a claim about what is copyrightable):
+
+   | Material | Boundary |
+   |---|---|
+   | Line-by-line paraphrase | Refused, including one instruction or basic block rewritten as one sentence. |
+   | Internal structure | Recovered class layouts, function decomposition, call graphs and branch structure are not prescribed unless a functional or interface requirement demands it. |
+   | Identifiers | Ours are chosen independently; a compatibility token whose exact spelling a file format requires is allowed individually and marked. |
+   | Constants | Individual functional facts with provenance are allowed; reconstructing a copied table as many "constants" is not. |
+   | Constant and string tables | Copied content, its ordering and encoded substitutes are refused; a formula that merely re-encodes a curated table does not pass. Tables loaded from data files are named by file and field. |
+   | Algorithms | Required results, state transitions and observable orderings are described; the implementer chooses the organisation. |
+
+   There is no safe numerical granularity; the reviewer judges each specification against this table.
+6. **Gate.** `scripts/check_no_assets.py` inspects the index (what a commit records), the outgoing commits of a
+   push (`scripts/hooks/pre-push`, installed by `git config core.hooksPath scripts/hooks`) and named drafts
+   (`--paths`); it refuses Ghidra project files and directories, exporter signatures and decompiler idioms in
+   UTF-8 or UTF-16 text, and reports what it cannot inspect. It is a heuristic; the spec reviewer is the rule.
+   The export scripts write only under the analysis root (`re/`) and refuse other destinations. Every
+   specification follows `docs/original/SPEC-TEMPLATE.md` (claims with ids, evidence and confidence; execution
+   semantics; acceptance tests; the identity block with the review and publication approvals) and is reviewed
+   before implementation starts on it.
 
 ## Consequences
 

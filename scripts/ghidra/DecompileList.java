@@ -11,17 +11,29 @@ import java.nio.file.*;
 import java.util.*;
 
 public class DecompileList extends GhidraScript {
+
+    /** The output directory must be inside the analysis root (a directory named `re`); anything else is refused. */
+    static File analysisOut(String[] args, int index) throws IOException {
+        File out = new File(args.length > index ? args[index] : "re/out").getCanonicalFile();
+        for (File p = out; p != null; p = p.getParentFile()) {
+            if (p.getName().equals("re")) { out.mkdirs(); return out; }
+        }
+        throw new IOException("refusing to write outside the analysis root (a directory named re): " + out);
+    }
+
     @Override
     public void run() throws Exception {
         String[] args = getScriptArgs();
         if (args.length < 1) { println("usage: DecompileList <list file> [out dir]"); return; }
-        File outDir = new File(args.length > 1 ? args[1] : "re/out");
+        File outDir = analysisOut(args, 1);
         File dir = new File(outDir, "decomp");
         dir.mkdirs();
         DecompInterface di = new DecompInterface();
         di.toggleCCode(true);
         di.setSimplificationStyle("decompile");
-        di.openProgram(currentProgram);
+        if (!di.openProgram(currentProgram)) throw new IOException("decompiler failed to open the program: " + di.getLastMessage());
+        int failed = 0;
+        try {
         FunctionManager fm = currentProgram.getFunctionManager();
         for (String line : Files.readAllLines(Paths.get(args[0]))) {
             String s = line.trim();
@@ -42,11 +54,16 @@ public class DecompileList extends GhidraScript {
                 if (res.decompileCompleted() && res.getDecompiledFunction() != null) {
                     w.println(res.getDecompiledFunction().getC());
                 } else {
+                    failed++;
                     w.println("// decompilation failed: " + res.getErrorMessage());
                 }
             }
         }
-        di.dispose();
+        } finally {
+            di.dispose();
+        }
+        if (monitor.isCancelled()) throw new IOException("cancelled: the output is incomplete");
+        println("decompilation failures: " + failed);
         println("decompilation written to " + dir);
     }
 }
