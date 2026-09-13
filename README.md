@@ -4,7 +4,7 @@ OpenSherwood is a free, open-source game engine that plays *Robin Hood: The Lege
 Entertainment, 2002) from the data files of a copy you already own. It is a clean-room reimplementation in the
 tradition of OpenMW, Julius and OpenRCT2: the original game's assets are read, never shipped.
 
-**Status: pre-alpha.** What works today (2026-09-05): every screen of the original from the player's files (main
+**Status: pre-alpha, rebuilding from the decompiled original (ADR-0009, since 2026-09-13).** The engine below was built from data observation and oracle recordings; where the executable decides a rule, that rule was a hypothesis. Analysts now derive behaviour specifications from the decompiled executable behind a two-tier wall, and every such subsystem is rebuilt from its reviewed spec; the harness, the formats and the screens stay. What works today (2026-09-05): every screen of the original from the player's files (main
 menu, credits, select player with profiles, options for graphics / sounds / shortcuts, load and save, briefing and
 debriefing parchments, pause menu, HUD with the crouch / stand figures and the mini-map scroll), Play! into any
 retail mission with its script running (objectives, messages, dialogue pages, sequences, scroll pickups), every
