@@ -8,6 +8,7 @@ commit.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,8 @@ FORBIDDEN_EXT = {
     ".rhs", ".rhp", ".rhm", ".scb", ".bks", ".dic", ".res", ".red", ".pak", ".sxt", ".map", ".min",
     ".bfn", ".tfn", ".fnt", ".ttc", ".sfk", ".fxg", ".cpf", ".bck", ".vid", ".bik", ".wav", ".ogg", ".mp3",
     ".bmp", ".exe", ".dll",
+    # Ghidra projects, exports and archives (ADR-0009: analysis stays in the ignored `re/`)
+    ".gpr", ".gzf", ".rep", ".gdt", ".fidb",
     # derived images: screenshots and decoded sheets of game data stay local
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff",
 }
@@ -28,6 +31,17 @@ FORBIDDEN_NAMES = {"continue", "continue_t", "restart", "restart_t", "profiles",
 MAGICS = [b"SRES", b"MEUH", b"DUTY", b"SBSCRIPT", b"SBFONT", b"SBTTFT", b"FXBK", b"SFPK", b"NEUF", b"GSHR",
           b"FORP", b"BIKi", bytes.fromhex("c9eb0300")]
 MAX_BINARY_BYTES = 512 * 1024
+# Decompiler idioms: a tracked text file with three or more distinct ones is refused (ADR-0009). The files that
+# describe the rule itself are listed by path.
+DECOMPILER_IDIOMS = [
+    re.compile(rb"FUN_[0-9a-fA-F]{6,8}"), re.compile(rb"DAT_[0-9a-fA-F]{6,8}"),
+    re.compile(rb"LAB_[0-9a-fA-F]{6,8}"), re.compile(rb"param_[0-9]+"),
+    re.compile(rb"[iup]Var[0-9]+"), re.compile(rb"local_[0-9a-f]+"),
+    re.compile(rb"undefined[1248]?"), re.compile(rb"__thiscall|__fastcall|__cdecl"),
+    re.compile(rb"in_stack_[0-9a-f]+"), re.compile(rb"unaff_[A-Z]+"),
+]
+IDIOM_ALLOWED = {"scripts/check_no_assets.py", ".agents/skills/analyst-ghidra/SKILL.md",
+                 ".claude/skills/analyst-ghidra/SKILL.md", "docs/decisions/ADR-0009-decompilation-driven-reimplementation.md"}
 
 
 def tracked_files() -> list[Path]:
@@ -66,12 +80,17 @@ def main() -> int:
                 problems.append(f"game format magic {magic!r}: {rel}")
         if is_binary(head) and path.stat().st_size > MAX_BINARY_BYTES:
             problems.append(f"large binary file ({path.stat().st_size} bytes): {rel}")
+        if not is_binary(head) and rel not in IDIOM_ALLOWED and path.stat().st_size < 4 * 1024 * 1024:
+            text = path.read_bytes()
+            hits = [i.pattern for i in DECOMPILER_IDIOMS if i.search(text)]
+            if len(hits) >= 3:
+                problems.append(f"looks like decompiler output ({len(hits)} idioms): {rel}")
     for p in problems:
         print(p)
     if problems:
         return 1
-    print("policy check passed: no forbidden extensions, magics, roots or large binaries in tracked files "
-          "(copied text is not detected by this script)")
+    print("policy check passed: no forbidden extensions, magics, roots, large binaries or decompiler idioms in "
+          "tracked files (copied prose is not detected by this script)")
     return 0
 
 

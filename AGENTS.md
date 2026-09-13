@@ -6,8 +6,9 @@ This file is the single source of truth for how work is done in this repository.
 
 ## What this project is
 
-OpenSherwood: a clean-room, GPLv3, asset-free reimplementation of the engine of *Robin Hood: The Legend of Sherwood*
-(2002). Goal order: (1) play the full original campaign from the player's own data, (2) modern platform and QoL,
+OpenSherwood: an open-source (GPLv3), asset-free reimplementation of the engine of *Robin Hood: The Legend of
+Sherwood* (2002), built from behaviour specifications that analysts derive from the decompiled executable behind a
+two-tier wall (ADR-0009). Goal order: (1) play the full original campaign from the player's own data, (2) modern platform and QoL,
 (3) modding: maps, missions, campaigns, characters, skins, scripts, (4) new modes, co-op, other games of the same
 engine family. Non-goals: shipping any original content; matching the original's binary layout; a general-purpose
 game engine.
@@ -16,10 +17,13 @@ game engine.
 
 1. Never add game data to the repository in any form. `scripts/check_no_assets.py` runs in CI; it is a safety net,
    not the rule.
-2. Clean room: decompiler or disassembler output never enters the repository, and a session that has looked at it
-   does not implement the corresponding subsystem. Static analysis is an *analyst* task that ends in a spec
-   document under `docs/`. Implementation works from specs, data-file observation and black-box behaviour.
-3. Unknown fields are named `unknown_*` in specs and code. No guessed semantics in code without a spec claim.
+2. Two-tier wall (ADR-0009): analysts read the decompiled executable in the git-ignored `re/` and write behaviour
+   specifications under `docs/` (template `docs/original/SPEC-TEMPLATE.md`, skill `analyst-ghidra`); implementers
+   write original Rust from reviewed specifications and never open `re/`. A session that has read decompilation
+   for a subsystem does not implement it. Decompiler output, transcribed pseudocode, the binary's identifiers,
+   strings, copied value tables and game text never enter the repository.
+3. Unknown fields are named `unknown_*` in specs and code. No guessed semantics in code without a spec claim; a
+   rule the spec has not settled is recorded as an `Assumption` (ADR-0008) until an analyst settles it.
 4. Every fact about the original goes into `docs/formats/` or `docs/original/` with its Provenance.
 
 ## Determinism rules (see `docs/architecture.md`, ADR-0004)
