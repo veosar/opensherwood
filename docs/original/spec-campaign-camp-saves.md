@@ -1,7 +1,10 @@
 # Campaign, Sherwood camp and saved games (behaviour specification)
 
-Status: `draft`, **revision 2** (answers Codex spec review 19 on revision 1, reviewed blob
-`6601ef353cb680df86e7b23613627c0cd6b032d5`; awaiting re-review).
+Status: `draft`, **revision 3** (awaiting re-review). Revision 2 answered all 29 findings of Codex spec review
+19 on revision 1, reviewed blob `6601ef353cb680df86e7b23613627c0cd6b032d5`. Revision 3 adds section 2.7, the
+three interface tables, on the maintainer's decision recorded as the clarification to ADR-0009 section 5
+(2026-09-13), and withdraws the two exclusions revision 2 had recorded for them; the production output formula
+stays excluded.
 Build: GOG English edition, `Robin Hood.exe` SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`,
 image base 0x00400000; every address below is a virtual address in that image.
 Analyst: session `a00ebf7dd67504358` (Opus, 2026-09-13), working in the git-ignored `re/` workspace.
@@ -218,9 +221,8 @@ level table is loaded (CAMP-047, 0056b8d0): the mission file is opened, its `SCO
 - `capability_reqs` := a list built from the `SCOT` records: ten single-byte flags at offset 22 of each record
   are read in order and each set flag appends one capability requirement to the node's list. Duplicates are not
   removed, so a requirement appears once per slot that asks for it. After the ten flags comes one byte that,
-  when non-zero, is followed by the slot's name as a byte string, and then one further byte. *The correspondence
-  between flag position and capability id is a ten-entry mapping inside the executable and is excluded from this
-  revision* (section 11). Codex's read-only inspection found non-zero requirement flags in **12 of the 39
+  when non-zero, is followed by the slot's name as a byte string, and then one further byte. The correspondence
+  between flag position and capability id is **interface table T1** (2.7). Codex's read-only inspection found non-zero requirement flags in **12 of the 39
   mission files, covering 16 slots** (CAMP-048), so this list is not empty in practice — revision 1's claim that
   it is empty for every node was wrong.
 
@@ -399,6 +401,86 @@ One profile record:
 8. the save-slot manager: a block tag, `u32 next_number` (the counter behind the numbered slot names),
    `u32 count`, then `count` slots, each a block tag, a byte-string *data file name*, a byte-string *thumbnail
    file name* and a wide-string *label shown to the player* (CAMP-114).
+
+### 2.7 Interface tables
+
+Three fixed correspondences inside the executable interpret fields of the player's own files. Under ADR-0009
+section 5, clarification of 2026-09-13: a mapping from a data-file field, flag or id to its meaning is an
+**interface fact** the player's files require and is allowed entry by entry with its data-file provenance,
+exactly like the native table, while a table of tuned values the program carries as content stays refused.
+Accordingly each table below is given entry by entry with the address that establishes it and the data-file field
+it interprets. None of them is a table of tuned values: every row names one datum the player's files carry.
+
+**T1 — the ten capability flags of a mission slot** (CAMP-048, CAMP-315). Field interpreted: the ten single-byte
+flags at offset 22 of each `SCOT` record of a mission `.rhm` (`docs/formats/rhm.md`, previously unnamed bytes of
+that record). Established at 0056b8d0, which reads the ten bytes in file order and appends the capability id of
+every non-zero one to the node's requirement list. Consumed by native 170 through the matcher at 004574b0, which
+looks the id up in the character profile's capability arrays (2.2, CAMP-315).
+
+| Flag, in file order | Capability id it requires |
+|---|---|
+| 1st | 21 |
+| 2nd | 22 |
+| 3rd | 28 |
+| 4th | 1 |
+| 5th | 25 |
+| 6th | 27 |
+| 7th | 2 |
+| 8th | 9 |
+| 9th | 13 |
+| 10th | 23 |
+
+These are the same id space as the entries of the two capability arrays of a character-profile record of
+`Configuration/profile.cpf` (`docs/formats/profile.md`: the small values of the player-character record's
+trailing block), which is what makes the match possible. The three substitutions of CAMP-315 apply on top: a
+requirement for 2 is also met by 3 and one for 13 by 14, in the three-entry array, and one for 25 by 26 in the
+four-entry array.
+
+**T2 — the item kind a workshop produces** (CAMP-325). Field interpreted: the item-kind id carried by a pick-up
+element of a level. Established at 00580350; consumed by the stock recount at 00580430, which sums the quantity
+of every active pick-up element whose item-kind id matches, and by the placement routine at 00580b70, which
+creates elements of that kind. The ids live in the same space as the pick-up item field of the `ZORG` chunk
+(`docs/formats/rhm.md`) and as the inventory property ids of natives 117 and 118 (`spec-script-vm.md`).
+
+| Workshop kind | Item kind it produces and counts |
+|---|---|
+| 0 | 1 |
+| 1 | 4 |
+| 2 | 5 |
+| 3 | 11 |
+| 4 | 12 |
+| 5 | 13 |
+| 6 | 16 |
+| 7 | 17 |
+| 8 | 19 |
+| 9..12 | none; the recount is skipped for these kinds |
+
+**T3 — the supervising character of a workshop** (CAMP-327). Field interpreted: a character-profile record of
+`Configuration/profile.cpf`; the program selects the record by comparing one of its designer strings with a fixed
+name, and the record so selected is the one native 256 reports under the campaign identity below
+(`spec-script-vm.md`, native 256). Established at 005806c0, which searches the workshop's assignment list for a
+character whose profile is that record and answers with him, or with nothing.
+
+| Workshop kind | Supervising character, by campaign identity (native 256) |
+|---|---|
+| 0 | 0 |
+| 1 | 0 |
+| 2 | 4 |
+| 3 | 3 |
+| 4 | 2 |
+| 5 | 2 |
+| 6 | 5 |
+| 7 | 3 |
+| 8 | 2 |
+| 9 | 0 |
+| 10 | 1 |
+| 11, 12 | none |
+
+Caveat (CAMP-333). Native 256 answers identity 0 for **both** of the hero's two character-profile records
+(0057ba60 returns 0 on either), whereas the comparison at 005806c0 names one designer string and so one of those
+two records. Whether the hero's other appearance also satisfies the supervisor test was not established, and it
+matters because a new campaign's band starts from the second of the two records (CAMP-200). What the supervisor
+*contributes* to a day's output is a separate matter and stays unknown (section 11).
 
 ---
 
@@ -674,7 +756,8 @@ statement here assumes otherwise.
 
 1. For every entry of the node's `required_pcs`: some member of `team` must have that character profile
    (identity comparison of the profile the member points at).
-2. For every entry of the node's `capability_reqs`: some member of `team` must have that capability. A member
+2. For every entry of the node's `capability_reqs` (built from the slot flags through interface table T1, 2.7):
+   some member of `team` must have that capability. A member
    has capability *c* when *c* appears in either of two capability arrays of his character profile — one of
    three entries and one of four — or when one of three substitutions applies: a requirement for capability 2 is
    also satisfied by 3 in the three-entry array, a requirement for 13 by 14 in the three-entry array, and a
@@ -726,7 +809,7 @@ requiring `previous` to be non-null with `outcome == 1` and do nothing otherwise
 
 | Kind | What the pass does |
 |---|---|
-| 0..8 | *gated by victory:* compute the day's output, `stock += output`, `last_output := output`. *Ungated:* walk the work spots and place items in the camp, up to 5 per spot, drawing down a **temporary** quantity initialised from `stock`; `stock` itself is not reduced by placement. Then recompute `full := 5 * (number of work spots) <= stock` (CAMP-322) |
+| 0..8 | *gated by victory:* compute the day's output, `stock += output`, `last_output := output`. *Ungated:* walk the work spots and place items of the workshop's item kind (interface table T2, 2.7) in the camp, up to 5 per spot, drawing down a **temporary** quantity initialised from `stock`; `stock` itself is not reduced by placement. Then recompute `full := 5 * (number of work spots) <= stock` (CAMP-322) |
 | 9, 10 | *gated by victory:* compute the day's output and add it to **each assigned character's** experience — slot 0 for kind 10, slot 1 for kind 9, and kind 9 additionally requires that character's profile to carry one particular capability in its three-entry capability array (CAMP-323) |
 | 11 | *gated by victory:* compute the day's output and **restore health** by that amount to every assigned character, capped at 100. Kind 11 is the rest workshop, not a training workshop (CAMP-324) |
 | 12 | a separate routine, ungated, not read (CAMP-329) |
@@ -738,17 +821,17 @@ The experience accumulator (CAMP-072, 0051d4e0): `points[slot] += amount`; then,
 to 100.
 
 A **separate campaign pass** (00456a70) captures the camp back into the campaign: for kinds 0..8 it recounts
-`stock` from the camp level — summing the quantity of every **active** pick-up element whose item id matches the
-workshop's, plus, for one particular item id, certain actors — and for every kind it rebuilds the `assignments`
+`stock` from the camp level — summing the quantity of every **active** pick-up element whose item kind matches the
+workshop's (interface table T2, 2.7), plus, for item kind 1, certain actors — and for every kind it rebuilds the `assignments`
 list by scanning the camp level's player characters that pass an eligibility test, recording each one's record,
 position and sector (CAMP-326). This pass has no direct caller in the export; when it runs was not established
 (section 10).
 
 **The day's output itself is not specified.** Each of the four output routines truncates a floating-point value
-to an integer, and the expression that produces it — including the part played by the routine that locates the
-workshop's supervising character, whose per-kind identity mapping is itself withheld (section 11) — is absent
-from the export. Section 11 excludes camp production from
-clearance.
+to an integer, and the expression that produces it is absent from the export. Which character supervises which
+workshop *is* specified (interface table T3, 2.7) and the routine that finds him answers with that character or
+with nothing; what his presence contributes to the value is unknown. Section 11 excludes the output arithmetic
+from clearance.
 
 ### 3.12 The campaign-map screen
 
@@ -816,7 +899,7 @@ Rows whose id carries **(R19-n)** answer finding *n* of spec review 19.
 | CAMP-045 | A node whose `needs_camp` byte is 0 may start without the camp | observed | 004539f0 | high | |
 | CAMP-046 | Location 8 is the camp and several routines gate on it | observed | 00579300, 0050b640, 004552f0 | high | |
 | CAMP-047 | `team_limit` is the number of `SCOT` records of the node's mission file, or 5 when the file or chunk is missing (with a warning) | observed | 0056b8d0 | high | **(R19-6)** |
-| CAMP-048 | `capability_reqs` is built from ten flag bytes at offset 22 of each `SCOT` record; each set flag appends one capability requirement, duplicates included | observed | 0056b8d0 | high | **(R19-6)**; 12 of 39 mission files carry them, covering 16 slots (Codex's read-only inspection). The flag-to-capability correspondence is excluded (section 11) |
+| CAMP-048 | `capability_reqs` is built from ten flag bytes at offset 22 of each `SCOT` record; each set flag appends one capability requirement, duplicates included; the flag-to-capability correspondence is interface table T1 (2.7) | observed | 0056b8d0 | high | **(R19-6)**; 12 of 39 mission files carry them, covering 16 slots (Codex's read-only inspection) |
 | CAMP-050 | 200000 in the maximum-money field means "no maximum"; the money and gang comparisons are unsigned | observed | 0054c800, 0054c8a0 | high | **(R19-10)** |
 | CAMP-060 | The availability test is the eight conditions of 3.2, in that order | observed | 0054c800, 0054c8a0 | high | |
 | CAMP-061 | The *after* list requires each prerequisite to have been played, won or lost | observed | 0054c6f0 | high | contradicts `profile.md` |
@@ -890,12 +973,15 @@ Rows whose id carries **(R19-n)** answer finding *n* of spec review 19.
 | CAMP-322 | Placement draws down a temporary quantity and does not reduce `stock`; afterwards the capacity flag is recomputed as `5 × spots <= stock` | observed | 00580b70 | high | **(R19-15)** |
 | CAMP-323 | Kinds 9 and 10 add their output to each assigned character's experience, slot 1 and slot 0; kind 9 additionally requires one capability in the character profile's three-entry array | observed | 005810c0, 0051d4e0, 0055bb00 | high | **(R19-16)** |
 | CAMP-324 | Kind 11 restores health to each assigned character, capped at 100 | observed | 00581180, 00484360 | high | **(R19-16)** |
+| CAMP-325 | Each workshop kind 0..8 produces and counts exactly one item kind, per interface table T2; kinds 9..12 have none | observed | 00580350, 00580430, 00580b70 | high | interpreted field: the item-kind id of a pick-up element |
+| CAMP-327 | Each workshop kind 0..10 has one supervising character, per interface table T3; kinds 11 and 12 have none | observed | 005806c0 | high | interpreted field: a character-profile record of `profile.cpf` |
 | CAMP-326 | A separate pass recounts `stock` for kinds 0..8 from **active** matching pick-up elements (plus certain actors for one item id) and rebuilds every workshop's assignment list from the camp's player characters | observed | 00456a70, 005804e0, 00580430, 00580520 | high for the content, unknown for when it runs | **(R19-15)** |
 | CAMP-328 | After the pass each assigned character is placed at his recorded spot | observed | 00580dc0 | high | |
 | CAMP-329 | Kind 12's routine was not read | unknown | 00580e80 | — | **(R19-17)** |
 | CAMP-330 | The campaign map lays out ten location slots, skipping 0 and 8, with one widget fewer for locations 1..3 | observed | 00527d20 | medium | |
 | CAMP-331 | An empty offered list on the campaign map yields a text and a reported warning | observed | 00527d20 | high | |
 | CAMP-332 | The status line carries money, score and the spared percentage from text resources 0xF3, 0xF4 and 0x40 | observed | 00528810 | high | |
+| CAMP-333 | Native 256 answers identity 0 for both of the hero's character-profile records, while the supervisor test names one of them; whether the other also satisfies it was not established | observed for the native, unknown for the consequence | 0057ba60, 005806c0 | medium | matters because a new band starts from the second record (CAMP-200) |
 | CAMP-340 | The two HUD counters are money and clovers, each with its own text resource | observed | 004c8140 | high | |
 | CAMP-341 | The blazon refresh errors and does nothing without a blazon node | observed | 00514730 | high | |
 | CAMP-350 | A hostile human is given five colour entries (red or violet, plus yellow and blue in the red case); a player character light green; two further classes cyan and pale yellow. Which entry a state uses was not established | observed for the values | 0048f280, 004a5c30, 0046ffe0, 004b1eb0, 005ef320 | high for the values, unknown for the mapping | **(R19-24)** |
@@ -929,6 +1015,7 @@ Rows whose id carries **(R19-n)** answer finding *n* of spec review 19.
 | capability flags per mission slot | 10 | flags at offset 22 of a `SCOT` record | 0056b8d0 | high |
 | capability array sizes of a character profile | 3 and 4 | entries | 004574b0 | high |
 | capability substitutions | 2 by 3, 13 by 14 (three-entry array); 25 by 26 (four-entry array) | — | 004574b0 | high |
+| interface tables | T1 slot flag -> capability id, T2 workshop kind -> item kind, T3 workshop kind -> supervising identity | see 2.7 | 0056b8d0, 00580350, 005806c0 | high |
 | workshops | 13 | records | 00456a40, retail file | high |
 | items placed per work spot | 5 | items | 00580b70 | high |
 | capacity-flag rule | `5 × spots <= stock` | — | 00580b70 | high |
@@ -1155,8 +1242,9 @@ claim that this revision closes them: section 11 names what it does not.
    mis-reads three groups.
 4. **Deployment requirements are a real feature the engine lacks entirely:** a per-node list of required
    character profiles *and* a per-node list of capability requirements built from each mission file's `SCOT`
-   flags, matched against the character profile's capability arrays with three substitutions, plus a per-node
-   team size limit equal to the mission's slot count.
+   flags through interface table T1, matched against the character profile's capability arrays with three
+   substitutions, plus a per-node team size limit equal to the mission's slot count. All of it is specified
+   here.
 5. **`savegame.md` is a wrong guess.** The 32-byte records are slots with age, blazon price and outcome; the 16
    bytes are a block tag; a save carries the campaign block **twice** when the version is above 38, the first
    copy streamed from `Campaign.bck`; and `Campaign.bck` is not a backup of a table but the campaign as of the
@@ -1169,8 +1257,9 @@ claim that this revision closes them: section 11 names what it does not.
    `STUB_POLICY_VALUES` pins to 0 while also pinning 174 to 5 unconditionally.
 8. **Message 1001 is engine-originated at camp start**, so the engine's camp never configures its 13 production
    zones. (Its delivery order, and the origin of 1000, are open — section 11.)
-9. **The workshop pass is absent,** including the parts that run without a victory: item placement, character
-   placement and the capacity flag.
+9. **The workshop pass is absent,** including everything that does not depend on the unspecified output
+   arithmetic: item placement of the workshop's own item kind (T2), character placement, the capacity flag, the
+   stock recount, and the experience and health effects of kinds 9 to 11.
 10. **Score, progress and the spared percentage are unlike anything in the engine.** Progress excludes ambush and
     tactical nodes, includes placeholders, and two level codes short-circuit to 95 and 100. The spared percentage
     is the share of **enemies left alive**, from two cumulative counters over hostile actors — not a count of the
@@ -1187,9 +1276,12 @@ the continue slot.
 ## 10. Open questions
 
 1. **The one-day output of a workshop, and kind 12.** Four routines truncate a floating-point value whose
-   expression the export does not contain, and the part played by the routine that locates the workshop's
-   supervising character is unknown. Read the raw instructions of 00581020, 005810c0, 00581180, 005806c0's tail
-   and 00580e80 (kind 12).
+   expression the export does not contain; which character supervises each workshop is settled (interface table
+   T3, 2.7) but what his presence contributes to the value is not. Settling this needs a **Ghidra session whose
+   decompiler output includes the floating-point expressions** (the current export dropped them) over 00581020,
+   005810c0, 00581180, 005806c0's tail and 00580e80 (kind 12); the lead schedules it. It cannot be closed from
+   the present export, and hand-disassembly is not an acceptable substitute for a rule that feeds a determinism
+   contract.
 2. **The delivery order of message 1001** relative to the workshop pass and the first tick (CAMP-303): recover
    the arguments of 00578d80's call in 0050f710 and the scheduler's admission rules (0058a940, and
    `spec-script-vm.md` VM-210/215).
@@ -1219,15 +1311,17 @@ The following are **not** cleared for implementation by this revision. Each maps
 
 | Area | Why | Assumption |
 |---|---|---|
-| **Camp production output** (3.11's gated half for kinds 0..11, and kind 12 entirely) | The output arithmetic, rounding and overflow are not recoverable from the export (open question 1). The routine that picks the workshop's supervising character maps each workshop kind to one campaign identity; that eleven-entry mapping is withheld on the same grounds as the other two, and the contribution it makes to the output is unknown anyway. The ungated half — item placement, character placement, the capacity flag, the recount — *is* specified and may be implemented | `CampProductionOutput` |
-| **The workshop-kind to item-kind correspondence** | A nine-entry mapping inside the executable. Reproducing it is the kind of curated table ADR-0009 refuses; the reviewer refused it in revision 1. The mechanism is specified (each of kinds 0..8 has exactly one item kind; kinds above 8 have none) but the mapping itself is withheld pending a maintainer and reviewer decision | `WorkshopItemKinds` |
-| **The `SCOT` flag to capability-id correspondence** | A ten-entry mapping inside the executable, of the same character. The mechanism, the flag positions, the matcher and its three substitutions are specified; the correspondence is withheld on the same grounds. Without it native 170's capability half cannot be implemented | `SlotCapabilityIds` |
+| **Camp production output** (the victory-gated half of 3.11 for kinds 0..11, and kind 12 entirely) | The output arithmetic, its rounding and its overflow behaviour are not recoverable from the present export, and the contribution the supervising character makes to it is unknown (open question 1, which names the Ghidra session that would close it). Everything else in 3.11 — item placement, character placement, the capacity flag, the recount, the experience and health effects, and interface tables T2 and T3 — *is* specified and may be implemented | `CampProductionOutput` |
 | **Message ordering in the camp** | CAMP-303. No implementation may assume 1001's handler completes before the workshop pass or before the first tick | `CampMessageOrder` |
 | **The origin of message 1000** | CAMP-302 | `CampSendAction` |
 | **The recruit count** | CAMP-291 | `RecruitCount` |
 | **Mini-map state-dependent rendering** | CAMP-350, CAMP-352: the values are known, the state-to-entry mapping is not, and no claim is made about grey dots | `MinimapDotState` |
 
-Everything else in sections 2 to 8 is offered for clearance.
+Everything else in sections 2 to 8 is offered for clearance, including the three interface tables of 2.7. The
+two exclusions revision 2 recorded for those tables (`SlotCapabilityIds`, `WorkshopItemKinds`) are **withdrawn**:
+ADR-0009 section 5's clarification admits a data-file field-to-meaning mapping entry by entry with its provenance,
+which is what 2.7 gives. No `Assumption` variant is needed for either, and native 170's capability half and the
+camp's item production are both implementable.
 
 ---
 
@@ -1239,13 +1333,14 @@ amendment first and define the scope an implementer must leave alone.
 1. The implementer session is fresh: no inherited analyst context, notes, tool output or memory, and no access
    to `re/` — including through helper scripts (ADR-0009 §2).
 2. The scope handed over excludes everything in section 11. Concretely, the implementer may build: the file
-   grammars of 2.6 (read and write, every archive version in section 5), the campaign object and its counters,
-   the availability test, the whole reduction including retries and restores, choice and aging, outcome and
-   mission-end bookkeeping, the blazon rules, the score/progress/spared/play-time formulas, the recruit
-   mechanism except its count, deployment except the capability half of native 170, the workshop pass except the
-   output arithmetic, the save slots and auto-saves, and the HUD counters. *(blocked)*: production output,
-   kind 12, the two withheld mappings, message ordering, the send action, the recruit count and the mini-map
-   state mapping.
+   grammars of 2.6 (read and write, every archive version in section 5), the three interface tables of 2.7, the
+   campaign object and its counters, the availability test, the whole reduction including retries and restores,
+   choice and aging, outcome and mission-end bookkeeping, the blazon rules, the
+   score/progress/spared/play-time formulas, the recruit mechanism except its count, deployment **including**
+   the capability half of native 170, the workshop pass except the output arithmetic — so item placement,
+   character placement, the capacity flag, the recount, and the experience and health effects are in scope — the
+   save slots and auto-saves, and the HUD counters. *(blocked)*: the output arithmetic for kinds 0..11, kind 12,
+   message ordering, the send action, the recruit count and the mini-map state mapping.
 3. The importer runs the camp script's load path before treating workshop assignments as positions (2.4,
    section 8).
 4. The four named RNG streams of section 8.7 exist with the stated consumption order, and their positions are in
@@ -1294,7 +1389,9 @@ Files read on disk, read-only, under `C:/Users/przem/source/gamedata/robinhood`:
 `Data/Savegame/Profile_001/{Continue,Continue_t,Restart,Restart_t}`. The mission-file inspection behind CAMP-048
 and A6 was the reviewer's, on the same installation.
 
-No oracle recording was made; the claims that would need one are listed in section 7.
+No oracle recording was made; the claims that would need one are listed in section 7. The three interface tables
+of 2.7 are admitted by the clarification to ADR-0009 section 5 (2026-09-13, the maintainer's decision after this
+document's first review); each row carries the address that establishes it and the data-file field it interprets.
 
 Function addresses appear inline in sections 2 to 6 and are collected in section 0. Instruction bytes,
 disassembly, recovered symbols and the comprehensive address map stay in `re/`.
@@ -1304,6 +1401,7 @@ Build: GOG English edition, `Robin Hood.exe` SHA-256
 
 Documents to update once this revision is cleared: `docs/formats/savegame.md` (replace the stub),
 `docs/formats/profile.md` (the three grammar corrections, the field meanings, the key-set layout),
-`docs/formats/rhm.md` (the `SCOT` record's capability flags and the slot count's role),
+`docs/formats/rhm.md` (the `SCOT` record's ten capability flag bytes at offset 22, interface table T1, and the
+slot count's role as the team size limit),
 `docs/formats/sherwood-hub.md` (sections 5 and 6), `docs/original/campaign-flow.md` (the successor rule),
 `docs/roadmap.md` and the `Assumption` registry (section 11).
