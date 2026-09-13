@@ -9,11 +9,20 @@ import java.io.*;
 import java.util.*;
 
 public class ExportStrings extends GhidraScript {
+
+    /** The output directory must be inside the analysis root (a directory named `re`); anything else is refused. */
+    static File analysisOut(String[] args, int index) throws IOException {
+        File out = new File(args.length > index ? args[index] : "re/out").getCanonicalFile();
+        for (File p = out; p != null; p = p.getParentFile()) {
+            if (p.getName().equals("re")) { out.mkdirs(); return out; }
+        }
+        throw new IOException("refusing to write outside the analysis root (a directory named re): " + out);
+    }
+
     @Override
     public void run() throws Exception {
         String[] args = getScriptArgs();
-        File outDir = new File(args.length > 0 ? args[0] : "re/out");
-        outDir.mkdirs();
+        File outDir = analysisOut(args, 0);
         ReferenceManager rm = currentProgram.getReferenceManager();
         FunctionManager fm = currentProgram.getFunctionManager();
         try (PrintWriter w = new PrintWriter(new FileWriter(new File(outDir, "strings.tsv")))) {
@@ -33,6 +42,7 @@ public class ExportStrings extends GhidraScript {
                 w.println(d.getAddress() + "\t" + text.length() + "\t" + String.join(",", funcs) + "\t" + text);
             }
         }
+        if (monitor.isCancelled()) throw new IOException("cancelled: the output is incomplete");
         println("strings written to " + outDir);
     }
 }

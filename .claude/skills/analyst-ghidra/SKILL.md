@@ -5,8 +5,10 @@ description: How an analyst session turns the decompiled executable into a behav
 
 # Analyst with Ghidra (ADR-0009)
 
-You are an **analyst**. Your deliverable is one specification file following `docs/original/SPEC-TEMPLATE.md`.
-You do not write engine code. The session that implements the subsystem must not be yours.
+You are an **analyst**. Your deliverable is one specification file following `docs/original/SPEC-TEMPLATE.md`,
+opened by its necessity record and confined to what the interoperability target requires. You do not write
+engine code, patches or translated algorithms, not even as review comments; the session that implements the
+subsystem must not be yours and must not inherit your context.
 
 ## Workspace
 
@@ -25,16 +27,19 @@ You do not write engine code. The session that implements the subsystem must not
 1. **Anchor**: find the subsystem from what is already known: the file formats it loads (`docs/formats/`), the
    strings the executable references (file names, format tags, error messages), the natives' dispatch table
    (the script VM), the harness measurements (`docs/original/`). Record the anchor addresses in `re/notes/`.
-2. **Read everything**: decompile the reachable functions, follow the data structures (write your own struct
-   layouts in the notes), until you can explain every branch. Rename in Ghidra freely; those names stay in `re/`.
+2. **Read what the target requires**: the functions that decide the behaviour the player's files depend on,
+   following the data structures (your own layouts in the notes) until the required results and orderings are
+   settled; record the scope and the stopping condition in the necessity record. Rename in Ghidra freely;
+   those names stay in `re/`. The export scripts refuse any output directory outside `re/`; keep logs there too.
 3. **Write the spec** in your own words: data model, behaviour with formulas and state tables, constants with
    their source addresses, native semantics by id, open questions, provenance. Test the spec against the data
    files and the harness where possible (a claim about a format field is checked on all 39 missions; a claim
    about timing against a recording).
-4. **Self-check for leaks** before saving: no line reads like decompiler output (no `FUN_`, `DAT_`, `param_N`,
-   `uVar`, `local_`, `undefined`), no identifiers or strings taken from the binary, no value tables copied from
-   its data segment (describe the rule that generates them, or name the data file they are loaded from), no game
-   text. Run `python scripts/check_no_assets.py`.
+4. **Self-check against the expression filter** (ADR-0009 section 5) before saving: no line reads like
+   decompiler output (no `FUN_`, `DAT_`, `param_N`, `uVar`, `local_`, `undefined`), no identifiers, class
+   layouts, function decomposition or strings taken from the binary, no value tables copied from its data
+   segment (describe the rule that generates them, or name the data file and field they are loaded from), no
+   game text; results and orderings, not organisation. Run `python scripts/check_no_assets.py --paths <spec>`.
 5. **Hand over**: the lead requests a Codex spec review (skill `cross-agent-review`, task B); only a reviewed spec
    is implemented.
 

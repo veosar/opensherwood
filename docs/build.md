@@ -83,3 +83,8 @@ start; resizable). Simulation runs at 60 ticks per second in window mode.
 | `OPENSHERWOOD_LENIENT_ASSETS` | `1` makes a retail scenario load with logged defaults when a required dependency is missing or malformed (the map's `.rhp` geometry: everything walkable, no occluders; `Configuration/profile.cpf` or a sprite profile it references: default sprites; the sprite bank or a profile: no sprites; the mission's `.scb` script missing, malformed, untranslatable, with classes that bind to no mission element, or without a known element index space: the mission runs without a script or with the unbound classes inert). Off by default: the `reset` of a `map:` or `mission:` scenario fails with the file and the parser's message instead, because a world built without them (no geometry, empty catalog) would silently differ from the original. Diagnostic use only; never for replays or goldens |
 | `OPENSHERWOOD_BIN` | engine binary used by the Python harness (default: `target/release` then `target/debug`) |
 | `RUST_LOG` | tracing filter, e.g. `opensherwood_core=debug` |
+
+## Publication gate
+
+After cloning run `git config core.hooksPath scripts/hooks`: the pre-push hook runs `scripts/check_no_assets.py --range` on every
+commit about to be published (ADR-0009). `python scripts/check_no_assets.py` inspects the index; `--paths <file>` a draft; `--selftest` the detectors.

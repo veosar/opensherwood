@@ -9,15 +9,27 @@ import java.io.*;
 import java.util.*;
 
 public class DecompileAll extends GhidraScript {
+
+    /** The output directory must be inside the analysis root (a directory named `re`); anything else is refused. */
+    static File analysisOut(String[] args, int index) throws IOException {
+        File out = new File(args.length > index ? args[index] : "re/out").getCanonicalFile();
+        for (File p = out; p != null; p = p.getParentFile()) {
+            if (p.getName().equals("re")) { out.mkdirs(); return out; }
+        }
+        throw new IOException("refusing to write outside the analysis root (a directory named re): " + out);
+    }
+
     @Override
     public void run() throws Exception {
         String[] args = getScriptArgs();
-        File dir = new File(new File(args.length > 0 ? args[0] : "re/out"), "decomp_all");
+        File dir = new File(analysisOut(args, 0), "decomp_all");
         dir.mkdirs();
         DecompInterface di = new DecompInterface();
         di.toggleCCode(true);
         di.setSimplificationStyle("decompile");
-        di.openProgram(currentProgram);
+        if (!di.openProgram(currentProgram)) throw new IOException("decompiler failed to open the program: " + di.getLastMessage());
+        int failed = 0;
+        try {
         int n = 0;
         FunctionIterator it = currentProgram.getFunctionManager().getFunctions(true);
         while (it.hasNext() && !monitor.isCancelled()) {
@@ -36,13 +48,18 @@ public class DecompileAll extends GhidraScript {
                 if (res.decompileCompleted() && res.getDecompiledFunction() != null) {
                     w.println(res.getDecompiledFunction().getC());
                 } else {
+                    failed++;
                     w.println("// decompilation failed: " + res.getErrorMessage());
                 }
             }
             n++;
             if (n % 500 == 0) println("decompiled " + n);
         }
-        di.dispose();
+        } finally {
+            di.dispose();
+        }
+        if (monitor.isCancelled()) throw new IOException("cancelled: the output is incomplete");
+        println("decompilation failures: " + failed);
         println("decompiled " + n + " functions into " + dir);
     }
 }

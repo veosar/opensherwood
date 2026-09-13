@@ -52,6 +52,20 @@ methods produced each part of the spec:
   the reviewed spec.
 - **Community knowledge**: public documentation from the modding community (cite the URL).
 
+## Necessity and disclosure (ADR-0009)
+
+Decompilation is confined to what interoperability with the player's files requires, and each specification
+records that necessity (interoperability target, information not otherwise available, scope read, stopping
+condition). Publishing a specification is a separate decision from writing it: the maintainer approves each
+specification for release, considering that the interoperability exception restricts onward disclosure and
+the development of substantially similar expression (Directive 2009/24/EC art. 6(2), the Polish act art. 75
+ust. 3); the expression filter of ADR-0009 is applied at review. The acquisition record of the analysed copy
+and the store and publisher terms in force when it was acquired are kept privately by the maintainer (the
+GOG user agreement restricts reverse engineering "except as permitted by applicable law"; the statutory
+exceptions cannot be excluded by contract: Directive art. 8, the Polish act art. 76). Analysts act on behalf of
+the maintainer, on the maintainer's lawfully acquired copy. This policy is not legal advice; the workflow is to
+be assessed by counsel before a public release that includes decompilation-derived specifications.
+
 ## Legal basis
 
 - European Union: Directive 2009/24/EC, Article 5(3) (observing, studying and testing a program one
