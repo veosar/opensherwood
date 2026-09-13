@@ -1,364 +1,404 @@
 # Campaign, Sherwood camp and saved games (behaviour specification)
 
-Status: `draft` (analyst session 2026-09-13; not yet reviewed).
+Status: `draft`, **revision 2** (answers Codex spec review 19 on revision 1, reviewed blob
+`6601ef353cb680df86e7b23613627c0cd6b032d5`; awaiting re-review).
 Build: GOG English edition, `Robin Hood.exe` SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`,
-image base 0x00400000; every address below is a virtual address in that image. Analyst: this session
-(2026-09-13, Claude analyst, `re/` workspace). Reviewer: **pending**. Publication approval: **pending**
-(separate from factual approval).
+image base 0x00400000; every address below is a virtual address in that image.
+Analyst: session `a00ebf7dd67504358` (Opus, 2026-09-13), working in the git-ignored `re/` workspace.
+Reviewer: Codex `gpt-6-astra`, spec review 19 (2026-09-13), verdict *redo*.
+Publication approval: **pending**, maintainer, separate from factual approval.
 
 This file describes what the original program does, in the analyst's own words, so that an implementer who has
 never seen the program can build it. It contains no decompiler output, no transcribed pseudocode, none of the
-binary's identifiers or strings, no tables copied from its data, no game text, and no prescribed internal
-structure (ADR-0009, "expression filter"). It describes required results and orderings; the implementer chooses
-the organisation.
+binary's identifiers or strings, no tables copied from its data or its code, no game text, and no prescribed
+internal structure (ADR-0009, "expression filter"). It describes required results and orderings; the implementer
+chooses the organisation. Where a value set inside the executable would have to be reproduced to make a feature
+implementable, the feature is named in **section 11, "Excluded from clearance"**, and is *not* cleared for
+implementation by this revision.
 
-Sibling specifications, read first and **not** duplicated here: `spec-script-vm.md` (opcodes, natives,
-callback ordering, the won / lost flags, objectives, the level tick), `spec-navigation.md`, `spec-ai-combat.md`
-(all profile stat fields are settled there — this file does not re-derive them). Existing observation-only
-documents this one corrects or extends: `docs/formats/profile.md`, `docs/formats/savegame.md`,
-`docs/formats/sherwood-hub.md`, `docs/original/campaign-flow.md`, `docs/original/ui-flow.md`.
+Sibling specifications, read first and **not** duplicated here: `spec-script-vm.md` (opcodes, natives, callback
+ordering, the won / lost flags, objectives, the level tick), `spec-navigation.md`, `spec-ai-combat.md` (every
+profile stat field, and **difficulty**, are settled there; this file defers to AI-045 and AI-020 and does not
+re-derive them). Existing documents this one corrects: `docs/formats/profile.md`, `docs/formats/savegame.md`,
+`docs/formats/sherwood-hub.md`, `docs/original/campaign-flow.md`.
 
 ---
 
 ## 0. Necessity record
 
-- **Interoperability target.** The player's own files: `Configuration/profile.cpf` (the campaign graph lives in
-  its level table), `Savegame/Profiles` (the player-profile archive, key and graphic configuration, the list of
-  save slots), `Savegame/Profile_<nnn>/<name>` and `<name>_t` (the saved games and their thumbnails),
-  `Campaign.bck` in the installation root, and the camp's own compiled script `Data/Levels/sherwood.scb`, whose
-  natives 163-166, 170, 172-174, 195/196, 199/200, 215, 232, 236/237, 239, 249/250, 256, 261 only mean
-  something once the campaign object behind them is specified. Without this the engine cannot load a retail
-  save, cannot decide which mission is offered next, and traps on six natives the camp script reaches.
-- **Information not otherwise available.** Four years of data observation established the *layout* of
-  `profile.cpf` but not the meaning of any numeric field; `docs/formats/profile.md` marked the whole campaign
-  graph "whether the executable applies exactly these rules is not verified" and mis-split three field groups.
-  `docs/formats/savegame.md` was a `stub` guess ("mission list with status") derived from a hex dump.
-  `docs/formats/sherwood-hub.md` section 5 had to guess 165/166/170/174/239/249 from call sites and recorded
-  message 1000/1001 as "must come from the engine … the obvious candidates". Black-box play cannot separate the
-  age counter from the money window from the ARES gate, because all three fire on the same campaign day; and no
-  amount of observation recovers the dead bytes a save file must still contain.
-- **Scope read.** About 150 functions: the campaign module (00450ec0-0045a940 plus its console report block at
-  0045ad00 and 0045cda0), `RHMission` (0054c680-0054cda0), the profile manager's level-table reader
-  (00564580, 00564e60, 00566570, 0056d190-0056d4c0), the player-profile archive and its configuration
-  serializers (0055c3c0, 0055d1a0, 0055dea0, 0051ba00, 0051ec40, 005b2190, 005fc2a0), the save-game manager
-  (0056ea20-0056ff10, 00511340, 0050f1a0-0050f3d0), the campaign hooks in the game loop and the level tick
-  (0050e7d0, 0050e800, 0050ed40, 0050f710, 004e3220, 004e3260, 00514730), the camp production module
-  (00580050-00581300, 00456a10, 00456a40), the campaign-map screen (00527d20, 005280d0, 00528810), the
-  campaign natives (005791d0-0057bfe0), the minimap dot code (005788a0, 0046ffe0, 0048f280, 004a5c30,
-  004b1eb0) and the archive primitives (005e0c90, 005e0ea0, 005e1b70, 005f52b0).
-  **Stopping condition reached:** every byte of `Campaign.bck`, of `Savegame/Profiles` and of the
-  campaign-and-profile part of a retail save is accounted for by a grammar that consumes those files exactly
-  (checked, section 7), and every native the camp script calls has a defined effect. Deliberately *not* read:
-  the in-mission part of a saved game (the level / actor / AI state written after the campaign block by the
-  level serializer at 004c4570) beyond identifying where it starts; the presentation code of the camp and
-  campaign-map screens beyond what decides *content*; the floating-point expression that scales one day of
-  workshop output (section 9).
-- **Analyst authorisation.** On behalf of the maintainer, on the maintainer's lawfully acquired copy.
+**Interoperability target.** The player's own files: `Configuration/profile.cpf`, whose level table carries the
+campaign graph and whose character-profile table carries the capability slots the camp's deployment test reads;
+`Savegame/Profiles`, the player-profile archive that holds the key and graphic configuration and the list of save
+slots; `Savegame/Profile_<nnn>/<name>` and `<name>_t`, the saved games and their thumbnails; `Campaign.bck` in
+the installation root; the `SCOT` chunk of every mission file (`docs/formats/rhm.md`), which supplies the team
+size limit and the per-slot capability requirements; and the camp's own compiled script
+`Data/Levels/sherwood.scb`, whose natives 163-166, 170, 172-174, 195/196, 199/200, 232, 236/237, 239, 249/250,
+256 and 261 mean nothing until the campaign object behind them is specified. Without this the engine cannot read
+a retail save, cannot decide which mission is offered next, and traps on six natives the camp script reaches.
+
+**Information not otherwise available, with the earlier attempts.** Data observation has run since 2026-09-02 and
+established containers but not meaning:
+
+- `docs/formats/profile.md` (analyst sessions 2026-09-02 and 2026-09-03, observation only) decoded the level
+  table's *layout* but left every numeric field `unknown_*`, mis-split three field groups (findings CAMP-041 to
+  CAMP-043 below), and closed its description of the graph with "whether the executable applies exactly these
+  rules is not verified".
+- `docs/formats/savegame.md` was a `stub` written from a hex dump: it guessed the save's campaign section as "a
+  table of 32-byte records each containing the same 16-byte hash, a u32 index, a u32 value" and `Campaign.bck` as
+  "a backup of the same table".
+- `docs/formats/sherwood-hub.md` (2026-09-05, observation only) recovered the camp's element index space but had
+  to mark 165/166/170/174/239/249 as natives with **no row at all**, read 195/196 as "availability of player
+  action k", and recorded messages 1000 and 1001 as "no script in the 39 files sends them: they must come from
+  the engine … the obvious candidates" — a guess it could not close.
+- `docs/original/campaign-flow.md` is `observed` only up to the start of the first mission; everything later is
+  marked *manual* / *inferred*.
+
+Black-box play cannot separate the money window from the band-size window from the age counter from the
+capability gate, because all of them fire on the same campaign day and produce the same visible result (a
+mission is or is not offered); it cannot recover a save field that is written and then discarded; and it cannot
+tell which of two counters the "spared lives" percentage divides.
+
+**Scope read.** About 165 functions: the campaign module (00450ec0-0045a940, its console report block at
+0045ad00 and 0045cda0), the mission-slot module (0054c680-0054cda0), the profile manager's level-table reader
+and its mission-file pass (00564580, 00564e60, 00566570, 0056b8d0, 0056d190-0056d4c0), the player-profile
+archive and its configuration serializers (0051ba00, 0051d4e0, 0051d5d0, 0051ec40, 0055c3c0, 0055d1a0, 0055dea0,
+005b2190, 005fc2a0), the save-game manager (0056ea20-0056ff10, 00511340, 0050f1a0-0050f3d0), the campaign hooks
+in the game loop and the level tick (0050e7b0, 0050e7d0, 0050e800, 0050ed40, 0050f710, 004e3220, 004e3260,
+00514730), the camp production module (00456a10, 00456a40, 00456a70, 00580050-00581300, 00484360), the
+campaign-map screen (00527d20, 005280d0, 00528810), the campaign natives (005791d0-0057bfe0), the mini-map dot
+code (005788a0, 0046ffe0, 0048f280, 004a5c30, 004b1eb0, 005ef320) and the archive primitives (005e0c90,
+005e0ea0, 005e1b70, 005f52b0).
+
+**Honest stopping statement.** The *file grammars* are closed: a grammar written from this specification consumes
+`Configuration/profile.cpf` (30,441 bytes), `Campaign.bck` (2,717 bytes), `Savegame/Profiles` (430 bytes) and
+the campaign part of both retail saves to the exact byte on the fixtures of this installation. The *behaviour*
+is **not** closed. Nine areas remain open (section 10) and four of them are load-bearing: the arithmetic that
+turns one camp day into workshop output, the delivery order of the two camp messages relative to production, the
+origin of the "send the team" message, and the expression that produces a recruit count. These are named in
+section 11 and are **excluded from clearance**: this revision does not authorise implementing camp production,
+nor any claim about message ordering.
+
+**Analyst authorisation.** On behalf of the maintainer, on the maintainer's lawfully acquired copy.
 
 ---
 
 ## 1. Scope
 
-This subsystem owns the state that survives a mission: the band of player characters, money, score, statistics,
-the per-mission progress of 63 campaign nodes, the camp's workshops, and the files all of this is stored in.
+This subsystem owns what survives a mission: the band of player characters, money, score, the statistics the
+profile screen shows, the per-mission state of 63 campaign nodes, the camp's workshops, and the files all of it
+lives in.
 
-**Inputs.** The level table of `profile.cpf` (63 records, read once at start-up; `docs/formats/profile.md`, with
-the corrections of section 2.2 below). The outcome of a mission: the *won* / *lost* flags of the level tick
-(`spec-script-vm.md` VM-103) and the per-mission statistics gathered while it ran. Player choices on the
-campaign-map screen and in the camp. The player profile selected in the front end.
+**Inputs.** The level table of `profile.cpf`; the `SCOT` chunk of each mission file; the *won* / *lost* flags of
+the level tick (`spec-script-vm.md` VM-103) and the statistics gathered while a mission ran; the player's choices
+on the campaign-map screen and in the camp; the selected player profile.
 
-**Outputs.** Which mission is loaded next (a level code plus its `.rhm`), the set of player characters
-instantiated in it and their health, the HUD counters, the campaign values and money the mission script reads
-through natives 195/196 and 236/237, the offered-mission list the campaign map draws, and the contents of the
-save files.
+**Outputs.** Which mission loads next, which player characters are instantiated in it and with what health, the
+HUD counters, the campaign values and money that mission scripts read through natives 195/196 and 236/237, the
+offered-mission list the campaign map draws, and the contents of the save files.
 
-**Shared state.** One campaign object exists while a campaign is running (not in single-mission mode: natives
-236/237 and 174 fail then, `spec-script-vm.md`). One player-profile object is current. The level object exposes
-a per-mission statistics block that the campaign reads at mission end.
+**Shared state.** One campaign object exists while a campaign runs; outside a campaign natives 174, 234, 236 and
+237 fail and the blazon display refuses to refresh. One player profile is current.
 
-**Terminology used below** (ours, chosen independently of the program's):
+**Terminology (ours, chosen independently).**
 
 | Term | Meaning |
 |---|---|
 | *node* | one record of the level table of `profile.cpf`; 63 of them, addressed by index 0..62 |
-| *mission slot* | the campaign's mutable state for one node (age, blazon price, outcome) |
+| *slot* | the campaign's mutable state for one node (age, blazon price, outcome) |
 | *band* | the player characters the player owns |
 | *team* | the subset of the band that goes on the next mission |
 | *kind* | the node's mission kind: 0 story, 1 assault, 3 ambush, 4 camp, 5 defend, 6 tactical |
 | *location* | the node's place: 1..3 the three forest crossings, 4..7 and 9 the five towns, 8 the camp |
-| *blazon* | the counter the manual calls a coat of arms; the console calls it both blazon and amulet |
-| *ARES state* | a single signed byte of campaign state that gates the defend / assault branch |
-| *campaign day* | one pass through camp -> mission -> camp; the age counter advances once per day |
+| *blazon* | the counter the manual calls a coat of arms |
+| *siege state* | a single signed byte of campaign state that gates the defend / assault branch (the program's own diagnostics use an internal name of their own for it, which is not reproduced) |
+| *campaign day* | one pass camp -> mission -> camp |
 
 ---
 
 ## 2. Data model
 
-All integers are little-endian. "u16", "i32" etc. give width and signedness. Units are stated per field.
+Little-endian throughout. Widths and signedness are given per field, and refer to the **file**: no in-memory
+layout is prescribed anywhere in this document.
 
 ### 2.1 The campaign object
 
-Three groups: 27 counters, the node state, and the people.
-
-**Counters** — 27 signed 32-bit values, index 0..26, all zero on a new campaign except index 1
-(CAMP-010, CAMP-011):
+**Counters** — 27 signed 32-bit values, index 0..26, all zero on a new campaign except index 1 (CAMP-010,
+CAMP-011):
 
 | # | Name (ours) | Unit | Meaning |
 |---|---|---|---|
-| 0 | `clovers` | count | the second HUD counter (the clover, `ui-flow.md` 9.3 row 1, icon `BTTN` 165). Read by the HUD (004c8140) and by one actor-action gate (004a78c0, which refuses the action once the value exceeds 9); **no code path in the image writes it through the counter accessors** (CAMP-016) |
-| 1 | `money` | currency | the money the HUD shows and the availability test compares; the debug report calls it the ransom. Writing it plays a sound when it grows and refreshes the HUD |
-| 2 | `score` | points | the profile screen's score |
-| 3 | `blazons` | count | blazons held; see 3.6 |
-| 4 | `returned` | men | cumulative count of team members who came back alive from a won mission |
-| 5 | `lost` | men | cumulative count of team members who did not |
+| 0 | `clovers` | count | the second HUD counter (the clover of `ui-flow.md` 9.3, icon `BTTN` 165). Read by the HUD and by one actor-action gate that refuses its action once the value exceeds 9. **No code path in the scope read writes it** (CAMP-016) |
+| 1 | `money` | currency | the money the HUD shows and the availability test compares. Writing it plays a sound when it grows and refreshes the HUD |
+| 2 | `score` | points | the score of the profile screen and the campaign-map status line |
+| 3 | `blazons` | count | blazons held; section 3.6 |
+| 4 | `spared` | actors | cumulative count of qualifying **hostile** actors left alive at the end of a won mission (CAMP-013) |
+| 5 | `killed` | actors | cumulative count of the same actors found dead |
 | 6 | `playtime` | seconds | accumulated play time |
-| 7..26 | `script[0..19]` | free | the twenty values natives 195/196 expose to mission scripts as indices 0..19 |
+| 7..26 | `script[0..19]` | free | the twenty values natives 195/196 expose as script indices 0..19 |
 
-The script window is a plain offset: native 195(k) returns counter k+7 and 196(k,v) writes it, for k in 0..19
-(CAMP-012; the range check is on the shifted index, 00579430/00579470). Counter 1 is also natives 236/237.
-Counter 3 is what native 178 adds a captured banner's value to and what native 234 compares.
+The script window is a plain offset: native 195(k) reads counter k+7 and 196(k,v) writes it, for k in 0..19; the
+range check is applied to the shifted index (CAMP-012). Counter 1 is natives 236/237. Counter 3 is what native
+178 adds a banner's value to and what native 234 compares.
 
-**Single scalars.**
+**Scalars.**
 
 | Name (ours) | Width | Meaning |
 |---|---|---|
-| `ares` | i8 | the ARES state, −1 on a new campaign (CAMP-030) |
-| `recruit_flag` | u8 | set when a man was moved back from the recovery list into the band; native 261 returns it; cleared at the start of the post-mission bookkeeping |
-| `current` | node ref | the mission being played (the camp is a node like any other) |
-| `previous` | node ref | the mission played before it |
-| `selected` | node ref | the mission the player picked in the camp, or null |
-| `blazon_node` | node ref | the defend / assault node the blazon counter currently belongs to, or null |
-| `town_result` | i32 | 0, or 1 / 2 = the last defend node was won / lost, pending display |
-| `town_node` | node ref (raw) | the level record of that node |
+| `siege_state` | i8 | −1 on a new campaign (CAMP-030) |
+| `recruit_flag` | u8 | set when a man returns from the recovery list; native 261 returns it; cleared in the post-victory bookkeeping |
+| `previous`, `current`, `selected`, `blazon_node` | slot references | the mission played before, the mission being played (the camp is a node like any other), the mission the player picked in the camp, and the node the blazon counter belongs to |
+| `town_result` | i32 | 0, or 1 / 2 = the last defend node resolved as won / lost, pending display |
+| `town_code` | 4 bytes | the two-letter level code of that node — a **code, not an index** (CAMP-003) |
 
-**The node state.** One *mission slot* per node, in level-table order, 63 of them (CAMP-020):
+**Slots.** One per node, in level-table order, 63 of them (CAMP-020):
 
 | Field | Width | Unit | Meaning |
 |---|---|---|---|
-| `node` | index | — | which level-table record this slot belongs to; the retail files have slot i pointing at node i |
-| `age` | u16 | campaign days | how many days the slot has been in the offered list; reset to 0 whenever it leaves the list |
-| `blazon_price` | u16 | currency | what one blazon costs for this node right now; initialised from the node's *first blazon price* field, raised by the node's *price step* after every purchase |
+| `node` | i32 | index | which level-table record this slot belongs to; −1 = none. In the retail files slot *i* points at node *i* |
+| `age` | u16 | campaign days | how long the slot has been offered; reset to 0 whenever it leaves the offered list |
+| `blazon_price` | u16 | currency | what one blazon costs for this node now; initialised from the node's *first blazon price*, raised by its *price step* after every purchase |
 | `outcome` | u32 | — | 0 not played, 1 won, 2 lost |
 
-**Lists.** All of these are ordered; the order is part of the save (CAMP-021).
+**Lists.** All ordered; the order is part of the save (CAMP-021).
 
 | Name (ours) | Elements | Meaning |
 |---|---|---|
-| `people` | character-status records | every player character the campaign has ever owned; the other lists hold positions in this one |
-| `band` | positions in `people` | the men the player owns now; its length is the "gang size" of the availability test |
-| `recovering` | positions in `people` | men out of action; a man may be moved back into `band` later |
+| `people` | character records | every player character the campaign has owned; the other people-lists hold positions in this one |
+| `band` | positions in `people` | the men owned now; its length is the "gang size" of the availability test |
+| `recovering` | positions in `people` | men out of action, from whom a recruit may return |
 | `team` | positions in `people` | who goes on the next mission |
-| `offered` | mission slots | the missions the campaign map offers |
-| `pending` | mission slots | a second, parallel list of slots filtered the same way (section 3.3) |
+| `offered` | slot references | the missions the campaign map offers |
+| `deferred` | slot references | **tactical** candidates held back while a blazon node is active (CAMP-260) |
 | `workshops` | production records | exactly 13, one per workshop kind 0..12 |
-| `spare_refs` | positions in `people` | a list that is empty in the retail data; see section 9 |
-| `labels` | wide strings | a list that is empty in the retail data; see section 9 |
-| `recent` | mission slots | the last at most three missions played, oldest first |
+| `spare_refs` | positions in `people` | empty in the retail fixtures; purpose unknown (section 10) |
+| `labels` | wide strings | empty in the retail fixtures; purpose unknown (section 10) |
+| `recent` | slot references | the last at most three missions played, oldest first |
 
 ### 2.2 One node: the level-table record of `profile.cpf`
 
-`docs/formats/profile.md` documents the container. The record is 244 bytes in memory and its fields are read in
-a fixed order from the file. **Three corrections to that document** (each verified by re-parsing the retail file
-to exact consumption, section 7):
+`docs/formats/profile.md` documents the container. **Three corrections to its grammar**, each verified by
+re-parsing the retail file to exact consumption (section 7, A1):
 
-1. The group the document reads as `u8 unknown_c, u8 unknown_d, u16 unknown_e, u16 unknown_f` is really
-   `u8, u16, u8, u16` (CAMP-041). The old reading happens to total the same 14 bytes because the retail values
-   make the mis-split invisible.
-2. The count in front of the per-record index list is a **u32**, not a u16 (CAMP-042). That list is the node's
-   *required player characters*: each entry is a 32-bit index into the character-profile table of the same file.
-3. Consequently the trailing byte block is **10** bytes, not 12, followed by the three signed bytes and the
-   seven u16 (CAMP-043).
+1. The group that document reads as `u8, u8, u16, u16` after the location is really `u8, u16, u8, u16`
+   (CAMP-041). The mis-split is invisible in the retail values because the byte pattern coincides.
+2. The count in front of the per-record index list is a **u32**, not a u16 (CAMP-042).
+3. Consequently the trailing byte block is **10** bytes, not 12, followed by three signed bytes and seven u16
+   (CAMP-043).
 
-Field roles (names ours; "file field" refers to `docs/formats/profile.md`'s grammar as corrected above):
-
-| Field (ours) | Width | Meaning established here |
-|---|---|---|
-| `code` | 4 chars | the node's two-letter code, the key of the graph lists and of `Text/RHLevel??.red` |
-| `map`, `mission_file`, `title` | strings | unchanged from `profile.md` |
-| `kind` | u32 | 0 story, 1 assault, 3 ambush, 4 camp, 5 defend, 6 tactical (CAMP-044). This is the value `spec-script-vm.md` calls the campaign node type: its VM-103 sub-flag is 0 for kinds 3 and 6 |
-| `needs_camp` | u8 | 0 = the node may be started without going through the camp; 1 = it is chosen in the camp (CAMP-045) |
-| `location` | u32 | 1..9 as in the table above; 8 = the camp. Native 174 refuses to answer unless the *current* node's location is 8 (CAMP-046) |
-| `min_money`, `max_money` | u32, u32 | the money window the availability test applies; the value 200000 in `max_money` means "no upper limit" (CAMP-050) |
-| `min_gang`, `max_gang` | u16, u16 | the band-size window of the availability test |
-| `max_age` | u16 | the node's lifetime in campaign days |
-| `obligatory` | u8 | 1 = while this node is accessible it is the only offer (CAMP-063) |
-| `prob` | u16 | a percentage used by the two random filters of section 3.3 |
-| `priority` | u16 | lower wins when two nodes share a location (CAMP-065) |
-| `required_pcs` | u32 count + u32 each | indices into the character-profile table; every one of them must be in the team before the mission may be sent (native 170) |
-| `ares_gate[0..9]` | u8 × 10 | `ares_gate[0]` is a flag: 0 = the node is not ARES-gated. If it is 1, the node is allowed only while `ares_gate[1 + ares]` is non-zero. Because `ares` is −1 on a new campaign the expression reads `ares_gate[0]` itself, which is 1, so a gated node is allowed at the start (CAMP-031, CAMP-032) |
-| `ares_on_win`, `ares_on_loss`, `ares_on_expiry` | i8 × 3 | the new ARES state after winning / losing this node, and after selecting it over-age; −1 = leave the state alone (CAMP-033) |
-| `m0`, `m1` | u16, u16 | not read by any code this analysis reached (section 9) |
-| `blazons_needed` | u16 | how many blazons this node needs (see 3.6) |
-| `blazons_held` | u16 | how many of them the player is treated as already holding |
-| `first_blazon_price` | u16 | the initial value of a slot's `blazon_price` |
-| `blazon_price_step` | u16 | what a purchase adds to it |
-| `men_per_blazon` | u16 | how many men one blazon is worth; the program asserts loudly if it is 0 because it divides by it |
-| `music_*` | strings | unchanged |
-| `team_limit` | u16 | **not stored in the file**: a run-time field of the record that native 174 returns as the team size limit of the selected node (CAMP-047). Where it is filled from was not found (section 9) |
-
-The record also carries two run-time vectors that the file does not contain: the *after* and *until* code lists
-(filled from the file) and a second requirement list that native 170 also walks; in the retail data the latter
-is empty for every node (CAMP-048).
-
-### 2.3 One person: the character-status record
-
-Held in `people`; 72 bytes in memory. What a save carries (CAMP-070):
+Field roles (names ours):
 
 | Field (ours) | Width | Meaning |
 |---|---|---|
-| base block | 16 bytes | two 32-bit values written by a shared base serializer (0051d5d0) plus 8 bytes this analysis could not attribute; the block also contains the value 100 in a fresh profile. Treat as `unknown_base` and copy it through (section 9) |
-| `health` | u16 | 0..100; a recovered man's health is re-rolled and clamped to 100 |
-| `unknown_a` | u8 | — |
-| `unknown_b..unknown_i` | u16 × 8 | — |
-| `camp_slot` | u16 | the camp element the man is attached to, 0xFFFF = none |
-| `name` | u16 count + count wide chars | the man's display name |
-| `profile` | i32 | index into the character-profile table of `profile.cpf`, −1 = none |
-| `present` | u8 | 1 = the man was instantiated in the current mission |
+| `code` | 4 bytes | the node's two-letter code; the key of the graph lists and of `Text/RHLevel??.red` |
+| `map`, `mission_file`, `title` | strings | as in `profile.md` |
+| `kind` | u32 | 0 story, 1 assault, 3 ambush, 4 camp, 5 defend, 6 tactical (CAMP-044). This is the value `spec-script-vm.md` calls the campaign node type; its VM-103 sub-flag is 0 for kinds 3 and 6 |
+| `needs_camp` | u8 | 0 = may be started without going through the camp; 1 = chosen in the camp (CAMP-045) |
+| `location` | u32 | 1..9; 8 = the camp (CAMP-046) |
+| `min_money`, `max_money` | u32, u32 | the money window; compared **unsigned**; the value 200000 in `max_money` means "no upper limit" (CAMP-050) |
+| `min_gang`, `max_gang` | u16, u16 | the band-size window, compared unsigned |
+| `max_age` | u16 | the node's lifetime in campaign days |
+| `obligatory` | u8 | non-zero = while this node is accessible it is the only offer (CAMP-063) |
+| `prob` | u16 | a percentage used by the two random filters (3.3.2) |
+| `priority` | u16 | lower wins when two candidates share a location (CAMP-065) |
+| `required_pcs` | u32 count + u32 each | indices into the character-profile table of the same file: characters that must be in the team |
+| `siege_gate[0..9]` | u8 × 10 | `siege_gate[0]` is a flag: not 1 means the node is not gated. When it is 1 the node is allowed only while `siege_gate[1 + siege_state]` is non-zero; because `siege_state` is −1 on a new campaign the expression reads `siege_gate[0]` itself, which is 1, so a gated node is allowed at the start (CAMP-031, CAMP-032) |
+| `siege_on_win`, `siege_on_loss`, `siege_on_expiry` | i8 × 3 | the new `siege_state` after winning / losing this node, and after selecting it over-age; −1 = leave it alone (CAMP-033) |
+| `m0`, `m1` | u16, u16 | no reader found in the scope read (section 10) |
+| `blazons_needed`, `blazons_held` | u16, u16 | section 3.6 |
+| `first_blazon_price`, `blazon_price_step` | u16, u16 | section 3.6 |
+| `men_per_blazon` | u16 | how many men one blazon is worth; a zero value is diagnosed and the routine returns without dividing (CAMP-263) |
+| `music_*` | strings | as in `profile.md` |
 
-**Name generation** (CAMP-071). A man whose character profile is marked as a named hero takes his name from a
-text resource: the profile's designer name is matched against a fixed list of seven names inside the executable
-and the matching position selects text id 0x90 + position. A man who is not a named hero gets a generated name:
-one text id drawn uniformly from 100..121 and one from 122..143, joined by a single space; the draw is retried
-up to ten times to avoid a name already in use, and the name is kept even if all ten attempts collide.
-(The seven designer names are data of the file, not reproduced.)
+Two further per-node values are **not** in `profile.cpf`. They are read from the node's own mission file when the
+level table is loaded (CAMP-047, 0056b8d0): the mission file is opened, its `SCOT` chunk located
+(`docs/formats/rhm.md`) and
+
+- `team_limit` := the number of `SCOT` records, i.e. the mission's player-character slot count. If the mission
+  file cannot be opened, or has no `SCOT` chunk, a warning is reported and `team_limit := 5`.
+- `capability_reqs` := a list built from the `SCOT` records: ten single-byte flags at offset 22 of each record
+  are read in order and each set flag appends one capability requirement to the node's list. Duplicates are not
+  removed, so a requirement appears once per slot that asks for it. After the ten flags comes one byte that,
+  when non-zero, is followed by the slot's name as a byte string, and then one further byte. *The correspondence
+  between flag position and capability id is a ten-entry mapping inside the executable and is excluded from this
+  revision* (section 11). Codex's read-only inspection found non-zero requirement flags in **12 of the 39
+  mission files, covering 16 slots** (CAMP-048), so this list is not empty in practice — revision 1's claim that
+  it is empty for every node was wrong.
+
+### 2.3 One person: the character record
+
+What the file carries, in order (CAMP-070; the framing consumes the retail 98-byte record exactly):
+
+| Field (ours) | Width | Meaning |
+|---|---|---|
+| block tag | 16 bytes | see 2.6 |
+| `exp[0].level`, `exp[0].points`, `exp[1].level`, `exp[1].points` | u32 × 4 | two experience slots, each a level and a point remainder; the accumulator of 3.11 carries points into levels in hundreds and clamps the level at 100. The retail hero has levels 20 and 100 with no points (CAMP-072) |
+| block tag | 16 bytes | see 2.6 |
+| `health` | u16 | 0..100 |
+| `unknown_a` | u8 | — |
+| `unknown_b` .. `unknown_j` | u16 × 9 | — |
+| `camp_slot` | u16 | the camp element the man is attached to; 0xFFFF = none |
+| `name` | u16 count + that many 16-bit characters | the display name |
+| `profile` | i32 | index into the character-profile table of `profile.cpf`; −1 = none |
+| `deployed` | u8 | set when the man was instantiated in the current mission |
+
+There are **no unattributed bytes**: the four 32-bit values come from a two-field loop that runs twice
+(0051d5d0). Revision 1's instruction to manufacture an opaque base block from captured bytes is withdrawn.
+
+**Name generation** (CAMP-071). A man whose character profile is marked a named hero takes his name from a text
+resource: the profile's own designer name is matched against a fixed seven-name list inside the executable and
+the matching position selects text id 0x90 + position; when it matches none, a fixed internal fallback string is
+used and the condition is reported. A man who is not a named hero gets a generated name: one text id drawn from
+100..121 and one from 122..143, joined by a single space. The generation runs inside a loop bounded at ten
+iterations; the loop's exit condition and its behaviour when every attempt collides were **not** established,
+and the fallback path means "the colliding name is kept" (revision 1) is not supported (section 10).
 
 ### 2.4 One workshop: the production record
 
-Exactly 13, kind 0..12, in kind order. 52 bytes in memory; what a save carries (CAMP-090):
+Exactly 13, kind 0..12, in kind order. What the file carries (CAMP-090):
 
 | Field (ours) | Width | Meaning |
 |---|---|---|
+| block tag | 16 bytes | see 2.6 |
 | `kind` | u32 | 0..12 |
 | `capacity` | u16 | the third argument of native 199 |
-| `stock` | u16 | how much of the workshop's item is lying in the camp |
-| `last_output` | u16 | what the last day produced |
-| `unknown_flag` | u8 | — |
-| `assignments` | u32 count + entries | who works where: per entry an i32 position in `people`, two 32-bit coordinates, and a u16 sector reference (0xFFFF = none) |
+| `stock` | u16 | how much of the workshop's item the camp holds |
+| `last_output` | u16 | what the last computed day produced |
+| `full` | u8 | a derived capacity flag, recomputed as `5 × (number of work spots) <= stock` (CAMP-322) |
+| `assignments` | u32 count + entries | per entry: an i32 position in `people`, two 32-bit coordinates, and a u16 sector reference (0xFFFF = none). From archive version 47 the u16 is the stored value; at version 46 a u16 is present, **read and discarded**, and the field is set to 0xFFFF; below 46 no u16 is present and the field is set to 0xFFFF (CAMP-093) |
 
-The work *spots* registered by native 200 live in a second, **not** serialized list: the camp script re-registers
-them on every load (CAMP-091).
+The work *spots* registered by native 200 are **not** in the file; the camp script re-registers them on every
+load (CAMP-091), and any importer must therefore reconstruct them by running the camp script's load path before
+the assignments mean anything on the map.
 
 ### 2.5 The player profile
 
-One record of `Savegame/Profiles`; see 2.6 for the file. The engine keeps, per profile: two key-configuration
-sets, a sound configuration, a graphic configuration, one further coordinate pair, the player's name as a wide
-string of at most 31 characters, the list of save slots, and six summary numbers that the campaign refreshes
+Per profile the engine keeps two key-configuration sets, a sound configuration, a graphic configuration, one
+further coordinate pair, the player's name, the list of save slots, and six summary numbers plus the difficulty
 (CAMP-100):
 
 | Field (ours) | Source |
 |---|---|
 | `score` | counter 2 |
 | `money` | counter 1 |
-| `spared` | 0 when counters 4 and 5 are both 0, else `100 * counter4 / (counter4 + counter5)` with integer division (CAMP-101) |
+| `spared_pct` | 0 when counters 4 and 5 are both 0, otherwise a percentage of counter 4 over their sum. The updater converts a floating-point value; **the expression is absent from the export**, so it is not proved identical to the campaign map's integer form (CAMP-101) |
 | `playtime` | `playtime += counter 6` |
-| `progress` | the percentage of section 3.7 |
-| `unknown_x`, `unknown_y` | two further 32-bit values, both 1 in a fresh retail profile; one of them is the difficulty (four presets exist, matching the four records of table B of `profile.cpf`), but which one was not established (section 9) |
+| `progress` | the percentage of 3.7 |
+| `unknown_x` | a 32-bit value, 1 in the retail fixture; no reader found |
+| `difficulty` | the last of the seven serialized values: 0 easy, 1 medium, 2 hard, per `spec-ai-combat.md` AI-045, which also establishes that table B of `profile.cpf` is the ranged-weapon table and **not** a difficulty table (CAMP-280). The retail fixture holds 1, consistent with `campaign-flow.md`'s "Medium" |
 
 ### 2.6 The files
 
-All three are the same serializer: a stream of fields with a 16-byte signature in front of each class. The
-signature is a digest of the class name; it is *checked* on reading and a mismatch only produces a warning, so
-an implementation may write any 16 bytes it likes as long as it writes the right number of them — but writing
-the original's values is what lets the original read our files, so the sixteen bytes must be preserved
-byte-for-byte from the player's own files or hard-coded (CAMP-002). They are content of the binary and are not
-reproduced here; an implementation reads them out of the player's `Campaign.bck` / `Profiles` once and reuses
-them, or keeps them in a private table generated from the player's files at build time.
+All three files use one stream format: fields in a fixed order, each record preceded by a **16-byte block tag**.
+On reading, the tag is compared with a value the program derives internally; a mismatch produces a warning and
+the load continues, and nothing downstream depends on it (CAMP-002). The tag values are content of the
+executable and are not reproduced here.
 
-Two string conventions appear: a byte string is a u16 count followed by that many bytes; a wide string is a u16
-count followed by that many 16-bit characters — except the player's name, which uses a **u32** count
-(CAMP-003).
+**Compatibility requirement, resolved** (this replaces revision 1's self-contradictory policy): a reader must
+accept *any* sixteen bytes in a tag position, and a writer may emit sixteen zero bytes — the original will load
+such a file and log a warning per record. What matters is only that sixteen bytes appear in each tag position.
+No cache of captured tag values is needed and none should be built.
+
+Two string conventions: a byte string is a u16 count and that many bytes; a wide string is a u16 count and that
+many 16-bit characters — **except** the player's name, which uses a u32 count (CAMP-004).
 
 #### 2.6.1 `Campaign.bck` (installation root)
 
-`u32 archive_version` followed by the campaign block of 2.6.2. The retail file is version 48 and 2717 bytes.
-It is rewritten from the live campaign every time the game loop starts a level in campaign mode (CAMP-120), and
-it is read back verbatim when a save is written (CAMP-123). Failure to create it is reported and ignored.
+`u32 archive_version` followed by the campaign block of 2.6.2. The retail fixture is version 48, 2,717 bytes. It
+is rewritten from the live campaign when the game loop starts a level in campaign mode (CAMP-120). Failure to
+create it is reported and otherwise ignored.
 
 #### 2.6.2 The campaign block
 
-Field order (this is the order an implementation must write; `V` = the archive version):
+Field order; `V` = the archive version:
 
-1. `signature(RHCampaign)` — 16 bytes.
-2. `recruit_flag` — u8. Only present when `V > 27`.
-3. the 27 counters — 27 × i32 = 108 bytes.
-4. `ares` — i8.
-5. the node state: `u32 count`, then `count` mission slots, each: `signature(RHMission)` 16 bytes, `u16 age`,
-   `u16 blazon_price`, `u32 outcome`, **two u16 of uninitialised memory**, `i32 node` (−1 = none). 32 bytes
-   each. The two u16 are read and discarded; the original writes whatever happened to be in a register, and the
-   two campaign blocks of one save file differ in exactly these bytes (CAMP-022). An implementation may write
-   zeros.
+1. block tag.
+2. `recruit_flag` — u8. Only when `V > 27`.
+3. the 27 counters — 27 × i32.
+4. `siege_state` — i8.
+5. the slots: `u32 count`, then `count` slots, each: block tag, `u16 age`, `u16 blazon_price`, `u32 outcome`,
+   **four bytes that are read and discarded**, `i32 node`.
 6. `offered`: `u32 count`, then `count` × u16 slot index (0xFFFF = none).
-7. `pending`: the same.
-8. `people`: `u32 count`, then `count` character-status records (2.3).
+7. `deferred`: the same.
+8. `people`: `u32 count`, then `count` character records (2.3).
 9. `band`: `u32 count`, then `count` × i32 position in `people`.
 10. `recovering`: the same.
 11. `team`: the same.
 12. `workshops`: `u32 count`, then `count` production records (2.4).
 13. `spare_refs`: `u32 count`, then `count` × i32.
 14. `labels`: `u32 count`, then `count` wide strings.
-15. `current`, `previous`, `selected`, `blazon_node` — four u16 slot indices, 0xFFFF = none, **in that order**
-    (CAMP-023).
+15. `previous`, `current`, `selected`, `blazon_node` — four u16 slot indices, 0xFFFF = none, **in that order**
+    (CAMP-023). The retail fixture reads (0xFFFF, 21, 0xFFFF, 0xFFFF): no previous mission, current mission
+    slot 21, nothing selected, no blazon node.
 16. only when `V > 29`: `recent`: `u32 count`, then `count` × u16 slot index.
 17. only when `V >= 41`: `town_result` — i32.
-18. only when `V >= 48`: `town_node` — i32 (a node index).
+18. only when `V >= 48`: `town_code` — 4 bytes (a level code).
+
+On the four discarded bytes (CAMP-022): the writer emits whatever the four bytes of one stack location hold at
+that moment and the reader throws them away. The two campaign blocks of each retail save differ there, which
+shows the value is not a function of the campaign state, but the export does **not** establish what the bytes
+are; revision 1's "uninitialised memory … whatever happened to be in a register" is withdrawn as unsupported.
+An implementation may write zeros.
 
 #### 2.6.3 A saved game (`Savegame/Profile_<nnn>/<name>`)
 
 | Offset | Content |
 |---|---|
-| 0 | the four characters `GSHR` |
+| 0 | the four bytes `GSHR` |
 | 4 | `u32 archive_version` (48 in the retail build) |
-| 8 | `u32` the four characters of the level code of the mission the save belongs to |
+| 8 | `u32` holding the four bytes of the level code of the mission the save belongs to |
 | 12 | `u32 archive_version` again |
-| 16 | **campaign block A** |
-| … | **campaign block B** |
-| … | the level and actor state, written by the level serializer (004c4570); not specified here |
+| 16 | the **backup** campaign block — present only when `V > 38` |
+| … | the **live** campaign block — always present |
+| … | the level and actor state, written by a separate serializer (004c4570); not specified here |
 
-Block A is byte-identical to the payload of `Campaign.bck` (CAMP-124); block B is the live campaign state at the
-moment of saving. Both blocks are present only when `V > 38`; on loading, both are deserialized in order, so
-block B wins. Practically: block A is the campaign as it was when the mission started (that is what makes
-"Restart" possible), block B is the campaign as it is now. Only the first three dwords and the second version
-dword are validated, and only the magic actually causes a refusal; a wrong version merely mis-parses
-(CAMP-125).
+Only the backup block is conditional (CAMP-124). On writing, the backup block is produced by streaming
+`Campaign.bck` (minus its version dword) straight into the save; on reading it is deserialized like any campaign
+block and then overwritten by the live block, so the live block wins. Practically the backup block is the
+campaign as it was when the mission started, which is what makes a restart possible.
 
-The header's magic check is the only integrity test. There is no length field, no checksum over the payload and
-no compression.
+Header validation (CAMP-125): the magic is compared and a mismatch is reported, but a version dword differing
+from the expected value **overwrites the rejection with success**, so a file with a wrong magic and a wrong
+version is accepted. An importer must not copy that; OpenSherwood refuses any file whose magic is not `GSHR`
+(section 8).
+
+On the retail fixtures, with `V` = 48, the backup block begins at offset 16, the live block at 2,729 and the
+level state at 5,442. Those offsets are properties of *these* fixtures, not of the format: the campaign block's
+length varies with every count in it.
 
 #### 2.6.4 The thumbnail
 
-A second file whose name is the save's data name with `_t` appended, written immediately after the save, in the
-picture format of `docs/formats/image-blob.md`; `docs/formats/savegame.md` records 160x120. It is a capture of
-the screen at the moment of saving and is not needed to load a save (CAMP-126).
+A second file whose name is the save's data-file name with `_t` appended, written immediately after the save, in
+the format of `docs/formats/image-blob.md`; `docs/formats/savegame.md` records 160x120. It is a capture of the
+screen and is not needed to load a save (CAMP-126).
 
 #### 2.6.5 `Savegame/Profiles`
 
 | Field | Width | Meaning |
 |---|---|---|
-| magic | 4 bytes | the four characters `FORP` |
-| version | u32 | must be 6, otherwise the archive is discarded and default profiles are created (CAMP-110) |
+| magic | 4 bytes | `FORP` |
+| version | u32 | must be 6; otherwise the archive is discarded and default profiles are created (CAMP-110) |
 | `next_dir` | u32 | the number the next profile directory gets (`Profile_%03i`) |
 | count | u32 | number of profiles |
-| profiles | — | `count` records, each as below |
-| current | i32 | position of the selected profile, negative = none |
+| profiles | — | `count` records as below |
+| current | i32 | position of the selected profile; negative = none |
 
 One profile record:
 
-1. `signature(RHPlayerProfile)`.
-2. six u32 in this order: `unknown_x`, `score`, `money`, `spared`, `playtime`, `progress`, then `unknown_y`
-   (seven values in total) (CAMP-111).
-3. key set 1, key set 2: each `signature(RHKeyConfig)`, `u16 set_id`, then 58 bytes = **29** u16 key codes.
-   `Configuration/keyset1.cfg` and `keyset2.cfg` are exactly these 76 bytes and carry set ids 2 and 3
-   (CAMP-112; this corrects `docs/formats/profile.md`, which read the 76 bytes as a 16-byte header plus 30
-   codes).
-4. sound configuration: `signature(RHSoundConfig)`, `u8`, `u8`, then five u16 (12 bytes of payload).
-5. graphic configuration: `signature(RHGraphicConfig)`, four u8 written in the order *first, second, fourth,
-   third* of the in-memory block, then two 32-bit floats = the screen width and height (CAMP-113 — this is the
-   float pair the community resolution patcher edits at profile offset 0x104).
+1. block tag.
+2. seven u32 in this order: `unknown_x`, `score`, `money`, `spared_pct`, `playtime`, `progress`, `difficulty`
+   (CAMP-111).
+3. key set 1, key set 2: each a block tag, `u16 set_id`, then **29** u16 key codes.
+   `Configuration/keyset1.cfg` and `keyset2.cfg` are exactly those 76 bytes and carry set ids 2 and 3
+   (CAMP-112). This corrects `docs/formats/profile.md`, which read the 76 bytes as a header plus 30 codes.
+4. sound configuration: a block tag, two u8, then five u16.
+5. graphic configuration: a block tag, four single-byte settings whose meanings were not established, then two
+   32-bit floats giving the screen width and height (CAMP-113 — the float pair the community resolution patcher
+   edits at profile offset 0x104).
 6. one further coordinate pair: two 32-bit floats.
-7. the player's name: `u32 count`, then `count` 16-bit characters.
-8. the save-slot manager: `signature(RHSaveGameManager)`, `u32 next_number` (the counter behind the numbered
-   slot names), `u32 count`, then `count` slots, each `signature(RHSaveGame)`, byte string *data file name*,
-   byte string *thumbnail file name*, wide string *label shown to the player* (CAMP-114).
+7. the player's name: `u32 count`, then `count` 16-bit characters (at most 31).
+8. the save-slot manager: a block tag, `u32 next_number` (the counter behind the numbered slot names),
+   `u32 count`, then `count` slots, each a block tag, a byte-string *data file name*, a byte-string *thumbnail
+   file name* and a wide-string *label shown to the player* (CAMP-114).
 
 ---
 
@@ -366,454 +406,501 @@ One profile record:
 
 ### 3.1 Start-up and a new campaign
 
-At start-up the profile archive is read (2.6.5); a broken or missing archive is replaced by default profiles.
-A new campaign is built as (CAMP-010, CAMP-200):
+The profile archive is read at start-up; a broken or missing archive is replaced by default profiles. A new
+campaign is (CAMP-010, CAMP-200):
 
-1. All 27 counters 0, then `money := 100`; `ares := -1`; all four node references null; every list empty.
-2. One mission slot per level-table record, in table order, with `age := 0`, `outcome := 0` and
-   `blazon_price := ` the record's `first_blazon_price`.
-3. The band: one man, created from the character-profile entry **at index 1** of `profile.cpf` (the program
-   asserts that index 0 and index 1 are the hero's two appearances and refuses to run otherwise), with
-   `present := 0`. The command line can replace this with a longer band: a string of letters, each letter
-   selecting one character profile by its designer name. The default is the single man.
+1. All 27 counters 0, then `money := 100`; `siege_state := -1`; the four slot references null; every list empty.
+2. One slot per level-table record, in table order, with `age := 0`, `outcome := 0`,
+   `blazon_price := ` the node's `first_blazon_price`.
+3. The band: one man built from character-profile index **1** (the program asserts that the hero's two
+   appearances are at indices 0 and 1 and refuses to run otherwise), not deployed. A command-line string can
+   replace this with a longer band, each letter selecting one character profile by its designer name.
 4. `team := band`.
 
-**Node 0 of the level table is the camp** and is never a candidate: the accessibility scan starts at slot 1
-(CAMP-201). Sending the player "to the camp" means making node 0 the current mission.
+**Level-table record 0 is the camp**; the accessibility scan starts at record 1, so the camp is never a candidate
+(CAMP-201). Going to the camp means making node 0 the current mission.
 
 ### 3.2 When is a node accessible
 
-For a mission slot `s` of node `n`, with `money` = counter 1 and `gang` = the length of `band`, all of the
-following must hold (evaluated in this order; the debug report at 0054c8a0 names the first failure)
-(CAMP-060):
+For a slot `s` of node `n`, with `money` = counter 1 and `gang` = the length of `band`, all of the following must
+hold, evaluated in this order (0054c800; the diagnostic twin 0054c8a0 names the first failure) (CAMP-060):
 
-1. `money >= n.min_money`
-2. `money <= n.max_money` **or** `n.max_money == 200000`
-3. `gang >= n.min_gang`
-4. `gang <= n.max_gang`
+1. `money >= n.min_money`, unsigned
+2. `money <= n.max_money`, unsigned, **or** `n.max_money == 200000`
+3. `gang >= n.min_gang`, unsigned
+4. `gang <= n.max_gang`, unsigned
 5. `s.age < n.max_age`
-6. `n.ares_gate[0] != 1` **or** `n.ares_gate[1 + ares] != 0` (with `ares == -1` this reads `n.ares_gate[0]`,
-   which is 1, so the test passes)
-7. every code in `n.after` names a slot whose `outcome != 0` — that is, every prerequisite has been **played**,
-   won *or* lost (CAMP-061)
-8. every code in `n.until` names a slot whose `outcome == 0` — no blocker has been played yet (CAMP-062)
+6. `n.siege_gate[0] != 1` **or** `n.siege_gate[1 + siege_state] != 0`
+7. every code in `n.after` names a slot whose `outcome != 0` — every prerequisite has been **played**, won *or*
+   lost (CAMP-061)
+8. every code in `n.until` names a slot whose `outcome == 0` — no blocker has been played (CAMP-062)
 
-A code that names no node makes the lookup return the first slot of the table; the retail data contains no such
-code.
-
-Two consequences worth stating because they are easy to get wrong: (a) the *after* list is satisfied by a lost
-prerequisite as well as a won one; (b) because every story node lists **itself** in its own *until* list, a
-story node is permanently gone once played, which is what keeps it out of the list after its slot's `outcome`
-is reset in step 1 of 3.3.
+A code naming no node makes the lookup return the table's first slot; the retail data contains no such code.
+Two consequences worth stating: a lost prerequisite satisfies the *after* list; and because every story node
+lists itself in its own *until* list, a story node is gone for good once played.
 
 ### 3.3 Rebuilding the offered list
 
-Run when the campaign needs the next mission (00451a90), once per campaign day:
+Rebuilding happens whenever the campaign needs the next mission **and also** when a defend node is resolved from
+the camp (3.6), so it is not once per campaign day (CAMP-202). The rebuild (00451a90):
 
-1. For every slot from index 1 to the end, in slot order: if the slot is accessible (3.2) and is not already in
-   `offered`, append it to `offered` and **set its `outcome` to 0** (CAMP-202).
-2. Reduce `offered` (3.3.1), then reduce `pending` the same way.
+1. For every slot from index 1 to the end, in slot order: if the slot is accessible (3.2) and not already in
+   `offered`, append it and set its `outcome` to 0.
+2. Reduce `offered` (3.3.1); then, if `deferred` is non-empty, reduce `deferred` the same way except that steps
+   c and d are skipped.
 
 #### 3.3.1 The reduction
 
-Work on a copy of the list. Repeat at most ten times (CAMP-203):
+The reduction runs on a working copy taken from the source list, and **every outer attempt re-takes that copy**;
+mutations to slot state (ages reset, outcomes set) made by a failed attempt persist (CAMP-203). At most ten
+attempts:
 
-| Step | Applies when | Effect |
+| Step | Precondition | Effect |
 |---|---|---|
-| a | size > 1 | **story deadline / expiry filter.** Walk the list. If a slot's node is a story node and `s.age == n.max_age - 1`, stop: that slot becomes the entire list (everything else is dropped with its `age` reset to 0). Otherwise, if `s.age == n.max_age`, drop the slot with `age := 0`; and if its node is a defend or assault node whose `outcome` is still 0, **mark it lost** (3.5) (CAMP-064, CAMP-210) |
-| b | size > 1 | **obligatory filter.** Sort so that obligatory nodes come first. If the first slot's node is obligatory and the second's is not, the list becomes just the first slot (the rest get `age := 0`). Two obligatory nodes at once is an error the program reports and then ignores (CAMP-063) |
-| c | `offered` only, size > 1 | **assault / defend random filter**, using the node's `prob` (3.3.2) |
-| d | `offered` only | **blazon-node selection** (3.6) |
-| e | size > 1 | **recency filter.** Drop every slot that is in `recent` (the last at most three missions played), with `age := 0` (CAMP-211) |
-| f | size > 1 | **non-assault / defend random filter**, using `prob` (3.3.2) |
-| g | size > 1 | **one per location.** Sort by (map name, `priority`) ascending and keep, for each location, only the slot with the lowest `priority`; the others are dropped with `age := 0`. Two candidates with the same location *and* the same priority is an error the program reports and then ignores (CAMP-065) |
+| a | more than one candidate | **deadline / expiry.** Walk the list. If a candidate's node is a story node and `s.age == n.max_age - 1`, stop: that candidate becomes the whole list and every other candidate is removed with `age := 0`. Otherwise, if `s.age == n.max_age`, remove the candidate with `age := 0`, and if its node is a defend or assault node whose `outcome` is still 0, record it as **lost** (3.5) (CAMP-064) |
+| b | more than one candidate | **obligatory.** Sort so that candidates with a non-zero `obligatory` come first. If the first candidate is obligatory and the second is not, the list becomes just the first and the rest are removed with `age := 0`. Two obligatory candidates at once is diagnosed and then ignored, leaving both (CAMP-063) |
+| c | `offered` only, more than one candidate | the **assault / defend** random filter (3.3.2) |
+| d | `offered` only | **blazon node and tactical deferral** (3.6) |
+| e | more than one candidate | **recency.** Visit `recent` from newest to oldest. For each history entry, remove every candidate that is that mission, with `age := 0`; **stop as soon as fewer than two candidates remain.** A recent mission can therefore survive as the sole offer (CAMP-211) |
+| f | more than one candidate | the **non-assault / defend** random filter (3.3.2) |
+| g | more than one candidate | **one per location.** Sort by (map name, `priority`) ascending, then walk the sorted list keeping, per run of equal `location`, the candidate with the lowest `priority` and removing the rest with `age := 0`. Two candidates with the same location and the same priority are diagnosed and both retained. Because the sort key is the map name while the elimination compares the location identifier, this step does not guarantee one candidate per location for inputs where map and location disagree (CAMP-065) |
 
-If the list is non-empty the reduction is done. If it is empty, repeat from step a. After ten empty rounds the
-program reports that it cannot determine an accessible mission, prints the whole campaign state, says it is
-forcing a mission, and then: if the working list has fewer than two entries it is used as is; otherwise one
-entry is drawn uniformly at random, every other slot of the source list gets `age := 0`, and the drawn slot
-becomes the whole list (CAMP-204).
+If the working list is non-empty the reduction is done and becomes the new source list. If it is empty, another
+attempt starts from the (possibly mutated) source list. After ten attempts the program reports that it cannot
+determine an accessible mission, prints the campaign state, reports that it is forcing a mission, restores the
+working list from the source list, re-runs step d, and then: if the working list has fewer than two entries it is
+used as it stands — **which may be empty** — otherwise one entry is drawn uniformly at random, every other slot
+of the source list gets `age := 0`, and the drawn slot becomes the whole list (CAMP-204). The forced path
+therefore cannot produce a mission from an empty source.
 
 #### 3.3.2 The two random filters
 
-Both examine `rand() % 101` against the node's `prob` and act when `prob < rand() % 101` (CAMP-212). One filter
-considers only nodes of kind 1 or 5 (assault, defend), the other only nodes that are neither. Both also require
-the slot's `age` to be 0. The precise membership decision of these two passes (keep or drop) could not be
-separated from the surrounding container code the decompiler folded away; see section 9. Determinism note: both
-draw from the C run-time generator, in list order.
+Each filter is "remove those that match", over a copy of the list, followed by **restoring the copy if the list
+became empty** (CAMP-212). A candidate matches when
+
+- its node's kind is 1 or 5 (the first filter) or is neither 1 nor 5 (the second filter), **and**
+- its `age` is 0, **and**
+- `n.prob < rand() % 101`.
+
+The draw is taken **only** for candidates that pass the kind and age tests, once each, in list order; a matching
+candidate also gets `age := 0`. Determinism: the original draws from the C run-time generator; ours draws from a
+named stream (section 8).
 
 ### 3.4 Choosing the next mission and the camp
 
 When the campaign is asked for the next mission (004539f0) (CAMP-220):
 
-1. If `selected` is set (the player picked a mission in the camp, or the command line forced one):
-   `previous := current`; `current := selected`; `selected := null`.
-2. Otherwise: rebuild the offered list (3.3). Then, for every offered slot, if its node is a defend node whose
-   `blazons_needed` is 0, **mark it won** (3.5) (CAMP-221). Then reset `team := band` and set
-   `previous := current` and:
-   - if `offered` holds **exactly one** slot and that node's `needs_camp` is 0, `current :=` that slot;
+1. If `selected` is set: `previous := current`; `current := selected`; `selected := null`. **No team reset.**
+2. Otherwise: rebuild the offered list (3.3); then, for every offered candidate whose node is a defend node with
+   `blazons_needed == 0`, record it as **won** (3.5) (CAMP-221); then `team := band` (CAMP-222 — the reset
+   happens only on this path); then `previous := current` and
+   - if `offered` holds **exactly one** candidate and that node's `needs_camp` is 0, `current :=` it;
    - otherwise `current :=` slot 0, the camp.
-3. If `current` is not the camp: remove it from `offered` (with `age := 0`), and append it to `recent`; if
-   `recent` then holds more than three entries, drop the oldest.
+3. If `current` is not the camp: remove it from `offered` with `age := 0`, and append it to `recent`; if `recent`
+   then holds more than three entries, drop the oldest.
 
-This is the whole "Sherwood becomes reachable only after the second mission" rule: the first two story nodes
-have `needs_camp == 0` and are the only accessible node at their time, so they start directly; everything else
-funnels through node 0 (CAMP-222, and it matches `campaign-flow.md` section 1).
+This is the whole "Sherwood becomes reachable only after the second mission" rule: the first two story nodes have
+`needs_camp == 0` and are each the only accessible node at their time, so they start directly; everything else
+funnels through node 0 (CAMP-223, consistent with `campaign-flow.md` section 1).
 
-**Selecting a mission in the camp** (004560d0) advances the campaign day (CAMP-230). For each slot in
-`offered`, in order:
+**Selecting a mission in the camp** (004560d0) (CAMP-230). For each candidate in `offered`, in order:
 
-- if it is the slot the player picked: `selected :=` it, its `age := 0`, and it is removed from `offered`;
-- otherwise: if the node's `max_age < 1000` **or** the slot's `age` is 0, `age := age + 1`; then, if the
-  *picked* slot's `age` now exceeds its own node's `max_age`, apply the picked node's `ares_on_expiry`
-  (CAMP-231).
+- if it is the candidate the player picked: `selected :=` it, its `age := 0`, and it is removed from `offered`;
+- otherwise: if the node's `max_age < 1000` **or** the candidate's `age` is 0, `age := age + 1`; then, if the
+  *picked* candidate's `age` now exceeds the picked node's `max_age`, apply the picked node's `siege_on_expiry`
+  (CAMP-231). This comparison reads the picked candidate, not the one being walked, and fires only while the
+  picked candidate has not yet been reached; it is preserved here because it is what the program does.
 
-Because the picked slot is removed without advancing the walk, slots before it in the list age and slots after
-it age too; the picked slot itself does not.
+The walk does not advance over the removed candidate, so candidates before and after the picked one both age, and
+the picked one does not.
 
 ### 3.5 Recording an outcome
 
-Applying an outcome to a slot `s` of node `n` (00456540) (CAMP-240):
+Recording an outcome on a slot `s` of node `n` (00456540) (CAMP-240):
 
 | Outcome | Effect |
 |---|---|
-| won | `ares := n.ares_on_win` unless that byte is −1; `s.outcome := 1` |
-| lost | `ares := n.ares_on_loss` unless that byte is −1; `s.outcome := 2`; and if `s` is `blazon_node`, `blazons := 0` |
+| won | `siege_state := n.siege_on_win` unless that byte is −1; `s.outcome := 1` |
+| lost | `siege_state := n.siege_on_loss` unless that byte is −1; `s.outcome := 2`; **and if `s` is `blazon_node`, `blazons := 0`** |
 
-In both cases, if `s` is `blazon_node` and `n.kind == 5` (defend), the pending town notification is armed:
-`town_node := n`, `town_result := s.outcome`. The campaign-map screen reads `town_result` and clears it
+In both cases, if `s` is `blazon_node` and `n.kind == 5`, the one-shot town notification is armed:
+`town_code := n.code`, `town_result := s.outcome`. The campaign-map screen reads `town_result` and clears it
 (CAMP-241).
 
-**End of a mission** (004e3260, run by the level tick after the won / lost flag is set, `spec-script-vm.md`
-VM-103) (CAMP-250), in this order:
+**End of a mission** (004e3260, run by the level tick once the won / lost flag is set, `spec-script-vm.md`
+VM-103), in this order (CAMP-250):
 
-1. Apply the outcome to `current`.
-2. Walk the level's player-character list in element order. For each man the level still knows and who belongs
-   to the campaign: if his health is at most 0 he counts as *lost*, otherwise he counts as *returned*, the
-   level's own survivor counter is bumped, and if his character profile carries a particular class marker or
-   his actor carries a particular flag he additionally contributes 70 score points.
-3. Walk the level's item list and collect what the rules there allow (the loot pass; not specified here).
-4. If the mission was won: `returned += survivors`; `lost += casualties`; `score += the 70-point sum`; if
-   `current`'s kind is not 3 (ambush), `score += 1000`; `recruit_flag := 0`; then add *k* new men to the band,
-   where *k* is a number the level object provides (3.8); record *k* on the level for the debriefing; if
-   `blazon_node` is set, refresh the blazon HUD.
-5. If the mission was lost: no counter changes at all; the level records that no recruits arrived.
+1. Record the outcome on `current` (3.5) — which, on a loss, can clear the blazon counter. So "nothing changes
+   on a loss" is false.
+2. Walk the level's non-player actor list in element order. Consider only actors of the soldier family on the
+   hostile side (two tests: an element-kind test and a virtual side/family test that must answer 1). For each:
+   if its health is at most 0 it counts as **killed**, otherwise it counts as **spared**, a per-mission spared
+   counter on the level is bumped, and if the actor's profile carries one particular class value or the actor
+   carries one particular flag it additionally contributes 70 score points. **These are enemies, not the
+   player's men** (CAMP-013).
+3. Walk the level's item list and collect what the rules there allow (the loot pass; not specified here). Steps
+   1 to 3 run whatever the outcome.
+4. If the mission was won: `spared += the spared count`; `killed += the killed count`;
+   `score += the 70-point sum`; if `current`'s kind is not 3 (ambush), `score += 1000`; `recruit_flag := 0`;
+   then add *k* men to the band (3.8) and record *k* on the level for the debriefing; if `blazon_node` is set,
+   refresh the blazon display.
+5. If the mission was lost: the level records that no recruits arrived, and nothing in step 4 happens.
 
-**Score during a mission** (CAMP-251): `score += 50` for one player-character act (004a5a00, gated on two
-virtual tests of the actor), `score += 100` when a player character's inventory count for a slot changes
-(0049fc80, i.e. picking something up). Every `score` change is also added to the mission-statistics block the
-debriefing screen shows; every `money` change likewise (CAMP-252).
+**Score during a mission** (CAMP-251): `score += 100` when a player character's **experience level** for one slot
+increases as a whole value (0049fc80 compares the level before and after the increase); `score += 50` when a
+hostile actor transitions into death as the result of damage (004a5a00: damage is applied, then a virtual
+side/family test must answer 1 and a virtual death test must be true). Only the *delta* form of a counter update
+propagates into the level's mission-statistics block; a direct set does not (CAMP-252), so the statistics the
+debriefing shows can differ from the counters.
 
 ### 3.6 Blazons
 
-`blazons` (counter 3) belongs to one node at a time, `blazon_node`, chosen in step d of the reduction: the first
-slot of the working list whose node is of kind 1 or 5 (assault or defend). If there is none, `blazon_node` is
-null. While `blazon_node` is set, the other assault / defend slots are taken out of `offered` and moved to
-`pending`; if `blazon_node` is null they are dropped instead (CAMP-260).
+`blazons` belongs to one node at a time. Step d of the reduction (00455f00) (CAMP-260):
+
+- **More than one candidate.** Clear `deferred`. `blazon_node` := the first candidate whose node kind is 1 or 5,
+  or null. Then walk the candidates:
+  - a candidate whose node kind is 1 or 5 and which is not `blazon_node` is removed with `age := 0`;
+  - a candidate whose node kind is 6 (tactical) is, when `blazon_node` is null, removed with `age := 0`, and
+    otherwise removed and appended to `deferred`;
+  - every other candidate, and `blazon_node` itself, stays.
+- **Exactly one candidate.** `blazon_node` := that candidate if its node kind is 1 or 5, else null. Nothing is
+  removed.
+- **No candidate.** `blazon_node` := null.
+
+So `deferred` holds the tactical missions held back while an assault or defend node owns the blazon counter —
+not, as revision 1 said, the other assault/defend candidates.
 
 Four ways the counter moves (CAMP-261):
 
 | Where | Effect |
 |---|---|
-| native 178, a banner captured in a mission | `blazons += the banner's value`. If the current node's kind is 1 (assault) and `blazons >= blazons_needed`, the mission is **won** at once |
-| a tactical mission (kind 6) | the counter is capped at `blazons_needed − blazons_held`; the excess is handed to a separate routine. If the mission is ending and `blazons >= blazons_needed`, `blazons := 0`, the blazon node is marked **won** and removed from `offered` |
-| the campaign map, buying a blazon (00525040) | `money -= the slot's blazon_price`; `blazons += 1`; `blazon_price += the node's blazon_price_step` |
-| the camp / campaign map, spending blazons on a defend node | if `blazons >= blazons_needed`: `blazons -= blazons_needed`, the node is marked **won**, removed from `offered`, `selected := null`, and the offered list is rebuilt |
+| native 178, a banner captured in a mission | `blazons += the banner's value`. If the current node's kind is 1 and `blazons >= blazons_needed`, the mission is won at once |
+| a tactical mission (kind 6) | the counter is capped at `blazons_needed - blazons_held` and the excess handed to a separate routine; when the mission is ending and `blazons >= blazons_needed`, `blazons := 0`, the blazon node is recorded as won and removed from `offered` |
+| the campaign map, buying a blazon | `money -= blazon_price` of the blazon node's slot; `blazons += 1`; `blazon_price += n.blazon_price_step` |
+| the camp or campaign map, spending blazons on a defend node | if `blazons >= blazons_needed`: `blazons -= blazons_needed`, the node is recorded as won, removed from `offered`, `selected := null`, and the offered list is **rebuilt** (3.3) |
 
-The number of blazons the player still needs, as the interface reports it, is `blazons_needed − blazons_held` of
-the node `blazon_node` when that differs from `current`, and `blazons_needed` of `current` otherwise
-(00455af0); native 234 answers "blazons >= that number" (CAMP-262).
+The requirement the interface reports is `blazons_needed - blazons_held` of `blazon_node` when that differs from
+`current`, and `blazons_needed` of `current` otherwise; native 234 answers "blazons >= that" (CAMP-262).
 
-`men_per_blazon` converts men into blazons: the number of men that may be spent is
-`men_per_blazon * min(team_size / men_per_blazon, blazons_needed − blazons_held − blazons)`, with unsigned
-integer division and clamping at 0 (00455a70). The program asserts when `men_per_blazon` is 0 (CAMP-263).
+`men_per_blazon` converts men into blazons (00455a70): the routine first checks `men_per_blazon`, and when it is
+zero it reports the condition and returns **without dividing**. Otherwise it computes
+`men_per_blazon * min(gang_or_team_size / men_per_blazon, (u16)(blazons_needed - blazons_held) - blazons)` where
+the `min` compares the two operands as 16-bit unsigned values and **there is no clamp to zero**: when the
+requirement is already met or exceeded, the subtraction wraps and the result is large (CAMP-263).
 
-### 3.7 Progress, score, spared lives, game length, difficulty
+### 3.7 Progress, score, spared percentage, game length
 
-**Progress** in percent (00456db0) (CAMP-270). Count nodes whose kind is neither 3 nor 6 (so ambushes and
-tactical missions do not count, placeholders do); call that `total`, and count how many of those have
-`outcome == 1`; call that `won`. Then:
+**Progress** in percent (00456db0) (CAMP-270). Count nodes whose kind is neither 3 nor 6 — ambushes and tactical
+missions do not count, placeholders do — as `total`, and how many of those have `outcome == 1` as `won`. Then: if
+any won node's code is one particular story code, the answer is **100**; else if any won node's code is one
+particular defend code, the answer is **95**; else the answer is `won * 100 / total` as an **unsigned** division
+**with no zero-denominator guard** — `total == 0` divides by zero. The two codes are four-byte constants
+compiled into the executable; they are compatibility tokens, marked individually, and they are the two-letter
+codes of the last story mission and of the last defend mission.
 
-- if any of the won nodes has the code `HI`, the answer is **100**;
-- otherwise if any has the code `DD`, the answer is **95**;
-- otherwise the answer is `won * 100 / total`, integer division.
+**Score** is counter 2 (3.5). **Spared percentage**: the campaign-map status line computes
+`counter4 * 100 / (counter4 + counter5)` as an unsigned division, guarded to 0 when both are 0 (CAMP-101); the
+profile updater takes the same guard and then converts a floating-point value whose expression the export does
+not contain, so the two are not proved to agree. Because counters 4 and 5 count hostile actors (3.5), this
+percentage is the share of enemies **left alive**, which is what makes it the game's "spared lives" statistic.
 
-`HI` and `DD` are two four-byte constants compiled into the executable; they are compatibility tokens, marked
-individually, and are needed because the campaign's end is recognised by code, not by data.
-
-**Score** is counter 2 (3.5). **Spared lives** is `100 * returned / (returned + lost)`, integer division, 0
-when both are 0 (CAMP-101); the campaign-map status line (00528810) and the player profile use the same
-expression. **Game length** is counter 6 in seconds: the game loop adds `(now − level_start) / 1000` at the end
-of a level, with `now` from the system tick counter in milliseconds (CAMP-271). One display path (0050e7d0)
+**Game length** is counter 6 in seconds. It accrues at save and transition checkpoints, not at level end
+(CAMP-271): a start marker is set when a level begins or resumes, and whenever a save is written the campaign
+adds `(tick now - start marker) / 1000` and **clears the marker**; the marker is then set again. One display path
 adds the *unscaled* millisecond difference to the same value, which mixes units; that path feeds a version /
-debug line only (CAMP-272).
+diagnostic line only (CAMP-272).
 
-**Difficulty.** Four presets exist (table B of `profile.cpf` has four records) and a new profile is created at
-the middle setting. The profile carries two 32-bit values that are both 1 in a fresh retail profile and one of
-them is the difficulty; which one, and how the preset reaches the combat rules, was not settled (section 9).
-No difficulty-dependent branch was found in the campaign code itself (CAMP-280).
+**Difficulty** is `spec-ai-combat.md` AI-045's: 0 easy, 1 medium, 2 hard, stored as the last of the profile's
+seven summary values. No campaign routine in the scope read branches on it (CAMP-280).
 
 ### 3.8 Recruits
 
-A new man is added by 004524b0 (CAMP-290). With probability 1/2 (one draw of the C generator, low bit) and only
-if `recovering` is non-empty: one entry of `recovering` is drawn uniformly, his health is re-rolled and clamped
-to 100, his `camp_slot` is set to 0xFFFF, he is moved into `band`, and `recruit_flag := 1` — a man comes back
-from the sick list. Otherwise a brand-new man is built from the character-profile table, considering only
-profiles that are not marked as named heroes (the exact draw is one the decompiler folded away, section 9).
+Adding a man (004524b0) (CAMP-290):
 
-The number of men added after a won mission is a value the level object carries; the level fills it from the
-mission's own bookkeeping (004e3260 reads it through a level accessor and truncates it to an integer). Men are
-added one at a time, so a run of *k* recruits makes *k* independent draws (CAMP-291).
+- If `recovering` is **empty**, no random draw is taken at all and a brand-new man is built from the
+  character-profile table, considering only profiles that are not marked named heroes; the exact selection draw
+  is absent from the export (section 10).
+- Otherwise one draw is taken from the C run-time generator and its low bit examined. On one value the
+  new-man path above runs. On the other, one entry of `recovering` is drawn uniformly and **recovered**: the
+  recovery routine adjusts the man's experience state, clears his carried-item fields, sets `camp_slot` to
+  0xFFFF, writes his health from a value whose source expression is absent (clamped to 100 — "re-rolled" is not
+  supported), moves him into `band`, and sets `recruit_flag := 1` (CAMP-292).
 
-Men leave the band by being moved to `recovering` (00455b80) or by being dropped outright (00455b20); both are
-driven by the HUD / mission-end paths of 005145b0.
+The number of men added after a won mission is a value the level object supplies and truncates to an integer;
+**the expression that produces it is absent from the export** and it is not established as a simple accessor
+(CAMP-291, section 10). Men are added one at a time, so *k* recruits make *k* independent passes.
+
+Men leave the band by being moved to `recovering` or by being dropped outright; both are driven by the HUD and
+mission-end paths of 005145b0, which were not read.
 
 ### 3.9 The camp between missions
 
 Entering the camp is entering node 0 as an ordinary mission on the `sherwood` map with its own script
-(`docs/formats/sherwood-hub.md`). What the engine does around it (CAMP-300, from the game loop at 0050f710):
+(`docs/formats/sherwood-hub.md`). Around it the game loop does (0050f710) (CAMP-300):
 
-1. Write `Campaign.bck` from the live campaign (2.6.1).
-2. Create the *Restart* auto-save — but only when the level being started is **not** the camp (3.10).
-3. If the level is the camp (the game object's "in the camp" flag, which is set from `current`'s
-   `location == 8`) and the level is not in one particular state: **send message 1001 to the level script**, then
-   **run the production of all 13 workshops** (3.11).
+1. Write `Campaign.bck` from the live campaign.
+2. Create the *restart* auto-save — only when the level being started is **not** the camp (3.10).
+3. If the level is the camp — the game object's "in the camp" flag, set from `current`'s `location == 8` — and
+   the level is not in one particular state: submit **message 1001** to the camp level's script, then start the
+   workshop pass (3.11).
 4. Enter the frame loop.
 
-Message 1001 is therefore an engine-originated message delivered once, when the camp level starts, before the
-first tick; the camp script answers it by configuring its 13 production zones with natives 199 and 200
-(CAMP-301). This confirms and replaces the guess in `docs/formats/sherwood-hub.md` section 5.
+Message 1001 is engine-originated and is submitted once, at camp start (CAMP-301) — this closes
+`sherwood-hub.md`'s open question about where it comes from. **Its execution order relative to the workshop pass
+and to the first tick is not established** (CAMP-303): the helper that submits it builds a script invocation and
+hands it to the sequence scheduler, and the export dropped the call's arguments, so whether the handler completes
+before the workshop pass, or is queued and drained during the first tick, is unknown. No normative statement in
+this document depends on that order, and an implementer must treat it as unsettled (section 11).
 
-Message 1000 ("send the team out") is delivered by the interface when the player uses the send action; the
-script answers it by walking the selected characters to the exit. This analysis located the message path
-(00578d80) and the camp-side handler but not the button that raises 1000; see section 9 (CAMP-302).
+The origin of **message 1000** ("send the team out") was not found (CAMP-302): the game loop does not submit it,
+and native 239 (which opens the debriefing screen) does not establish it either. It is unknown, and no normative
+statement here assumes otherwise.
 
-**Team deployment.** The team is `team`. `team := band` whenever the campaign picks a new mission (3.4 step 2).
-Natives 165 and 166 add and remove one man (they refuse a non-player-character with a script error): 165
-appends the man's status record to `team` if it is not already there, marks him present, clears two of his
-fields and refreshes the HUD; 166 removes him and refreshes the HUD (CAMP-310). Native 163 is the length of
-`team`, 164 its i-th member's element. Native 174 is the selected node's `team_limit`, or 5 when no node is
-selected, and it reports an error and answers 0 unless the current node's location is 8 (CAMP-311). Native 170
-answers "the team satisfies the node's requirements": every entry of the node's `required_pcs` list must be the
-character profile of some member of `team`, and the same for the node's second (in retail: empty) requirement
-list (CAMP-312). Native 172 is the selected node's four-character code, 0 when nothing is selected — this is
-what the camp script compares against a level code to notice that a mission has been picked.
+**Team deployment.** The team is `team`; it is reset to `band` only on the unselected-next-mission path (3.4).
 
-**Instantiating the team.** When a mission starts, each team member gets a player-character actor; his status
-record is marked present, and his `camp_slot` keeps a value only while the current node's location is 8, else it
-is set to 0xFFFF (004552f0) (CAMP-313). A node whose `required_pcs` cannot be matched to a spawn point produces
-a warning and the spawn point stays empty.
+| Native | Effect |
+|---|---|
+| 163 | the length of `team` |
+| 164 (`i`) | the element of `team[i]`; no bound check |
+| 165 (`pc`) | refuses a non-player-character with a script error. Otherwise: append the character's record to `team` if it is not already there; refresh the HUD; then write three fields **of the actor**, one of which is set to the value 2. Those actor fields were not identified and are `unknown`; in particular 165 does **not** write the saved `deployed` flag (CAMP-310) |
+| 166 (`pc`) | remove the character's record from `team`; refresh the HUD. Same refusal |
+| 170 | 1 when the selected node's requirements are satisfied (below) |
+| 172 | the selected node's four-byte code, 0 when nothing is selected — what the camp script compares to notice a pick |
+| 174 | the selected node's `team_limit`, or 5 when nothing is selected; reports an error and answers 0 unless the **current** node's location is 8 (CAMP-311) |
+| 249 | the number of **HUD-selected** player characters. This is the interface selection and must not be conflated with `team` (CAMP-314) |
+| 250 (`i`) | the i-th HUD-selected player character; error and null at or above the count |
 
-### 3.10 The five named save slots and the auto-saves
+**Native 170's test** (00453cd0) (CAMP-312), in this order:
 
-The executable knows five fixed slot names — `Continue`, `Restart`, `QuickSave`, `ExQuickSave`, `Sherwood` —
-plus numbered slots named by a `Savegame_%03i` pattern whose counter is the save manager's `next_number`
-(CAMP-130). Slot labels shown to the player come from text resources (0xF6 for *Continue*, 0xF7 for *Restart*),
-so the data file name and the label differ.
+1. For every entry of the node's `required_pcs`: some member of `team` must have that character profile
+   (identity comparison of the profile the member points at).
+2. For every entry of the node's `capability_reqs`: some member of `team` must have that capability. A member
+   has capability *c* when *c* appears in either of two capability arrays of his character profile — one of
+   three entries and one of four — or when one of three substitutions applies: a requirement for capability 2 is
+   also satisfied by 3 in the three-entry array, a requirement for 13 by 14 in the three-entry array, and a
+   requirement for 25 by 26 in the four-entry array (CAMP-315).
+
+Both loops stop at the first unsatisfied entry.
+
+**Instantiating the team.** When a mission starts, each team member gets a player-character actor, his record is
+marked `deployed`, and his `camp_slot` keeps a value only while the current node's location is 8, otherwise it is
+set to 0xFFFF (CAMP-313). A node whose `required_pcs` cannot be matched to a spawn point produces a warning and
+the spawn point stays empty.
+
+### 3.10 Save slots and the auto-saves
+
+The executable knows five fixed slot names — `Continue`, `Restart`, `QuickSave`, `ExQuickSave`, `Sherwood` — plus
+numbered slots named from a `Savegame_%03i` pattern whose counter is the profile's `next_number` (CAMP-130).
+Labels shown to the player come from text resources (0xF6 and 0xF7 for the *continue* and *restart* slots), so a
+slot's file name and its label differ.
 
 | Slot | Written when |
 |---|---|
 | `Restart` | at the start of every level that is not the camp (CAMP-131) |
 | `Sherwood` | at the start of the camp level (CAMP-132) |
-| `Continue` | after **every** successful save: the file just written is copied to `Continue`, unless the save that was written is itself `Continue` or `Restart` (CAMP-133) |
-| `QuickSave`, `ExQuickSave` | the quick-save key; `ExQuickSave` holds the previous quick save |
+| `Continue` | after every successful save, the file just written is copied to `Continue` — unless two tests (which were not read individually) say the file *is* the continue or restart slot (CAMP-133) |
+| `QuickSave`, `ExQuickSave` | the quick-save key; the older quick save moves to `ExQuickSave` |
 | numbered | the save menu |
 
-Writing a save (00511340): open the data file for writing, write the header, commit the elapsed play time into
-counter 6, write campaign block A by streaming `Campaign.bck` (minus its version dword) into the archive, write
-campaign block B from the live campaign, write the level state; then write the thumbnail file; then mirror into
-`Continue`; then show a message from a text resource. Loading is the same function with the direction reversed:
-both campaign blocks are deserialized in order, then the level state (CAMP-134).
+Writing a save (00511340): open the data file for writing; write the header; add the elapsed interval to
+counter 6 and clear the start marker; when `V > 38` write the backup block by streaming `Campaign.bck` minus its
+version dword; write the live campaign block; write the level state; set the start marker again; write the
+thumbnail file; mirror into the continue slot; show a message from a text resource. Loading is the same routine
+with the direction reversed: the backup block (when present) is deserialized, then the live block, then the level
+state (CAMP-134). "Restart" and "Continue" are therefore not separate mechanisms but ordinary saves under fixed
+names.
 
-"Restart" therefore restores the campaign as it was when the mission began and reloads the mission from its
-start; "Continue" restores the last save of any kind. Neither is a separate mechanism: both are ordinary saves
-under fixed names.
+### 3.11 The workshop pass
 
-### 3.11 Production between missions
+The 13 workshops are addressed by kind and are what natives 199 and 200 configure (CAMP-320):
 
-The 13 workshops are addressed by kind, `campaign.workshops[k]`, and are the objects natives 199 and 200
-configure (CAMP-320):
+- **199 (k, location, capacity)**: workshop `k` takes that location as its zone and that capacity, and the
+  location is back-linked to the workshop kind.
+- **200 (k, location)**: a work spot is appended to workshop `k`'s non-persistent spot list, carrying the
+  location's coordinates, one of its identifiers, and the index of its sector or 0xFFFF when it has none.
 
-- **native 199 (k, location, capacity)**: workshop `k` gets that location as its zone and that capacity, and
-  the location is back-linked to the workshop kind.
-- **native 200 (k, location)**: a work spot is appended to workshop `k`'s (non-persistent) spot list, carrying
-  the location's coordinates, one of its identifiers and the index of its sector, or 0xFFFF when the location
-  has no sector.
+The pass runs over all 13 workshops in kind order and is handed `previous`. **Victory gates only the output
+calculation, not the pass** (CAMP-321): the routines that compute a day's output for kinds 0..11 each begin by
+requiring `previous` to be non-null with `outcome == 1` and do nothing otherwise, while item placement (kinds
+0..8), kind 12's routine and the placement of assigned characters run regardless.
 
-Production runs once per camp entry, over all 13 workshops in kind order, and **only if the previous mission
-was won** — the routine is handed `previous` and does nothing unless its `outcome` is 1 (CAMP-321). Per
-workshop kind:
-
-| Kind | What one day does |
+| Kind | What the pass does |
 |---|---|
-| 0..8 | compute the day's output; `stock += output`; `last_output := output`; then place up to 5 units of the workshop's item per work spot in the camp, drawing down `stock` (CAMP-322) |
-| 9, 10 | compute the day's output and hand it to a global player-wide store, at index 1 for kind 9 (only when a further test passes) and index 0 for kind 10 (CAMP-323) |
-| 11 | compute the day's output and apply it to **every** man assigned to the workshop — this is the training workshop (CAMP-324) |
-| 12 | a separate routine (00580e80), not read |
+| 0..8 | *gated by victory:* compute the day's output, `stock += output`, `last_output := output`. *Ungated:* walk the work spots and place items in the camp, up to 5 per spot, drawing down a **temporary** quantity initialised from `stock`; `stock` itself is not reduced by placement. Then recompute `full := 5 * (number of work spots) <= stock` (CAMP-322) |
+| 9, 10 | *gated by victory:* compute the day's output and add it to **each assigned character's** experience — slot 0 for kind 10, slot 1 for kind 9, and kind 9 additionally requires that character's profile to carry one particular capability in its three-entry capability array (CAMP-323) |
+| 11 | *gated by victory:* compute the day's output and **restore health** by that amount to every assigned character, capped at 100. Kind 11 is the rest workshop, not a training workshop (CAMP-324) |
+| 12 | a separate routine, ungated, not read (CAMP-329) |
 
-Each kind maps to one item id: 0->1, 1->4, 2->5, 3->11, 4->12, 5->13, 6->16, 7->17, 8->19; the others have no
-item (CAMP-325). Existing stock is recounted from the camp level before production: every pick-up item in the
-level whose item id matches contributes its quantity to `stock`, and for item id 1 certain actors count too
-(CAMP-326).
+Then, for every workshop, each assigned character is placed at his recorded spot in the camp level (CAMP-328).
 
-Each kind also has a **supervising hero**, identified by campaign identity (the ids of native 256): kinds 0, 1
-and 9 the hero; kind 2 Scarlet; kinds 3 and 7 Stutely; kinds 4, 5 and 8 Tuck; kind 6 Marian; kind 10 John;
-kinds 11 and 12 none (CAMP-327). The day's output is computed from the workshop and from whether its supervising
-hero is among the men assigned to it; **the arithmetic is a floating-point expression the decompiler dropped**
-and is an open question (section 9). What is certain: the result is truncated towards zero to an integer, and a
-workshop with no assigned men and no supervisor still runs.
+The experience accumulator (CAMP-072, 0051d4e0): `points[slot] += amount`; then, while `level[slot] < 100` and
+`points[slot] >= 100`, `level[slot] += points[slot] / 100`, `points[slot] %= 100`, and `level[slot]` is clamped
+to 100.
 
-After production each assigned man is placed at his work spot in the camp level (CAMP-328), which is what makes
-the camp look busy.
+A **separate campaign pass** (00456a70) captures the camp back into the campaign: for kinds 0..8 it recounts
+`stock` from the camp level — summing the quantity of every **active** pick-up element whose item id matches the
+workshop's, plus, for one particular item id, certain actors — and for every kind it rebuilds the `assignments`
+list by scanning the camp level's player characters that pass an eligibility test, recording each one's record,
+position and sector (CAMP-326). This pass has no direct caller in the export; when it runs was not established
+(section 10).
+
+**The day's output itself is not specified.** Each of the four output routines truncates a floating-point value
+to an integer, and the expression that produces it — including the part played by the routine that locates the
+workshop's supervising character, whose per-kind identity mapping is itself withheld (section 11) — is absent
+from the export. Section 11 excludes camp production from
+clearance.
 
 ### 3.12 The campaign-map screen
 
-Reached from the camp. It shows ten location slots, indices 0..9; index 0 and index 8 (the camp) are skipped,
-and for indices 1..3 (the three forest crossings) one of the per-location widgets is skipped as well
-(CAMP-330). Two further widget groups are driven by the current `ares` value. The miniature of a location shows
-the offered mission for that location — by construction of step g of 3.3.1 there is at most one. If the offered
-list is empty the screen shows a text and the program reports a warning (CAMP-331). A status line is composed
-from text resources 0xF3, 0xF4, 0x40 and carries `money`, `score` and the spared-lives percentage (CAMP-332).
-The buttons along the bottom are the purse, recruit, cart and tower/shield actions of `ui-flow.md` 9.x
-(`BTTN` 71-74 on this screen, 157-160 in the camp). The pending town notification (`town_result`, `town_node`)
-is read here and cleared (CAMP-241).
+Ten location slots, indices 0..9; index 0 and index 8 (the camp) are skipped, and for indices 1..3 (the forest
+crossings) one of the per-location widgets is skipped (CAMP-330). Two further widget groups are driven by the
+current `siege_state`. A location's miniature shows the offer for that location; by construction of step g there
+is normally at most one. An empty offered list produces a text and a reported warning (CAMP-331). A status line
+composed from text resources 0xF3, 0xF4 and 0x40 carries `money`, `score` and the spared percentage (CAMP-332).
+The buttons are the purse, recruit, cart and tower/shield actions of `ui-flow.md` (`BTTN` 71-74 here, 157-160 in
+the camp). The pending town notification is read here and cleared (CAMP-241).
 
 ### 3.13 HUD and mini-map
 
-What this analysis settles (the rest of the HUD is `ui-flow.md`, measured from captures):
-
-- The two top-left counters are `money` (counter 1) and `clovers` (counter 0), each formatted with its own text
-  resource (0xF4 and 0xF5) (CAMP-340).
-- The blazon display is refreshed whenever `blazons` changes and only exists in campaign mode; outside a
-  campaign the refresh reports an error and does nothing (CAMP-341).
-- **Mini-map dot colours.** Each element carries a dot style code and a three-entry colour set. The default
-  colour set is fixed per element class: a player character is light green, RGB (165, 255, 82); a
-  non-player human is red, RGB (255, 0, 0), unless one flag on his controller is set, in which case he is
-  violet, RGB (115, 40, 203); a non-player human additionally carries a yellow, RGB (255, 255, 0), and a blue,
-  RGB (0, 120, 255), entry for two further states; one further element class is cyan, RGB (0, 190, 255), and
-  another pale yellow, RGB (255, 247, 90) (CAMP-350).
-- **Native 24** overrides the style: codes 0 and 1 are the class default; 100/101/102 and 111 set light green,
-  200/201/202 and 222 red, 300/301/302 and 333 cyan; the codes 111, 222 and 333 additionally require the
-  element to belong to the human family and report an error otherwise; 500 and 666 are accepted but match no
-  colour case, so they leave the colour set unchanged; every other code is an error that changes nothing
-  (CAMP-351). This refines the entry in
-  `spec-script-vm.md` with the actual colours.
-- No grey colour is set anywhere in the image. A grey dot in a capture is therefore either a dot that is not
-  drawn at all (an element the script un-blipped, native 243) or the map's own dark background, RGB (0, 30, 60)
-  (CAMP-352).
-- The portrait counters, the action-icon availability and the tooltips were **not** read (section 9); the
-  character name shown under a portrait is the `name` field of 2.3 and the portrait faces are the resources
-  `ui-flow.md` 9.3 lists.
+- The two top-left counters are `money` and `clovers`, each formatted with its own text resource (0xF4 and 0xF5)
+  (CAMP-340).
+- The blazon display refresh reports an error and does nothing when there is no blazon node, which includes every
+  non-campaign game (CAMP-341).
+- **Mini-map colours.** Each element carries a dot style code and several colour entries. A player character's
+  entries are set to light green, RGB (165, 255, 82). A hostile human's are set to red, RGB (255, 0, 0) — or, when
+  one flag on his controller is set, to violet, RGB (115, 40, 203) and nothing else — and in the red case two
+  further entries are set to yellow, RGB (255, 255, 0), and blue, RGB (0, 120, 255); **five entries in total,
+  more than revision 1 claimed**, and which entry is used in which actor state was not established. One further
+  element class is cyan, RGB (0, 190, 255), and another pale yellow, RGB (255, 247, 90) (CAMP-350).
+- **Native 24** sets the style code. Accepted codes: 0, 1, 100, 101, 102, 111, 200, 201, 202, 222, 300, 301, 302,
+  333, 500 and 666; anything else is an error that changes nothing. Codes 111, 222 and 333 additionally require
+  the element to belong to the human family and report an error otherwise. Of the accepted codes, 100/101/102 and
+  111 set light green, 200/201/202 and 222 red, 300/301/302 and 333 cyan; **0, 1, 500 and 666 change the style
+  code only and leave the colour entries as they are, so they do not restore a colour a previous call
+  overrode** (CAMP-351).
+- Only the calls of one colour-conversion helper were examined. Among those calls no grey value appears; that is
+  the whole of the evidence, and it does **not** establish that no grey dot can be drawn. State-dependent
+  rendering — which of an element's colour entries is used, and whether an un-blipped element is drawn at all —
+  is unspecified (CAMP-352).
+- Portrait states, action-icon availability and tooltips were **not** read; `ui-flow.md` has the geometry. The
+  name under a portrait is the `name` field of 2.3.
 
 ---
 
 ## 4. Claims
 
-| Id | Claim (one sentence) | Status | Evidence | Confidence | Notes |
+Rows whose id carries **(R19-n)** answer finding *n* of spec review 19.
+
+| Id | Claim | Status | Evidence | Confidence | Notes |
 |---|---|---|---|---|---|
-| CAMP-002 | Each serialized class is preceded by a 16-byte digest of its class name; a mismatch only warns | observed | 005e1b70, 0060f1c0 | high | reading is tolerant, so the digest need not be recomputed, only reproduced |
-| CAMP-003 | Byte strings and wide strings use a u16 count; the player's name uses a u32 count | observed | 005e0c90, 005e0ea0, 0055d1a0 | high | validated on `Profiles` |
-| CAMP-010 | A new campaign has all 27 counters 0 except money = 100 | observed | 00450ec0, `Campaign.bck` | high | |
-| CAMP-011 | The 27 counters are i32 and the whole block is 108 bytes | observed | 00452030, 00452f20 | high | |
-| CAMP-012 | Natives 195/196 address counters 7..26 as script indices 0..19 | observed | 00579430, 00579470 | high | agrees with `spec-script-vm.md` |
-| CAMP-013 | Counter 1 is money, 2 score, 3 blazons, 4 men returned, 5 men lost, 6 play time in seconds | observed | 0055d370, 00528810, 004e3260, 0050e800, 005795c0 | high | the debug report names money, gang size and ARES |
-| CAMP-016 | Counter 0 is the clover HUD counter and no code path writes it through the counter accessors | observed | 004c8140, 004a78c0 | medium | a variable-index write via native 196 cannot reach it; how it ever becomes non-zero is open |
-| CAMP-020 | The node state is one 12-byte slot per level-table record: age u16, blazon price u16, outcome u32, plus a node reference | observed | 0054cc40, 00452f20 | high | |
-| CAMP-021 | Every campaign list is serialized as a u32 count followed by its elements in order | observed | 00452f20, 00453630, 00458be0, 00458e70, 00459160, 004593f0 | high | |
-| CAMP-022 | Each mission slot record contains two u16 of uninitialised memory that are read and discarded | observed | 0054cc40; the two campaign blocks of the retail `Continue` differ in exactly those bytes | high | write anything |
-| CAMP-023 | The four node references are written in the order current, previous, selected, blazon node, each as a u16 slot index with 0xFFFF for null | observed | 00452f20, 00453940; retail `Campaign.bck` reads 0xFFFF, 21, 0xFFFF, 0xFFFF | high | 21 is the slot of the first story node |
-| CAMP-030 | ARES is one signed byte, −1 on a new campaign | observed | 00456e40, 00456e60, retail file | high | |
-| CAMP-031 | A node is ARES-gated only when the first byte of its 10-byte gate array is 1 | observed | 0054c800 | high | |
-| CAMP-032 | The gate is `gate[1 + ares] != 0`, so `ares == -1` reads the enable flag itself and always passes | observed | 0054c800 | high | a deliberate or accidental aliasing; either way it is the behaviour |
-| CAMP-033 | Winning, losing and over-age selection each set ARES from one signed byte of the node, −1 meaning no change | observed | 00456540, 004560d0, 00456e40 | high | |
-| CAMP-041 | The level record's field group after the location is u8, u16, u8, u16 and not u8, u8, u16, u16 | observed | 00566570 | high | corrects `docs/formats/profile.md` |
-| CAMP-042 | The required-player-character list of a level record is counted by a u32 | observed | 00566570 | high | corrects `profile.md`; re-parsed to exact consumption |
-| CAMP-043 | The trailing byte block of a level record is 10 bytes, then 3 signed bytes, then 7 u16 | observed | 00566570, exact re-parse | high | |
-| CAMP-044 | The node's kind is the u32 the old document called `unknown_a`, with 0 story, 1 assault, 3 ambush, 4 camp, 5 defend, 6 tactical | observed | 005795c0, 00514730, 0054cbf0, 0054cc20, 00456db0 | high | |
-| CAMP-045 | A node whose `needs_camp` byte is 0 may start without visiting the camp | observed | 004539f0 | high | explains the first two missions |
+| CAMP-002 | Each record is preceded by a 16-byte block tag that is compared on reading; a mismatch only logs and the load continues | observed | 005e1b70, 0060f1c0, 0060f1e0 | high | **(R19-27)** |
+| CAMP-003 | The town notification stores the node's four-byte level code, not an index | observed | 00456540, 00452f20, 005280d0 | high | **(R19-3)** |
+| CAMP-004 | Byte and wide strings use a u16 count; the player's name uses a u32 count | observed | 005e0c90, 005e0ea0, 0055d1a0 | high | validated on the profile archive |
+| CAMP-010 | A new campaign has all 27 counters 0 except money = 100 | observed | 00450ec0, retail backup file | high | |
+| CAMP-011 | The counters are 27 × i32 | observed | 00452030, 00452f20 | high | |
+| CAMP-012 | Natives 195/196 address counters 7..26 as script indices 0..19 | observed | 00579430, 00579470 | high | |
+| CAMP-013 | Counters 4 and 5 count qualifying **hostile soldier-family** actors left alive and found dead, not the player's men; the 70-point bonus likewise concerns qualifying surviving hostiles | observed | 004e3260 (element-kind test plus a virtual side/family test), 004a1bc0 | medium-high | **(R19-18)**; the two virtual tests were not followed, so "qualifying" is not fully characterised |
+| CAMP-016 | Counter 0 is the clover HUD counter and no writer appears in the scope read | observed | 004c8140, 004a78c0 | medium | how it becomes non-zero is open |
+| CAMP-020 | A slot carries age, blazon price, outcome and a node reference | observed | 0054cc40, 00452f20 | high | |
+| CAMP-021 | Every campaign list is a u32 count followed by its elements in order | observed | 00452f20, 00453630, 00458be0, 00458e70, 00459160, 004593f0 | high | |
+| CAMP-022 | Each slot record contains four bytes that are written from one stack location and discarded on reading | observed | 0054cc40; the two campaign blocks of each retail save differ there | high for the framing, low for the origin | **(R19-5)**; no claim about what the bytes are |
+| CAMP-023 | The four slot references are written previous, current, selected, blazon node | observed | 00452f20 (order), 004539f0 (previous is assigned from current) | high | **(R19-1)**; revision 1 reversed the first two |
+| CAMP-030 | The siege state is one signed byte, −1 on a new campaign | observed | 00456e40, 00456e60, retail file | high | |
+| CAMP-031 | A node is gated only when the first byte of its ten-byte gate array is 1 | observed | 0054c800 | high | |
+| CAMP-032 | The gate reads `gate[1 + state]`, so state −1 reads the enable flag itself and passes | observed | 0054c800 | high | |
+| CAMP-033 | Win, loss and over-age selection each set the state from one signed byte, −1 meaning no change | observed | 00456540, 004560d0, 00456e40 | high | |
+| CAMP-041 | The level record's group after the location is u8, u16, u8, u16 | observed | 00566570 | high | corrects `profile.md` |
+| CAMP-042 | The required-character list is counted by a u32 | observed | 00566570 | high | corrects `profile.md` |
+| CAMP-043 | The trailing block is 10 bytes, then 3 signed bytes, then 7 u16 | observed | 00566570 | high | |
+| CAMP-044 | The node kind is 0 story, 1 assault, 3 ambush, 4 camp, 5 defend, 6 tactical | observed | 005795c0, 00514730, 0054cbf0, 0054cc20, 00456db0 | high | |
+| CAMP-045 | A node whose `needs_camp` byte is 0 may start without the camp | observed | 004539f0 | high | |
 | CAMP-046 | Location 8 is the camp and several routines gate on it | observed | 00579300, 0050b640, 004552f0 | high | |
-| CAMP-047 | Native 174 answers the selected node's run-time `team_limit` u16, 5 when nothing is selected | observed | 00579300 | high | the field is not in `profile.cpf` |
-| CAMP-048 | Native 170 also walks a second, in retail empty, requirement list of the node | observed | 00453cd0 | medium | never non-empty in the retail data |
-| CAMP-050 | 200000 in the maximum-money field means "no maximum" | observed | 0054c800, 0054c8a0 | high | a single sentinel constant |
-| CAMP-060 | The availability test is the eight conditions of 3.2, in that order | observed | 0054c800, 0054c8a0 | high | the debug variant names each failure |
-| CAMP-061 | The *after* list requires each prerequisite to have been played, won or lost | observed | 0054c6f0 | high | contradicts the "available after winning" reading in `profile.md` |
+| CAMP-047 | `team_limit` is the number of `SCOT` records of the node's mission file, or 5 when the file or chunk is missing (with a warning) | observed | 0056b8d0 | high | **(R19-6)** |
+| CAMP-048 | `capability_reqs` is built from ten flag bytes at offset 22 of each `SCOT` record; each set flag appends one capability requirement, duplicates included | observed | 0056b8d0 | high | **(R19-6)**; 12 of 39 mission files carry them, covering 16 slots (Codex's read-only inspection). The flag-to-capability correspondence is excluded (section 11) |
+| CAMP-050 | 200000 in the maximum-money field means "no maximum"; the money and gang comparisons are unsigned | observed | 0054c800, 0054c8a0 | high | **(R19-10)** |
+| CAMP-060 | The availability test is the eight conditions of 3.2, in that order | observed | 0054c800, 0054c8a0 | high | |
+| CAMP-061 | The *after* list requires each prerequisite to have been played, won or lost | observed | 0054c6f0 | high | contradicts `profile.md` |
 | CAMP-062 | The *until* list requires each blocker to be unplayed | observed | 0054c6f0 | high | |
-| CAMP-063 | An obligatory node, when accessible, is the only offer; two at once is a reported error | observed | 00452e70 | high | |
-| CAMP-064 | A story node whose slot age reaches `max_age - 1` becomes the only offer; at `max_age` a slot is dropped, and a dropped defend / assault slot that was never played is marked lost | observed | 004526f0 | high | ignoring a defend mission loses it |
-| CAMP-065 | At most one mission per location is offered, the one with the lowest priority value | observed | 00452d20, 0054c780 | high | |
-| CAMP-070 | The character-status record carries health, a camp slot, a wide name, a character-profile index and a present flag around an unattributed 16-byte base block | observed | 0055c3c0, 0055bb30, 0051d5d0, exact re-parse of the retail record (98 bytes) | high for the framing, medium for the base block | |
-| CAMP-071 | A generated man's name is one text id from 100..121 and one from 122..143 joined by a space, retried up to ten times for uniqueness; a named hero's name is text 0x90 + his position in a seven-name list | observed | 0055bf00, 0055bdf0 | high | the seven names are data of the binary and not reproduced |
-| CAMP-090 | A workshop record carries kind, capacity, stock, last output, a flag and a list of assignments | observed | 00580970, 00580ab0 | high | 13 records in the retail file, payload 15 bytes each |
-| CAMP-091 | The work spots of native 200 are not saved; the camp script re-registers them each load | observed | 00580220, 00580970 | high | |
-| CAMP-100 | The profile's six summary numbers are score, money, spared percent, accumulated play time and progress percent | observed | 0055d370, 0055d1a0, retail `Profiles` | high | |
-| CAMP-101 | Spared lives = 100 * returned / (returned + lost), integer, 0 when both are 0 | observed | 0055d370, 00528810 | high | the float expression itself was dropped; the guard and the campaign-map copy fix it |
-| CAMP-110 | `Savegame/Profiles` starts with the four characters `FORP` and a u32 version that must be 6 | observed | 0055dea0, retail file | high | |
-| CAMP-111 | A profile record's seven u32 are written in the order unknown, score, money, spared, play time, progress, unknown | observed | 0055d1a0, exact re-parse | high | |
-| CAMP-112 | A key configuration is a 16-byte signature, a u16 set id and 29 u16 key codes; `keyset1.cfg` / `keyset2.cfg` are exactly that and carry ids 2 and 3 | observed | 0051ec40, both files | high | corrects `profile.md`'s "30 u16" |
-| CAMP-113 | The graphic configuration is four u8 written in the order 1, 2, 4, 3 followed by two floats giving the screen width and height | observed | 0051ba00, 005fc2a0, retail file (1024, 768) | high | matches the community resolution patch offset |
-| CAMP-114 | A save slot is a signature, a byte-string data file name, a byte-string thumbnail name and a wide label | observed | 0056ea20, 0056ff10, retail file | high | |
-| CAMP-120 | `Campaign.bck` is a u32 version plus the campaign block and is rewritten at every level start in campaign mode | observed | 00457560, 0050f710 | high | |
-| CAMP-123 | On writing a save the campaign block A is streamed verbatim out of `Campaign.bck` | observed | 004576f0, 00511340 | high | |
-| CAMP-124 | A retail save contains the campaign block twice; block A equals the `Campaign.bck` payload byte for byte and block B is the live state | observed | 00511340; byte comparison of the retail `Continue`, `Restart` and `Campaign.bck` | high | both start at fixed offsets 16 and 2729 in the retail files |
-| CAMP-125 | Only the `GSHR` magic is enforced; the version dwords are read but a mismatch does not refuse the file | observed | 0056ea70 | medium | the refusal expression is partly folded |
-| CAMP-126 | The thumbnail is a separate file named `<data name>_t` in the image-blob format | observed | 00511340, 0056e6b0, retail files | high | |
-| CAMP-130 | Five fixed slot names exist plus numbered slots from a `Savegame_%03i` pattern and a counter in the profile | observed | 0056ef30, 0056f090, 0056f1f0, 0056f350, 0056f4b0, 0056fa30 | high | |
-| CAMP-131 | *Restart* is written at the start of every non-camp level | observed | 0050f2d0, 0050f710 | high | |
-| CAMP-132 | *Sherwood* is written at the start of the camp level | observed | 0050f3d0 | high | |
-| CAMP-133 | Every successful save is mirrored into *Continue* unless it is itself *Continue* or *Restart* | observed | 0050f1a0, 00511340 | medium-high | the two exclusion tests were not read individually |
-| CAMP-134 | Save and load are one routine with a direction flag; on load both campaign blocks are applied in order, so block B wins | observed | 00511340 | high | |
-| CAMP-200 | A new campaign's band is one man built from character profile index 1; a command line string can replace it | observed | 00450ec0, 0048f280 | high | the program asserts the two hero profiles are at 0 and 1 |
-| CAMP-201 | Level-table record 0 is the camp and the accessibility scan starts at record 1 | observed | 00451a90, 004539f0 | high | the retail record 0 is the camp node |
-| CAMP-202 | A slot newly appended to the offered list has its outcome reset to 0 | observed | 00451a90 | high | harmless because story nodes block themselves |
-| CAMP-203 | The reduction is applied to a copy, up to ten times, in the order a..g | observed | 00451b70 | high | |
-| CAMP-204 | After ten empty rounds the campaign reports the failure, prints its state and forces one mission, drawn uniformly when more than one candidate is left | observed | 00451b70, 00456e60 | high | |
-| CAMP-210 | Step a is the only place a slot is dropped for age, and the only place an ignored defend / assault node is marked lost | observed | 004526f0 | high | |
-| CAMP-211 | The last at most three played missions are excluded from the offered list | observed | 00452c90, 004539f0 | high | the list is saved from version 30 on |
-| CAMP-212 | The two random filters compare the node's percentage field with `rand() % 101` and act when the field is smaller | observed | 00452040, 00452090 | medium | which side is kept was not separated; see section 9 |
+| CAMP-063 | Obligatory filtering needs more than one candidate; obligatory means a non-zero flag; two obligatory candidates are diagnosed and both retained | observed | 00452e70 | high | **(R19-10)** |
+| CAMP-064 | A story candidate at `max_age - 1` becomes the sole offer; at `max_age` a candidate is removed, and a removed defend/assault candidate with outcome 0 is recorded lost | observed | 004526f0 | high | requires more than one candidate |
+| CAMP-065 | The one-per-location step sorts by (map name, priority) and eliminates by comparing the location identifier, so it guarantees one per location only when map and location agree; equal location and priority are diagnosed and both retained | observed | 00452d20, 0054c780 | high | **(R19-10)** |
+| CAMP-070 | The character record is: tag, four u32 (two experience level/point pairs), tag, health, one u8, nine u16, camp slot, wide name, profile index, deployed flag — with no unattributed bytes | observed | 0051d5d0 (a two-field loop running twice), 0055c3c0, 0055bb30; exact re-parse of the retail 98-byte record | high | **(R19-2)** |
+| CAMP-071 | Generated names draw one text id from 100..121 and one from 122..143, joined by a space, inside a loop bounded at ten; a named hero's name is text 0x90 + his position in a seven-name list, with a fixed fallback when he matches none | observed | 0055bf00, 0055bdf0 | medium | **(R19-23)**; the loop's exit condition is open |
+| CAMP-072 | An experience slot is a (level, points) pair; adding points carries into the level in hundreds and clamps the level at 100 | observed | 0051d4e0 | high | |
+| CAMP-090 | A workshop record carries kind, capacity, stock, last output, a capacity flag and an assignment list | observed | 00580970, 00580ab0 | high | |
+| CAMP-091 | Work spots are not saved; the camp script re-registers them each load | observed | 00580220, 00580970 | high | |
+| CAMP-093 | An assignment's trailing u16 is stored from archive version 47; at version 46 a u16 is read and discarded and the field becomes 0xFFFF; below 46 there is none | observed | 00580ab0 | high | **(R19-17)** |
+| CAMP-100 | The profile's serialized summary is six numbers plus the difficulty | observed | 0055d370, 0055d1a0, retail archive | high | |
+| CAMP-101 | The campaign-map spared percentage is an unsigned integer division of counter 4 by the sum, guarded to 0 when both are 0; the profile updater applies the same guard and then a floating-point conversion whose expression is absent | observed | 00528810, 0055d370 | high for the map, medium for the profile | **(R19-21)** |
+| CAMP-110 | The profile archive begins with `FORP` and a u32 version that must be 6 | observed | 0055dea0, retail file | high | |
+| CAMP-111 | The profile's seven u32 are unknown, score, money, spared, play time, progress, difficulty | observed | 0055d1a0, exact re-parse | high | |
+| CAMP-112 | A key configuration is a tag, a u16 set id and 29 u16 codes; the two `.cfg` files are exactly that, with ids 2 and 3 | observed | 0051ec40, both files | high | corrects `profile.md` |
+| CAMP-113 | The graphic configuration is a tag, four single-byte settings and two floats giving width and height | observed | 0051ba00, 005fc2a0, retail file | high | **(R19-26)**; no in-memory order stated |
+| CAMP-114 | A save slot is a tag, a data-file name, a thumbnail name and a wide label | observed | 0056ea20, 0056ff10, retail file | high | |
+| CAMP-120 | `Campaign.bck` is a u32 version plus one campaign block, rewritten at every level start in campaign mode | observed | 00457560, 0050f710 | high | |
+| CAMP-124 | Only the backup block is conditional on `V > 38`; the live block is unconditional. On writing, the backup block is streamed from `Campaign.bck`; on the retail fixtures the blocks begin at 16 and 2,729 and the level state at 5,442 | observed | 00511340, 004576f0; byte comparison of both retail saves against the backup file | high | **(R19-4)**; the offsets are fixture properties |
+| CAMP-125 | The magic is compared, but a version dword differing from the expected value overwrites the rejection with success | observed | 0056ea70 | medium-high | **(R19-4)**; OpenSherwood does not copy this |
+| CAMP-126 | The thumbnail is a separate `<name>_t` file in the image-blob format | observed | 00511340, 0056e6b0, retail files | high | |
+| CAMP-130 | Five fixed slot names plus numbered slots from a pattern and a counter in the profile | observed | 0056ef30, 0056f090, 0056f1f0, 0056f350, 0056f4b0, 0056fa30 | high | |
+| CAMP-131 | The restart slot is written at the start of every non-camp level | observed | 0050f2d0, 0050f710 | high | |
+| CAMP-132 | The Sherwood slot is written at the start of the camp level | observed | 0050f3d0 | high | |
+| CAMP-133 | Every successful save is mirrored into the continue slot unless two unread tests say it already is one of the two auto-slots | observed | 0050f1a0, 00511340 | medium | |
+| CAMP-134 | Save and load are one routine with a direction flag; on load the backup block (when present) is applied first, then the live block | observed | 00511340 | high | |
+| CAMP-200 | A new campaign's band is one man from character-profile index 1; a command-line string can replace it | observed | 00450ec0, 0048f280 | high | |
+| CAMP-201 | Level-table record 0 is the camp; the scan starts at record 1 | observed | 00451a90, 004539f0 | high | |
+| CAMP-202 | Rebuilding is not once per day: resolving a defend node from the camp rebuilds within the camp. A candidate newly appended has its outcome reset to 0 | observed | 00451a90, 00514730 | high | **(R19-11)** |
+| CAMP-203 | The reduction runs on a copy re-taken from the source at every attempt, up to ten attempts, steps a..g; slot mutations of a failed attempt persist | observed | 00451b70 | high | **(R19-7)** |
+| CAMP-204 | After ten attempts the campaign diagnoses, restores the working list, re-runs step d, and either uses a working list of fewer than two entries as it stands — possibly empty — or draws one entry uniformly | observed | 00451b70, 00456e60, 00457a30 | high | **(R19-7)**; it cannot guarantee a mission |
+| CAMP-211 | Recency visits history newest to oldest and stops once fewer than two candidates remain, so a recent mission can survive as the sole offer | observed | 00452c90 | high | **(R19-8)** |
+| CAMP-212 | Each random filter removes matching candidates over a copy and restores the copy when the list becomes empty; the draw is taken only for candidates that pass the kind and age tests, once each, in list order; a removed candidate also gets age 0 | observed | 00452040, 00452090, 00452810, 00452a50 | high | **(R19-7)** |
 | CAMP-220 | The next mission is the selected one, else the single offer whose node does not need the camp, else the camp | observed | 004539f0 | high | |
-| CAMP-221 | Before choosing, every offered defend node whose blazon requirement is 0 is marked won | observed | 0054cda0 | medium | no retail defend node has a 0 requirement |
-| CAMP-222 | The team is reset to the whole band whenever the campaign picks a new mission | observed | 00455650, 004559f0 | high | |
-| CAMP-230 | Selecting a mission in the camp ages every other offered slot by one and resets the picked slot's age | observed | 004560d0 | high | |
-| CAMP-231 | A slot whose node's maximum age is 1000 or more only ever ages from 0 to 1 | observed | 004560d0 | high | no retail node has such a value |
-| CAMP-240 | Recording a win sets outcome 1 and the win ARES byte; a loss sets outcome 2, the loss ARES byte, and zeroes the blazon counter when the node is the blazon node | observed | 00456540 | high | |
-| CAMP-241 | Losing or winning the blazon node when it is a defend node arms a one-shot notification the campaign-map screen reads and clears | observed | 00456540, 005280d0, 004577a0, 004577b0 | high | saved from version 41 (result) and 48 (node) |
-| CAMP-250 | Mission-end bookkeeping is the six steps of 3.5 and changes no counter at all when the mission was lost | observed | 004e3260 | high | |
-| CAMP-251 | Score gains 1000 for a won non-ambush mission, 70 per surviving special team member, 50 for one player-character act and 100 for an inventory pickup | observed | 004e3260, 004a5a00, 0049fc80 | high for the values, medium for what the 70 and the 50 are earned by | the two virtual tests were not followed |
-| CAMP-252 | Every money and score change is also added to the level's mission-statistics block | observed | 00450b60, 004e3cc0 | high | that block feeds the debriefing |
-| CAMP-260 | The blazon node is the first offered assault or defend node; the others move to the second list, or are dropped when there is none | observed | 00455f00, 0054cbf0 | medium-high | |
-| CAMP-261 | The four ways the blazon counter moves, as tabulated in 3.6 | observed | 005795c0, 00514730, 00525040 | high | |
-| CAMP-262 | The reported blazon requirement is needed − held for the blazon node and needed for the current node | observed | 00455af0, 00579690 | high | |
-| CAMP-263 | Men convert to blazons in groups of `men_per_blazon`, capped by the outstanding requirement; a zero divisor is an asserted error | observed | 00455a70 | high | |
-| CAMP-270 | Progress is 100 with one particular story node won, else 95 with one particular defend node won, else won × 100 / total over nodes of kind other than 3 and 6 | observed | 00456db0 | high | the two codes are compatibility tokens |
-| CAMP-271 | Play time accumulates as (tick now − tick at level start) / 1000 seconds at the end of each level | observed | 0050e800 | high | |
-| CAMP-272 | One display path adds unscaled milliseconds to the same seconds value | observed | 0050e7d0 | high | a unit bug in the original; a version / debug line only |
-| CAMP-280 | No campaign routine branches on difficulty | observed | scope read | medium | the presets act elsewhere |
-| CAMP-290 | A recruit is, with probability one half and if anyone is recovering, a recovered man with re-rolled health, else a newly generated man from a non-hero profile | observed | 004524b0, 00455bf0 | medium | the generation draw is folded |
-| CAMP-291 | After a won mission the campaign adds as many men as the level's recruit count, one draw each | observed | 004e3260 | high | |
-| CAMP-300 | At every level start in campaign mode the engine writes the campaign backup, makes the *Restart* auto-save, and, in the camp, sends message 1001 and runs production | observed | 0050f710 | medium-high | the campaign-mode test itself is folded (section 9) |
-| CAMP-301 | Message 1001 is engine-originated, delivered once at camp start, before the first tick | observed | 0050f710, 00578d80 | high | settles the open question of `sherwood-hub.md` 5 |
-| CAMP-302 | Message 1000 is delivered by the interface's send action | inferred | 0050f710 does not send it; the camp handler exists | low | the raising site was not found |
-| CAMP-310 | Native 165 appends the man to the team if absent, marks him present and clears two of his fields; 166 removes him; both refuse non-player-characters and refresh the HUD | observed | 00579210, 00579280, 00455400, 004555f0 | high | fills the six missing native rows |
+| CAMP-221 | Before choosing, every offered defend candidate whose blazon requirement is 0 is recorded won | observed | 0054cda0 | medium | no retail defend node has a 0 requirement |
+| CAMP-222 | The team is reset to the band only on the unselected-next-mission path | observed | 004539f0, 00455650, 004559f0 | high | **(R19-11)** |
+| CAMP-223 | The first two story nodes start without the camp because each is the only accessible node and has `needs_camp` 0 | inferred from CAMP-045, CAMP-060 and the retail data | 004539f0 | high | matches `campaign-flow.md` |
+| CAMP-230 | Selecting in the camp ages every other offered candidate by one and zeroes the picked one's age | observed | 004560d0 | high | |
+| CAMP-231 | A candidate whose node's maximum age is 1000 or more only ages from 0 to 1; the over-age expiry comparison reads the picked candidate | observed | 004560d0 | high | preserved as observed |
+| CAMP-240 | A win sets outcome 1 and the win byte; a loss sets outcome 2, the loss byte, and zeroes the blazon counter when the slot is the blazon node | observed | 00456540 | high | |
+| CAMP-241 | A resolved defend blazon node arms a one-shot notification (code plus result) that the campaign-map screen reads and clears | observed | 00456540, 005280d0, 004577a0, 004577b0 | high | |
+| CAMP-250 | Mission-end bookkeeping records the outcome and runs the actor and loot passes whatever the outcome; only the counter and recruit work is gated on victory. A loss therefore can still clear the blazon counter | observed | 004e3260, 00456540 | high | **(R19-20)** |
+| CAMP-251 | Score gains 1000 for a won non-ambush mission, 70 per qualifying surviving hostile, 100 when a player character's experience level increases as a whole value, and 50 when a hostile dies from damage | observed | 004e3260, 0049fc80, 00485200, 004a5a00, 0047e9a0 | medium-high | **(R19-19)** |
+| CAMP-252 | Only delta updates of money and score propagate into the level's statistics block; direct sets do not | observed | 00450b60, 004520e0, 004e3cc0 | high | **(R19-19)** |
+| CAMP-260 | Step d: the blazon node is the first candidate of kind 1 or 5; other kind-1/5 candidates are removed; **tactical** candidates move to the deferred list when a blazon node exists and are removed otherwise; with exactly one candidate nothing is removed | observed | 00455f00, 0054cbf0, 0054cc20 | high | **(R19-9)**; revision 1 misidentified the deferred list |
+| CAMP-261 | The four ways the blazon counter moves (3.6) | observed | 005795c0, 00514730, 00525040 | high | |
+| CAMP-262 | The reported requirement is needed − held for the blazon node and needed for the current node | observed | 00455af0, 00579690 | high | |
+| CAMP-263 | A zero `men_per_blazon` is diagnosed and the routine returns before dividing; otherwise the conversion compares 16-bit unsigned operands and has no clamp to zero, so an already-met requirement wraps | observed | 00455a70 | high | **(R19-22)** |
+| CAMP-270 | Progress is 100 or 95 on two particular won level codes, else won × 100 / total over nodes of kind other than 3 and 6, unsigned and without a zero-denominator guard | observed | 00456db0 | high | **(R19-21)** |
+| CAMP-271 | Play time accrues at save and transition checkpoints from an active interval, clearing the start marker | observed | 0050e7b0, 0050e800, 00511340, 00512310 | high | **(R19-21)** |
+| CAMP-272 | One diagnostic display path adds unscaled milliseconds to the seconds value | observed | 0050e7d0 | high | |
+| CAMP-280 | Difficulty is the profile's last serialized summary value, 0 easy / 1 medium / 2 hard, per `spec-ai-combat.md` AI-045; no campaign routine in the scope read branches on it | observed (deferred) | AI-045; 0055d1a0 | high | **(R19-20)**; table B is the ranged-weapon table (AI-020) |
+| CAMP-290 | With an empty recovery list no draw is taken and a new man is generated; otherwise one draw's low bit selects between generating and recovering | observed | 004524b0 | high | **(R19-23)** |
+| CAMP-291 | The number of men added after a victory comes from the level and is truncated to an integer; the expression is absent from the export | observed for the truncation, unknown for the expression | 004e3260 | low | **(R19-20)** |
+| CAMP-292 | Recovery adjusts experience, clears carried-item fields, sets the camp slot to 0xFFFF, writes health from an absent expression clamped to 100, moves the man to the band and sets the recruit flag | observed except the health source | 00455bf0, 0055c390 | medium | **(R19-23)** |
+| CAMP-300 | At every level start in campaign mode: write the backup file, make the restart auto-save when the level is not the camp, and in the camp submit message 1001 and run the workshop pass | observed | 0050f710 | medium-high | the campaign-mode test itself is folded (section 10) |
+| CAMP-301 | Message 1001 is engine-originated and submitted once at camp start | observed | 0050f710, 00578d80 | high | closes `sherwood-hub.md`'s question |
+| CAMP-302 | The origin of message 1000 is unknown | unknown | 0050f710 does not submit it; the camp handler exists | — | **(R19-13)** |
+| CAMP-303 | The execution order of message 1001 relative to the workshop pass and the first tick is unknown: the submitting helper builds a script invocation and hands it to the sequence scheduler, and its arguments are absent | unknown | 00578d80, 0058a940 | — | **(R19-13)** |
+| CAMP-310 | Native 165 appends the record without duplication and refreshes the HUD, then writes three unidentified actor fields, one of them to 2; it does not write the saved deployed flag. 166 removes and refreshes | observed | 00579210, 00579280, 00455400, 004555f0 | high for the list and HUD, unknown for the actor fields | **(R19-12)** |
 | CAMP-311 | Native 174 errors and answers 0 unless the current node's location is 8 | observed | 00579300 | high | |
-| CAMP-312 | Native 170 requires every required character profile of the node to be the profile of a team member | observed | 00453cd0, 00457480, 004574b0 | medium-high | the two per-entry helpers were not read in full |
+| CAMP-312 | Native 170 requires every required character profile and every capability requirement to be met by some team member, stopping at the first failure | observed | 00453cd0, 00457480, 004574b0 | high | |
 | CAMP-313 | A team member's camp slot survives only while the current node's location is 8 | observed | 004552f0 | medium | |
+| CAMP-314 | Native 249 counts HUD-selected characters, which is not the team | observed | 0057b5e0, 0057b5f0 | high | **(R19-13)** |
+| CAMP-315 | A capability is satisfied by a three-entry or a four-entry capability array of the character profile, with three substitutions: 2 by 3 and 13 by 14 in the three-entry array, 25 by 26 in the four-entry array | observed | 004574b0 | high | **(R19-6)**; three individual facts |
 | CAMP-320 | Native 199 sets a workshop's zone and capacity and back-links the location; native 200 appends a work spot with coordinates and a sector reference | observed | 005799d0, 00579a00, 00580330, 00580220, 00456a10 | high | |
-| CAMP-321 | Production runs once per camp entry over all 13 workshops in kind order and only when the previous mission was won | observed | 00456a40, 00580d20 | high | |
-| CAMP-322 | Kinds 0..8 add their output to stock and then place up to five units per work spot | observed | 00581020, 00580b70 | medium-high | |
-| CAMP-323 | Kinds 9 and 10 add their output to a global store at index 1 and 0 | observed | 005810c0, 0051d4e0 | medium | what the store is was not read |
-| CAMP-324 | Kind 11 applies its output to every assigned man (training) | observed | 00581180, 00484360 | medium | |
-| CAMP-325 | The item id per workshop kind is 1, 4, 5, 11, 12, 13, 16, 17, 19 for kinds 0..8 and none above | observed | 00580350 | high | nine individual facts, not a data table |
-| CAMP-326 | Stock is recounted from the camp level before production by summing the quantities of matching pick-up items | observed | 00580430 | high | |
-| CAMP-327 | Each workshop kind has a supervising hero by campaign identity: 0/1/9 hero, 2 Scarlet, 3/7 Stutely, 4/5/8 Tuck, 6 Marian, 10 John, 11/12 none | observed | 005806c0 | high | matched by designer name inside the binary; the names are not reproduced |
-| CAMP-328 | After production every assigned man is placed at his work spot | observed | 00580dc0 | high | |
-| CAMP-330 | The campaign map lays out ten location slots, skipping 0 and 8, with one widget fewer for locations 1..3 | observed | 00527d20 | medium | presentation detail |
-| CAMP-331 | An empty offered list on the campaign map produces a text and a reported warning | observed | 00527d20 | high | |
-| CAMP-332 | The campaign-map status line carries money, score and spared percent from text resources 0xF3, 0xF4 and 0x40 | observed | 00528810 | high | |
-| CAMP-340 | The two HUD counters are money and the clover counter, each with its own text resource | observed | 004c8140 | high | agrees with `ui-flow.md` 9.3 |
-| CAMP-341 | The blazon display refresh reports an error and does nothing outside a campaign | observed | 00514730 | high | |
-| CAMP-350 | The default mini-map colour is per element class: player character light green, hostile human red (violet under one controller flag), plus a yellow and a blue state colour, and two further classes cyan and pale yellow | observed | 0048f280, 004a5c30, 0046ffe0, 004b1eb0, 005ef320 | high for the values, medium for which state uses which | |
-| CAMP-351 | Native 24 accepts 0, 1, 100-102, 111, 200-202, 222, 300-302, 333, 500 and 666; 111, 222 and 333 require a human element; 500 and 666 change no colour; anything else is an error with no change | observed | 005788a0 | high | refines `spec-script-vm.md` |
-| CAMP-352 | No grey dot colour exists in the image | observed | every call site of 005ef320 | high | an apparent grey dot is an undrawn dot or the map background |
+| CAMP-321 | Victory gates only the output calculation for kinds 0..11; item placement, kind 12 and character placement run regardless | observed | 00456a40, 00580d20, 00581020, 005810c0, 00581180, 00580b70, 00580e80, 00580dc0 | high | **(R19-14)** |
+| CAMP-322 | Placement draws down a temporary quantity and does not reduce `stock`; afterwards the capacity flag is recomputed as `5 × spots <= stock` | observed | 00580b70 | high | **(R19-15)** |
+| CAMP-323 | Kinds 9 and 10 add their output to each assigned character's experience, slot 1 and slot 0; kind 9 additionally requires one capability in the character profile's three-entry array | observed | 005810c0, 0051d4e0, 0055bb00 | high | **(R19-16)** |
+| CAMP-324 | Kind 11 restores health to each assigned character, capped at 100 | observed | 00581180, 00484360 | high | **(R19-16)** |
+| CAMP-326 | A separate pass recounts `stock` for kinds 0..8 from **active** matching pick-up elements (plus certain actors for one item id) and rebuilds every workshop's assignment list from the camp's player characters | observed | 00456a70, 005804e0, 00580430, 00580520 | high for the content, unknown for when it runs | **(R19-15)** |
+| CAMP-328 | After the pass each assigned character is placed at his recorded spot | observed | 00580dc0 | high | |
+| CAMP-329 | Kind 12's routine was not read | unknown | 00580e80 | — | **(R19-17)** |
+| CAMP-330 | The campaign map lays out ten location slots, skipping 0 and 8, with one widget fewer for locations 1..3 | observed | 00527d20 | medium | |
+| CAMP-331 | An empty offered list on the campaign map yields a text and a reported warning | observed | 00527d20 | high | |
+| CAMP-332 | The status line carries money, score and the spared percentage from text resources 0xF3, 0xF4 and 0x40 | observed | 00528810 | high | |
+| CAMP-340 | The two HUD counters are money and clovers, each with its own text resource | observed | 004c8140 | high | |
+| CAMP-341 | The blazon refresh errors and does nothing without a blazon node | observed | 00514730 | high | |
+| CAMP-350 | A hostile human is given five colour entries (red or violet, plus yellow and blue in the red case); a player character light green; two further classes cyan and pale yellow. Which entry a state uses was not established | observed for the values | 0048f280, 004a5c30, 0046ffe0, 004b1eb0, 005ef320 | high for the values, unknown for the mapping | **(R19-24)** |
+| CAMP-351 | Native 24's accepted codes and their colours; 111/222/333 require a human element; 0, 1, 500 and 666 change only the style code and leave colours untouched | observed | 005788a0 | high | **(R19-24)** |
+| CAMP-352 | No grey value appears among the examined calls of one colour helper; this does not establish that no grey dot can be drawn, and state-dependent rendering is unspecified | observed (limited) | 005ef320 call sites | low | **(R19-24)** |
 
 ---
 
@@ -821,328 +908,402 @@ What this analysis settles (the rest of the HUD is `ui-flow.md`, measured from c
 
 | Name (ours) | Value | Unit | Source | Confidence |
 |---|---|---|---|---|
-| save magic | the four characters `GSHR` | — | 0056ea70 | high |
-| profile archive magic | the four characters `FORP` | — | 0055dea0 | high |
+| save magic | the four bytes `GSHR` | compatibility token, marked | 0056ea70 | high |
+| profile archive magic | the four bytes `FORP` | compatibility token, marked | 0055dea0 | high |
 | profile archive version | 6 | — | 0055dea0 | high |
 | archive version of the retail build | 48 | — | 0056ea70, retail files | high |
-| archive version at which the second campaign block appears | 39 (the test is "greater than 38") | — | 00511340 | high |
-| archive version at which the recent-mission list appears | 30 (the test is "greater than 29") | — | 00452f20 | high |
-| archive version at which the town result appears | 41 | — | 00452f20 | high |
-| archive version at which the town node appears | 48 | — | 00452f20 | high |
-| archive version at which the recruit flag appears | 28 (the test is "greater than 27") | — | 00452f20 | high |
-| archive version at which a workshop assignment gains its u16 | 47 | — | 00580ab0 | medium |
-| class signature length | 16 | bytes | 005e1b70, 0060f1e0 | high |
-| campaign counters | 27 | i32 slots | 00452f20 | high |
-| script campaign value window | counters 7..26, script indices 0..19 | — | 00579430 | high |
-| new-campaign money | 100 | currency | 00450ec0, retail `Campaign.bck` | high |
-| character profile index of the starting man | 1 | index | 00450ec0 | high |
+| version above which the backup campaign block appears | 38 | — | 00511340 | high |
+| version above which the recent list appears | 29 | — | 00452f20 | high |
+| version from which the town result appears | 41 | — | 00452f20 | high |
+| version from which the town code appears | 48 | — | 00452f20 | high |
+| version above which the recruit flag appears | 27 | — | 00452f20 | high |
+| version at which a workshop assignment's u16 is discarded | 46 | — | 00580ab0 | high |
+| version from which that u16 is stored | 47 | — | 00580ab0 | high |
+| block tag length | 16 | bytes | 005e1b70 | high |
+| campaign counters | 27 | i32 | 00452f20 | high |
+| script campaign value window | counters 7..26 as script indices 0..19 | — | 00579430 | high |
+| new-campaign money | 100 | currency | 00450ec0, retail file | high |
+| character-profile index of the starting man | 1 | index | 00450ec0 | high |
 | no-maximum sentinel in the money window | 200000 | currency | 0054c800 | high |
-| default team size limit when nothing is selected | 5 | men | 00579300 | high |
+| team size limit when nothing is selected, and on a missing mission file or `SCOT` chunk | 5 | men | 00579300, 0056b8d0 | high |
+| capability flags per mission slot | 10 | flags at offset 22 of a `SCOT` record | 0056b8d0 | high |
+| capability array sizes of a character profile | 3 and 4 | entries | 004574b0 | high |
+| capability substitutions | 2 by 3, 13 by 14 (three-entry array); 25 by 26 (four-entry array) | — | 004574b0 | high |
 | workshops | 13 | records | 00456a40, retail file | high |
-| units placed per work spot per day | 5 | items | 00580b70 | medium-high |
+| items placed per work spot | 5 | items | 00580b70 | high |
+| capacity-flag rule | `5 × spots <= stock` | — | 00580b70 | high |
+| experience carry | 100 points per level, level clamped at 100 | — | 0051d4e0 | high |
+| health cap | 100 | points | 00484360, 00455bf0 | high |
 | recent-mission memory | 3 | missions | 004539f0 | high |
-| reduction attempts before forcing | 10 | rounds | 00451b70 | high |
+| reduction attempts before forcing | 10 | attempts | 00451b70 | high |
 | random filter modulus | 101 | — | 00452040, 00452090 | high |
+| age-increment threshold above which a candidate only ages 0 -> 1 | 1000 | campaign days | 004560d0 | high |
 | score for a won non-ambush mission | 1000 | points | 004e3260 | high |
-| score per surviving special team member | 70 | points | 004e3260 | high |
-| score for one player-character act | 50 | points | 004a5a00 | high |
-| score for one inventory pickup | 100 | points | 0049fc80 | high |
-| progress when the final story node is won | 100 | percent | 00456db0 | high |
+| score per qualifying surviving hostile | 70 | points | 004e3260 | high |
+| score for an experience-level increase | 100 | points | 0049fc80 | high |
+| score for a hostile's death from damage | 50 | points | 004a5a00 | high |
+| progress when the last story node is won | 100 | percent | 00456db0 | high |
 | progress when the last defend node is won | 95 | percent | 00456db0 | high |
-| clover ceiling for one actor action | 9 (the action is refused above it) | count | 004a78c0 | medium |
-| health clamp for a recovered man | 100 | points | 00455bf0 | high |
-| name generation: first-name text ids | 100..121 | resource id | 0055bf00 | high |
-| name generation: second-name text ids | 122..143 | resource id | 0055bf00 | high |
-| named-hero name text ids | 0x90 + position, positions 0..6 | resource id | 0055bf00 | high |
-| campaign-map status line text ids | 0xF3, 0xF4, 0x40 | resource id | 00528810 | high |
-| HUD counter text ids | 0xF4 (money), 0xF5 (clover) | resource id | 004c8140 | high |
-| *Continue* / *Restart* label text ids | 0xF6, 0xF7 | resource id | 0050f1a0, 0050f2d0 | high |
+| clover ceiling for one actor action | 9 | count | 004a78c0 | medium |
+| name generation text id ranges | 100..121 and 122..143 | resource ids | 0055bf00 | high |
+| named-hero name text ids | 0x90 + position, positions 0..6 | resource ids | 0055bf00 | high |
+| campaign-map status line text ids | 0xF3, 0xF4, 0x40 | resource ids | 00528810 | high |
+| HUD counter text ids | 0xF4 money, 0xF5 clover | resource ids | 004c8140 | high |
+| auto-slot label text ids | 0xF6, 0xF7 | resource ids | 0050f1a0, 0050f2d0 | high |
 | game-length label text id | 0x50 | resource id | 0054d550 | high |
-| player-character mini-map colour | RGB (165, 255, 82) | colour | 0048f280 | high |
-| hostile-human mini-map colour | RGB (255, 0, 0) | colour | 004a5c30 | high |
-| hostile-human alternate colour under one controller flag | RGB (115, 40, 203) | colour | 004a5c30 | high |
-| hostile-human second and third state colours | RGB (255, 255, 0) and RGB (0, 120, 255) | colour | 004a5c30 | high |
-| mini-map colour of the cyan element class | RGB (0, 190, 255) | colour | 0046ffe0, 005788a0 | high |
-| mini-map colour of the pale-yellow element class | RGB (255, 247, 90) | colour | 004b1eb0 | high |
-| mini-map background | RGB (0, 30, 60) | colour | 005ef320 call sites | medium |
-| workshop item ids for kinds 0..8 | 1, 4, 5, 11, 12, 13, 16, 17, 19 | item id | 00580350 | high |
+| player-character dot colour | RGB (165, 255, 82) | colour | 0048f280 | high |
+| hostile-human dot colour | RGB (255, 0, 0) | colour | 004a5c30 | high |
+| hostile-human colour under one controller flag | RGB (115, 40, 203) | colour | 004a5c30 | high |
+| hostile-human further entries | RGB (255, 255, 0) and RGB (0, 120, 255) | colour | 004a5c30 | high |
+| cyan element class | RGB (0, 190, 255) | colour | 0046ffe0, 005788a0 | high |
+| pale-yellow element class | RGB (255, 247, 90) | colour | 004b1eb0 | high |
 | slot names | `Continue`, `Restart`, `QuickSave`, `ExQuickSave`, `Sherwood`; numbered slots `Savegame_%03i` | compatibility tokens, marked individually | 0056ef30, 0056f090, 0056f1f0, 0056f350, 0056f4b0, 0056fa30 | high |
 | thumbnail name suffix | `_t` | compatibility token, marked | 0056e6b0, retail files | high |
 | campaign backup file name | `Campaign.bck` in the installation root | compatibility token, marked | 00457560 | high |
-| profile directory pattern | `Profile_%03i` under the save directory | compatibility token, marked | 0055d1a0 area | high |
-| progress special-case level codes | the two-letter codes `HI` and `DD` | compatibility tokens, marked individually | 00456db0 | high |
+| profile directory pattern | `Profile_%03i` | compatibility token, marked | 0055dea0 area | high |
+| progress special-case level codes | the two-letter codes of the last story mission and the last defend mission | compatibility tokens, marked individually | 00456db0 | high |
 
 ---
 
 ## 6. Interfaces to the script VM
 
-Only the natives this subsystem owns. Arity, coercion and the call protocol are `spec-script-vm.md`'s; what is
-new here is the meaning. Rows marked **new** had no row in the engine before.
+Only the natives this subsystem owns. Arity, coercion and the call protocol are `spec-script-vm.md`'s.
 
 | Id | Args | Returns | Meaning and side effects | Failure |
 |---|---|---|---|---|
-| 163 | – | int | length of `team` | 0 outside a campaign |
+| 163 | – | int | the length of `team` | 0 outside a campaign |
 | 164 | `i` | handle | the element of `team[i]`; no bound check | – |
-| 165 **new** | `pc` | – | if `pc` is not already in `team`, append his status record; mark him present, clear two of his fields, refresh the HUD | script error and no change when the argument is not a player character |
-| 166 **new** | `pc` | – | remove him from `team`; refresh the HUD | as 165 |
-| 170 **new** | – | bool | 1 when every required character profile of the *selected* node is the profile of some team member (and the node's second requirement list is likewise satisfied) | reads through a null selected node |
-| 172 | – | int | the four-character code of the selected node, 0 when none | – |
-| 173 | – | bool | one byte of the game object, not of the campaign | – |
-| 174 **new** | – | int | the selected node's team limit, 5 when none is selected | script error and 0 unless the current node's location is 8 |
-| 178 | `banner` | – | deactivate the banner; `blazons += its value`; in an assault node, win the mission once `blazons >= blazons_needed`; refresh the HUD | error when the banner is null or already inactive |
-| 195 | `k` | int | counter `k + 7` for `k` in 0..19 | script error and 0 outside the range |
+| 165 | `pc` | – | append to `team` if absent; refresh the HUD; write three unidentified actor fields, one to 2 | script error, no change, for a non-player-character |
+| 166 | `pc` | – | remove from `team`; refresh the HUD | as 165 |
+| 170 | – | bool | the requirement test of 3.9 | reads through a null selection |
+| 172 | – | int | the selected node's four-byte code, 0 when none | – |
+| 173 | – | bool | one byte of the game object, not of the campaign; its transitions were not read | – |
+| 174 | – | int | the selected node's `team_limit`, 5 when none | script error and 0 unless the current node's location is 8 |
+| 178 | `banner` | – | deactivate the banner; `blazons +=` its value; in an assault node win once `blazons >= blazons_needed`; refresh the HUD | error for a null or already inactive banner |
+| 195 | `k` | int | counter `k + 7`, `k` in 0..19 | script error and 0 outside the range |
 | 196 | `k, v` | – | write counter `k + 7` | as 195 |
-| 199 | `k, loc, n` | – | workshop `k`: zone `loc`, capacity `n`; back-link the location to the kind | no range check on `k` |
-| 200 | `k, loc` | – | append a work spot to workshop `k` from the location's coordinates, one identifier and its sector index (0xFFFF when it has none) | – |
-| 215 | `k` | handle | as `spec-script-vm.md` | – |
-| 232 | `pc` | – | add `pc` to the band | error when not a player character or already present |
-| 234 | – | bool | `blazons >=` the reported requirement of 3.6 | 0 outside a campaign |
+| 199 | `k, loc, n` | – | workshop `k`: zone and capacity; back-link the location | no range check on `k` |
+| 200 | `k, loc` | – | append a work spot to workshop `k` | – |
+| 232 | `pc` | – | add to the band | error when not a player character or already present |
+| 234 | – | bool | `blazons >=` the reported requirement | 0 outside a campaign |
 | 236 | – | int | counter 1 | −1 with an error outside a campaign |
-| 237 | `v` | – | write counter 1; plays a sound when the value grows and refreshes the HUD | as 236 |
-| 239 **new** | – | – | open the debriefing screen (a named interface resource) | – |
-| 249 **new** | – | int | the number of currently *selected* player characters — a HUD selection count, **not** a campaign field | – |
-| 250 | `i` | handle | the i-th selected player character | error and null when `i` is at or above the count |
-| 256 | `pc` | int | the campaign identity of `pc` by his profile's designer name: 0 hero, 1 John, 2 Tuck, 3 Stutely, 4 Scarlet, 5 Marian, 6..8 the three generic followers | −1 with an error for anything else |
-| 261 | – | bool | the campaign's recruit flag | – |
+| 237 | `v` | – | write counter 1; a growing value plays a sound; refresh the HUD | as 236 |
+| 239 | – | – | open the debriefing screen | – |
+| 249 | – | int | the number of HUD-selected player characters | – |
+| 250 | `i` | handle | the i-th HUD-selected character | error and null at or above the count |
+| 256 | `pc` | int | the campaign identity of `pc`, matched from his character profile's designer name; the id assignment is `spec-script-vm.md`'s row for this native and is not restated here | −1 with an error otherwise |
+| 261 | – | bool | the recruit flag | – |
 
 **Engine-originated messages to the camp level.**
 
-| Message | When | Meaning |
-|---|---|---|
-| 1001 | once, at camp level start, before the first tick, only in campaign mode | "configure your production zones"; the script answers with natives 199 and 200 |
-| 1000 | when the player uses the send action in the camp | "send the team out"; the script walks the selected characters to the exit |
+| Message | When | Meaning | Ordering |
+|---|---|---|---|
+| 1001 | once, at camp level start, in campaign mode | "configure your production zones"; the script answers with natives 199 and 200 | **unknown** (CAMP-303) |
+| 1000 | unknown | "send the team out"; the script walks the HUD-selected characters to the exit | unknown (CAMP-302) |
 
 ---
 
 ## 7. Acceptance tests
 
-**Format tests, all runnable against the player's own installation** (all four were run in this session and
-pass; the probes live in the analyst workspace and are one-off derivations, so the tests below re-derive the
-numbers from the files):
+### 7.1 Format observations on this installation's fixtures
+
+A1 is a property of the retail data file and is a genuine acceptance test. **A2 to A5 are observations of
+mutable local fixtures** — a save, a backup and a profile archive that any play session rewrites — so they are
+regression fixtures, not universal expectations, and they prove grammar, not semantics.
 
 | Id | Input | Expected |
 |---|---|---|
-| A1 | `Configuration/profile.cpf` parsed with the level-record grammar of 2.2 | the file is consumed to the exact byte; 63 level records; record 0 has kind 4 and location 8 |
-| A2 | `Campaign.bck` | parses as `u32 48` + the campaign block; 27 counters with only counter 1 non-zero and equal to 100; ARES = −1; 63 mission slots whose node indices are 0..62 in order; all outcomes 0; the four node references are none, slot 21, none, none; one man in `people` with health 100, profile index 1 and the name of the hero; `band` = [0]; `team` = [0]; `recovering` empty; 13 workshops with kinds 0..12 and empty assignment lists; `recent` = [21]; town result 0 |
-| A3 | `Savegame/Profile_001/Continue` and `Restart` | header `GSHR`, version 48, level code of the first story node, version 48; the 2713 bytes at offset 16 are byte-identical to `Campaign.bck` minus its first four bytes; a second campaign block starts at offset 2729 and differs from the first only in counter 6 and in the two discarded u16 of every mission slot |
-| A4 | `Savegame/Profiles` | magic `FORP`, version 6, one profile, consumed to the exact byte; money 100, score 0, progress 0, play time 12 s; two key sets of 29 codes; graphic resolution 1024 x 768; two save slots named `Restart` / `Restart_t` and `Continue` / `Continue_t` |
-| A5 | `Configuration/keyset1.cfg`, `keyset2.cfg` | 76 bytes each: 16-byte signature, set id 2 and 3, 29 u16 codes |
+| A1 | `Configuration/profile.cpf` parsed with 2.2's grammar | consumed to the exact byte, all 30,441 of them; 63 level records; record 0 has kind 4 and location 8 |
+| A2 | `Campaign.bck` (fixture) | `u32 48` + one campaign block, consumed exactly (2,717 bytes); counters all 0 but index 1 = 100; siege state −1; 63 slots whose node indices are 0..62 in order, all outcomes 0; the four slot references read (none, 21, none, none); one character record with health 100, profile index 1, experience levels 20 and 100; band = [0]; team = [0]; recovering empty; 13 workshop records with kinds 0..12 and empty assignment lists; recent = [21]; town result 0 |
+| A3 | the two fixture saves | header `GSHR`, version 48, a level code, version 48; the 2,713 bytes at offset 16 equal the backup file minus its first four bytes; a second campaign block begins at 2,729 and differs from the first only in counter 6 and in the four discarded bytes of every slot; the level state begins at 5,442 |
+| A4 | `Savegame/Profiles` (fixture) | `FORP`, version 6, one profile, consumed exactly (all 430 bytes); money 100, score 0, progress 0, play time 12 s, difficulty 1; two key sets of 29 codes; resolution 1024 x 768; two save slots |
+| A5 | `Configuration/keyset1.cfg`, `keyset2.cfg` | 76 bytes each: a 16-byte tag, set id 2 and 3, 29 u16 codes |
+| A6 | every mission file's `SCOT` chunk | each node's `team_limit` equals its mission file's `SCOT` record count; 12 of the 39 mission files carry non-zero capability flags, over 16 slots in total |
 
-**Behaviour tests** (synthetic, no game data needed):
+### 7.2 Behaviour tests (synthetic, no game data)
 
 | Id | Input | Expected |
 |---|---|---|
-| B1 | a node with `min_money` 5000 and money 4999 | not accessible; the reported reason is the minimum-money one |
-| B2 | a node with `max_money` 200000 and money 10^9 | accessible (the sentinel) |
-| B3 | a node whose `after` list names a node with outcome 2 (lost) | accessible — a lost prerequisite satisfies the list |
-| B4 | a node whose `until` list names itself, played | never accessible again |
-| B5 | ARES −1 and a node with gate byte 0 = 1 and all other gate bytes 0 | accessible |
-| B6 | ARES 0 and the same node | not accessible |
-| B7 | two accessible nodes with the same location, priorities 1 and 2 | only the priority-1 node is offered; the other's age is reset to 0 |
-| B8 | one accessible obligatory node and two others | only the obligatory node is offered |
-| B9 | a story node with `max_age` 6 and age 5 | it alone is offered |
-| B10 | a defend node with `max_age` 3, age 3, outcome 0 | dropped from the list **and** marked lost; its ARES loss byte is applied |
-| B11 | the last three played missions all still accessible | none of them is offered |
-| B12 | the reduction leaves the list empty ten times | the forced-mission path runs and produces exactly one mission |
-| B13 | exactly one offer whose node has `needs_camp` 0 | that node becomes current; the camp is not entered |
-| B14 | exactly one offer whose node has `needs_camp` 1 | node 0 (the camp) becomes current |
-| B15 | picking an offer in the camp | the picked slot's age is 0 and it leaves the offered list; every other offered slot's age grew by one |
-| B16 | a won mission of kind 0 with 3 survivors and 1 casualty, one of the survivors special | returned += 3, lost += 1, score += 1000 + 70 |
-| B17 | the same mission lost | no counter changes at all |
-| B18 | returned 3, lost 1 | spared lives = 75 |
-| B19 | returned 0, lost 0 | spared lives = 0 |
-| B20 | 20 non-ambush, non-tactical nodes, 7 won, none of them the two special codes | progress = 35 |
-| B21 | the special defend node won and nothing else | progress = 95 |
-| B22 | the final story node won | progress = 100 |
-| B23 | buying a blazon for a node with price 1500 and step 500, twice | money falls by 1500 then 2000; blazons = 2; the slot's price is 2500 |
-| B24 | an assault node with `blazons_needed` 12, banner values summing to 12 | the mission is won on the banner that crosses the threshold |
-| B25 | a defend node with `blazons_needed` 3 and blazons 3, resolved from the camp | blazons = 0, the node is won and leaves the offered list, and the town notification is armed with result 1 |
-| B26 | `men_per_blazon` 3, team 8, outstanding requirement 2 | the convertible number of men is 6 |
-| B27 | `men_per_blazon` 0 | the implementation must refuse rather than divide |
-| B28 | a save written and reloaded | the campaign compares equal field by field, with the two discarded u16 of every mission slot ignored |
-| B29 | a save whose block A differs from block B | after loading, the campaign equals block B |
-| B30 | native 174 with the current node's location not 8 | 0 and a recorded script error |
-| B31 | production with the previous mission lost | nothing changes in any workshop |
-| B32 | production of a kind-0..8 workshop with output 7 and two work spots | stock rises by 7 and at most 5 units are placed per spot |
+| B1 | `min_money` 5000, money 4999 | not accessible; the diagnostic names the minimum-money condition |
+| B2 | `max_money` 200000, money 4 × 10^9 (unsigned) | accessible |
+| B3 | an *after* entry whose slot has outcome 2 | accessible |
+| B4 | a node listing itself in *until*, played | never accessible again |
+| B5 | siege state −1, gate byte 0 = 1, all other gate bytes 0 | accessible |
+| B6 | siege state 0, the same node | not accessible |
+| B7 | three candidates sharing one location and one map, priorities 1, 2, 2 | only the priority-1 candidate survives; the others' ages are 0 |
+| B8 | two candidates at the same location and priority | both retained and one diagnostic recorded |
+| B9 | one obligatory and two ordinary candidates | only the obligatory candidate survives |
+| B10 | one obligatory candidate alone | step b does not run; the candidate survives unchanged |
+| B11 | a story candidate with `max_age` 6 and age 5, plus one other | the story candidate alone survives |
+| B12 | a defend candidate with `max_age` 3, age 3, outcome 0, plus one other | it is removed, recorded lost, and its loss byte applied |
+| B13 | three candidates of which the two most recent are in `recent`, newest first | the newest recent one is removed; the walk then stops with two candidates, so the second recent one **survives** |
+| B14 | one candidate that is in `recent` | it survives (step e needs more than one candidate) |
+| B15 | a random filter that would remove every candidate | the list is restored unchanged, and exactly one draw was taken per candidate that passed the kind and age tests |
+| B16 | a random filter with three eligible candidates and one ineligible | three draws, in list order; the ineligible candidate takes none |
+| B17 | an empty source list | the reduction reports failure after ten attempts and yields an empty list; no mission is forced |
+| B18 | a source list of one candidate that every step keeps | the forced path is not reached; that candidate is the offer |
+| B19 | exactly one offer whose node has `needs_camp` 0 | it becomes current; the camp is not entered; `team` is reset to `band` |
+| B20 | exactly one offer whose node has `needs_camp` 1 | node 0 becomes current |
+| B21 | `selected` set | it becomes current and `team` is **not** reset |
+| B22 | picking an offer in the camp with three offers | the picked candidate's age is 0 and it leaves the list; the other two aged by one |
+| B23 | a won kind-0 mission with 3 hostile survivors (one qualifying) and 1 hostile dead | spared += 3, killed += 1, score += 1000 + 70 |
+| B24 | the same mission lost, the slot being the blazon node | the outcome is 2, blazons become 0, the loot pass still runs, and no counter from step 4 changes |
+| B25 | spared 3, killed 1 | the map's spared percentage is 75 |
+| B26 | spared 0, killed 0 | the spared percentage is 0 |
+| B27 | 20 qualifying nodes, 7 won, neither special code | progress 35 |
+| B28 | 0 qualifying nodes | the original divides by zero; OpenSherwood answers 0 and records a diagnostic |
+| B29 | the special defend code won | progress 95 |
+| B30 | the special story code won | progress 100 |
+| B31 | buying a blazon at price 1500, step 500, twice | money falls 1500 then 2000; blazons 2; price 2500 |
+| B32 | an assault node needing 12, banners summing to 12 | won on the banner that crosses the threshold |
+| B33 | a defend blazon node needing 3, blazons 3, resolved from the camp | blazons 0, the node won and out of `offered`, the notification armed with the node's code and result 1, and the offered list rebuilt |
+| B34 | `men_per_blazon` 3, team 8, needed − held 2, blazons 0 | the convertible count is 6 |
+| B35 | `men_per_blazon` 3, needed − held 2, blazons 5 | the original's unsigned subtraction wraps and the result is large; OpenSherwood clamps to 0 and records a departure |
+| B36 | `men_per_blazon` 0 | nothing is computed and a diagnostic is recorded; no division occurs |
+| B37 | four candidates: two of kind 5, one of kind 6, one of kind 0 | the first kind-5 candidate becomes the blazon node, the second kind-5 candidate is removed, the kind-6 candidate moves to `deferred`, the kind-0 candidate stays |
+| B38 | the same set with no kind-1/5 candidate | the blazon node is null and the kind-6 candidate is removed rather than deferred |
+| B39 | one candidate of kind 5 | it becomes the blazon node and is not removed |
+| B40 | native 174 with the current node's location not 8 | 0 and a recorded script error |
+| B41 | a node whose capability requirement is satisfied only by the substitution 2-by-3 | native 170 answers 1 |
+| B42 | a node with a required character profile absent from the team | native 170 answers 0 and stops at that entry |
+| B43 | a workshop pass with `previous` lost | no output is computed for any kind; item placement, kind 12 and character placement still run; the capacity flag is still recomputed |
+| B44 | a kind-0 workshop, stock 7, output 0 (no victory), two spots | stock stays 7; at most 5 items are placed per spot; the capacity flag becomes `10 <= 7` = false |
+| B45 | a kind-9 workshop, two assigned characters, one lacking the required capability | only the other one's experience slot 1 changes |
+| B46 | a kind-11 workshop, an assigned character at health 95, output 20 | his health becomes 100 |
+| B47 | an experience slot at level 3, points 80, plus 150 | level 5, points 30 |
+| B48 | an experience slot at level 100, points 0, plus 500 | level 100, points 500 |
+| B49 | a save written and reloaded | the campaign compares equal field by field, the four discarded bytes of every slot ignored |
+| B50 | a save whose backup block differs from its live block | after loading, the campaign equals the live block |
+| B51 | a save with a bad magic and a bad version | the original accepts it; OpenSherwood refuses it (a recorded departure) |
+| B52 | a save at archive version 46 | each workshop assignment's trailing u16 is read and the field becomes 0xFFFF |
+| B53 | recruiting with an empty recovery list | no draw is taken from the recruit stream |
+| B54 | recruiting with a non-empty recovery list | exactly one draw is taken, and on the recovery branch exactly one more for the choice of man |
+| B55 | native 24 with code 100 then code 0 | the style code becomes 0 and the colours stay light green |
+| B56 | native 24 with code 111 on a non-human element | an error and no change |
+| B57 | native 24 with code 999 | an error and no change |
 
-**Oracle procedures.** The play-time accumulation (CAMP-271) and the *Restart* / *Sherwood* write points
-(CAMP-131, CAMP-132) are checkable against a recording made from
-`C:\Users\przem\source\gamedata\robinhood_oracle`: start a mission, note that `Restart` and `Restart_t` appear
-before the first frame; enter the camp, note that `Sherwood` and `Sherwood_t` appear; quit and compare the
-profile's play time with the wall-clock time to the second. Tolerance: 1 s.
+**Oracle procedures.** The auto-save write points (CAMP-131, CAMP-132) and the play-time accrual (CAMP-271) are
+checkable against a recording from `C:\Users\przem\source\gamedata\robinhood_oracle`: start a mission and
+confirm the restart slot and its thumbnail appear before the first frame; enter the camp and confirm the Sherwood
+slot appears; save twice with a measured interval between and confirm the profile's play time grew by that
+interval, to the second. Tolerance 1 s.
 
 ---
 
 ## 8. Implementation choices, snapshot and departure contract
 
-**What is the original's behaviour** — everything in sections 2, 3, 5 and 6 unless listed below.
+Everything in sections 2, 3, 5 and 6 is the original's behaviour unless it appears below.
 
-**OpenSherwood decisions.**
+**OpenSherwood decisions and deliberate deviations.**
 
-1. *The 16-byte class signatures.* Ours are not computed; they are read from the player's own `Campaign.bck` and
-   `Profiles` on first run and cached, or supplied by the format layer. We never publish them. A save we write
-   must carry the same bytes in the same places for the original to accept it; a save we read must not be
-   refused for a signature mismatch, because the original only warns (CAMP-002).
-2. *The two discarded u16 per mission slot.* We write zeros. This is a deliberate deviation from the original,
-   which writes uninitialised memory; it makes our saves reproducible and byte-stable, which the harness needs.
-   Round-trip comparisons must mask those four bytes per slot (CAMP-022).
-3. *The unit bug in the live play-time display* (CAMP-272) is not reproduced; we show seconds.
-4. *The unattributed 16-byte base block of a character-status record* (CAMP-070) is carried through verbatim as
-   `unknown_base` and is part of the snapshot. We neither interpret nor regenerate it; a new man gets the bytes
-   the original writes for a new man, which an implementer must capture once from a retail save or default to
-   zeros with the health field set.
-5. *Randomness.* The original uses the C run-time generator for the two offer filters, the forced-mission draw,
-   the recruit coin flip and the generated names. We use named seeded streams (`campaign.offer`,
-   `campaign.force`, `campaign.recruit`, `campaign.name`), consumed in exactly the orders section 3 gives, so
-   that replays are deterministic. We do not claim to match the original's sequence.
-6. *Errors.* Where the original reports a condition and then continues (two obligatory nodes, two nodes with the
-   same location and priority, a zero `men_per_blazon`, an empty offered list, a failed reduction), we record a
-   diagnostic and take the same continuation; we do not abort.
+1. *Block tags.* We write sixteen zero bytes and accept any sixteen bytes on reading (2.6). No captured or
+   generated tag values are kept anywhere, and there is no first-run problem.
+2. *The four discarded bytes per slot.* We write zeros, for reproducible saves. Round-trip comparisons mask those
+   four bytes per slot.
+3. *Header validation.* We refuse any save whose magic is not `GSHR`, and we refuse an archive version we do not
+   support, instead of the original's behaviour where a wrong version can mask a wrong magic (CAMP-125).
+4. *Progress with no qualifying node* divides by zero in the original; we answer 0 and record a diagnostic
+   (B28).
+5. *The blazon conversion* has no clamp in the original and its subtraction wraps; we clamp to 0 and record a
+   departure (B35). The zero-divisor case needs no deviation: the original already returns without dividing, and
+   so do we.
+6. *The unit mix in the live play-time display* (CAMP-272) is not reproduced; we show seconds.
+7. *Randomness.* The original draws from the C run-time generator. We use **four** named seeded streams,
+   consumed in exactly the orders section 3 gives, and do not claim to match the original's sequence:
+   `campaign.offer` (the two random filters, one draw per eligible candidate per pass),
+   `campaign.force` (the forced-mission draw), `campaign.recruit` (the recovery coin flip and the choice of man
+   to recover) and `campaign.name` (the two name draws per generated name, and the bounded retry loop). There is
+   no fifth stream; revision 1's snapshot said five and its list gave four, and four is correct.
+8. *Diagnostics.* Where the original reports a condition and continues — two obligatory candidates, equal
+   location and priority, a zero men-per-blazon, an empty offered list, a failed reduction, a missing mission
+   file or `SCOT` chunk — we record a diagnostic and take the same continuation; we do not abort.
 
-**Snapshot contract.** Everything in 2.1 is authoritative and belongs in `snapshot()`: the 27 counters, `ares`,
-`recruit_flag`, the four node references as slot indices, every mission slot (node, age, blazon price, outcome),
-the `people` list in order with every field of 2.3, `band`, `recovering`, `team`, `offered`, `pending`, `recent`
-as ordered index lists, the 13 workshop records with their assignment lists in order, `town_result` and
-`town_node`. Also authoritative, though not in the original's campaign block: the identity of the current
-player profile and the save-slot list, because a save the player can reload depends on them. The RNG stream
-positions of the five named streams are authoritative. Not authoritative: the offered list's *reduction* working
-copy, the work-spot lists of 2.4, the level's mission-statistics block while no mission is running, and every
-derived display value (progress, spared lives, the blazon requirement).
+**Snapshot contract.** Authoritative, and therefore in `snapshot()` and under the canonical hash: the 27
+counters; `siege_state`; `recruit_flag`; the four slot references; every slot's node, age, blazon price and
+outcome; `people` in order with every field of 2.3; `band`, `recovering`, `team`, `offered`, `deferred`, `recent`
+as ordered lists; the 13 workshop records with kind, capacity, stock, last output, capacity flag and
+`assignments` in order; `town_result` and `town_code`; the identity of the current player profile and its save
+slot list; and the positions of the four named RNG streams.
 
-**Departure contract.** The canonical hash covers the snapshot above. A change to any of the following is a
-ruleset bump: the availability test of 3.2, the reduction order of 3.3.1, the aging rule of 3.4, the outcome and
-mission-end rules of 3.5, the blazon rules of 3.6, the score, progress and spared-lives formulas of 3.7, the
-recruit rule of 3.8, or the RNG consumption order anywhere in section 3. A change to the file grammars of 2.6 is
-a format-version bump and must keep reading every earlier archive version listed in section 5.
+Not authoritative: the reduction's working copy; the work-spot lists of 2.4 (they are rebuilt by running the camp
+script's load path — an importer that does not run it has assignments whose coordinates point nowhere, which is
+a load-order requirement, not a state field); the level's mission-statistics block while no mission runs; and
+every derived display value (progress, the spared percentage, the reported blazon requirement, `full`).
 
----
-
-## 9. Open questions
-
-1. **How does the clover counter (counter 0) ever become non-zero?** No write through the counter accessors
-   exists, and native 196 cannot reach index 0. Look at 004a78c0's caller chain and at the pick-up handling of
-   the item whose action id is 14, and at 0050b640 near the campaign-counter call whose arguments the
-   decompiler dropped (CAMP-016).
-2. **The one-day output of a workshop.** 00581020, 005810c0 and 00581180 each truncate a floating-point value to
-   an integer; the expression that produces it, and the part 005806c0's supervising-hero lookup plays in it, were
-   folded away by the decompiler. Read the raw instructions of 00581020 (0x94 bytes), 005810c0 and 005806c0's
-   tail; also 00580e80 for workshop kind 12 and 0051d4e0 for the global store of kinds 9 and 10.
-3. **Which of the two 32-bit profile values is the difficulty**, and how a preset reaches the combat rules.
-   Look at readers of the player profile at +0x18 and +0x1c and at the four-record table of `profile.cpf`.
-4. **Where `team_limit` comes from.** Native 174 answers a level-record field that `profile.cpf` does not
-   contain. Candidates: the `SCOT` count of the node's `.rhm`, or a field of the mission file copied in at load.
-   Look at writers of the level record at +0x72 and at 00568ba0 (the forced-mission-profile path).
-5. **The two random offer filters** (CAMP-212): which side of the comparison is kept. The container code around
-   00452810 and 00452a50 was folded; read their raw instructions.
-6. **Who raises message 1000** (CAMP-302). Search the interface code for the send action of the camp
-   (`ui-flow.md`'s `BTTN` 160) and for callers of the message path 00578d80 outside the script natives.
-7. **The eight unattributed bytes of a character-status record** (CAMP-070). The base serializer at 0051d5d0
-   writes only two 32-bit values, yet sixteen bytes separate the two class signatures. Re-read 0055c3c0's head
-   and 0051d5d0's raw instructions.
-8. **What the two unused u16 of a level record (`m0`, `m1`) do.** No reader was found in the scope read. They
-   vary per story node in the retail data, which suggests a briefing or difficulty use; search for readers of
-   the level record at +0x64 and +0x66 outside the profile manager.
-9. **What earns the 70-point bonus and the 50-point act** (CAMP-251): two virtual calls were not followed
-   (004e3260's two indirect tests, 004a5a00's virtual slots 0x130 and 0x48).
-10. **The campaign-mode test at the head of the game loop** (0050f710): the decompiler renders it as a test on
-    the campaign's ARES byte, which would make the normal path depend on a value that is −1 at the start; the
-    plausible reading is "a campaign object exists". This must be settled before the loop order of 3.9 is
-    implemented.
-11. **The exact semantics of the second offered list (`pending`)** and of the two lists that are empty in the
-    retail data (`spare_refs`, `labels`). They are saved, so an importer must read them, but nothing in the
-    retail data exercises them.
-12. **Portrait states, action-icon availability and tooltips** were not read; `ui-flow.md` has the geometry.
-    Look at 005145b0, 00514670 and the portrait widget of the HUD module.
+**Departure contract.** A ruleset bump is required by a change to: the availability test (3.2); the reduction
+order, its retry and restore behaviour, or the RNG consumption order (3.3); the choice and aging rules (3.4);
+the outcome and mission-end rules (3.5); the blazon rules (3.6); the score, progress and spared formulas (3.7);
+the recruit rule (3.8); the deployment requirement test (3.9); or the workshop pass once it is specified (3.11).
+A change to the file grammars of 2.6 is a format-version bump and must keep reading every archive version listed
+in section 5.
 
 ---
 
-## 10. Differences from the current engine
+## 9. Differences from the current engine
 
-Concrete, against `crates/opensherwood-app/src/{engine.rs,ui.rs}`, `docs/formats/profile.md`,
-`docs/formats/savegame.md`, `docs/formats/sherwood-hub.md` and `docs/original/campaign-flow.md` as they stand:
+Against `crates/opensherwood-app/src/{engine.rs,ui.rs}`, `docs/formats/profile.md`, `docs/formats/savegame.md`,
+`docs/formats/sherwood-hub.md` and `docs/original/campaign-flow.md` as they stand. This is a list of gaps, not a
+claim that this revision closes them: section 11 names what it does not.
 
 1. **The successor rule is wrong.** The engine's rule is a successor relation over profiles; the original's is
-   the eight-condition availability test of 3.2 plus the seven-step reduction of 3.3.1 plus the age counter.
-   Nothing in the engine has a money window, a band-size window, an age limit, an ARES gate, a per-location
-   priority, a recency filter or the two random filters.
-2. **The *after* list is not "won", it is "played".** A lost prerequisite opens its successors. The engine's
-   reading (and `profile.md`'s) is stricter than the original.
-3. **`profile.md`'s level-record grammar is wrong in three places** (CAMP-041, CAMP-042, CAMP-043): a field
-   group is mis-split, a count is u16 instead of u32, and a byte block is 12 instead of 10. The parser in
-   `opensherwood-formats::cpf` consumes the retail file anyway because the errors cancel; a strict reader that
-   trusts the field names will mis-read `unknown_e`, the required-character list and `unknown_l`.
-4. **The required-character list is a real feature.** It is a list of character-profile indices and it gates
-   sending the team (native 170). The engine has no notion of it.
-5. **`savegame.md` is a wrong guess.** There is no "table of 32-byte records each containing the same 16-byte
-   hash, a u32 index and a u32 value" in the sense described: the 32-byte records are mission slots with age,
-   blazon price and outcome, the 16 bytes are a class signature, and the file contains the campaign block
-   **twice**, the first copy byte-identical to `Campaign.bck`. `Campaign.bck` is not "a backup of the same
-   table"; it is the campaign as of the last level start and is the source of the save's first block.
-6. **Nothing in the engine implements the blazon economy.** Blazons are earned in assault and tactical
-   missions, bought for money at a price that rises per purchase, spent to resolve defend missions, and reset
-   when the blazon node is lost. Natives 178, 223 and 234 are stubs against a counter that no rule moves.
-7. **The six natives `sherwood-hub.md` lists as "no row" now have rows** (165, 166, 170, 174, 239, 249), and
-   two of the stub policy values are wrong: 174 must be the selected node's team limit (5 only when nothing is
-   selected) and 249 is the *HUD selection* count, not a campaign number — `STUB_POLICY_VALUES` pins 174 to 5
-   and 249 to 0 unconditionally.
-8. **Message 1001 is engine-originated at camp start and message 1000 comes from the send action**; the engine
-   sends neither, so the camp's 13 production zones are never configured and no workshop ever produces.
-9. **Production only runs after a won mission**, over 13 workshops in kind order, with a per-kind item id and a
-   per-kind supervising hero. The engine has no production at all.
-10. **The score, progress and spared-lives formulas differ from anything in the engine.** Progress is not
-    "missions done / missions total": ambushes and tactical nodes are excluded, placeholders are included, and
-    two particular level codes short-circuit to 95 and 100. Spared lives is a ratio of two cumulative counters,
-    not a count. `campaign-flow.md`'s "Progress 0 %" for a fresh profile is consistent, but the engine's
-    `profiles.json` has no field for play time, spared lives, blazons or the ARES state, so a profile written
-    by the engine cannot round-trip through the original.
+   the eight-condition test of 3.2, the seven-step reduction with its retries and restores, and the age counter.
+   The engine has no money window, band-size window, age limit, siege gate, priority, recency filter or random
+   filter.
+2. **The *after* list means "played", not "won":** a lost prerequisite opens its successors.
+3. **`profile.md`'s level-record grammar is wrong in three places** (CAMP-041 to CAMP-043). The existing parser
+   consumes the retail file anyway because the errors cancel, but a reader that trusts the field names
+   mis-reads three groups.
+4. **Deployment requirements are a real feature the engine lacks entirely:** a per-node list of required
+   character profiles *and* a per-node list of capability requirements built from each mission file's `SCOT`
+   flags, matched against the character profile's capability arrays with three substitutions, plus a per-node
+   team size limit equal to the mission's slot count.
+5. **`savegame.md` is a wrong guess.** The 32-byte records are slots with age, blazon price and outcome; the 16
+   bytes are a block tag; a save carries the campaign block **twice** when the version is above 38, the first
+   copy streamed from `Campaign.bck`; and `Campaign.bck` is not a backup of a table but the campaign as of the
+   last level start.
+6. **The blazon economy is absent.** Blazons are earned in assault and tactical missions, bought at a price that
+   rises per purchase, spent to resolve defend missions and cleared when the blazon node is lost. Natives 178,
+   223 and 234 are stubs over a counter nothing moves.
+7. **Six natives gain rows** (165, 166, 170, 174, 239, 249) and two stub policy values are wrong: 174 must be the
+   selected node's slot count (5 only when nothing is selected), and 249 is the HUD selection count, which
+   `STUB_POLICY_VALUES` pins to 0 while also pinning 174 to 5 unconditionally.
+8. **Message 1001 is engine-originated at camp start**, so the engine's camp never configures its 13 production
+   zones. (Its delivery order, and the origin of 1000, are open — section 11.)
+9. **The workshop pass is absent,** including the parts that run without a victory: item placement, character
+   placement and the capacity flag.
+10. **Score, progress and the spared percentage are unlike anything in the engine.** Progress excludes ambush and
+    tactical nodes, includes placeholders, and two level codes short-circuit to 95 and 100. The spared percentage
+    is the share of **enemies left alive**, from two cumulative counters over hostile actors — not a count of the
+    player's men, which is what a naive implementation would build.
 
-Two further differences worth naming: the engine's `profiles.json` is not the original's `Savegame/Profiles`
-(different container, different fields, no key or graphic configuration, no save-slot list), and the engine has
-no auto-save at all, whereas the original writes *Restart* at every mission start, *Sherwood* at every camp
-entry and mirrors every save into *Continue*.
+Two further gaps: `profiles.json` is not `Savegame/Profiles` (different container, no key or graphic
+configuration, no slot list, no play time, spared percentage, blazons, siege state or difficulty), so a profile
+the engine writes cannot round-trip through the original; and the engine has no auto-save, whereas the original
+writes a restart slot at every mission start, a Sherwood slot at every camp entry, and mirrors every save into
+the continue slot.
 
 ---
 
-## 11. Identity block
+## 10. Open questions
 
-- **Analyst:** this session (Claude analyst agent, 2026-09-13), working in the git-ignored `re/` workspace on the
-  maintainer's lawfully acquired copy. Exposure: full decompilation of the functions listed in section 0
-  ("scope read"), plus `re/out/inventory.tsv`, `re/out/strings.tsv` and `re/notes/modules.txt`.
-- **Exposure record for the wall (ADR-0009 §2).** This session has read decompilation for: campaign flow, the
-  Sherwood camp, camp production, saved games, the player profile and configuration files, the campaign-map
-  screen, and the mini-map dot colours. It must not implement any of them, and no implementer session may
-  inherit its context, notes or tool output.
-- **Spec reviewer:** pending (Codex, task B of `cross-agent-review`).
+1. **The one-day output of a workshop, and kind 12.** Four routines truncate a floating-point value whose
+   expression the export does not contain, and the part played by the routine that locates the workshop's
+   supervising character is unknown. Read the raw instructions of 00581020, 005810c0, 00581180, 005806c0's tail
+   and 00580e80 (kind 12).
+2. **The delivery order of message 1001** relative to the workshop pass and the first tick (CAMP-303): recover
+   the arguments of 00578d80's call in 0050f710 and the scheduler's admission rules (0058a940, and
+   `spec-script-vm.md` VM-210/215).
+3. **The origin of message 1000** (CAMP-302). Search the interface code for the camp's send action
+   (`ui-flow.md` `BTTN` 160) and for submitters of 00578d80 outside the natives.
+4. **The recruit count** after a victory (CAMP-291): the expression is absent from 004e3260's export.
+5. **When the camp-capture pass runs** (CAMP-326, 00456a70 has no direct caller in the export) and how its
+   rebuilt assignments relate to the work spots the script registers.
+6. **How the clover counter becomes non-zero** (CAMP-016). Follow 004a78c0's callers and the folded
+   campaign-counter call in 0050b640.
+7. **The three actor fields native 165 writes** (CAMP-310), one of them set to 2.
+8. **Which colour entry each actor state uses**, and whether an un-blipped element is drawn (CAMP-350,
+   CAMP-352); plus portrait states, action-icon availability and tooltips (005145b0, 00514670).
+9. **Smaller items:** the two unused level-record u16 (`m0`, `m1`); the purpose of `spare_refs` and `labels`;
+   native 173's state transitions; the two tests that exclude the auto-slots from continue-mirroring
+   (CAMP-133); the generated-name loop's exit condition (CAMP-071); the source of a recovered man's health
+   (CAMP-292); what makes a surviving hostile "qualifying" (CAMP-013, CAMP-251); the campaign-mode test at the
+   head of the game loop, which the export renders as a test on the siege byte and which is more plausibly "a
+   campaign exists" (CAMP-300); and the behaviour of save writing when the file cannot be created.
+
+---
+
+## 11. Excluded from clearance
+
+The following are **not** cleared for implementation by this revision. Each maps to an `Assumption` variant
+(ADR-0008) that must stay in the registry until an amendment settles it.
+
+| Area | Why | Assumption |
+|---|---|---|
+| **Camp production output** (3.11's gated half for kinds 0..11, and kind 12 entirely) | The output arithmetic, rounding and overflow are not recoverable from the export (open question 1). The routine that picks the workshop's supervising character maps each workshop kind to one campaign identity; that eleven-entry mapping is withheld on the same grounds as the other two, and the contribution it makes to the output is unknown anyway. The ungated half — item placement, character placement, the capacity flag, the recount — *is* specified and may be implemented | `CampProductionOutput` |
+| **The workshop-kind to item-kind correspondence** | A nine-entry mapping inside the executable. Reproducing it is the kind of curated table ADR-0009 refuses; the reviewer refused it in revision 1. The mechanism is specified (each of kinds 0..8 has exactly one item kind; kinds above 8 have none) but the mapping itself is withheld pending a maintainer and reviewer decision | `WorkshopItemKinds` |
+| **The `SCOT` flag to capability-id correspondence** | A ten-entry mapping inside the executable, of the same character. The mechanism, the flag positions, the matcher and its three substitutions are specified; the correspondence is withheld on the same grounds. Without it native 170's capability half cannot be implemented | `SlotCapabilityIds` |
+| **Message ordering in the camp** | CAMP-303. No implementation may assume 1001's handler completes before the workshop pass or before the first tick | `CampMessageOrder` |
+| **The origin of message 1000** | CAMP-302 | `CampSendAction` |
+| **The recruit count** | CAMP-291 | `RecruitCount` |
+| **Mini-map state-dependent rendering** | CAMP-350, CAMP-352: the values are known, the state-to-entry mapping is not, and no claim is made about grey dots | `MinimapDotState` |
+
+Everything else in sections 2 to 8 is offered for clearance.
+
+---
+
+## 12. Implementer handoff requirements
+
+A handoff of this subsystem is complete only when all of the following hold. Items marked *(blocked)* need an
+amendment first and define the scope an implementer must leave alone.
+
+1. The implementer session is fresh: no inherited analyst context, notes, tool output or memory, and no access
+   to `re/` — including through helper scripts (ADR-0009 §2).
+2. The scope handed over excludes everything in section 11. Concretely, the implementer may build: the file
+   grammars of 2.6 (read and write, every archive version in section 5), the campaign object and its counters,
+   the availability test, the whole reduction including retries and restores, choice and aging, outcome and
+   mission-end bookkeeping, the blazon rules, the score/progress/spared/play-time formulas, the recruit
+   mechanism except its count, deployment except the capability half of native 170, the workshop pass except the
+   output arithmetic, the save slots and auto-saves, and the HUD counters. *(blocked)*: production output,
+   kind 12, the two withheld mappings, message ordering, the send action, the recruit count and the mini-map
+   state mapping.
+3. The importer runs the camp script's load path before treating workshop assignments as positions (2.4,
+   section 8).
+4. The four named RNG streams of section 8.7 exist with the stated consumption order, and their positions are in
+   the snapshot.
+5. The snapshot and departure contracts of section 8 are implemented and the canonical hash covers exactly the
+   authoritative set.
+6. The acceptance tests of section 7 exist, with A2 to A5 marked as fixture regressions rather than universal
+   expectations, and with a documented procedure for refreshing them when the fixtures change.
+7. Each entry of section 11 is an `Assumption` variant in the registry, and no winning path depends on one.
+8. Save failure behaviour (a file that cannot be created, a version that is not supported, a truncated block) is
+   defined by OpenSherwood, since the original's behaviour is partly unknown (open question 9) — refuse and
+   report, never partially apply a campaign block.
+
+---
+
+## 13. Identity and exposure
+
+- **Analyst:** session `a00ebf7dd67504358` (Opus, 2026-09-13). Exposure: full decompilation of the ~165
+  functions of section 0, plus the function inventory, the string cross-reference and the module map.
+- **Reviewer:** Codex `gpt-6-astra`, spec review 19 on blob
+  `6601ef353cb680df86e7b23613627c0cd6b032d5`, verdict *redo*, 29 findings. The reviewer is a **spec reviewer**
+  and read `re/`; its exposure covers the same subsystem plus the mission-file inspection behind CAMP-048. It
+  therefore may not implement this subsystem either, and its output was corrections to this document only.
+- **Wall (ADR-0009 §2).** Sessions exposed for this subsystem: the analyst above and the reviewer above. Neither
+  may implement campaign flow, the Sherwood camp, camp production, saved games, the player profile and
+  configuration files, the campaign-map screen or the mini-map dot colours.
 - **Publication approval:** pending, maintainer, separate from factual approval.
 - **Gate:** `python scripts/check_no_assets.py --paths docs/original/spec-campaign-camp-saves.md` run before
-  saving.
+  saving this revision. The gate is a heuristic and does not clear the expression filter; section 11 records
+  what the reviewer withheld.
 
 ---
 
-## 12. Provenance
+## 14. Provenance
 
-Ghidra project `re/ghidra/robinhood` (never committed), full-function decompilation under `re/out/decomp_all/`
-exported by `scripts/ghidra/DecompileAll.java`, the function inventory and string cross-reference by
-`scripts/ghidra/ExportInventory.java` and `ExportStrings.java`, and the module map in `re/notes/modules.txt`
-derived from assertion strings. Byte-level checks used `scripts/ghidra/peek.py` and three throw-away parsers in
-`re/notes/campaign/` (a `Campaign.bck` / save reader, a level-table reader and a `Savegame/Profiles` reader);
-those parsers are one-off derivations of the numbers in section 7 and are not needed to check the claims — the
-acceptance tests A1..A5 re-derive them from the player's files.
+Ghidra project `re/ghidra/robinhood` (never committed); full-function decompilation under `re/out/decomp_all/`
+exported by `scripts/ghidra/DecompileAll.java`; the function inventory and string cross-reference from
+`scripts/ghidra/ExportInventory.java` and `ExportStrings.java`; the module map in `re/notes/modules.txt`, derived
+from assertion strings. Byte-level checks used `scripts/ghidra/peek.py` and three throw-away parsers in
+`re/notes/campaign/` (a campaign-block reader, a level-table reader and a profile-archive reader); those parsers
+are one-off derivations of the numbers in section 7 and are not needed to check the claims — the acceptance
+tests re-derive them from the player's files.
 
-Files read on disk (read-only, `C:/Users/przem/source/gamedata/robinhood`): `Campaign.bck`,
-`DATA/Configuration/profile.cpf`, `DATA/Configuration/keyset1.cfg`, `keyset2.cfg`,
-`Data/Savegame/Profiles`, `Data/Savegame/Profile_001/{Continue,Continue_t,Restart,Restart_t}`.
+Files read on disk, read-only, under `C:/Users/przem/source/gamedata/robinhood`: `Campaign.bck`,
+`DATA/Configuration/profile.cpf`, `DATA/Configuration/keyset1.cfg`, `keyset2.cfg`, `Data/Savegame/Profiles`,
+`Data/Savegame/Profile_001/{Continue,Continue_t,Restart,Restart_t}`. The mission-file inspection behind CAMP-048
+and A6 was the reviewer's, on the same installation.
 
-No oracle recording was made for this specification; the two timing claims that would need one are named in
-section 7.
+No oracle recording was made; the claims that would need one are listed in section 7.
 
-Function addresses are given inline throughout sections 2 to 6 and collected in section 0. Instruction bytes,
+Function addresses appear inline in sections 2 to 6 and are collected in section 0. Instruction bytes,
 disassembly, recovered symbols and the comprehensive address map stay in `re/`.
 
 Build: GOG English edition, `Robin Hood.exe` SHA-256
 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`.
 
-Documents that must be updated once this specification is reviewed: `docs/formats/savegame.md` (replace the
-stub), `docs/formats/profile.md` (the three grammar corrections and the field meanings),
-`docs/formats/sherwood-hub.md` (sections 5 and 6: the six natives, messages 1000/1001, production),
-`docs/original/campaign-flow.md` (the successor rule), `docs/roadmap.md` and the `Assumption` registry.
+Documents to update once this revision is cleared: `docs/formats/savegame.md` (replace the stub),
+`docs/formats/profile.md` (the three grammar corrections, the field meanings, the key-set layout),
+`docs/formats/rhm.md` (the `SCOT` record's capability flags and the slot count's role),
+`docs/formats/sherwood-hub.md` (sections 5 and 6), `docs/original/campaign-flow.md` (the successor rule),
+`docs/roadmap.md` and the `Assumption` registry (section 11).

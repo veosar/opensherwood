@@ -61,6 +61,13 @@ any reasonable time, and every review said so.
    | Algorithms | Required results, state transitions and observable orderings are described; the implementer chooses the organisation. |
 
    There is no safe numerical granularity; the reviewer judges each specification against this table.
+
+   *Clarification (2026-09-13, after the campaign review):* a mapping from a data-file field, flag or id to its
+   meaning (which flag byte selects which capability, which workshop kind produces which item kind, which
+   native id has which semantics) is an **interface fact** the player's files require and is allowed, entry
+   by entry, with its data-file provenance, exactly like the native table. What stays refused is a table of
+   tuned values that the program carries as content (balance numbers, colour lists, curves) unless the rule
+   that generates it is described or the data file it is loaded from is named.
 6. **Gate.** `scripts/check_no_assets.py` inspects the index (what a commit records), the outgoing commits of a
    push (`scripts/hooks/pre-push`, installed by `git config core.hooksPath scripts/hooks`) and named drafts
    (`--paths`); it refuses Ghidra project files and directories, exporter signatures and decompiler idioms in
