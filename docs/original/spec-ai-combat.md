@@ -1,12 +1,15 @@
 # AI and combat (behaviour specification)
 
-Status: `draft`, revision 3 (answers Codex review 22 of revision 2, which answered review 16 of revision 1;
-awaiting clearance). Build: GOG English edition, `Robin Hood.exe` SHA-256
+Status: `draft`, revision 4 (answers Codex review 27 of revision 3; revisions 2 and 3 answered reviews 16 and
+22; awaiting clearance). Build: GOG English edition, `Robin Hood.exe` SHA-256
 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`, image base `0x00400000`; every address
-below is a virtual address in that image. Analyst: 2026-09-13, session `a2931a3a5b130742c` (analyst role,
-ADR-0009). Reviewer: Codex `gpt-6-astra` (reviews 16 and 22, committed as
-`docs/decisions/reviews/2026-09-13-codex-review-16-spec-ai-combat.md` and `...-22-spec-ai-combat.md`; review
-22 examined revision 2 at commit `e966b05`, blob `e10208494c95caf92c2b356357329a61cf014c13`). Publication
+below is a virtual address in that image. Analyst: 2026-09-13 and 2026-09-18, session `a2931a3a5b130742c`
+(analyst role, ADR-0009). Reviewer: Codex `gpt-6-astra`, reviewer session
+`01a0b406-a088-76b0-b80e-f5d4a5abd73d` (spec-reviewer role only); reviews 16, 22 and 27 are committed as
+`docs/decisions/reviews/2026-09-13-codex-review-16-spec-ai-combat.md`, `...2026-09-13-codex-review-22-...`
+and `...2026-09-18-codex-review-27-spec-ai-combat.md`; review 22 examined revision 2 at commit `e966b05`
+(blob `e10208494c95caf92c2b356357329a61cf014c13`), review 27 examined revision 3 at commit `e7b2cd4`
+(`e7b2cd45ec1dd170101be64e68f2d5517efbdbfd`, blob `c9040a2a406e8525fbd6aae32241b81fe0c72a6c`). Publication
 approval: pending (separate from factual approval).
 
 Sibling specifications this file depends on, pinned: `spec-script-vm.md` revision 3 (commit `25b6dbe`),
@@ -38,9 +41,14 @@ program's random stream (2.2).
   its context, notes or tool output.
 - **Delegated readers**: six forked sub-sessions of session `a2931a3a5b130742c` (same role, same
   workspace), one per area, each of which read the decompiled functions of its area and reported to the
-  analyst; their notes are `re/notes/ai/*.md` (git-ignored). **Their session ids were not recorded separately**
-  (the forks carry only the tool's internal task ids, which this file does not reproduce); they are identified
-  by area and note file: (1) profile fields — `profile-fields.md`, exposure: the profile loaders, the
+  analyst; their notes are `re/notes/ai/*.md` (git-ignored). **Identity record**: the forks were launched on
+  2026-09-13 as six background tasks of session `a2931a3a5b130742c`; each has a task identifier and a
+  transcript file in that session's task records (the harness's `tasks/` directory of the session scratchpad,
+  six entries, in the launch order profile fields, perception, state machine, attacking, rails / orders /
+  natives, combat), which the maintainer can recover from the session; the identifiers are the harness's
+  internal ids and are **not reproduced here** (the harness marks them as not for user-facing text) — that is
+  the retained identity gap. They are bound below to their exposure by area and note file: (1) profile fields
+  — `profile-fields.md`, exposure: the profile loaders, the
   difficulty scaler and the stat consumers; (2) perception — `perception.md`, exposure: the cone, the scan,
   hearing, line of sight, identification; (3) the non-attacking state machine — `state-machine.md`, exposure:
   the event dispatchers, the default / wondering / seeking / sleeping / fleeing handlers, the civilian AI;
@@ -53,13 +61,15 @@ program's random stream (2.2).
 - **Helpers exposed**: the export scripts in `scripts/ghidra/` (generic), `scripts/ghidra/peek.py` (byte reads),
   capstone disassembly of eight functions the decompiler exported incompletely (00438620, 005c1dd0, 004a18c0,
   0048d990, 0048e610, 004a1e90, 004500c0's float tail, 00475bd0's punch scaling): the disassembly stays in `re/`.
-- **Spec reviewer**: Codex `gpt-6-astra`, `cross-agent-review` task B: review 16 of revision 1 (28 findings,
-  verdict redo) and review 22 of revision 2 at commit `e966b05` (16 findings, verdict fix-then-clear; it upheld
-  revision 2's two disputes and cleared the layouts, stimulus meanings, category lifetimes, hearing corrections,
-  clock distinction, difficulty, rail double advancement, mutual-duel gate and the recovery / stun / deflection
-  boundaries as individual facts). The reviewer's own session id is not known to this file; the two review
-  documents are committed at the paths named in the header. A reviewer may read `re/`; its output is
-  corrections to this file only.
+- **Spec reviewer**: Codex `gpt-6-astra`, reviewer session `01a0b406-a088-76b0-b80e-f5d4a5abd73d`
+  (spec-reviewer role only), `cross-agent-review` task B: review 16 of revision 1 (28 findings, verdict redo),
+  review 22 of revision 2 at `e966b05` (16 findings, fix-then-clear; it upheld revision 2's two disputes and
+  cleared the layouts, stimulus meanings, category lifetimes, hearing corrections, clock distinction,
+  difficulty, rail double advancement, mutual-duel gate and the recovery / stun / deflection boundaries) and
+  review 27 of revision 3 at `e7b2cd4` (13 findings, fix-then-clear; it cleared the event-to-callback mapping,
+  AI-100, natives 134 / 135, AI-170's out-of-combat recovery, AI-173's scaling, AI-174's residual phase and
+  AI-176's geometric rules subject to the arithmetic contract). The three review documents are committed at
+  the paths named in the header. A reviewer may read `re/`; its output is corrections to this file only.
 - **Implementation reviewer**: pending, must be a session that has never read `re/`.
 - **Publication approval**: pending, separate from factual approval.
 
@@ -131,15 +141,21 @@ then the claim of this file is "the rules read are these", not "the mission is c
   the oracle measured, the realised frame is 46.875 ms (3.1). Conversions to seconds below use 40 ms and say so.
 - Percentages are integers 0..100 unless a formula says otherwise; "roll" is `r = rand()` with r in 0..32767
   (2.2) and `r % n` its remainder.
-- **Arithmetic contract** (AI-008, observed on every float expression cited): every stored float quantity
-  (positions, the perception value of an entry, the reach, the constants) is an IEEE single-precision number
-  (round to nearest, ties to even); an expression is evaluated left to right in the order the text gives, with
-  every intermediate held in a precision of at least 64 significant bits (the original uses the x87 extended
-  format); named constants such as 0.01, 1.33, 0.3 are the single-precision numbers nearest to those decimals
-  (0.01 is 0.0099999997764825821; 0.3 is 0.30000001192092896); "trunc" converts to an integer by truncation
-  toward zero. Where the rounding of one expression decides an integer (AI-068, AI-100) the acceptance tests
-  give the exact expected integer; an implementation that stores singles and evaluates intermediates in double
-  or extended precision reproduces them.
+- **Arithmetic contract** (AI-008, observed on the float expressions cited, disassembled where the export
+  dropped them). (a) Operands and constants: every float quantity read from memory (positions, profile-derived
+  values, the constants 0.01, 1.33, 0.3, 20, 200, the stored perception value, the stored reach) is an IEEE
+  single-precision number; 0.01 is 0.0099999997764825821, 0.3 is 0.30000001192092896. (b) Intermediates: an
+  expression is evaluated left to right in the order the text gives, with intermediates in the x87 extended
+  format (64-bit mantissa) **until a value is stored**; (c) **rounding boundaries**: a value is rounded to
+  single (round to nearest, ties to even) exactly where the text says "stored" — the perception value of an
+  entry (AI-068), and in the aim test the scaled y displacement, the tangent, the reach and the squared reach
+  (AI-176) — and the comparison or the next operation then reads the stored single; (d) "trunc" converts an
+  extended value to an integer by truncation toward zero. **What is demonstrated**: the fixtures of section 7
+  (the 15 / 159 contributions, the 54 / 108 / 60 delays, the aim equality case) were computed under (a)..(d)
+  and match the instructions read; general bit-equivalence of every float path with the original is **not**
+  demonstrated and is not claimed. OpenSherwood's chosen arithmetic (section 8 item 4: `f32` storage at the
+  boundaries of (c), `f64` intermediates) reproduces those fixtures; behaviour that depends on other rounding
+  boundaries than the ones listed is withheld from clearance until a fixture settles it (9.2 item 18).
 
 ### 2.2 The random stream
 
@@ -268,7 +284,7 @@ AI-040 (observed, 00471b00, 00471c00, 0047c600, 0047dc00):
 | unconscious, tied, immune | flags | false | immune = principal enemy: its hit points are never lowered, stun is ignored |
 | adversaries | ordered list | empty | several attackers per actor; the first entry is "the" adversary |
 | initiative, grace, hand-over chance | flag, flag, u16 % | | the turn-taking of a mutual duel (3.9.1) |
-| per-figure usage penalties | u16 × 9 | 0 | +50 when a figure is used, −10 per choice (floor 0) (3.8.2); they decide later choices, so a snapshot carries them |
+| per-figure usage penalties | u16 × 9 | 0 | +50 when a figure is chosen; −10 (floor 0) each time a scoring pass is entered (not on a chooser call whose attack gate fails) (3.8.2); they decide later choices, so a snapshot carries them |
 | melee experience, bow experience | (whole 0..100, hundredths) ×2 | the profile words | raised by kills and strikes, capped at 100 |
 | ammunition | u16 per item kind | the profile stock | player characters: per kind with a maximum; soldiers: one count |
 | door-stuck counter | u16 | 0 | incremented per frame while waiting at a door in order state 4; a reset at 26 (3.1) |
@@ -287,9 +303,23 @@ colleague to check on; the "seen clearly" flag; the search flags; the walk-to an
 counter; the frame of the last alert; the walking flags (3.4.4); the hesitation byte (0 for hostile soldiers,
 larger for civilian-class AIs); the drunkenness byte; the head marker (emoticon) with its expiry; the patrol
 rail and the alert rail; the two timer deadlines and their armed flags with the sub-state the AI timer was
-launched in (3.3.3); the emoticon expiry; **the cached program roll** (AI-007: drawn once, consumed by the next
-program table, so it must survive a snapshot); the check-for look accumulator and interval; the search budget
-and the "alerting" flag; the level's seek-point cooling frames (3.5.4, level state shared by all NPCs).
+launched in (3.3.3); the emoticon expiry; **the cached program roll: its value and, separately, whether it is
+still available** (AI-007: drawn once, consumed by the next program table); the check-for look accumulator and
+interval; the search budget and the "alerting" flag; the level's seek-point cooling frames (3.5.4, level state
+shared by all NPCs). Further authoritative quantities with explicit ownership (finding 8 of review 27):
+- **the pending event queue** of the NPC — the deferred events in delivery order, each with its kind, payload
+  (element or position) and parameters; the **queue-while-locked** flag and the events it queued (AI-082 a);
+  the **locked** and **"out"** flags (AI-003);
+- **the rail execution position**: the current point index and direction (AI-090), the program block being
+  executed and the offset of the next command in it, the remaining length, and the suspension kind (none /
+  waiting for a turn or glance to finish / the rail-wait timer / registered as a sync waiter with the partner
+  and the waypoint index) (3.4);
+- **the creation frame** of the NPC (the stagger key of AI-004 and AI-050);
+- **the ten custom native values** of the NPC (natives 197 / 198), loaded from the record or the save;
+- of the perception state (2.9): the mode, the **collapse increment** and the current base range while
+  collapsing or recovering, the **tracked element** or the given direction, the head angle, the wobble phases.
+No quantity above has a demonstrated reconstruction rule; each is snapshot-owned. **Integrated snapshot /
+replay clearance is withheld** until the restore fixtures of 9.2 item 19 exist.
 
 ### 2.9 Per-NPC perception state (what a save must carry)
 
@@ -350,15 +380,21 @@ loot threshold read only by the purse-looting behaviour (inferred, low); `member
   animation and movement steps, but the perception work (the rescan, the cone update, the scan, the deafness
   update) and the AI work (the think hook, the timer checks, the event queue) are skipped and the AI deadlines
   advance (AI-003). Each frame, for every non-player human in the engine's actor-list order (the mission's
-  element order): (1) the AI pre-tick hook; (2) the human base tick: stun decay (3.11), the animation and
-  movement steps, and — player characters only — the refresh of the walk-noise record; (3) a door-wait check:
-  an actor in order state 4 whose action is one of the two door-wait animations, not "out" and not in a
-  no-sight zone, counts frames and resets the AI at 26; then, unless level-paused: (4) if "needs rescan" is
-  set, every other actor enters category 1 unless listed (within a 700 px max-norm box when the AI is
-  restricted); (5) the cone geometry update (3.2.1); (6) the perception scan (3.2.5): identification,
-  walk-noise hearing, sight, with the resulting events delivered to this observer's own AI in list order at
-  the end of its scan; (7) the AI tick (the state logic) then the deafness update; (8) the phases of AI-003.
-  No random number is consumed by perception (AI-007).
+  element order): (1) **unless level-paused**, the AI pre-tick hook; (2) the human base tick: stun decay
+  (3.11), the animation and movement steps, and — player characters only — the refresh of the walk-noise
+  record (a base tick that reports "not active" ends the actor's tick here); (3) unless level-paused: the
+  rescan when flagged (every other actor enters category 1 unless listed; within a 700 px max-norm box when
+  the AI is restricted), the cone geometry update (3.2.1), the perception scan (3.2.5) with its events
+  delivered to this observer's own AI in list order at the end of the scan, the AI tick (the state logic), and
+  the deafness update; (4) **after those**, the door-wait check: an actor in order state 4 whose action is
+  one of the two door-wait animations, not "out" and not in a no-sight zone, counts frames and resets the AI
+  at 26 (the counter clears otherwise); (5) **for civilians only, and regardless of the level pause, the lock
+  and the "out" flag**: the civilian periodic routine keyed by (frame − creation frame + 156), which may draw
+  random numbers (a 1-in-3 chatter roll and a variant roll) and play a remark; (6) the phases of AI-003 (the
+  think hook, the timer checks, the emoticon expiry, the event queue), only when not level-paused, not locked
+  and not "out". So an actor-local pause stops perception, the state logic and the timers, but not the
+  animation, the movement, the door-wait check or the civilian chatter. No random number is consumed by
+  perception (AI-007).
 - **AI-004** (observed, 0048a980, 00471b00, 00487d00). Staggers keyed by the element id: identification when
   (id + frame) mod 16 = 0; the walk-noise hearing test when (id + frame) mod 3 = 0; energy recovery when
   frame mod 64 = id mod 32 (3.10).
@@ -432,7 +468,8 @@ display (9.2).
      1.75 (r − 0.3); r ≥ 0.7 → 0.25 − (r − 0.7) ÷ 3, clamped at 0 (r = 1 gives 0.15);
   6. the **posture factor** of the seen actor: order state 10 → × 0.5; else by its posture code: 2, 8, 14 →
      × 3; 3, 9 → × 20; 4, 5, 6 → × 2; 7, 10, 11 → × 1.5; others × 1 (the codes' names were not mapped, 9.2).
-  All arithmetic is single precision.
+  The operands (positions, the range, the constants) are singles and the intermediates extended (AI-008); the
+  value g leaves this computation unrounded and is rounded only when the entry's value is stored (AI-068).
 - **AI-067** (observed, 00489680; medium). A friendly-side observer, when the mission's outfit flag is set, uses
   a simpler in-range / in-front / line-of-sight test giving 1.0 or 0.
 
@@ -550,19 +587,27 @@ display on (9.2).
   carries its kind, a source element or position and a few parameters. Sources: perception (3.2), other NPCs
   ("calls", delivered synchronously, the caller learning whether the call was accepted), the actor (reached
   point, could not reach, done = an animation or sequence finished, got hit, lose consciousness, fit again,
-  timer), the script, and the AI itself. "Return to duty" (event 21) resets the AI (3.5.1).
-- **AI-081** (observed, 0041f540). The event kinds, numbered as the AI uses them internally (the script sees a
-  renumbered id, 6.2): 0 view, 1 out of view, 2 hear, 3 reached point, 4 could not reach point, 5 done,
-  6 impossible, 7 timer, 8 shot at by a player, 9 sees body, 10 sees object, 11 sees soldier, 12 sees friend in
-  trouble, 13 fit again, 14 got hit, 15 loses consciousness, 16 misses the watched colleague, 17 object gone,
-  18 sees the watched element, 19 sync, 20 continue after script, 21 return to duty, 22 panic, 23 enters a
-  sword fight, 24 quits a sword fight, 25 incoming sword strike, 26 wasp, 27 wasp gone, 28 apple, 29 net, 30 net
-  gone, 31 sees beggar, 32 an arrow landed, 33 sees brawl, 34..49 the calls (alert, combat alert, hey, hint,
-  instruction, look there, coordinate, report, go to the officer, officer I am back, the colleague is back,
-  patrol coordinate, tower-guard alert, tower guard calls me, finish the brawl, you just wait), 50 apple chase
-  near, 51 door combat, 52 gallop loop end, 53 sees shadow, 54 arrow launched, 55 stone, 56 adversary weak,
-  57 after-combat injury, 58 clean up after the brawl, 59..61 my talk 1..3, 62..64 your talk 1..3, 65 good
-  strike, 66 lethal strike, 67 enemy near, 68 my talk 0, 69 your talk 0, 70 stop.
+  timer), the script, and the AI itself. The return-to-duty event resets the AI (3.5.1).
+- **AI-081** (observed, 00410620, 0041f540). The events are named here by what happens; the only numbers an
+  implementer needs are the **script-visible values** the filter callback receives (6.2), given in brackets.
+  *Perception*: an enemy comes into the cone [0]; a reported enemy leaves it [1]; a noise is heard [2]; a body
+  is seen [8]; an object (purse, ale) is seen [9]; a soldier is seen [10]; a friend in trouble is seen [11]; the
+  watched element (the checked colleague) is seen [17]; a beggar is seen [30]; a shadow (the "?") is seen [52];
+  a brawl is seen [32]; an arrow lands nearby [31]; a stone lands [54]. *Actor*: reached the point [3]; could
+  not reach it [4]; the animation or sequence is done [5]; the order was impossible [6]; the AI timer fired
+  [7]; got hit [13]; loses consciousness [14]; fit again (the stun fell below the waking level) [12]; the
+  checked colleague is missing [15]; the object went away [16]; a synchronisation partner arrived [18]; the
+  gallop loop ended [51]. *Script and control*: continue after the script [19]; return to duty [20]; stop
+  [−2]. *Fights*: a player shot at me [−2]; enters a sword fight [22]; quits it [23]; an incoming sword strike
+  [24]; the adversary is weak [55]; injured after the fight [56]; a good strike / a lethal strike [−2]; an
+  enemy is near [−2]; an arrow was launched [53]; a door combat [50]. *Stimuli*: panic [21]; wasp / wasp gone
+  [25 / 26]; apple [27]; net / net gone [28 / 29]; an apple chase comes near [49]. *Calls between NPCs*
+  (delivered synchronously, the caller learns whether they were accepted): alert [33], combat alert [34], hey
+  [35], hint [36], instruction [37], look there [38], coordinate [39], report [40], go to the officer [41],
+  officer I am back [42], the colleague is back [43], patrol coordinate [44], tower-guard alert [45], the tower
+  guard calls me [46], finish the brawl [47], you just wait [48], clean up after the brawl [−2]. *Dialogue
+  beats* between two NPCs (the "my line" / "your line" steps of a reported conversation, four each) [−2]. The
+  values not listed above are not produced. Every event's behaviour is in section 3 under the name used here.
 
 #### 3.3.2 Pre-filter
 
@@ -573,7 +618,8 @@ display on (9.2).
   passes only lose-consciousness and fit-again; (d) a timer event is dropped when the sub-state it was launched
   in differs from the current sub-state (a stale timer); (e) an actor out of action (dead, neutralised) drops
   everything; (f) an **unconscious** actor drops every event except fit-again and lose-consciousness, and drops
-  fit-again too **while its current action id is 7**; (g) three events are converted here regardless of state:
+  fit-again too **while its order state is 7** (an order state, the same domain as native 89's 18 and the
+  hidden states 21..23 — not a sprite action id); (g) three events are converted here regardless of state:
   **lose consciousness** clears the order and the head marker, removes the NPC from any brawl, enters sleeping /
   unconscious, puts the stars on the actor and silences him; **wasp** clears the order, sets the storm cloud and
   the wasp reaction; **net** enters the under-the-net reaction. For actors flagged for scripting the event is
@@ -651,8 +697,10 @@ display on (9.2).
   select cycle 290); 0x400 no stop at the waypoint; bit 2 stop exactly on the point (cleared when the target is
   on another layer); 0x10 check reachability first and report could-not-reach; 0x20 turn to the point's
   direction after arriving and play a follow-up action; 0x80 accept arrival within a radius. Native 140 writes
-  this word (0 walk, 1 run, other values verbatim) and re-issues the current leg with the new flags if the actor
-  is on a rail.
+  this word for styles **0 (walk) and 1 (run)** and re-issues the current leg with the new flags if the actor
+  is on a rail; **for any other style the word written is not the supplied value but bits derived from the
+  actor's memory address** (an original defect, 005780d0 / 0041bd20): only styles 0 and 1 are cleared, and
+  OpenSherwood treats any other style as an error with no change (a deliberate deviation, section 8 item 7).
 - **AI-094** (observed, 00439080, 00424d50, 004444a0). **Check-for(guy, N)** (hostile AI): guy indexes the
   mission's NPC table (must be an NPC other than self). Skipped when guy is in the actor's own company or when
   the actor's last alert is less than 3000 frames old. Otherwise (warnings only) at least one waypoint of guy's
@@ -661,7 +709,8 @@ display on (9.2).
   roll). Loop: glance done → "looking for the colleague" with a 10-frame timer; on each timer a new glance starts
   with probability (acc + 10) ÷ 5000 (one roll, then one for the side), acc grows by the interval every 10
   frames; once acc exceeds 1000 the actor gives up and goes **seeking**: a remark, then a search route built from
-  guy's post or his waypoints starting at the nearest (3.5.4). Seeing guy meanwhile (event 18) ends the look. N
+  guy's post or his waypoints starting at the nearest (3.5.4). Seeing guy meanwhile (the watched-element
+  sighting) ends the look. N
   is a look budget, not a radius.
 - **AI-095** (observed, 00439080, 00410de0). **Check-for-sync(guy, N, wp)**: with N = 0 a pure
   synchronisation: wp < 500 is an absolute waypoint index of guy's path, wp ≥ 1000 means "my current index +
@@ -698,7 +747,7 @@ with n frames; "×m" is the reaction delay of AI-100; "reset" is return to duty 
   every difficulty. The integer-boundary cases fall to the lower integer because 0.01 is stored slightly
   below 1/100.
 - **AI-101** (inferred, medium; the event's handling is observed in 00424d50, the body of the hostile reset
-  was not isolated). **Return to duty** (event 21, the unlock native, the end of a search, the finish of a
+  was not isolated). **Return to duty** (the return-to-duty event, the unlock native, the end of a search, the finish of a
   brawl): the AI leaves its current state for the default state and the actor goes to his post, to the nearest
   point of his route or resumes the patrol (AI-096); what else the reset clears (the target list, the post
   facing) is inferred from the behaviour that follows and is a hand-off boundary for the implementer (9.2).
@@ -967,7 +1016,7 @@ with n frames; "×m" is the reaction delay of AI-100; "reset" is return to duty 
 - **AI-142** (observed, 0043d780, 0042fe00, 0043ea70). **Target choice**: the nearest valid enemy with the
   distance √(dx² + (1.7434 dy)²); the join from observe adds 10000 per attacker already on that enemy (prefer
   the unengaged), reserve and step-back add 100 per attacker, shields skip the validity test. "Enemy near"
-  (event 67) while in reaction / observe makes that actor the target at once. Got hit outside a sword fight: a
+  while in reaction / observe makes that actor the target at once. Got hit outside a sword fight: a
   brawling hitter → the brawl logic; otherwise the hitter becomes the target. If my first opponent already
   fights ≥ 2 of us and a crowded friend exists, my target may be reassigned.
 - **AI-143** (observed, 00442470, 004303e0). **How many attack one player**: nothing caps it but the observe
@@ -1049,12 +1098,16 @@ with n frames; "×m" is the reaction delay of AI-100; "reset" is return to duty 
   **the sweeping figures (half circles and circles) need at least two opponents inside their arc and reach
   band**, the others one; score = Σ over those opponents of (expected value + 30), expected value = damage ×
   (100 − the victim's defence) ÷ 100 + stun × (100 − the victim's stun resistance) ÷ 100, −1 if a friend is in
-  the arc, minus the figure's usage penalty (2.7: +50 when used, −10 per choice). The best score wins and its
-  penalty rises; no admissible figure → "step back" when the adversary is too far. In **reaction mode**
+  the arc, **minus three times the figure's usage penalty** — except that a circle admitted through the
+  non-zero-hesitation exception scores its sum **plus 500 without the penalty subtraction**. **When the
+  scoring pass is entered** (the attack gate passed and an adversary exists) every penalty first decays by 10
+  (floor 0); a chooser call that stops at the gate decays nothing. The figure with the highest score wins;
+  **on equal scores the earlier row wins** (a later row must strictly exceed); the winner's penalty rises by
+  50. No admissible figure → "step back" when the adversary is too far. In **reaction mode**
   (AI-152) the block is returned when the block animation's displacement is shorter than the incoming strike's
   remaining displacement — after a failed gate (the NPC case, or the player's second roll not below skill) the
   block is the only candidate; after a passed gate with no scored figure it is the fallback.
-- **AI-152** (observed, 00442190). **Reaction to a player's strike** (event 25 while in the sword fight,
+- **AI-152** (observed, 00442190). **Reaction to a player's strike** (the incoming-strike event while in the sword fight,
   special strike, approaching or moving around): the incoming figure is classified; the chooser runs in reaction
   mode; then with experience > 49, a circle-type incoming thrust and a free spot at reach + 10..20 px → **step
   back**; else the **parade** (the block animation, T = incoming displacement + 10); if the chooser returned an
@@ -1093,7 +1146,7 @@ with n frames; "×m" is the reaction delay of AI-100; "reset" is return to duty 
 - **AI-162** (observed, 0047d270, 0047ca50). **Disengagement**: an adversary is dropped when he dies, is
   knocked out, moves more than 150 px away, goes out of sight, or changes layer / height by more than 40 px; an
   actor with no adversary left sends himself "quit swordfight" and leaves the stance (the fight idle is action
-  54); soldiers report events 24 / 57 to their side.
+  54); soldiers report the quit-swordfight and after-combat-injury events to their side.
 - **AI-163** (observed, 0047dc00, 0043db20, 0043ea70). **Several attackers**: an actor keeps the list; his
   adversary is the first; NPCs balance targets (AI-142). Hits from several attackers are independent messages;
   nothing serialises them.
@@ -1134,18 +1187,24 @@ with n frames; "×m" is the reaction delay of AI-100; "reset" is return to duty 
   4. **Stun roll**, whether or not the blow landed: one roll r2 = rand%99 + 1; if r2 > the victim's head word 9
      (stun resistance) and the row's stun value ≠ 0 and **the victim's current hit points are not 0**: stun
      level += stun × 100 ÷ current hit points (integer division).
-  5. The resolution's result is one of: **no effect** (defended and no stun applied), **damage**, **stun**,
-     **damage and stun**, **finished** (a lying victim hit by a finishing-off figure), **rejected** (a victim
-     without a class block). After it, the strike handler: on *no effect* stops at once (no reaction, no further
-     roll); otherwise plays the reaction (step 6) and, **only when the result is not "finished" and the figure
-     is one of the ten row figures** (not a quick strike), draws **one more roll** rand%100 and compares it with
-     the attacker's experience × 0.2; the experience-gain message that follows applies to player attackers
-     only, but that roll is consumed for every attacker in those cases. So: damage / stun / both with a row
-     figure → three decision draws (defence, stun, experience); no effect → two (defence, stun); finished → the
-     stun draw only when the finishing-off path reaches it (it does not: one draw at most, the defence roll is
-     skipped for lying victims — zero draws); a quick strike → two (defence, stun), never the experience roll.
-     Whether the *rejected* case (a civilian) reaches the experience roll is not settled (9.2). Random draws
-     made by the reactions themselves (sounds, remarks) are outside these counts and are not decision draws.
+  5. **Outcomes and draws.** The resolution reports two *attempt* indications, not state changes: the
+     **damage indication** (the defence roll passed and the row's damage was applied to the hit points — the
+     immune's hit points do not fall, the indication is still set) and the **stun indication** (the stun roll
+     passed and the row's stun value is non-zero — set even when a zero hit-point count or immunity prevented
+     any increase of the level). Three special outcomes carry no indications: a **lying** victim (no defence
+     and no stun draw; a finishing-off figure reports "finished", any other figure reports nothing); a victim
+     **without a class block** (a civilian: no defence and no stun draw, and it reports **both indications
+     set**, exactly as a damage-and-stun result — there is no separate "rejected" outcome); and "nothing"
+     (a standing victim with both indications clear). The strike handler then: on *nothing* exits (the
+     displacement reactions that precede this exit still happen; no further roll); on *finished* plays the
+     reaction and exits without the experience roll; otherwise plays the reaction (step 6) and, **when the
+     figure is one of the ten row figures** (not a quick strike), draws **one more roll** rand%100 and compares
+     it with the attacker's experience × 0.2 — the experience-gain message applies to player attackers only,
+     but that roll is consumed for every attacker in this case. **Decision draws per strike**: a standing
+     victim with a class block: 2 (defence, stun) + 1 if either indication is set and the figure is a row
+     figure; a quick strike on such a victim: 2; a victim without a class block: 1 for a row figure (the
+     experience roll only), 0 for a quick strike; a lying victim: 0. Draws made by the reactions themselves
+     (sounds, remarks) are accounted separately and are not decision draws.
   6. The reaction animation (00474d60): damage only → the flinch 44 (stance 102, bow 114); stunned or
      unconscious → the fall 44 / 107 / 114 then, if still conscious and level > 40, the stagger 103; dead → the
      forward fall 41 when the row has a stun value, else the backward fall 44 (stance / bow twins 105 / 107 and
@@ -1236,7 +1295,7 @@ transitions and the hero's bar at 20 Hz for 60 s.
 
 - **AI-177** (observed, 0047bb60, 004500c0, 004b4260). The arrow element is created bound to the shooter's
   ranged record with an elevation constant 0.1 (flat) or 0.9 (lobbed) by the shot posture; the initial speed is
-  solved for the target distance; a soldier with a signal animation tells his side (event 54). **Hit chance**:
+  solved for the target distance; a soldier with a signal animation tells his side (the arrow-launched event). **Hit chance**:
   the grid is A when the distance ≤ range A, else B (if the distance exceeds the selected range the chance is
   0); p = trunc(100 × distance ÷ range) (an integer percentage); the band is p < 20 → steps 0..1, < 40 → 1..2,
   < 60 → 2..3, < 80 → 3..4, else 4..5; the lower skill row is 0 if skill ≤ 49 else 1, the upper the next; for
@@ -1257,8 +1316,9 @@ transitions and the hero's bar at 20 Hz for 60 s.
   the damage applies (only reachable on hard, or from an NPC never); (b) a **soldier or player** (an actor with
   a class block): one roll rand%101 and the arrow **penetrates iff roll > the target's class head word 10**,
   else it is deflected (a word of 100 always deflects; a word of 0 deflects on roll 0, one in 101); the knight
-  classes carry 100; (c) an **immune** (principal-enemy) target goes through case (b)'s roll like any soldier,
-  but its hit points are never lowered (2.7), so the arrow has no effect either way. A deflected arrow bounces
+  classes carry 100; (c) an **immune** (principal-enemy) NPC target is recognised **before** the penetration
+  test: the arrow does nothing to it and **no penetration draw is made** (zero draws on this path; the guard of
+  the shooter kind still runs first). A deflected arrow bounces
   and re-launches; a penetrating one deals **damage = the record's damage word** (A or B by the arrow's flag;
   100 / 75 / 10 / 20 for records 1..4's A words), no stun, no defence roll; a kill gives the shooter 20 bow
   experience; civilians hit tell their AI. Gravities: −5.6 / −6.4 / −4.0 for the arrow kinds, −0.8 / −7.2 for
@@ -1505,7 +1565,7 @@ row says so.
 | 85 | (x) → bool | 1 iff x is null (no element) | observed, rails reader |
 | 87 | (actor) → bool | 1 iff dead | observed (virtual predicate) |
 | 88 | (actor) → bool | 1 iff unconscious (AI-174's flag) | observed |
-| 89 | (npc) → bool | 1 iff the NPC's **order state** is 18 (the tied / carried state; which of the two is 9.2); a player or invalid handle → error, 0 | observed, 00579b10 |
+| 89 | (human) → bool | accepts any human (player characters included — a broader type test than 134 / 135); 1 iff the actor's **order state** is 18 (the tied / carried state; which of the two is 9.2); a non-human or invalid handle → error, 0 | observed, 00579b10 |
 | 90 | (actor) → bool | dead or unconscious or (order state 18) | observed |
 | 99 | (actor) | reveal the silhouette (AI-074); returns nothing | observed, 00570e70 |
 | 102 | (actor, amount, flag) → bool | the actor must be one of the current sequence's declared actors and a character, else error and 0; queues a hit step of `amount` with a second parameter 100 when flag ≠ 0 else 0 (its meaning 9.2); returns 1 | observed, 00577500 |
@@ -1514,22 +1574,24 @@ row says so.
 | 130 | (npc, target, flag) | no effect in this build | observed, 00486f50 |
 | 134 | (npc, flag) | lock the NPC's AI: the locked flag set, the "queue while locked" flag := flag, the actor **stopped unless its current action is the block stance (127)** (stop reason "AI locked"), the program cleared; an object element (category 0) gets a byte set instead; **a player character → error, no effect** | observed, 00576d80, 00418b80 |
 | 135 | (npc) | unlock: only when the NPC's "out" flag is set (else error, no effect): enemies are told he is fit, the locked flag cleared, and unless the actor is unconscious, has no AI target, or one of its pending sequence steps is a move, return-to-duty is posted; an object element clears its byte; a player → error | observed, 00576e00, 00418bc0 |
-| 140 | (npc, k) | writes the walking flags (AI-093): 0 walk, 1 run, others verbatim; re-issues the current rail leg | observed, 0041bd20 |
-| 160 | (a, b) → px | distance | observed |
-| 176 | (npc, n) | set the company number (2.10) | observed |
-| 177 | (npc, flag) | "always attentive": when set and no target, perception is re-run at once | observed, 00444440 |
+| 140 | (npc, style) | NPC only (a player → error, no effect); style 0 → walking flags := walk, 1 → run, then the current rail leg is re-issued; **any other style writes address-derived bits** (AI-093: only 0 / 1 cleared; OpenSherwood: error, no change) | observed, 005780d0, 0041bd20 |
+| 160 | (loc a, loc b) → int | both arguments must be non-null **location** handles (a null or a non-location → error, 0); result = trunc(the plain euclidean distance between the two locations' points, in px, no y scaling) | observed, 00571b80 |
+| 176 | (soldier, n) | **soldiers only** (a civilian, a player or an object → error, no effect); stores n as a 16-bit company number (2.10) | observed, 005790b0 |
+| 177 | (soldier, flag) | **soldiers only** (else error); "always attentive": when set and no target, perception is re-run at once | observed, 005790f0, 00444440 |
 | 197 | (npc, k) → int | the NPC's custom value k, k in 0..9; **k outside 0..9, a null / non-character handle or a non-NPC → error and −1** | observed, 005794b0 |
 | 198 | (npc, k, v) | write custom value k := v, k in 0..9; invalid k / handle / non-NPC → error, **nothing written** | observed, 00579520 |
-| 218 / 219 | (chief, npc) / (chief) | add a subordinate / remove all subordinates (AI-097); errors when the chief is on a patrol or the subordinate already has one | observed |
-| 220 | (npc) | switch to the alert rail (2.10) and reset the default state; no alert rail (−1) → no effect | observed, 0044cae0 |
+| 218 | (chief, npc) | add npc as a subordinate of chief; rejected (error, no effect) when either handle is not an NPC, when npc already has a chief, when npc has subordinates of its own, when chief is on a patrol, or when chief and npc are the same actor | observed, 0057aa70 |
+| 219 | (chief) | remove all subordinates of chief; rejected when the handle is not an NPC | observed |
+| 220 | (soldier) | **soldiers only** (else error); if the alert rail (2.10) is not −1 it becomes the rail; **in every case** the actor is reset to the default state (an actor already on duty is reset again even without an alert rail) | observed, 0057ad30, 0044cae0 |
 | 228 | (npc, id, frames) | set the emoticon: 0 clears; 1..7 → the markers 2..8 of AI-084 for `frames` frames | observed, 0057aed0 |
 | 235 | (item) → bool | picked up (unchanged from scb.md) | observed |
 | 240 | (actor) → bool | active | observed |
 | 59 | (actor, step kind, parameter) → bool | **excluded from this file**: it records a step of the given kind into the cinematic sequence being declared (error and 0 when no declaration is open or the actor is invalid); it is a sequence native of `spec-script-vm.md`, not an AI native, and not "archer shoots" | observed as far as stated, 00573450 |
 
-scb.md's readings of 128, 140, 177, 197 / 198, 219 / 220 and 228 are superseded. Natives 85, 87, 88, 90, 160,
-176, 218, 219, 235, 240: the meaning is observed; the failure behaviour is the common contract above, inferred
-from the bodies read (medium). The complete id → function map stays in the analyst workspace.
+scb.md's readings of 128, 140, 177, 197 / 198, 219 / 220 and 228 are superseded. **Excluded from clearance**
+(the meaning is observed but the accepted types, coercions and failure effects were not read for them): 85,
+87, 88, 90, 99, 128, 130, 228, 235, 240 — an implementer applies the common contract and records an
+`Assumption` for their failure behaviour. The complete id → function map stays in the analyst workspace.
 
 ### 6.2 Callbacks (required compatibility tokens)
 
@@ -1541,13 +1603,13 @@ from the bodies read (medium). The complete id → function map stays in the ana
   waypoint is reached (AI-091); `FilterAIEvent(source, event)` for actors flagged for scripting (and only
   while the launcher's script flag is set), before the pre-filter, with the receiving actor as the implicit
   context, `source` = the event's source element when the event's payload is an element, otherwise null, and
-  the event id **renumbered**: internal 0..7 unchanged; internal 9..35 → id − 1; 36 → 36; 37..45 → id + 2; 46
-  → 37; 47 → 38; 48 → 35; 49..53 → id − 1; **every other internal id (8 "shot at by a player" and the ids above
-  53) is offered as −2** — the callback is still invoked for them. A zero return drops the event. Hence the ids
-  the retail scripts compare — 0, 2, 8, 11, 13, 14, 22, 23, 31, 33, 34, 52 — mean: 0 view, 2 hear, 8 sees body,
-  11 sees friend in trouble, 13 got hit, 14 loses consciousness, 22 enters a sword fight, 23 quits a sword
-  fight, 31 an arrow landed, 33 the alert call, 34 the combat-alert call, 52 sees shadow (and, for the record,
-  sees soldier is 10, an incoming strike 24).
+  `event` = the **script-visible value** bracketed in AI-081 for that event, or **−2 for every event AI-081
+  marks −2** (the shot-at-by-a-player event, the strike-quality events, enemy near, stop, the brawl clean-up
+  call and the dialogue beats) — the callback is still invoked for them. A zero return drops the event. Hence
+  the ids the retail scripts compare — 0, 2, 8, 11, 13, 14, 22, 23, 31, 33, 34, 52 — mean: 0 an enemy comes
+  into the cone, 2 a noise heard, 8 a body seen, 11 a friend in trouble seen, 13 got hit, 14 loses
+  consciousness, 22 enters a sword fight, 23 quits a sword fight, 31 an arrow landed, 33 the alert call, 34 the
+  combat-alert call, 52 a shadow seen (and, for the record, a soldier seen is 10, an incoming strike 24).
 
 ## 7. Acceptance tests
 
@@ -1565,8 +1627,11 @@ from 0 at the actor's creation unless stated.
    first holds after the add of **frame 66** (1005) → the view event on frame 66, acc := 0, the entry marked
    reported and kept. Wide mode (contribution 159): shadow on frame 1 (acc 159 before the add), view on frame 6
    (1113). Negative: the same player playing action 242 contributes 0 and nothing fires; the player in a
-   no-sight zone the soldier is not in contributes 0; a soldier with id 1 evaluates on odd frames but the
-   contributions and frames above are unchanged because the cached value is identical.
+   no-sight zone the soldier is not in contributes 0. **Observer-id variant**: a soldier with id 1, the entry
+   newly added on frame 0 (its cached value starts at 0, no forced re-evaluation): the first evaluation is on
+   frame 1, frame 0 contributes 0, so the accumulator after frame k is 15 k; shadow on **frame 8** (acc 105
+   before the add), sighting on **frame 67** (1005); with the cache pre-populated to the stored single before
+   frame 0 the frames are those of the id-0 case.
 2. **Category lifecycle** (AI-069). A body entry (category 1) visible to an alerted (seeking) hostile: its
    first non-zero contribution frame emits sees-body and removes the entry; a category-0 entry that was
    reported and is no longer visible emits out-of-view and becomes unreported, and is not removed.
@@ -1600,11 +1665,13 @@ from 0 at the actor's creation unless stated.
    (behind); the attacker 20 px higher → word 4 whatever the bearing. With word 10: roll 10 → not landed, roll
    11 → landed.
 9. **RNG decision draws of one strike** (AI-166, AI-007). A row-figure strike on a standing victim with a
-   class block: landed with damage (stun value 0 or the stun roll failed) → three draws (defence, stun,
-   experience); landed with damage and stun → three; defended but stunned → three; **defended and no stun → two
-   (defence, stun), no experience roll**; a quick strike (no row) that lands → two (defence, stun), never the
-   experience roll; a finishing-off figure on a lying victim → zero (no defence roll; result "finished" skips
-   the experience roll); the reactions' own draws (sounds, remarks) are not counted.
+   class block: the damage indication set (stun value 0 or the stun roll failed) → three draws (defence, stun,
+   experience); both indications set → three; the stun indication only → three; **both clear → two (defence,
+   stun), no experience roll**; the same with an immune victim or a victim at 0 hit points → the indications
+   are set as attempts and the counts are the same as for a normal victim; a quick strike (no row) → two
+   (defence, stun), never the experience roll; a row figure on a victim without a class block → **one**
+   (experience only); a quick strike on such a victim → zero; any figure on a lying victim → zero; the
+   reactions' own draws (sounds, remarks) are accounted separately.
 10. **Recovery phase** (AI-170). An actor with id 5 standing still, no adversary, rate 50, fatigue 12: fatigue
     becomes 7 on the first frame with frame mod 64 = 5 and 2 on the next such frame, then 0; id 37 recovers on
     the same frames as id 5 (37 mod 32 = 5).
@@ -1619,8 +1686,8 @@ from 0 at the actor's creation unless stated.
     skill 0 at exactly range A → p = 100, band 4..5, the step-5 / skill-0 value; skill 30 at 30 % of range A →
     p = 30, band 1..2 with weight 0.5, rows 0 and 1 blended 0.7 / 0.3; a miss consumes three jitter draws.
     Penetration: a soldier target with word 100 → deflected on every roll; word 0 → deflected only on roll 0; a
-    civilian admitted by the guard (a player's arrow on hard) → no roll, full damage; an immune target → the
-    roll is drawn but the hit points never fall; an NPC's arrow never affects a civilian nor a same-side
+    civilian admitted by the guard (a player's arrow on hard) → no roll, full damage; an immune NPC target →
+    **no roll**, no effect (zero draws); an NPC's arrow never affects a civilian nor a same-side
     actor; a player's arrow affects a same-side actor on hard only.
 13. **Aim validity** (AI-176). Range A 250, no flag, same height: a target 249 px due east → D² = 62001 <
     62500 → valid; 250 px due east → not valid (strict); a target 200 px due north → D² = (1.33 × 200)² =
@@ -1628,6 +1695,10 @@ from 0 at the actor's creation unless stated.
     reach = 250 + 0.30933626 × 100 = 280.93; 280 px due east valid, 281 not; in the long mode (a non-NPC
     shooter with the outfit flag) the same case gives reach 561.87; the shooter below the target → 250 (500
     long). A player with 0 arrows → invalid before any geometry; an NPC shooter never uses the long mode.
+    **Rounding-boundary fixture** (AI-008 c): reach 204, same height, dx 0, dy 153.38345336914062: the scaled
+    y 1.33 × dy = 203.99999956 in extended precision is **stored as the single 204.0**, so D² = 41616 =
+    reach² and the strict comparison rejects the shot; an implementation that keeps the extended value would
+    accept it — the stored-single boundary is mandatory.
 14. **Oracle procedures** (tolerances): (a) the cone reach: capture the Alt cone of one soldier with a tint
     threshold that keeps pixels ≥ 5 % green and expect 310 × 229 px (± 10 %); (b) the run heard at 330 px: read
     the material class under the run's path and repeat with the console's noise display; expect the drawn white
@@ -1641,7 +1712,7 @@ from 0 at the actor's creation unless stated.
     sight.
 15. **Callbacks** (AI-190). An actor flagged for scripting receives `FilterAIEvent` for a view event with an
     element payload → (that element, 0); for a hear event whose payload is a position → (null, 2); for
-    internal event 8 → (null, −2) and the callback is still invoked; for internal 60 (my talk 2) → (null, −2);
+    the shot-at-by-a-player event → (null, −2) and the callback is still invoked; for a dialogue beat → (null, −2);
     the receiving actor is the implicit context, not an argument; a return of 0 drops the event before the
     pre-filter, a non-zero return lets it through; an actor without the script flag never receives the
     callback. `ActionChange` on an actor whose action changes from 6 to 141 receives (141, 6).
@@ -1660,11 +1731,23 @@ decisions, not facts about the original:
    per-rule orders of section 3 (AI-007). *Equivalence target*: **distribution-level**, not draw-for-draw —
    an original trace cannot be reproduced draw for draw anyway because the shared stream's sound and effect
    draws are not part of this engine. *Stream ownership*: one named stream for this subsystem ("AI and
-   combat"), drawn only by the rules of section 3 and the natives of section 6 (none draw). *Draw ordering*:
-   per frame in actor-list order (AI-050), within an actor in the order the rules list their rolls, and
-   within one rule the order of its numbered steps; no other subsystem draws from this stream. *Withheld
-   until ratified*: nothing of sections 2..3 depends on the choice except the exact sequence of outcomes; the
-   acceptance tests of section 7 that count draws (9, 12) are stated per decision, not per stream position.
+   combat"), drawn by every rule of section 3 wherever it executes — including **transitively through the
+   natives** (native 140 re-issues a rail leg, whose pass-through pre-check may generate the cached program
+   roll; the unlock native may post return-to-duty whose handling rolls; native 102's hit resolves with the
+   strike rolls) — and by nothing else. *Draw ordering* (complete for the entry points that exist): (i) the
+   level tick's phases are those of `spec-script-vm.md` (VM-103): the script scheduler runs its natives at its
+   phase, and a native's draws occur inside that native's execution; (ii) within the actor phase, actors in
+   actor-list order (AI-050) and, within an actor's tick, the order of AI-050's steps then AI-003's phases;
+   (iii) a synchronous cross-actor call (a shout, a call between NPCs, an engagement's attack order) is
+   handled **inside the caller's step** — its draws nest at that point and complete before the caller's next
+   draw; (iv) a player character's combat draws (the auto-fight decision, the strike resolution on the victim)
+   occur in the actor tick of the actor whose rule executes (the striking actor's hit frame for the sweep, the
+   victim's tick-independent message handling nested in the striker's step); (v) projectiles draw in the
+   projectile phase of the level tick, in projectile-list order, and a hit's target rolls nest inside the
+   projectile's step; (vi) within one rule the order of its numbered steps. *Withheld until ratified*:
+   **integrated seeded behaviour, replay reproduction and canonical-hash expectations for this subsystem are
+   not cleared** — the acceptance tests of section 7 that count draws (9, 12) are stated per decision, not
+   per stream position, and no test asserts a stream position.
 3. **Seeding.** The original reseeds from the wall clock at every save (AI-006); OpenSherwood keeps its
    snapshot-carried seeds — a deliberate deviation that makes replays reproducible across saves.
 4. **Arithmetic.** The original's float arithmetic is AI-008; OpenSherwood implements it with `f32` storage
@@ -1673,6 +1756,8 @@ decisions, not facts about the original:
    expected integer).
 5. **The line-of-sight cache collision** (AI-065) is an original defect; reproducing it is optional and, if
    not reproduced, must be recorded as a deviation.
+7. **Native 140's out-of-range styles** (AI-093) write address-derived bits in the original; OpenSherwood
+   treats styles other than 0 and 1 as a script error with no change — a deliberate, recorded deviation.
 6. **The current engine** (`crates/opensherwood-core/src/ai.rs`, stealth-and-combat.md "Engine") models a
    sector cone with a rear radius, a single run-noise radius, a patrol → noticed → alarm → alerted → returning
    chain with a fixed timeout, one-at-a-time fights that soldiers never start, fixed soldier hits (5 hp at 2 in
@@ -1691,7 +1776,19 @@ decisions, not facts about the original:
 
 - Revision 2 disputed two findings of review 16: the stimulus order (purse, apple, beer, whistle) and
   native 126's values (menacing 4, fleeing 5, sleeping 0). **Review 22 upheld both**; the text keeps them.
-- Revision 3 disputes **no finding of review 22**. Every one of its 16 findings is answered in the text: (1)
+- Revision 4 disputes **no finding of review 27**. Its 13 findings are answered in the text: (1) the rounding
+  boundaries of AI-008, AI-066 reconciled, the aim equality fixture, general equivalence not claimed; (2) test
+  1's id-1 variant (first evaluation frame 1, shadow 8, sighting 67); (3) 3× penalty, the circle bonus without
+  subtraction, decay on entering the scoring pass, the earlier row on ties; (4) attempt indications versus
+  state changes, the class-less victim's outcome and single draw, "finished" restated, the displacement
+  reactions before the exit; (5) order state 7 in AI-082 f; (6) zero penetration draws on the immunity path;
+  (7) the pre-tick hook under the local pause, the door-wait check after perception / AI / deafness, the
+  civilian periodic routine outside the guards; (8) the snapshot inventory extended with explicit ownership and
+  integrated clearance withheld; (9) the natives' transitive draws, the complete entry-point ordering, the
+  explicit withholding; (10) natives 89 / 160 / 176 / 177 / 218 / 220 corrected, the unfinished ones excluded;
+  (11) native 140's styles 0 / 1 only, the deviation; (12) AI-081 rewritten as behavioural events with the
+  script-visible values only, the internal numbers removed from the prose; (13) the identity block.
+- Revision 3 disputed **no finding of review 22**. Every one of its 16 findings is answered in the text: (1)
   the rounding stages and the 15 / 159 / frame-66 example; (2) the extended-precision reaction arithmetic and
   the 54 / 108 / 60 examples; (3) the circles' hesitation exception and the reactive second roll; (4) the
   conditional experience roll and the per-result draw counts; (5) the −2 mapping and the callback tests; (6)
@@ -1741,8 +1838,13 @@ is first needed and does not infer it from this file. Items 15..17 were added by
 14. The hostile reset body (AI-101): what return-to-duty clears beyond the state change; the stun counter's
     phase when the level is set by a script rather than a blow.
 15. Whether native 89's order state 18 is "tied" or "carried" (both are described as that state by different
-    consumers); whether the *rejected* strike result (a victim without a class block) reaches the experience
-    roll (AI-166 step 5).
+    consumers).
+18. Float paths whose rounding boundaries were not fixed by a fixture (AI-008): the graded-value formula's
+    own stages (00489d00), the light-limited reach (0048db80), the morale formula's integer divisions
+    (00432d30), the bow's interpolation (004500c0): cleared as formulas, withheld as bit-exact behaviour.
+19. Snapshot restore fixtures for the inventory of 2.7..2.9 (a pending event queue restored in order, a
+    suspended rail wait, a sync waiter, a collapsing cone, a cached roll that is still available versus
+    consumed): to be written by the implementer before integrated snapshot / replay clearance.
 16. The order pipeline beyond AI-185: the right-click cancel, Ctrl queueing, the left click's dispatch to the
     context actions (previously listed under item 5; restated here as the boundary of AI-185).
 17. What an area search registers as "known" after clearing the watched element (AI-070), and the second
@@ -1771,11 +1873,12 @@ the generic scripts in `scripts/ghidra/`; strings and inventory exports; byte re
 clock-and-rng}.md` and the id maps `state-ids.txt`, `substate_ids.txt`, `natives-map.tsv`. Data checks on the
 player's `profile.cpf` with `harness/tools/probe/cpf_stats.py` and `cpf_probe.py` (all 68 SD, 10 PC, 24 CV
 records, 27 class blocks, 4 ranged records). Oracle recordings compared (no new recording): `combat-
-measurements.md`, `h01-measurements-2.md`, `stealth-and-combat.md` 8 (2026-09-05). Reviews 16 (of revision 1)
-and 22 (of revision 2 at `e966b05`, blob `e10208494c95caf92c2b356357329a61cf014c13`) by Codex `gpt-6-astra`,
-committed under `docs/decisions/reviews/`, drove revisions 2 and 3. Revision 3 was finished on 2026-09-18
-after an interruption on 2026-09-13; no function was re-read between the two dates except those named in
-9.1's answers. Tests that will depend on this spec: none yet (section 7 is the list to implement).
+measurements.md`, `h01-measurements-2.md`, `stealth-and-combat.md` 8 (2026-09-05). Reviews 16 (of revision 1),
+22 (of revision 2 at `e966b05`) and 27 (of revision 3 at `e7b2cd4`, blob `c9040a2a406e8525fbd6aae32241b81fe0c72a6c`)
+by Codex `gpt-6-astra` (reviewer session `01a0b406-a088-76b0-b80e-f5d4a5abd73d`), committed under
+`docs/decisions/reviews/`, drove revisions 2, 3 and 4. Revisions 3 and 4 were written on 2026-09-18 after an
+interruption on 2026-09-13; the functions re-read for them are named in 9.1's answers and in section 8 of the
+review documents. Tests that will depend on this spec: none yet (section 7 is the list to implement).
 
 Functions read, by area (why): **clock / RNG** 004c6ef0 0050f710 00404180 00642a7d 00642a70 004148b0 0040a230
 (the frame, the wait, the seeding). **Profile loading and fields** 00564580 00564e60 00564bf0 00564ea0 00565490
