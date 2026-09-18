@@ -1,9 +1,9 @@
 # Navigation: layers, sectors, doors, lifts and the path finder (behaviour specification)
 
-Status: `draft`, revision 5 (answers Codex review 32; awaiting the next review). Build: GOG English edition,
+Status: `draft`, revision 6 (answers Codex review 37; awaiting the next review). Build: GOG English edition,
 `Robin Hood.exe` SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`, image base
 `0x00400000`; every address below is a virtual address in that image. Analyst: 2026-09-13, session
-`a275bfc2e1e321f17` (analyst role, ADR-0009). Reviewer: Codex `gpt-6-astra`, reviews 15, 20, 26 and 32 (the
+`a275bfc2e1e321f17` (analyst role, ADR-0009). Reviewer: Codex `gpt-6-astra`, reviews 15, 20, 26, 32 and 37 (the
 review events are listed in "Identity and exposure"). Publication approval: pending (separate from factual
 approval).
 
@@ -18,11 +18,12 @@ Claim ids are `NAV-nnn`, inline; every statement an implementer relies on carrie
 the program at the address, and where possible confirmed on the nine `.rhp` maps), `inferred` (the reading that
 fits every branch and every map, with the evidence), `unknown`. Confidence is high unless stated.
 
-Sibling specifications, pinned: `spec-movement-animation-camera.md` revision 3 (commit `03b413e`, `ANIM-nnn`:
+Sibling specifications, pinned: `spec-movement-animation-camera.md` revision 5 (commit `002314d`, `ANIM-nnn`:
 the frame, play modes, per-frame displacement, turning, the proximity comparison ANIM-240, the failed-move
 counter ANIM-241, arrival ANIM-242, bonds ANIM-243, element completion, the action queue ANIM-022, layer changes
-inside action lists ANIM-311, the snapshot contract of its section 8; its ANIM-240 names NAV-150(b) as the
-fuller statement of the proximity eligibility, so that list is owned here); `spec-ai-combat.md` revision 3
+inside action lists ANIM-311, the snapshot contract of its section 8; its ANIM-240 states the proximity guards
+and the directional comparison and defers the class and state tests and the query geometry to NAV-150(b), which
+owns them; the contract between the two is stated in NAV-150(b)); `spec-ai-combat.md` revision 3
 (`e7b2cd4`, `AI-nnn`: the random stream, actor classes, line of sight AI-065); `spec-script-vm.md` revision 5
 (`22a1e33`, `VM-nnn`: handles VM-030, the native table, sequence elements). What the pinned movement revision
 does **not** supply and this specification therefore withholds or defines as its own fallback: the proximity
@@ -57,7 +58,14 @@ logic frame; every count in frames transfers one to one.
     table (static formats except `TUPO` / `PPPP`; graph decoding, availability predicate, quadrant rules,
     corner walks and waypoint ordering; click resolution; door admission, native state changes and passage
     action ordering; building semantics; stairs; waypoint delivery, approach test and crossing state);
-    answered by this revision.
+    answered by revision 5;
+  - review 37, `2026-09-18-codex-review-37-spec-navigation.md`: revision 5, commit `4e35271`, blob
+    `0ad05e9f43ea15b463951f03e0b466575ec15798`; 6 findings, fix-then-clear with an updated clearance table
+    (established formats, `TUPO` name / record parsing withheld; graph decoding, availability predicate,
+    quadrant rules, corner walks and waypoint ordering; established click resolution and cursor rules; door
+    admission, native state changes and passage action ordering; building semantics; stairs; waypoint
+    delivery, approach tests and crossing state; the integration items waiting on findings 1, 2, 3, 4 and 6);
+    answered by this revision. The ids of the cleared claims are unchanged in this revision.
   The reviewer's exposure: the decompilation in `re/` and the analyst's navigation notes, the inspected revision
   of this file; its output is corrections to this file only.
 - **Implementation reviewer**: pending, must be a session that has never read `re/`.
@@ -324,7 +332,10 @@ Door {
   refusal reaction instead of walking), obstacle polygons in an active and an inactive variant, lists of
   `(layer, index)` references that switch bonds and door leaves on or off, and the parameters of the availability
   toggle of NAV-057. The complete layout, and which fields carry the toggle parameters, is unread (section 9,
-  fallback 8.7).
+  fallback 8.7). Established from the chunk loader (`0x004c3930`, `0x005e1d50`, `0x005e20c0`; high): the body
+  opens with a `u16` record count, the records follow, and the chunk header's length word (which covers the
+  version word and the body, as for every chunk) frames the whole; the record layout given in `rhp.md` is
+  **not** established (it consumes none of the eight nonempty retail chunks) and no patch name is read.
 
 ### 2.8 The cell grid
 
@@ -366,7 +377,15 @@ Door {
     unavailable sequence **in reverse available order** (the last such node first); then the members of the
     unavailable sequence that are available under `s` are moved to the end of the available sequence **in
     reverse unavailable order**;
-  - edges of a node, and obstacles of a sector: the same two moves, but each **in forward order**.
+  - obstacles of a sector: the same two moves, but each **in forward order**;
+  - edges of a node: the same two forward moves, applied **only in a recomputation under which the node itself
+    is available** (it stays available, or it becomes available in that recomputation). While a node is
+    unavailable, a recomputation leaves both of its edge sequences exactly as they are, whatever the edges'
+    own availability under `s`; when the node becomes available again its sequences are transformed once,
+    against the state of that moment, so an edge disabled and re-enabled meanwhile is not moved at all and
+    keeps its place, and an edge that is unavailable at that moment is moved then. (The search never reads
+    the edges of an unavailable node, so the frozen sequences are observable only through this history:
+    test 7.2-14, fixture F4.)
   Example (nodes, file order `A, B, C`, `A` and `B` unavailable at the initial state, `C` available): after the
   initial recomputation, available `C`, unavailable `B, A`; enabling both: available `C, A, B`; disabling both
   again: unavailable `B, A` (the moves are `B` then `A` in reverse available order); enabling again: `C, A, B`.
@@ -378,7 +397,8 @@ Door {
   re-enables in the order the rule above yields (for nodes: the reverse of their unavailable order, that is, the
   file order of the initially unavailable nodes that the saved state enables). The original does not preserve an
   in-session order across a save and a load when the two rules produce different sequences (e.g. after a field
-  was toggled twice). OpenSherwood's choice is 8.3; test 7.2-14 fixes the original's outcomes and the chosen one.
+  was toggled twice). OpenSherwood's choice is 8.3; test 7.2-14 fixes the original's outcomes and the chosen one,
+  for node orders and for the edge-order history of a node that was unavailable while its edges were toggled.
 
 ## 3. Behaviour
 
@@ -434,17 +454,22 @@ Door {
   is at `x = 0`; when its left edge is right of the map, so that its right edge is at the map width; likewise
   vertically. One **round** applies, for each enabled wall segment meeting the box, in cell order, the wall's
   **separation**: a translation along the wall's oriented unit normal `n` (NAV-012) by the distance `T(wall,
-  box)` defined below; the box handed to the next wall is the translated one (wall order is observable, test
-  7.2-15c). The separation of a wall whose `n` side does not contain the box centre `c` (`n . (c - p1) <= 0`,
-  `p1` an end of the wall) is zero. Otherwise `T` is the function of the four signed corner distances
-  `d_i = n . (corner_i - p1)`, taken in the fixed corner order (min x, min y), (max x, max y), (max x, min y),
-  (min x, max y), given by `T_0 = 0` and `T_i = 1 - d_i` when `d_i + T_(i-1) < 0.1`, else `T_i = T_(i-1)`;
-  `T = T_4`. The observable consequences: after a separation the last corner that determined `T` lies exactly
-  1 px on the `n` side; a corner deeper than that one by more than 0.9 px would have determined `T` itself, so
-  the deepest corner of the box ends at exactly 1 px unless a corner earlier in the fixed order and within 0.9
-  px of it determined `T`, in which case the deepest ends between 0.1 and 1 px (test 7.2-15e); a diagonal wall
-  yields a diagonal translation; a box whose centre is on a wall's blocked side is not moved by that wall in
-  that round.
+  box) >= 0` defined below; the box handed to the next wall is the translated one (wall order is observable,
+  test 7.2-15c). Let `d_i = n . (corner_i - p1)` (`p1` an end of the wall) be the signed distances of the four
+  corners from the wall's line, positive on the free side, and `c` the box centre. `T = 0` when the centre is
+  not on the free side (`n . (c - p1) <= 0`). Otherwise `T = 1 - d_ref` for one corner of the box, its
+  **reference corner** for that wall, which therefore ends exactly 1 px on the free side. Which corner is the
+  reference is fixed by the corner distances and the fixed corner order (min x, min y), (max x, max y),
+  (max x, min y), (min x, max y): it is the last corner of the chain that starts at the first corner in that
+  order lying less than 0.1 px on the free side (`d < 0.1`) and continues, from each corner of the chain, to
+  the next corner in the order lying more than 0.9 px deeper than it (`d_next < d_chain - 0.9`); when no corner
+  lies below 0.1 px there is no chain and `T = 0`. Required consequences: after a separation every corner lies
+  at least 0.1 px on the free side and the reference corner exactly 1 px; when no two corners are within 0.9 px
+  of each other in depth the reference is the deepest corner (`T = 1 - min d_i`) and the order plays no part;
+  the order decides only among corners within 0.9 px of one another, and then a shallower corner earlier in the
+  order can be the reference, leaving the deepest between 0.1 and 1 px (test 7.2-15e); a diagonal wall yields a
+  diagonal translation; a box whose centre is on a wall's blocked side is not moved by that wall in that
+  round.
 - NAV-112 (observed, `0x00556990`; `0x004f6c20` is the live variant the orders use). **Corridor test** from `p`
   to `q` for half-size `(w, h)`: the corridor is the rectangle spanned by the two boxes of half-size
   `(w - 1, h - 1)` centred at `p` and `q`, its sides taken from the boxes' corners according to the signs of
@@ -463,7 +488,8 @@ Door {
   sector `X` into its other side `Y`: `door_cost` is NAV-041; `g` is the length walked to `D`'s point on `X`:
   from `P` for the doors of `S0`, otherwise the `g` of the door it was reached from plus that door's cost plus
   the link length; `h = |D's point on Y - T|`, fixed when `D` is first reached and not recomputed. The doors of
-  `S0` that the character may pass from `S0` (NAV-170, planning form) are the initial set. Examining `D`: if
+  `S0` that the character may pass from `S0` (NAV-170, planning form) are the initial set, queued in the
+  sector's door-list order (so among equal `f` the last-listed is examined first). Examining `D`: if
   `Y == target_sector`, the route is `D`'s chain of predecessors (at most 102 doors; longer chains are a
   failure: no route). Otherwise each link of `D` on `Y` to another door `N` is a candidate unless it is the link
   `D` was reached by or it is excluded by NAV-123; `N` is reached through `D` when it has not been reached before
@@ -606,8 +632,9 @@ Door {
 ### 3.6 Movement along the waypoints
 
 - NAV-150 (observed, `0x00467a50`, `0x005fc700`, `0x00561040`). Movement is the sibling specification's:
-  per-frame displacement ANIM-200/201/206, turning ANIM-203, the collision-aware move ANIM-204/205, move-action
-  arrival ANIM-208, layer changes inside action lists ANIM-311. Two facts belong here:
+  per-frame displacement ANIM-200/201/206, turning ANIM-203, the choice between the plain move and the
+  collision-aware move ANIM-204 (the latter is the movement specification's section 3.9: ANIM-240/241/242),
+  move-action arrival ANIM-208, layer changes inside action lists ANIM-311. Two facts belong here:
   (a) the **door-approach test** element of NAV-130 (ANIM section 3.4, kind 2) is an immediate two-way
   branch: in its point form it is *done* when `max(|dx|, |dy|) < tolerance + 5` px between the character and its
   point and otherwise *cancels the rest of the sequence*; in its sector form it is done when the character's
@@ -616,18 +643,28 @@ Door {
   the mover's *proposed next position* (its position plus this frame's displacement) with half-extent `r` on
   each axis, `r` = the element's proximity radius field plus 60 px (the field's source is unread, fallback 8.7:
   0). Every candidate element must be displayed, must not be the mover nor the element the mover carries, and
-  must be on the mover's layer and sector (the common exclusions; ANIM-240 at the pinned revision names this
-  claim as the fuller statement, so the list is owned here). A **character** candidate (the two low class bits
-  clear) is then a partner iff all of: it is not marked out of action; the mover's displacement this frame is
-  nonzero; it is not a soldier-family character whose current action id (ANIM-010) is 7; when the mover is a
-  soldier-family character with its "engaged" field set (a field read at the comparison but not named by any
-  routine read; fallback 8.7: treated as clear), the candidate's current action id is none of 3, 12, 17; its
-  position lies in the square; and the dot product of `(candidate position - mover position)` with the unit
-  movement direction is at least 5 px. A **non-character** candidate (both low class bits set) is a partner iff
-  it answers "blocking" and its position lies in the square (no other test). What happens to a partner and to
-  the mover is the proximity reaction, unread by both specifications; 8.7 (`NavProximityReaction`) supplies the
-  executable fallback and takes precedence over the movement specification's `CharacterPush` entry, which names
-  no outcome.
+  must be on the mover's layer and sector (the common exclusions; ANIM-240 at the pinned revision states the
+  same guards and defers the class and state tests and the query geometry to this claim, which owns them). A
+  **character** candidate (the two low class bits clear) is then a partner iff all of: it is not marked out of
+  action; its **position differs from the mover's position** (the two position pairs are compared for
+  equality, `0x0056133c`-`0x00561347`, `0x005fc0e0`; nothing about this frame's displacement is tested here - a
+  candidate standing exactly on the mover is never a partner, and a mover with a zero displacement runs no
+  proximity scan at all, ANIM-200); it is not a soldier-family character whose current action id (ANIM-010) is
+  7; when the mover is a soldier-family character with its "engaged" field set (a field read at the comparison
+  but not named by any routine read; fallback 8.7: treated as clear), the candidate's current action id is none
+  of 3, 12, 17; its position lies in the square (bounds inclusive on both axes); and the dot product of
+  `(candidate position - mover position)` with the mover's **unit movement direction** is at least 5 px
+  (`0x005613be`-`0x005613e0`; the operand is the normalised direction the mover's position code keeps,
+  `0x0055fc20`, so the product is the candidate's lead along the direction of travel in px, independent of the
+  mover's speed). A **non-character** candidate (both low class bits set) is a partner iff it answers
+  "blocking" and its position lies in the square (no other test). **Contract with ANIM-240** (pinned revision
+  5): both specifications state the same directional comparison - the unit direction and the threshold 5 - and
+  the same guards; the movement specification's revision-3 wording that the product depends on the mover's
+  speed is withdrawn in its revision 5. Precedence should the two ever disagree: the eligibility list and the
+  query geometry are this claim's; the directional comparison is ANIM-240's; the reaction is neither's. What
+  happens to a partner and to the mover is the proximity reaction, unread by both specifications; 8.7
+  (`NavProximityReaction`) supplies the executable fallback and takes precedence over the movement
+  specification's `CharacterPush` entry, which names no outcome.
 
 ### 3.7 Bonds: changing area (and height)
 
@@ -907,10 +944,17 @@ of N4 with {8,1} of N1); no other edges. Start `(100,100)`, goal `(300,100)`, un
     (e) *Budget*: with the budget forced to 1 unit, `P`'s dispatch at `t + 1` produces an empty result delivered
     at `t + 2` as failed-pending. (f) *Failure boundary*: a failed-pending result with arrival tick `a = t + 2`
     is still pending at the slot of `a + 100` and fails at the slot of `a + 101`, when `P` plays its refusal
-    reaction; a snapshot taken at `a + 50` and restored reproduces that failure tick. (g) *Patch after a
-    restore*: the snapshot of (a) is restored; at `t + 1` `P` is dispatched (completed, lower path, delivery
-    `t + 2`); the patch of (c) is then applied during the updates of `t + 1`: the restored inputs are recomputed
-    and `P` gets the upper path at `t + 2`, `Q` the upper path at `t + 3` (under `NavPatches`: lower, lower).
+    reaction; a snapshot taken at `a + 50` and restored reproduces that failure tick. (g) *Restore of a
+    completed result, then a patch*: the snapshot of (b) is restored (end of `t + 1`: `P` completed with the
+    lower path and delivery tick `t + 2`, `Q` queued). At P1 of `t + 2` `P`'s restored result is consumed
+    unchanged: its three lower-path move actions exist after the slot of `t + 2` and no search runs for it (a
+    restored completed result is always consumed at the first P1 after the restore; patches run in P3, so none
+    can reach it). `Q` is dispatched at P2 of `t + 2` (completed, lower path, delivery `t + 3`). The patch of
+    (c) is then applied during P3 of `t + 2`: `P`'s consumed result is not revised; `Q`'s completed result is
+    returned to the queue head and recomputed at once against the new availability with delivery tick `t + 3`
+    unchanged: `Q` gets the upper path at `t + 3` (under `NavPatches`: lower). A patch meant to revise a result
+    that a snapshot holds as completed must have run before the snapshot was taken (case (c)); after a restore
+    a patch can only revise requests dispatched after the restore.
     (h) *Repeated patches*: two toggles of field 0 in the same updates of `t + 1`: the state ends as it began;
     `P`'s result is recomputed twice, the second time against the initial availability; `P` gets the lower path
     at `t + 2` (under `NavPatches`: lower). (i) *Cancellation, submission, patch* in one updates phase of
@@ -936,6 +980,34 @@ of N4 with {8,1} of N1); no other edges. Start `(100,100)`, goal `(300,100)`, un
     opened later (N2 and N3 are not openable): the lower path as above; under 8.3: the upper path. When 8.3 is
     rejected, a snapshot taken between the two toggles must restore both sequences (`N3, N4` / `N2, N1`) so that
     the second toggle yields `N3, N4, N1, N2`.
+    **Edge-order history of an unavailable node** (NAV-058, second rule), **fixture F4**: as F1 but the
+    obstacle is the triangle `T0 (160,100)`, `T1 (180,80)`, `T2 (180,120)` (one region, nodes in that order;
+    `offset_bits` 9 for T0, 7 for T1, 14 for T2; T0 `node_mask` 2, T1 and T2 mask 0), with edges in both
+    directions between T0-T1 (record pairs joining {1} of T0 with {1,2} of T1), T0-T2 (pairs joining {8} of T0
+    with {8,4} of T2) and T1-T2 (pairs joining {2,4} of T1 with {2,4} of T2), cost = corner distance; the edge
+    T1 -> T0 (entering T0 from T1) has `edge_mask` 4, every other edge mask 0; the edges entering T0 are listed
+    T1 -> T0 then T2 -> T0. Two barrier segments `(140,50)-(140,92)` and `(140,108)-(140,150)` (search
+    barriers, 2.2; they are not walls and block no corridor) separate the start `(100,100)` from the corners
+    of T1 and T2 but not from T0's corner, so T1 and T2 are never openable and are reached only through T0.
+    Start `(100,100)`, goal `(300,100)`. When T0 is available it is the only opened node (`g = 60`, `h = 140`),
+    is not goal-visible, and reaches T1 and T2 with equal `f` (about 209.94) **in the order of its entering
+    edges**; the node reached second is examined first and is goal-visible (T1 through bit 2 at `(186,76)`, T2
+    through bit 4 at `(186,124)`): entering order `T1 -> T0, T2 -> T0` gives the **lower path**
+    `(100,100), (154,104), (186,124), (300,100)`; the order `T2 -> T0, T1 -> T0` gives the **upper path**
+    `(100,100), (154,96), (186,76), (300,100)` (smoothing removes nothing: either three-point corridor meets
+    the triangle). Sequences, each starting from the load state (T0 unavailable: the search finds no path):
+    - toggle field 1 (the edge T1 -> T0 becomes unavailable while T0 is unavailable), toggle field 1 again,
+      then toggle field 0 (T0 becomes available): the original leaves T0's edge sequences untouched by the first
+      two recomputations and transforms them at the third against a state under which every edge is available,
+      so the entering order stays `T1 -> T0, T2 -> T0`: the **lower** path; state word `0x55555556`. An
+      implementation that transformed the edge sequences at every recomputation would end with
+      `T2 -> T0, T1 -> T0` and the upper path, which is wrong. Under 8.3: lower (file order).
+    - toggle field 0 first (T0 available), then field 1 twice: now the edge is moved to T0's unavailable
+      sequence and back to the end of its available sequence: `T2 -> T0, T1 -> T0`, the **upper** path; the
+      same state word `0x55555556`. Under 8.3: lower. The two sequences reach the same state word with
+      different orders, which is why 8.2 keeps the sequences and not only the words when 8.3 is rejected.
+    - a snapshot taken after the first two toggles of the first sequence and restored must yield the lower path
+      after the third toggle (its restored sequences for T0 are `T1 -> T0, T2 -> T0` / empty).
 15. **Unsticking** (NAV-111), segments given with their oriented normals; inputs and final outputs only.
     (a) Vertical wall `(100,50)-(100,150)`, normal `(-1,0)`, box `(91,96)-(103,104)`: result `(87,96)-(99,104)`,
     clear after one round (the deepest corners end 1 px on the free side). (b) Diagonal wall `(0,0)-(100,100)`,
@@ -947,10 +1019,10 @@ of N4 with {8,1} of N1); no other edges. Start `(100,100)`, goal `(300,100)`, un
     in general the order is observable. (d) The box of (a) with its centre at `(103,100)` (the wall's blocked
     side): the wall's separation is zero; after 50 rounds unsticking fails with the box unchanged.
     (e) Order-sensitive case: wall through `(100,100)` with unit normal `(-cos 5 deg, sin 5 deg)` (about
-    `(-0.99619, 0.08716)`), box `(91,96)-(103,104)`: corner distances in the fixed order are about 8.617,
-    -2.640, -3.338, 9.315; the translation is `1 - (-2.640) = 3.640` along the normal (the third corner is then
-    at about 0.302, above 0.1, and determines nothing): result about `(87.374,96.317)-(99.374,104.317)`; the
-    deepest corner ends 0.302 px on the free side, not 1 px.
+    `(-0.99619, 0.08716)`), box `(91,96)-(103,104)`: the corner distances in the fixed order are about 8.617,
+    -2.640, -3.338, 9.315 (the second and third corners within 0.9 px of each other in depth). Result: the box
+    translated by about 3.640 along the normal, about `(87.374,96.317)-(99.374,104.317)`: the second corner of
+    the fixed order ends exactly 1 px on the free side and the deepest corner about 0.30 px, not 1 px.
 16. **Quadrant rule, all bits** (NAV-143), corner `(100,100)`; for each candidate a point for the first form,
     a point on the first form's boundary, a point for the second form, and two failing points:
     bit 1 at `(94,96)`: `(94,120)` first form (boundary `v_x = 0`), `(80,120)` first, `(120,96)` second form
@@ -1001,7 +1073,9 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
      subsequent submission in the same P3 joins the queue (ordered by NAV-147), and a subsequent patch in the
      same P3 dispatches the then head at once with delivery tick = current tick + 1 (test 7.2-13i); repeated
      patches in one P3 each recompute the completed request against the state at that moment, the delivery tick
-     unchanged (test 7.2-13h); a patch after a restore recomputes from the restored inputs (test 7.2-13g);
+     unchanged (test 7.2-13h); a completed result restored from a snapshot is consumed at the first P1 after
+     the restore, before any P3 can apply a patch, so a patch after a restore revises only requests dispatched
+     after the restore (test 7.2-13g);
    - **work budget**: one unit per corridor test (NAV-112, each evaluation), per node examination and per
      reaching (NAV-141 steps 3 and 4), 1 000 000 units per search; exhaustion ends the search with an empty
      result delivered at the request's delivery tick (as failed-pending). The value is a bound, not a
@@ -1009,8 +1083,10 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
      assert that no retail map exhausts it. Exhaustion is a deviation from the original (which has no bound).
 2. **Snapshot contract (ADR-0004).** Authoritative and hashed: per sector the state word (NAV-055) and, when
    8.3 is not adopted, for every ordered collection of NAV-058 (the nodes of each region, the edges entering each
-   node, the obstacles of each sector) **both** its available and its unavailable sequence, since the next
-   toggle's outcome depends on the unavailable order as much as on the available one; per door the open flag,
+   node, the obstacles of each sector) **both** its available and its unavailable sequence - including those
+   of every node currently unavailable, which keep their history until the node is re-enabled (NAV-058) -
+   since the next toggle's outcome depends on the unavailable order as much as on the available one; per door
+   the open flag,
    both lock sets,
    the "player barred" byte, the leaf's enabled flag; per building the occupant list and the "displayed"
    marks; per character: the layer, sector number and area of NAV-003, the **active crossing** (the door recorded
@@ -1021,17 +1097,19 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
    sector number, start, goal, gait, run flag, priority state, unstuck flag, submission tick, reference box and
    point; every completed request with the same inputs, its waypoint list and its delivery tick; every
    failed-pending request with its owner, inputs and arrival tick. A completed result is restored as data and
-   consumed at its delivery tick; it keeps its inputs so that a patch after the restore can recompute it (8.1).
+   consumed at its delivery tick, which under 8.1 is always the first P1 after the restore (no patch can reach
+   it first; test 7.2-13g); it keeps its inputs for the hash and for the failed-pending re-run.
    There is never an executing request at a snapshot boundary. Restore rebuilds availability from the state
    words (and both sequences from the stored ones when kept).
 3. **Availability order (proposed deviation, requires approval).** OpenSherwood keeps the nodes, edges and
    obstacles of a sector in file order filtered by availability at all times. The original's orders of NAV-058
-   (re-enabled objects moved to the end, nodes in reverse order, edges and obstacles in forward order) are not
-   reproduced; the difference is confined to the opening and examination ties of NAV-141 after a field has been
-   toggled. Test 7.2-14 fixes the original's outcomes and the chosen one. If the deviation is rejected, the two
-   sequences of every collection become snapshot state (8.2), maintained by the moves of NAV-058 at every
-   recomputation, and restore reproduces the stored sequences (not the original's load transition, which the
-   original itself does not keep consistent with its in-session order).
+   (re-enabled objects moved to the end, nodes in reverse order, edges and obstacles in forward order, a node's
+   edge sequences transformed only while the node is available) are not reproduced; the difference is confined
+   to the opening, reaching and examination ties of NAV-141 after a field has been toggled. Test 7.2-14 fixes
+   the original's outcomes and the chosen one. If the deviation is rejected, the two sequences of every
+   collection become snapshot state (8.2), maintained by the moves of NAV-058 at every recomputation under the
+   conditional rule for edges, and restore reproduces the stored sequences (not the original's load transition,
+   which the original itself does not keep consistent with its in-session order).
 4. **Invalid inputs (OpenSherwood decisions where the original is undefined).** NAV-014: a request naming an
    obstacle or an unknown number is rejected (the element fails). Native 8 with any index outside `0 ..
    count - 1` returns none. Natives 182 and 186-189 with a null or unknown handle: 182 returns 0, the setters do
@@ -1043,33 +1121,66 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
    costs are stored single-precision values; (iii) the **improvement comparison** of NAV-141 step 4 is made
    between the tentative cost as an extended-precision sum (`g + edge cost` before rounding) and the stored
    single-precision `g` of the far node (`0x00556839`-`0x0055688c`); when the reaching improves, the stored `g`
-   becomes the rounded sum; (iv) the route search's three-term score is summed in extended precision and stored
-   (`0x004f9ff5`-`0x004fa01f`); (v) the cross products of the quadrant and corridor tests are compared with zero
-   in extended precision without storing; (vi) the precision-control word the program runs under was not read.
-   **OpenSherwood's policy** (deviation): every operation in `f32`, in the written order (`door_cost + g` then
-   `+ h`; `g + h`; `g + cost`), stored scores compared as `f32`, and the improvement comparison made on the
-   **rounded** tentative cost. Where the two evaluations can differ: (a) an improvement comparison whose exact
-   tentative cost lies below the stored `g` by less than half an `f32` step at that magnitude (the original
-   improves, the policy does not); (b) sums and square roots whose double rounding differs from a single
-   rounding; (c) nothing in the geometric tests with retail data, because map coordinates, candidates
-   (`corner +- (6, 4)`) and corridor sides (`+- (5, 3)`) are integers, so cross products are exact in both
-   evaluations, and the smoothing shrink `0.00005 (r - k)` lands within one `f32` step of an integer only for
-   legs longer than 20 000 px (none exist). No bound on the frequency of (a) and (b) on retail maps is claimed.
+   becomes the rounded sum; (iv) the route search's three-term score is summed in extended precision in the
+   order `door_cost + h`, then `+ g`, and stored (`0x004f9c26`-`0x004f9c34` for the initial doors,
+   `0x004f9ff5`-`0x004fa01f` for reached doors); (v) the cross products of the corridor test (`0x0060a990`,
+   compared with zero inclusively) are evaluated in extended precision without storing, while the quadrant rule
+   compares differences of coordinates with zero, whose sign every evaluation reproduces; (vi) the smoothing
+   shrink is stored single-precision in the original as well (`0x00554a14`-`0x00554a55`: the scaled vector and
+   the sum are stored); (vii) the precision-control word the program runs under was not read.
+   **OpenSherwood's policy** (deviation): every operation in `f32`, in the original's written order
+   (`door_cost + h` then `+ g`; `g + h`; `g + cost`), stored scores compared as `f32`, and the improvement
+   comparison made on the **rounded** tentative cost. Where the two evaluations can differ: (a) an improvement
+   comparison whose exact tentative cost lies below the stored `g` by less than half an `f32` step at that
+   magnitude (the original improves, the policy does not); (b) a three-term door score whose first partial sum
+   rounds, so that the two roundings of the policy and the single rounding of the original land on adjacent
+   `f32` values (an order or a tie may differ); (c) a cross product of the corridor test whose factors need more
+   than 24 significant bits (both coordinate differences above 4096 px, or fractional runtime coordinates): the
+   policy can turn a strict side decision into an exact touch, never reverse a side (rounding is monotonic);
+   (d) square roots and sums of squares at magnitudes where the double rounding differs from a single rounding.
+   Where they cannot differ: the quadrant rule and the box tests (signs of differences); every product of two
+   integers below 4096 in magnitude (exact in `f32`); the shrink, which both evaluations lose identically when
+   `0.00005 (r - k)` is below half an `f32` step of the coordinate (legs shorter than about 2.4 px at
+   coordinates in `[2048, 4096)`, about 4.9 px in `[4096, 8192)`). No bound on the frequency of (a)-(d) on
+   retail maps is claimed.
    Acceptance fixtures for the policy, with the corridor and quadrant tests stubbed as always passing and the
    goal visible only from the node named (search-kernel fixtures): (1) **rounding-sensitive improvement**: start
    `(0,0)`, goal `(100,200)`; nodes A `(100,0)`, M `(10,0)`, N `(10,40)` in that list order, all openable from
    the start with `g` = their distance (100, 10, `sqrt 1700`); edges M -> N with file cost exactly
-   `20 - 2^-19` (an `f32` value) and N -> A with cost 70; `h`: A 200, M about 219.3, N about 183.6. M is examined
-   first (`f` about 229.3), reaches N with `g = 10 + (20 - 2^-19) = 30 - 2^-19` exactly (stored), which improves
-   N; N is examined next (`f` about 213.6) and reaches A with the exact tentative cost `100 - 2^-19`; the
-   original improves A (`100 - 2^-19 < 100`) and the path is start, M, N, A, goal; under the policy the rounded
-   tentative cost is `100.0`, A is not improved, and the path is start, A, goal. The expected outcome under the
-   policy is the second; the first documents the original. (2) The exact ties of tests 6 and 14 (identical
-   operands: both evaluations agree). (3) The 0.807 separation of test 6 and the 0.42 separation of F1 with the
-   obstacle moved to `(180,80) (220,80) (220,121) (180,121)` are far above any `f32` step and must give the same
-   examination order under both evaluations (upper path in both). (4) Geometric exactness: the quadrant cases of
-   test 16 and the corridor cases of test 3 must be decided identically under `f32` and under extended
-   evaluation (integers); an implementation is expected to pass them with either.
+   `20 - 2^-19` (an `f32` value) and N -> A with cost 70; `h`: A 200, M about 219.32, N about 183.58. **N** is
+   examined first (`f` about 224.81, below M's 229.32), reaches A with the tentative cost `sqrt 1700 + 70`
+   (about 111.23), which does not improve A's opening cost 100; M is examined next (`f` about 229.32), reaches N
+   with `g = 10 + (20 - 2^-19) = 30 - 2^-19` exactly (stored as the `f32` value 29.999998), which improves N and
+   re-places it; N is examined again (`f` about 213.58) and reaches A with the exact tentative cost
+   `100 - 2^-19`; the original improves A (`100 - 2^-19 < 100`: A's stored `g` becomes the rounded 100.0 and
+   its predecessor N); under the policy the rounded tentative cost is 100.0, not below 100.0, and A keeps its
+   opening. A is examined last (`f = 300`) and answers. The observed quantity is the **predecessor chain** of
+   the answer (before the corner walks and the smoothing): original: start, M, N, A; policy: start, A. The
+   delivered waypoints do not distinguish the two here: with the corridor tests stubbed as passing, smoothing
+   collapses either chain's waypoint list to start, goal, so the harness reads the chain or runs the fixture
+   with smoothing disabled. The expected outcome under the policy is start, A. (2) The exact ties of tests 6 and
+   14 (identical operands: both evaluations agree). (3) The 0.807 separation of test 6 and the 0.42 separation
+   of F1 with the obstacle moved to `(180,80) (220,80) (220,121) (180,121)` are far above any `f32` step and
+   must give the same examination order under both evaluations (upper path in both). (4) Geometric decisions:
+   the quadrant cases of test 16 and the corridor cases of test 3 are decided identically under `f32` and under
+   extended evaluation (small integers; every product exact). (5) **Rounding-sensitive door order** (NAV-121,
+   case (b)): sectors X and Y; the character in X at `(30,100)`; the target `T = (30 - 5 * 2^-19, 100)` (an
+   `f32` value, about 29.99999) in Y; door D2 listed first (X point `(30,200)`, Y point `(30,130)`) and door D1
+   listed second (X point `(135,100)`, Y point `(55,100)`), both type 0, open, no locks, cost 70. D2: `g = 100`,
+   `h = 30` under both evaluations (`sqrt((5 * 2^-19)^2 + 30^2)` rounds to 30.0 either way): score exactly 200.
+   D1: `g = 105`, `h = 25 + 5 * 2^-19` exactly; the exact score `200 + 5 * 2^-19` rounds once to `200 + 2^-16`
+   in the original; under the policy `70 + h` rounds to `95 + 2^-17` and adding 105 gives the tie
+   `200 + 2^-17`, resolved to 200.0. Outcome: the original examines D2 first (200 below `200 + 2^-16`) and, Y
+   being the target sector, routes through D2; under the policy the scores tie and D1, queued last, is examined
+   first: the route is through D1. The expected outcome under the policy is D1; D2 documents the original.
+   (6) **Rounding-sensitive corridor** (NAV-112, case (c)): class `(6, 4)`, `p = (5,-3)`, `q = (8199,8189)` (a
+   diagonal leg whose side through the corners `(-5,+3)` runs from `(0,0)` to `(8194,8192)`), one wall segment
+   `(4098,4097)-(4088,4107)`, no other wall. Exact evaluation: the wall's near end is strictly outside that
+   side (cross product `8194 * 4097 - 8192 * 4098 = 2`) and its far end farther outside (163862); the wall
+   neither crosses nor touches the corridor: **free**. Under the policy the products 33570818 and 33570816
+   both round to the `f32` value 33570816, the near end lies on the side's line, the touch counts as a crossing
+   (the inclusive rule of NAV-112 that test 3's end-on-side case fixes) and the corridor is **blocked**. The
+   expected outcome under the policy is blocked; free documents the original.
 6. **Clock.** Frame counts of section 5 are logic frames; the engine's fixed 46.875 ms frame is ADR-0010's
    decision, the original's requested pacing is 40 ms and its realised cadence host-dependent.
 7. **Narrowed clearance: fallbacks for the unread items.** Each is an `Assumption` variant (ADR-0008) with the
@@ -1077,13 +1188,20 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
    - `NavGoalCheckTail` (NAV-141 step 0): the goal is inadmissible iff any enabled wall segment meets the goal
      box.
    - `NavNodeReset` (`0x005557c0`): every node's search state is cleared before each search.
-   - `NavPatches` (NAV-046/057/172, `TUPO` unread): patch **records are loaded as inert elements**: the
-     `TUPO` count and names are read (`rhp.md`), every patch occupies its slot in the level's element table
-     (`scb.md` "Index spaces", VM-030: the map elements first, then the patches, so that no subsequent index
-     shifts), native 5 returns the patch handle for a valid index (and none for `-1` or out of range, as native
-     4), native 12 returns its index, native 144 returns the patch's active flag, natives 145 / 146 set and
-     clear that flag and invalidate the cached view (VM section 6 rows 144-146), with the flag initially clear
-     and part of the snapshot; but a patch has **no geometry and no effect**: no patch-target polygon takes part
+   - `NavPatches` (NAV-046/057/172, `TUPO` records unread): patch **records are loaded as inert, nameless
+     elements by count**: the `u16` record count that opens the chunk body is read and the rest of the body is
+     skipped by the chunk header's length word (which covers the version word and the body; the loader checks
+     the consumed size against it: `0x005e1d50`, `0x005e20c0`; the skip lands on the next chunk tag on all nine
+     maps, whose counts are 6, 9, 9, 7, 16, 12, 11, 0 and 10 in the map order of 7.1). No record is parsed: the
+     record layout of `rhp.md` is not established (it consumes none of the eight nonempty retail chunks) and
+     must not be used, and no patch has a name; anything that would bind a patch by name resolves to none until
+     the framing is read. Every patch occupies its slot in the level's element table
+     (`scb.md` "Index spaces", VM-030: the map elements first, then the patches in chunk order, so that no
+     subsequent index shifts), native 5 returns the patch handle for a valid index (and none for `-1` or out of
+     range, as native 4), native 12 returns its index, native 144 returns the patch's active flag, natives 145 /
+     146 set and clear that flag and invalidate the cached view (VM section 6 rows 144-146), with the flag
+     initially clear and part of the snapshot; but a patch has **no geometry and no effect**: no patch-target
+     polygon takes part
      in click resolution (a click there resolves as if the polygon were absent), no availability field is
      toggled (the five maps with nonzero masks keep the initial availability), no lock-set swap, no bond or leaf
      switch, no eviction and no background alteration occur. The behaviours lost are the patch-driven map
@@ -1127,8 +1245,9 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
    search (`0x005557c0`).
 4. Jump lines and jump zones (`PPPP`, `0x004fb510`, `0x0051e230`, `0x0051b6e0`, `0x00583630`, `0x0049dbc0`) and
    the jump element of NAV-130.
-5. The patch record (`TUPO`, `0x0054eea0`, `0x0054f870`, `0x0054fe10`): which fields name the availability
-   field, the sector and the layer of NAV-057; the eviction element pushed at `0x004d28e0`.
+5. The patch record (`TUPO`, `0x0054eea0`, `0x0054f870`, `0x0054fe10`): its framing beyond the count word
+   (the record is variable-length: it carries polygons and reference lists), the name if any, which fields name
+   the availability field, the sector and the layer of NAV-057; the eviction element pushed at `0x004d28e0`.
 6. The building tenants' trailing byte (`0x004c1f90`).
 7. The player's door interaction on a leaf click (the player-character method called from `0x004d7880`) and
    what closes a door.
