@@ -310,7 +310,7 @@ def test_running_near_a_soldier_alerts_him_at_once_from_afar(binary, game_dir):
         # the cone's own taint, not the noise channel's.
         sc = e.observe(entities=False)["script"]
         assert sc["tainted"], sc
-        assert {"policy": 235} in sc["assumptions"] and "tick_rate" in sc["assumptions"]
+        assert {"policy": 235} in sc["assumptions"]
         assert "noise_radius" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
         # The charge itself records nothing; the five-second timeout and the return destination it
         # stores are the hypothesis (`alert_timeout`, Codex review 10, finding 1).
@@ -392,8 +392,8 @@ def _path_length(e, index, ticks, every=10):
 def test_walk_run_and_sneak_speeds_match_the_measurements(binary, game_dir):
     """H01 (Lincoln), `docs/original/stealth-and-combat.md` 8.1-8.3 (measured): Robin walks at
     85.3 px/s, runs (double click, action 7) at 101 +- 10 px/s (106.7 from the table) and sneaks
-    at 17.8 px/s, along the analyst's line from the start (down-left across the courtyard).
-    Asserted within 5 % over 120 ticks (2 s at 60 Hz) against the table-derived values."""
+    at 18.0 px/s, along the analyst's line from the start (down-left across the courtyard).
+    Asserted within 5 % over 60 logic frames (2.8125 s at 64 / 3 Hz, ADR-0010)."""
     expected = {"walk": 85.33, "run": 106.67, "sneak": 18.0}
     for mode, px_per_s in expected.items():
         with Engine(binary=binary, game_dir=game_dir, timeout=300) as e:
@@ -414,9 +414,9 @@ def test_walk_run_and_sneak_speeds_match_the_measurements(binary, game_dir):
             assert p["target"] is not None
             assert p["gait"] == ("run" if mode == "run" else "walk")
             assert p["posture"] == ("crouched" if mode == "sneak" else "standing")
-            covered = _path_length(e, robin_index, 120)
-            assert _entity(e, robin_index)["target"] is not None, "arrived before the 120 ticks were up"
-            want = px_per_s * 2.0
+            covered = _path_length(e, robin_index, 60)
+            assert _entity(e, robin_index)["target"] is not None, "arrived before the 60 frames were up"
+            want = px_per_s * 60.0 * 3.0 / 64.0
             assert abs(covered - want) <= want * 0.05, (mode, covered, want)
 
 
@@ -633,7 +633,9 @@ def test_attack_order_closes_in_and_the_fight_starts_with_the_bars(binary, game_
         assert p["foe"] == g["id"] and g["foe"] == p["id"]
         assert p["target"] is None and p["attack_target"] is None and g["target"] is None
         d = math.hypot(_pos(p)[0] - _pos(g)[0], _pos(p)[1] - _pos(g)[1])
-        assert 47 <= d <= 53, d
+        # The measured fighting distance is 52 px; the approach stops within one step of it,
+        # and a step is 4 - 5 px at the logic frame (ADR-0010).
+        assert 45 <= d <= 53, d
         assert p["action"] == 54 and g["action"] == 54
         assert p["hp"] == 100 and g["hp"] == 80
         gx, gy = _pos(g)
@@ -707,13 +709,14 @@ def test_the_soldiers_blows_wear_robin_down_to_the_lost_page(binary, game_dir, t
                 break
         else:
             raise AssertionError(f"Robin survived 240 s: {hp} hp, hits at {hits}")
-        # The cadence: 100 -> about 40 hp after 100 s in the model (measured 100 -> 30 in 90 s
-        # with a 25-hp blow among the hits); asserted loosely.
-        assert 10 <= hp_at[6000] <= 70, hp_at[6000]
+        # The cadence: 100 -> about 40 hp after 100 s in the model (2130 logic frames, measured
+        # 100 -> 30 in 90 s with a 25-hp blow among the hits); asserted loosely.
+        assert 10 <= hp_at[2130] <= 70, hp_at[2130]
         assert soldier_spent and soldier_regained
         intervals = [b - a for a, b in zip(hits, hits[1:])]
         mean = sum(intervals) / len(intervals)
-        assert 330 <= mean <= 660, (mean, intervals)
+        # 5.5 - 11 s between landed hits, in logic frames.
+        assert 117 <= mean <= 235, (mean, intervals)
         obs = e.observe()
         p, g = obs["entities"][robin_index], obs["entities"][gi]
         assert p["hp"] == 0 and not p["alive"] and p["ai_state"] in ("dying", "dead")
@@ -898,9 +901,10 @@ def test_two_powerful_blows_kill_the_soldier_the_script_polls(binary, game_dir, 
 WALKWAY_PILE = 100
 STEWARDS_PURSE = 105
 STEWARD_TIP_SCROLL = 120
-# The measured constants of `crates/opensherwood-core/src/world.rs` (`docs/original/h01-measurements-2.md` 1).
-STOOP_TICKS = 40
-SCROLL_PAUSE_TICKS = 42
+# The measured constants of `crates/opensherwood-core/src/world.rs` (`docs/original/h01-measurements-2.md`
+# 1), in logic frames of 46.875 ms (ADR-0010).
+STOOP_TICKS = 14
+SCROLL_PAUSE_TICKS = 15
 SCROLL_STOP_DISTANCE = 18
 ITEM_TAKE_RADIUS = 8
 

@@ -46,7 +46,7 @@ def test_record_then_play_matches_every_checkpoint(engine):
     header = lines[0]
     assert header["type"] == "header"
     assert header["time"] == "session"
-    assert header["tick_rate"] == [60, 1] and header["viewport"] == [640, 480]
+    assert header["tick_rate"] == [64, 3] and header["viewport"] == [640, 480]
     assert header["rng_streams"]["gameplay"]["algorithm"] == "pcg32"
     checkpoints = [l for l in lines if l["type"] == "checkpoint"]
     assert [c["tick"] for c in checkpoints] == [0] + list(range(25, 201, 25)) + [203]

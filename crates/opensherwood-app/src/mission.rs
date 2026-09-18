@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use opensherwood_assets::{GameDir, SpriteBank};
 use opensherwood_core::ai::DEFAULT_HIT_POINTS;
-use opensherwood_core::natives::{NativeStatus, native_status};
+use opensherwood_core::natives::{Kind, native_kind};
 use opensherwood_core::vm::Assumption;
 use opensherwood_core::world::DEFAULT_STARTING_MONEY;
 use opensherwood_core::{ActorSpec, Geometry, Instruction, MapInfo, MissionSpec, Team};
@@ -76,8 +76,9 @@ pub fn facing256_from_direction(direction: u32) -> i32 {
     ((16 - d) % 16) * 16
 }
 
-/// Ticks for a waypoint wait operand. Inferred: the operand values (10, 12, 25, 50, 75, 100,
-/// 150 ... 500) read as hundredths of a second; the unit is not verified against the original.
+/// Logic frames for a waypoint wait operand. Inferred: the operand values (10, 12, 25, 50, 75,
+/// 100, 150 ... 500) read as hundredths of a second; the unit is not verified against the
+/// original.
 #[must_use]
 pub fn wait_ticks(hundredths: u16) -> u32 {
     let (num, den) = crate::engine::TICK_RATE;
@@ -621,7 +622,7 @@ fn translate_script(
         ));
         return None;
     };
-    let binding = MissionBinding::from_mission(mission, map_elements, crate::engine::TICK_RATE);
+    let binding = MissionBinding::from_mission(mission, map_elements);
     if binding.actor_count() != actor_count {
         stats.script_error = Some(format!(
             "element table has {} actors, the mission {}",
@@ -640,10 +641,14 @@ fn translate_script(
                 ..ScriptStats::default()
             };
             for (id, n) in report.native_calls {
-                match native_status(id) {
-                    NativeStatus::Implemented => sc.implemented_calls += n,
-                    NativeStatus::Stub => *sc.stub_calls.entry(id).or_insert(0) += n,
-                    NativeStatus::Unknown => *sc.unknown_calls.entry(id).or_insert(0) += n,
+                match native_kind(id) {
+                    Some(Kind::Settled | Kind::Partial) => sc.implemented_calls += n,
+                    Some(Kind::Stub | Kind::Unresolved) => {
+                        *sc.stub_calls.entry(id).or_insert(0) += n;
+                    }
+                    Some(Kind::Unknown) | None => {
+                        *sc.unknown_calls.entry(id).or_insert(0) += n;
+                    }
                 }
             }
             stats.script = Some(sc);

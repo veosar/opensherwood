@@ -2,7 +2,12 @@
 
 Date: 2026-09-02. Status: accepted.
 
-Versions in force (2026-09-05, Codex review 7): protocol 6 (`reset.starting_money` and `ReplayHeader.starting_money`: the mission's starting money is a canonical input recorded in the header, playback resets with it; `UiItem.selected`; `observe.persistence_error`; replay time is the session tick: header `time:
+Versions in force (2026-09-18, implementer batch 1): protocol 6, ruleset 19, snapshot schema 22, hash schema
+21 - the rebuilt script VM of `docs/original/spec-script-vm.md` revision 9 (one instruction per bytecode quad,
+the native call protocol of VM-086, synchronous messages, the fault log and suppression sets of 8.1 / 8.3 in
+the `scripts` hash, the instances' buffers and registers in the snapshot set) and the single logic frame of
+ADR-0010 (`tick_rate` = (64, 3) Hz for the session, replays and the harness). Previously (2026-09-05, Codex
+review 7): protocol 6 (`reset.starting_money` and `ReplayHeader.starting_money`: the mission's starting money is a canonical input recorded in the header, playback resets with it; `UiItem.selected`; `observe.persistence_error`; replay time is the session tick: header `time:
 "session"`, checkpoints carry `world_tick`, a `session` digest and the `frame` hash, the tick-0 and terminal
 checkpoints are required and compared; `ui` observation,
 `menu` scenario, optional world fields; the `script` observation object and `debug.vm` are additive), ruleset 18

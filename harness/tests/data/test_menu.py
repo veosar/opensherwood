@@ -122,8 +122,10 @@ def test_credits_scroll_and_escape_returns(binary, game_dir, tmp_path):
         ui = e.observe(entities=False)["ui"]
         assert ui["screen"] == "credits"
         c0 = e.capture(path="credits_0.png")
-        e.step(120)
-        assert e.observe(entities=False)["ui"]["page"][0] == 40  # 2 s at 20 px/s
+        # Two seconds at 20 px/s: 64 frames in 3 s (ADR-0010), so 2 s is 42.67 frames; 43
+        # frames have scrolled 40 px.
+        e.step(43)
+        assert e.observe(entities=False)["ui"]["page"][0] == 40
         c1 = e.capture(path="credits_2s.png")
         assert c0["hash"] != c1["hash"]
         e.step(1, [key("escape")])

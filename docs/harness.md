@@ -186,7 +186,8 @@ installs another world and discards the recording. The Python client wraps the t
 Limits. A request line is at most 16 MiB; a longer line is answered with "request too large" and the rest of it is
 skipped through the reader's buffer without being stored. A replay file is at most 64 MiB, 2^20 events, 2^16
 checkpoints and 2^24 ticks (`opensherwood_protocol::replay_limits`); `replay.play` checks the file size before
-reading it and refuses replays that run past 1,000,000 ticks (about 4.6 hours at 60 Hz) before resetting the
+reading it and refuses replays that run past 1,000,000 logic frames (about 13 hours at 21.333 frames per
+second, ADR-0010) before resetting the
 session. The recorder enforces the same quotas cumulatively: a `step` that would push the active recording over
 the event, checkpoint or tick quota is refused before anything moves (`replay.stop` first), and a recording that
 crosses a quota outside `step` (window mode) is discarded with an error at `replay.stop` rather than written as a
@@ -233,11 +234,19 @@ ADR-0008 ("Hypotheses and taint"): `tainted` (the script executed over a hypothe
 (snapshotted and hashed). The set is dependency-closed by construction (Codex review 8): every source is a
 variant of the registry `vm::Assumption`, recorded where the hypothesis is taken whether or not the script
 reads a value there, so `tainted: false` means no known hypothesis was taken. The entries:
-`{"stub_result": id}` (a stub with an unmodelled effect was called, or a stub's fabricated result consumed;
-the presentation-only stubs 62 / 69 / 149 / 150 / 243 record nothing on the call), `{"policy": id}` (an
-implemented native whose reading is a policy, `natives::NATIVE_TAINT`), `{"opcode": op}` (an instruction of
-a low-confidence opcode executed: 0x14, 0x24, 0x28, 0x2b), `"unresolved_jump"`, `{"unknown_native": id}`
-(lenient mode), and the engine's own rules, each recorded where it first changes authoritative state
+`{"stub_result": id}` (a native whose effect this engine does not model at all was called, or its neutral
+result consumed), `{"policy": id}` (a native whose row `docs/original/spec-script-vm.md` settles but whose
+effect reaches a subsystem this engine models only in part: the camera, animation, the AI, navigation, the
+campaign), `{"unresolved_effect": id}` (one of the eighteen ids of the specification's 4.3, whose effect is
+settled only up to a code, flag or consumer no reviewed specification names), `{"unknown_native": id}` (one of
+the twelve ids excluded from clearance in 4.2, answering the placeholder the specification prescribes),
+`"unresolved_jump"` (the sentinel jump of VM-070 ended a callback), `"unwritten_result_slot"` (a `0x0A` read a
+slot no `0x07` had written: OpenSherwood reads 0, VM-071), `"snapshot_set"` (a callback left a residue in one
+of the instance's buffers, so the inferred persistence rule of VM-088 is in play), `"element_table_order"`,
+`"object_action_change"`, `{"ai_event_code": n}`, `"reach_point_source"`, `"element_admission"` and
+`{"element_duration": category}` (the parts of the specification the reviews have not cleared: the actors'
+admission and the sequence elements' durations), and the engine's own rules, each recorded where it first
+changes authoritative state
 whether or not a script handler exists (Codex review 9): `"sight_cone"` (the rear radius of 50 px or the
 crouch divisor decided a sighting that changed a soldier's state; the cone itself, a sector of 80 degrees
 bound to the facing with an elliptical reach of 270 x 194 px, is measured and a standing character seen
@@ -251,11 +260,10 @@ untainted), `{"attack_policy": "reach" | "block" | "hit_chance" | "post_bound" |
 swing timed with the engine's jitter; a soldier standing his ground; a second attacker waiting at reach
 because a soldier fights one at a time), `"knock_out"` (the blow felled or failed to fell a
 victim, native 90 / 128 reported it, or its action id reached a handler), `"profile_stats"`,
-`"tick_rate"`, `"scroll_pickup"` (a scroll's `IsTaken` returned non-zero and the scroll was deactivated: what
+`"scroll_pickup"` (a scroll's `IsTaken` returned non-zero and the scroll was deactivated: what
 makes a scroll vanish after its reading; the reading itself is measured), `"item_pickup"` (a purse or an item
 of an unknown kind was taken: the purse amount and the unknown kind's effect; an arrow pile's take is measured
-and records nothing), `"zone_at_load"`, `"walk_completion"`, `"action_change_order"`,
-`"campaign_graph"`, `"lenient_assets"`. Every fight is therefore tainted from its first swing and every
+and records nothing), `"zone_at_load"`, `"walk_completion"`, `"campaign_graph"`, `"lenient_assets"`. Every fight is therefore tainted from its first swing and every
 sighting from the tick it changed a state; a win reached through a heard charge is tainted by
 `alert_timeout` alone, the hearing within the bound and the charge itself recording nothing
 (`a_charge_from_the_unmeasured_noise_band_taints_a_win_read_from_native_97`; `test_running_near_a_soldier_alerts_him_at_once_from_afar`

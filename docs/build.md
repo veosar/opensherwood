@@ -71,7 +71,8 @@ borderless fullscreen at the desktop resolution, letterboxed), `--scale N` (inte
 Left click selects a unit or orders the selected unit to walk there (double click: run), right click cancels the
 selected unit's order or deselects, `c` / `s` crouch / stand, arrow keys or the pointer at the
 window edge scroll the camera. The window is letterboxed to the logical 640x480 viewport (integer `--scale` on
-start; resizable). Simulation runs at 60 ticks per second in window mode.
+start; resizable). The simulation advances one logic frame of 46.875 ms at a time (ADR-0010), in window
+mode as everywhere else; the window renders the last simulated frame at the display's rate.
 
 ## Environment variables
 

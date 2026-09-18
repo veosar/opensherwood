@@ -355,11 +355,12 @@ enum Screen {
 
 /// The mission `Play!` starts with a fresh profile (`docs/original/campaign-flow.md`).
 pub const FIRST_MISSION: &str = "H01_Lin_VL";
-/// How long a non-blocking script text stays on screen (5 s at 60 ticks; the original's timing is
-/// not observed yet).
-const NOTICE_TICKS: u32 = 300;
-/// World ticks between rolling auto saves (one minute at 60 Hz) and the number of slots kept.
-const AUTOSAVE_TICKS: u64 = 3600;
+/// How long a non-blocking script text stays on screen (5 s = 107 logic frames, ADR-0010; the
+/// original's timing is not observed yet).
+const NOTICE_TICKS: u32 = 107;
+/// Logic frames between rolling auto saves (one minute at 21.333 frames per second, ADR-0010)
+/// and the number of slots kept.
+const AUTOSAVE_TICKS: u64 = 1280;
 const AUTOSAVE_SLOTS: u32 = 5;
 /// Save file format version (bumped with the snapshot envelope).
 const SAVE_FORMAT: u32 = 1;
@@ -372,8 +373,9 @@ struct SaveFile {
     snapshot: Snapshot,
 }
 
-/// Tick rate used by replays and the window (ticks per second).
-pub const TICK_RATE: (u32, u32) = (60, 1);
+/// Tick rate used by replays and the window: the core's logic frame (ADR-0010), 64 frames in
+/// exactly 3 s.
+pub const TICK_RATE: (u32, u32) = opensherwood_core::TICK_RATE;
 
 struct Recording {
     /// The replay so far; the recorder accounts the serialised bytes of every line it accepts
@@ -391,8 +393,9 @@ struct Recording {
 pub mod limits {
     /// Most ticks in one `step`.
     pub const MAX_TICKS: u32 = 100_000;
-    /// Most ticks one `replay.play` simulates synchronously (about 4.6 hours at 60 Hz; the
-    /// replay format itself allows 2^24). Longer replays are rejected before the session is reset.
+    /// Most logic frames one `replay.play` simulates synchronously (about 13 hours at 21.333
+    /// frames per second; the replay format itself allows 2^24). Longer replays are rejected
+    /// before the session is reset.
     pub const MAX_REPLAY_PLAY_TICKS: u64 = 1_000_000;
     /// Most ticks per `step` when per-tick hashes are requested.
     pub const MAX_HASHED_TICKS: u32 = 10_000;
@@ -1185,7 +1188,7 @@ impl Session {
                     Some(MenuAction::Exit) => self.exit_requested = true,
                     Some(MenuAction::Credits) => {
                         let _ = self.ui_assets();
-                        self.screen = Screen::Credits(Credits::new(crate::window::TICK_RATE));
+                        self.screen = Screen::Credits(Credits::new(TICK_RATE));
                     }
                     Some(MenuAction::Load) => self.open_saves(false, false),
                     Some(MenuAction::Options) => self.open_options(false),
@@ -2732,7 +2735,6 @@ impl Session {
                     "fault": vm.fault,
                     "lenient": vm.lenient,
                     "unknown_calls": vm.unknown_calls,
-                    "pending_messages": vm.messages.len(),
                     "camera_target": vm.camera_target,
                     "debriefing": vm.debriefing,
                     "mission_vars": vm.mission_vars,

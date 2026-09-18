@@ -40,9 +40,10 @@ def test_auto_saves_roll_over_five_slots(binary, game_dir, tmp_path):
     with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=600) as e:
         e.reset({"mission": "H01_Lin_VL"}, seed=0)
         e.skip_briefing()
-        e.step(3600)
+        # One auto save a minute: 1280 logic frames of 46.875 ms (ADR-0010).
+        e.step(1280)
         assert (tmp_path / "saves" / "auto-0.json").is_file()
-        e.step(3600)
+        e.step(1280)
         names = sorted(p.name for p in (tmp_path / "saves").glob("auto-*.json"))
         assert names == ["auto-0.json", "auto-1.json"]
 

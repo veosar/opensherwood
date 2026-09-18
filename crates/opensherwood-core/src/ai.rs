@@ -328,15 +328,15 @@ pub const RUN_NOISE_RADIUS: i32 = 350;
 /// far (`stealth-and-combat.md` 8.6). Hearing within it is measured; hearing between it and
 /// [`RUN_NOISE_RADIUS`] is the engine's hypothesis.
 pub const NOISE_MEASURED_RADIUS: i32 = 330;
-/// Ticks an alerted soldier keeps searching after his last sighting before he returns to his
-/// patrol (5 s at 60 ticks per second). Hypothesis.
-pub const ALERT_TIMEOUT_TICKS: u32 = 300;
+/// Logic frames an alerted soldier keeps searching after his last sighting before he returns to
+/// his patrol (5 s at 21.333 frames per second, ADR-0010). Hypothesis.
+pub const ALERT_TIMEOUT_TICKS: u32 = 107;
 /// An alerted soldier re-plans his walk when the last seen position moved this far from the
 /// point he is walking to (map pixels; bounds the path searches per tick).
 pub const REPLAN_DISTANCE: i32 = 32;
-/// Knock-out duration in ticks for a victim with no knock-out resistance (10 s at 60 ticks per
-/// second); the profile's `p4` shortens it, see [`knock_out_ticks`]. Hypothesis.
-pub const KNOCK_OUT_BASE_TICKS: u32 = 600;
+/// Knock-out duration in logic frames for a victim with no knock-out resistance (10 s at 21.333
+/// frames per second); the profile's `p4` shortens it, see [`knock_out_ticks`]. Hypothesis.
+pub const KNOCK_OUT_BASE_TICKS: u32 = 213;
 /// Knock-out resistance (`profile.md`, SD `p4`) at or above which the blow does not fell the
 /// victim at all (the antagonists' 100: "impossible to knock out"). Hypothesis.
 pub const KNOCK_OUT_IMMUNE_RESISTANCE: i32 = 100;
@@ -347,11 +347,10 @@ pub const PUNCH_REACH: i32 = 32;
 /// striking from behind: 48 = 67.5 degrees either side of straight behind (a 135 degree arc).
 /// Hypothesis (the manual only says the punch works best unseen).
 pub const BACK_ARC_HALF_ANGLE_256: i32 = 48;
-/// Fallback durations in world ticks of the timed states when the profile has no block for
+/// Fallback durations in logic frames of the timed states when the profile has no block for
 /// the animation (or the world has no catalog): the soldier profiles' actions 141, 142, 41 and
-/// 49 and the hero's 123 on the animation clock (`sprite-animations.md`, "Reading rules": a
-/// frame lasts its tick half plus one table ticks of 3 clocks at 64 Hz; `anim::world_ticks`
-/// converts): 141 = 5 frames of 6 ticks -> 11 table ticks -> 31 world ticks.
+/// 49 and the hero's 123, counted in frames (ADR-0010: a frame lasts its tick half plus one
+/// logic frames): 141 = 5 frames of 6 ticks -> 11 frames.
 pub const NOTICED_TICKS: u32 = world_ticks(11);
 /// See [`NOTICED_TICKS`]: 142 = 8 frames of 11 ticks -> 19 table ticks.
 pub const ALARM_TICKS: u32 = world_ticks(19);
@@ -372,11 +371,12 @@ pub const HERO_HIT_POINTS: i32 = 100;
 pub const DEFAULT_HIT_POINTS: i32 = HERO_HIT_POINTS;
 /// Energy of every fighter: 20 units, one per pixel of the blue bar (measured, 1.2).
 pub const ENERGY_MAX: i32 = 20;
-/// Ticks the hero needs to regain one unit of energy: 0.9 s (measured 0.8-1.0 s per pixel,
-/// 1.2), 54 ticks at 60 Hz.
-pub const HERO_ENERGY_REGEN_TICKS: u32 = 54;
-/// Ticks a soldier needs to regain the unit a landed hit cost him: about 4 s (measured, 1.2).
-pub const SOLDIER_ENERGY_REGEN_TICKS: u32 = 240;
+/// Logic frames the hero needs to regain one unit of energy: 0.9 s (measured 0.8-1.0 s per
+/// pixel, 1.2), 19 frames at 21.333 per second.
+pub const HERO_ENERGY_REGEN_TICKS: u32 = 19;
+/// Logic frames a soldier needs to regain the unit a landed hit cost him: about 4 s (measured,
+/// 1.2), 85 frames.
+pub const SOLDIER_ENERGY_REGEN_TICKS: u32 = 85;
 /// Energy a soldier's landed hit costs him (measured: one pixel, 1.2).
 pub const SOLDIER_HIT_ENERGY: i32 = 1;
 /// Energy the hero's powerful blow costs, landed or not (measured: two pixels, 1.2 / 1.4).
@@ -387,14 +387,14 @@ pub const FIGHT_RANGE: i32 = 52;
 /// Distance beyond which a fight breaks off (a fighter moved away by a script walk; the
 /// player's own orders end his fight directly): twice the fighting distance.
 pub const FIGHT_BREAK_RANGE: i32 = 2 * FIGHT_RANGE;
-/// Ticks between a soldier's swings: about 5.3 s (measured: 12 swings in 64 s, 1.5), 318
-/// ticks; the gameplay RNG adds a jitter of up to [`SWING_JITTER_TICKS`] either way.
-pub const SOLDIER_SWING_TICKS: u32 = 318;
+/// Logic frames between a soldier's swings: about 5.3 s (measured: 12 swings in 64 s, 1.5), 113
+/// frames; the gameplay RNG adds a jitter of up to [`SWING_JITTER_TICKS`] either way.
+pub const SOLDIER_SWING_TICKS: u32 = 113;
 /// Half width of the uniform jitter on a soldier's swing interval (about half a second; the
 /// measured intervals between landed hits spread 5.2..15.4 s around the 7.7 s median, which
 /// the cadence with two of three swings landing reproduces). The engine's choice within the
 /// measurement, not a rule of the original.
-pub const SWING_JITTER_TICKS: u32 = 32;
+pub const SWING_JITTER_TICKS: u32 = 11;
 /// Chance of a soldier's swing landing as `(numerator, denominator)`: two in three
 /// (measured: median 7.7 s between landed hits over a swing every 5.3 s, 1.5).
 pub const SOLDIER_HIT_CHANCE: (u32, u32) = (2, 3);
@@ -403,24 +403,25 @@ pub const SOLDIER_HIT_CHANCE: (u32, u32) = (2, 3);
 pub const SOLDIER_HIT_DAMAGE: i32 = 5;
 /// Damage of the hero's powerful blow when it lands (measured: "50", 13 pixels of 80 hp, 1.4).
 pub const POWERFUL_BLOW_DAMAGE: i32 = 50;
-/// Ticks from the figure's order to the blow's resolution: 0.9-1.0 s measured (1.4), 57 ticks.
-pub const POWERFUL_BLOW_TICKS: u32 = 57;
+/// Logic frames from the figure's order to the blow's resolution: 0.9-1.0 s measured (1.4), 20
+/// frames.
+pub const POWERFUL_BLOW_TICKS: u32 = 20;
 /// Chance of the hero's powerful blow landing on a soldier as `(numerator, denominator)`: one
 /// in three, from 2 of 6 strokes against a halberdier (1.4; small sample). Hypothesis:
 /// resolving a blow records [`AttackRule::HitChance`].
 pub const POWERFUL_BLOW_CHANCE: (u32, u32) = (1, 3);
-/// Ticks between the hero's automatic strikes while fighting (1.5 s): presentation only,
+/// Logic frames between the hero's automatic strikes while fighting (1.5 s): presentation only,
 /// since a click attack never lands against a soldier ([`AttackRule::Block`]; observed
 /// against a pole arm at 52 px over 225 s, 1.3); the interval itself is not measured.
-pub const HERO_SWING_TICKS: u32 = 90;
+pub const HERO_SWING_TICKS: u32 = 32;
 /// Fallback duration of a quick strike (actions 59..66: 8 tick halves over 8 frames = 16
-/// table ticks on `Soldier A00`, `sprite-animations.md`).
+/// logic frames on `Soldier A00`, `sprite-animations.md`).
 pub const STRIKE_TICKS: u32 = world_ticks(16);
-/// Fallback duration of the flinch in the stance (action 104; not read: 12 table ticks).
+/// Fallback duration of the flinch in the stance (action 104; not read: 12 logic frames).
 pub const FLINCH_TICKS: u32 = world_ticks(12);
-/// Ticks a damage number rises over the victim's head before it vanishes (measured: about
-/// 1.5 s for 50 px, 1.2).
-pub const DAMAGE_NUMBER_TICKS: u32 = 90;
+/// Logic frames a damage number rises over the victim's head before it vanishes (measured:
+/// about 1.5 s for 50 px, 1.2), 32 frames.
+pub const DAMAGE_NUMBER_TICKS: u32 = 32;
 /// Pixels a damage number rises in [`DAMAGE_NUMBER_TICKS`] (measured, 1.2).
 pub const DAMAGE_NUMBER_RISE: i32 = 50;
 /// Shortest pointer stroke (map pixels between the press and the release of the left button)
@@ -2383,8 +2384,8 @@ mod tests {
             offset_x: 0,
             offset_y: 0,
         };
-        // Animation 2 is the noticed block (3 + 4 table ticks = 315 clock units = 20 world
-        // ticks), 3 the alarm block (2 table ticks = 90 units = 6 world ticks).
+        // Animation 2 is the noticed block (3 + 4 = 7 logic frames), 3 the alarm block
+        // (2 logic frames); a table tick is a logic frame since ADR-0010.
         let mut set = AnimSet::standing_only(
             vec![
                 vec![frame(1)],
@@ -2403,24 +2404,24 @@ mod tests {
         w.attach_catalog(catalog, None, Some("soldier"));
         w.step(&[]);
         let g = &w.entities[1];
-        assert_eq!((g.ai_state, g.state_ticks), (AiState::Noticed, 20));
+        assert_eq!((g.ai_state, g.state_ticks), (AiState::Noticed, 7));
         assert_eq!(g.anim.as_ref().unwrap().animation, 2);
-        // The first frame (135 units) changes on the ninth tick of the state.
-        for _ in 0..8 {
+        // The first frame (3 frames) changes on the third frame of the state.
+        for _ in 0..2 {
             w.step(&[]);
         }
         assert_eq!(w.entities[1].anim.as_ref().unwrap().frame, 0);
         w.step(&[]);
         assert_eq!(w.entities[1].anim.as_ref().unwrap().frame, 1);
-        for _ in 0..10 {
+        for _ in 0..3 {
             w.step(&[]);
         }
         assert_eq!(w.entities[1].ai_state, AiState::Noticed);
         assert_eq!(w.entities[1].anim.as_ref().unwrap().frame, 1);
-        // The twentieth tick ends the state as the loop completes.
+        // The seventh frame ends the state as the loop completes.
         w.step(&[]);
         let g = &w.entities[1];
-        assert_eq!((g.ai_state, g.state_ticks), (AiState::Alarm, 6));
+        assert_eq!((g.ai_state, g.state_ticks), (AiState::Alarm, 2));
         assert_eq!(g.anim.as_ref().unwrap().animation, 3);
         w.validate().unwrap();
     }
@@ -2430,9 +2431,13 @@ mod tests {
         let mut w = scene((400, 240), 128, (500, 240));
         w.entities[0].posture = Posture::Crouched;
         click(&mut w, 400, 240, Button::Left);
-        // 68 px into reach at the sneak's 0.28 px per tick, then the 60-tick fall.
-        for _ in 0..400 {
+        // The sneak closes the 68 px at 0.84 px per logic frame, then the victim falls and
+        // lies knocked out ([`KNOCK_OUT_BASE_TICKS`] frames).
+        let mut frames = 0;
+        while w.entities[1].ai_state != AiState::Lying {
             w.step(&[]);
+            frames += 1;
+            assert!(frames < 400, "the guard was never knocked out");
         }
         assert_eq!(w.entities[1].ai_state, AiState::Lying);
         let json = serde_json::to_string(&w.snapshot(None)).unwrap();
@@ -2749,8 +2754,8 @@ mod tests {
         let span = hits.last().unwrap() - start;
         let mean = span / (hits.len() as u64 - 1);
         assert!(
-            (380..=600).contains(&mean),
-            "mean interval between landed hits {mean} ticks (measured median 462)"
+            (135..=213).contains(&mean),
+            "mean interval between landed hits {mean} frames (measured median 7.7 s = 164)"
         );
         // Two of three swings land, within the sample's spread.
         assert!(

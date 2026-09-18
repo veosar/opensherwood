@@ -78,12 +78,26 @@ settled before any interpreter is written: a VM living above core cannot be snap
   with the elliptical reach 270 x 194 px bound to the facing plus the rear radius hypothesis; `SightCone`
   narrowed to the rear radius and the crouch divisor, `ScrollPickup` to the take-on-non-zero rule,
   `ItemPickup` to a purse's amount and an unknown kind's effect); ruleset 18, snapshot schema 21 and hash
-  schema 20 (2026-09-06, Codex review 11, findings 2 / 3 / 4 / 5: every callback runs as a transaction
-  and an aborted one is rolled back whole (below, "Action changes"), `Entity::pending_stimulus` (the
+  schema 20 (2026-09-06, Codex review 11, findings 2 / 3 / 4 / 5: every callback ran as a transaction
+  and an aborted one was rolled back whole - superseded in ruleset 19 by the termination contract of the
+  specification's 8.1, which keeps what a terminated callback did and rolls back only a queued handler the
+  work budget cut short (below, "Action changes"), `Entity::pending_stimulus` (the
   stimulus of an unpaid transition, consumed by the retry: `ai::PendingStimulus`), reciprocity as an
   invariant of every living, active fighter and the second attacker's unconditional wait,
   `ItemKind::Pouch` for the `ZORG` kind 8 (taken tainted by `ItemPickup` like an unknown kind), the
-  pick-up block 126 in `AnimSet::pick_up`).
+  pick-up block 126 in `AnimSet::pick_up`); **ruleset 19, snapshot schema 22 and hash schema 21**
+  (2026-09-18, implementer batch 1: the script VM rebuilt from `docs/original/spec-script-vm.md` revision 9
+  and the single logic frame of ADR-0010. One `Instr` per bytecode quad with no fusing; one `Instance` per
+  class holding the class block, the script-parameter buffer, the 12-cell native argument buffer, the native
+  result register and the callback return register, all snapshotted and hashed (VM-014); a growable
+  mission-variable array (VM-020); the native call table of all 265 ids with the wrapper protocol of VM-086;
+  synchronous messages with the dynamic current actor and current scroll; the fault log, the three
+  suppression sets and the sequence provenance of 8.1 / 8.3; the campaign values, NPC values and door bytes
+  of natives 195 - 198 and 182 - 191; the assumption registry reshaped - `UnwrittenResultSlot`,
+  `SnapshotSet`, `UnresolvedEffect(id)`, `ElementAdmission`, `ElementDuration(category)`,
+  `ElementTableOrder`, `ObjectActionChange`, `AiEventCode`, `ReachPointSource` in, `Opcode`, `TickRate` and
+  `ActionChangeOrder` out; and `TICK_RATE` = (64, 3) Hz with every tick-counted constant re-expressed in
+  logic frames).
 - The `scripts` / `scheduler` hash parts stop being zero placeholders.
 - **What is authoritative and what is not.** `VmState::counters` (instructions, callbacks, budget aborts,
   faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
@@ -155,24 +169,16 @@ settled before any interpreter is written: a VM living above core cannot be snap
   `MAX_OBSTACLE_CELL_OCCUPANCY` (2048), so with the geometry's 2^20 edges a mover always finishes
   his query on his turn instead of restarting it from zero forever. Navigation has no fail-open entry point:
   `World::try_ensure_nav` is the only way to rebuild a missing grid and every caller handles its error.
-- **Trust boundary.** `Program::validate` in core is self-sufficient (functions in table order from address 0
-  with their prologue, jumps inside their function, parameter reads and call arities against the table,
-  arities within the stack limit, every native call site of a known id with the argument count of the one
-  signature table `natives::NATIVE_SIGNATURES` (`id -> arity, returns_value, read_in_corpus`: the arity and
-  the `-> result` contract from the spec's rows, the corpus observation of a `0x0d` kept as its own column)
-  and a result slot only on a native that leaves a value, aggregate code / vertex bounds, element and location
-  coordinates within `+-2^20`); the translator's checks are earlier diagnostics. The native call and its
-  result read are **one IR instruction** (`Instr::Native { id, argc, dst }`): the translator fuses a `0x0c`
-  with the `0x0d` after it (the `0x0d` quad becomes a `Nop` so quad indices stay instruction indices) and
-  refuses a jump whose target is a `0x0d` quad, so no control flow can reach a result read without the
-  call that produces it (Codex review 8, finding 6); frames hold no native result. The script call and
-  its result read are fused the same way (Codex review 9, finding 3): `Instr::Call { function, argc,
-  dst }` carries the destination of the `0x0a` after it (the `0x0a` quad becomes a `Nop`), the translator
-  refuses a `0x0a` without a `0x05` before it, after a call of a function without a result, and any jump
-  whose target is a `0x0a` quad (direct, from a divergent predecessor, as a loop's entry);
-  `Program::validate` refuses a destination on a callee without `has_result` (and a call of a function
-  outside the table), and the callee's value is written to the destination when its frame returns, so a
-  frame holds no call result either and no fabricated value can feed a branch.
+- **Trust boundary** (rewritten for ruleset 19 against `docs/original/spec-script-vm.md` revision 9).
+  `Program::validate` in core is self-sufficient and checks what the *container* must satisfy: functions in
+  table order from address 0 with their prologue, jump and call targets inside the class code (the sentinel
+  `0xFFFFFFFF` of VM-070 excepted), symbol indices inside their block, native ids below the 265-entry call
+  table, aggregate code / vertex bounds, and element and location coordinates within `+-2^20`. It
+  deliberately does **not** check what the original does not check either (VM-011, VM-048, VM-051, VM-080,
+  VM-087): argument counts, parameter offsets and the fill of the native buffer are run-time conditions with
+  the deterministic outcomes of the specification's 8.1. There is no fusing any more: one bytecode quad is
+  one `Instr`, so `0x0A` reads the frame's persistent result slot and `0x0D` the instance's native result
+  register, both of which the interpreter keeps, and a jump may legitimately land on either.
   The dispatcher checks the signature again: a call whose argument count differs traps like an unknown native
   (`counters.arity_mismatches`), so a required argument never defaults to 0. `World::validate` also requires
   the gameplay and `script` RNG streams to derive from the world seed with their assigned ids (1 and 2), and
@@ -191,19 +197,14 @@ settled before any interpreter is written: a VM living above core cannot be snap
   variant in `VmState::assumptions` (a `BTreeSet`, snapshotted, hashed under `scripts`, validated:
   every entry must be well formed for its source) at the point where the hypothesis is taken, whether or
   not the script reads a value there: it is conservative, not a data-flow analysis. The sources:
-  `Opcode(op)` when an instruction of a low-confidence opcode executes (`vm::LOW_CONFIDENCE_OPCODES`:
-  `0x24` read as `>=`, `0x28` as `!=`, `0x2b` as a fixed-point `<`, `0x14` rounded to 24.8; the translator
-  keeps `0x24` apart from the medium-confidence `0x26` as `BinOp::GeLow`) and `UnresolvedJump` when a jump
-  to `0xffff` leaves its function (`Instr::LeaveUnresolved`); `Policy(id)` on every call of an
-  implemented native whose reading is a policy rather than an observation (`natives::NATIVE_TAINT`,
-  `Taint::Policy`: 8, 44, 45, 64, 93, 94, 98, 110, 128, 133, 134, 135, 140, 159, 161, 193, 194, 196, 204,
-  235, 245, each with its choice named in the table; the `Taint::Branch` rows 111 / 211 / 250 record it only
-  with more than one player character and 240 only for a non-actor element); `StubResult(id)` on every
-  call of a recorded stub with an effect the engine does not model (`Taint::Effect`, the never-win stubs
-  included) and whenever a stub's fabricated result is consumed (the result slot of the fused native);
-  only the stubs proven presentation-only record nothing on the call (`Taint::Presentation`: 62 an
-  expression, 69 a remark before a dialogue line, 149 / 150 a level sound, 243 the cutscene highlight,
-  each justified in the table); `UnknownNative(id)` on every lenient unknown call; the engine's own rules record their source **where
+  the departures of the specification's 8.1 that it maps to an assumption - `UnresolvedJump` when the
+  sentinel jump of VM-070 ends a callback, `UnwrittenResultSlot` when a `0x0A` reads a slot no `0x07` wrote,
+  `SnapshotSet` when a callback leaves a residue in one of the instance's buffers (VM-088); `Policy(id)` on
+  every call of a native whose row the specification settles but whose effect reaches a subsystem this engine
+  models only in part (`natives::Kind::Partial`); `UnresolvedEffect(id)` for the eighteen ids of the
+  specification's 4.3 and `UnknownNative(id)` for the twelve of its 4.2; `StubResult(id)` on every
+  call of a native whose effect the engine does not model at all (`natives::Kind::Stub`) and whenever such a
+  native's neutral result is consumed; the engine's own rules record their source **where
   the rule first mutates authoritative state, independent of any callback or later consumer** (Codex
   review 9, finding 1: a hypothesis-driven position can win a mission through an observed native such as
   97 with no `ActionChange` handler in sight): `SightCone` when the unmeasured part of the sight (the rear
@@ -237,17 +238,17 @@ settled before any interpreter is written: a VM living above core cannot be snap
   while another one was alive (measured for a lone hero); the measured constants (the speeds, the
   animation clock, the noise channel within its bound and the immediate charge, hit points, energy,
   damage, cadence, the fighting distance, the blow's timing, the attack order, death and the lost page)
-  record nothing; `TickRate` when a native-56 wait ran (in a sequence or outside one) or
-  `Hourglass` read its time; `ScrollPickup` when a scroll's `IsTaken` returned non-zero and the scroll was
+  record nothing; `ScrollPickup` when a scroll's `IsTaken` returned non-zero and the scroll was
   deactivated (the take-on-non-zero rule: what makes a scroll vanish after its reading is not measured;
-  the reading itself, an order on the scroll, the stop 18 px short and the pause of 42 ticks, is measured
-  and records nothing); `ItemPickup` when a player character took a purse or an item of an unknown kind
-  (`World::resolve_pickups`: the purse amount `PURSE_MONEY_PER_STACK` and the unknown kind's effect are
-  hypotheses; the order, the arrival within 8 px, the stoop of 40 ticks and an arrow pile adding its
+  the reading itself, an order on the scroll, the stop 18 px short and the pause of 15 logic frames, is
+  measured and records nothing); `ItemPickup` when a player character took a purse or an item of an unknown
+  kind (`World::resolve_pickups`: the purse amount `PURSE_MONEY_PER_STACK` and the unknown kind's effect are
+  hypotheses; the order, the arrival within 8 px, the stoop of 14 logic frames and an arrow pile adding its
   `unknown_b` are measured and record nothing; native 235 reading the taken
   flag records `Policy(235)` on the call); `ZoneAtLoad` when a zone callback fired on the first scan for a character
   standing inside at load; `WalkCompletion` when a barrier was released by a walk that did not arrive;
-  `ActionChangeOrder` on every `ActionChange` delivery (the parameter order); `CampaignGraph` when the
+  `ElementAdmission` and `ElementDuration(category)` where the uncleared sequence machinery (3.7) decides
+  what the original's actors would decide; `CampaignGraph` when the
   app's successor rule picked the next mission (`World::record_assumption`); `LenientAssets` when the app
   built the spec with a fallback (`MissionSpec::assumptions`). The set only grows (a rolled-back
   transaction keeps what it recorded). `mission_won` / `mission_lost` stay recorded, but
@@ -264,39 +265,34 @@ settled before any interpreter is written: a VM living above core cannot be snap
 - **Action changes are delivered exactly once, transactionally.** Every change of an actor's reported
   action id is queued in `VmState::pending_action_changes` (snapshotted, hashed under `scheduler`,
   validated) and delivered to the class bound to the actor within what the tick's budget left; a change
-  whose class has no handler is dropped as undeliverable, one whose handler returned (or trapped: it
-  would fail the same way again) is removed. Every callback runs as a transaction (`vm::Transaction`,
-  Codex review 8, finding 3, widened from the queued handlers to every callback by Codex review 11,
-  finding 2: `Initialize` / `PostInitialize`, `Hourglass`, `CheckVictoryCondition`, the message, zone,
-  scroll and action handlers): before it starts, the VM's mutable state (class and mission variables,
-  objectives, queues, sequences, texts, money, patches, attributes, states, the script RNG) is captured
-  at one work unit per value copied (`VmState::capture_cost`, charged to the tick's budget; a capture
-  that does not fit is a budget abort and the callback does not run), and the entities its natives
-  touch (`World::vm_touch_entity`), the selection and the camera are captured as they are touched. A
-  callback that aborts (a trap, a fault, the frame-limit overflow) is rolled back to that capture
-  whichever callback it is, so an `Hourglass` that sets a variable, teleports an actor and recurses to
-  the limit leaves nothing for the same tick's `CheckVictoryCondition` or any later tick to read
-  (`an_overflowing_hourglass_is_rolled_back_and_never_wins`: the same tick, later ticks, through a
-  snapshot / restore, an `Initialize` at load; the fault stays sticky and the assumptions recorded
-  stay). A queued handler the budget cut short (`CallOutcome::Exhausted`) is rolled back too and stays
-  at the front to be delivered at the start of the next tick, after the messages and before
-  `Hourglass`, running whole from the state it saw the first time; an ordinary callback the budget
-  cuts short keeps what it did (the tick stops there, as before). A capture that does not fit the
-  budget waits like an exhausted handler. A full
-  queue is a deterministic fault (`VmState::fault = ActionQueueOverflow`, sticky, hashed; `faulted` is
-  now derived from `fault`, which also names an unknown native, an arity mismatch or the frame-limit
-  overflow `CallStackOverflow` of Codex review 10, finding 3: a script call that would exceed
-  `vm::MAX_FRAMES` aborts the callback at the call with its destination untouched and rolls its
-  transaction back, so a recursive `CheckVictoryCondition` cannot win through a slot it wrote before
-  the call; a queued handler that fails deterministically, by a trap or a fault, is rolled back and
-  consumed rather than retried), never a silent drop.
+  whose class has no handler is dropped as undeliverable, one whose handler returned or terminated (it
+  would fail the same way again) is removed. The parameters are `(current_action, previous_action)` and
+  the actor is the current actor (`spec-script-vm.md` VM-091 / VM-093). Every callback still runs as a
+  transaction (`vm::Transaction`): before it starts, the VM's mutable state (the instances, the globals,
+  the mission variables, objectives, sequences, texts, money, patches, the campaign and NPC values, the
+  door bytes, the open recording, the script RNG) is captured at one work unit per value copied
+  (`VmState::capture_cost`, charged to the frame's budget; a capture that does not fit is a budget abort
+  and the callback does not run), and the entities its natives touch (`World::vm_touch_entity`), the
+  selection and the camera are captured as they are touched. Since ruleset 19 the capture serves **only**
+  the work budget: a callback that *terminates on a fault* keeps everything it did, because that is the
+  termination contract of the specification's 8.1 (all its frames are popped, both buffers and both
+  registers stay as the fault found them, and the engine goes on with its frame). A queued handler the
+  budget cut short (`CallOutcome::Exhausted`) is still rolled back and stays at the front to be delivered
+  at the start of the next frame, running whole from the state it saw the first time; an ordinary
+  callback the budget cuts short keeps what it did. A full queue is a deterministic fault
+  (`Fault::ActionQueueOverflow`), never a silent drop, and so is a script call that would exceed
+  `vm::MAX_FRAMES` (`Fault::CallStackOverflow`, which ends the callback at the call with its result slot
+  untouched).
 - **Campaign money.** `MissionSpec::starting_money` (100 by default) is applied to `VmState::money` before
   `Initialize` runs, so a script that sets it (H10's native 237) wins and nothing overwrites it afterwards;
   the app seeds it from the player's profile at load, never at install.
-- **Sequences.** Native 32 is a barrier: walks (45 / 48 / 64) and animations (49..=53, stubs) issue completion
-  tokens, the barrier holds the sequence until every token issued since the previous barrier completed (a
-  walk completes when the entity arrived, gave up, was ordered elsewhere, deactivated or died: hypothesis,
-  `docs/formats/scb.md`, "Engine notes"). Native 203 pages hold their sequence directly; native 202 texts
+- **Sequences** (not cleared: `spec-script-vm.md` 3.7 keeps this engine's own reading). Native 32 is a
+  barrier: walks and animations issue completion tokens, the barrier holds the sequence until every token
+  issued since the previous barrier completed (a walk completes when the entity arrived, gave up, was
+  ordered elsewhere, deactivated or died). The recording state itself follows VM-200 / VM-201 (one
+  recording at a time, the 16-bit level counter with its deterministic fault at the wrap, the entered
+  lists) so that natives 30 / 31 / 32 answer what the specification says. Native 203 pages hold their
+  sequence directly; native 202 texts
   never block anything, and `VmState::pending_text_requests` / `ScriptObservation::text_requests` expose the
   flag so the app can show a 202 text without pausing (`pending_texts` stays for compatibility).
 - The synthetic corridor has no script: its hashes only change through the schema bump.
