@@ -1,11 +1,11 @@
 # Navigation: layers, sectors, doors, lifts and the path finder (behaviour specification)
 
-Status: `draft`, revision 3 (answers Codex review 20; awaiting the next review). Build: GOG English edition,
+Status: `draft`, revision 4 (answers Codex review 26; awaiting the next review). Build: GOG English edition,
 `Robin Hood.exe` SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`, image base
 `0x00400000`; every address below is a virtual address in that image. Analyst: 2026-09-13, session
-`a275bfc2e1e321f17` (analyst role, ADR-0009). Reviewer: Codex `gpt-6-astra`, reviews 15 and 20 (archived as
-`docs/decisions/reviews/2026-09-13-codex-review-15-spec-navigation.md` and
-`2026-09-13-codex-review-20-spec-navigation.md`). Publication approval: pending (separate from factual approval).
+`a275bfc2e1e321f17` (analyst role, ADR-0009). Reviewer: Codex `gpt-6-astra`, reviews 15, 20 and 26 (the
+review events are listed in "Identity and exposure"). Publication approval: pending (separate from factual
+approval).
 
 This file describes what the original program does, in the analyst's own words, so that an implementer who has
 never seen the program can build it. It contains no decompiler output, no transcribed pseudocode, none of the
@@ -19,10 +19,11 @@ the program at the address, and where possible confirmed on the nine `.rhp` maps
 fits every branch and every map, with the evidence), `unknown`. Confidence is high unless stated.
 
 Sibling specifications, pinned: `spec-movement-animation-camera.md` revision 2 (commit `b0cd053`, `ANIM-nnn`:
-the frame, play modes, per-frame displacement, turning, the collision-aware move, element completion, layer
-changes inside action lists, the snapshot of the position record); `spec-ai-combat.md` revision 2 (`e966b05`,
-`AI-nnn`: the random stream, actor classes); `spec-script-vm.md` revision 3 (`25b6dbe`, `VM-nnn`: handles, the
-native table, sequence elements). Clock: the program requests a minimum frame of 40 ms and realises 46.875 ms on
+the frame, play modes, per-frame displacement, turning, the proximity scan ANIM-240, the failed move ANIM-241,
+arrival ANIM-242, bonds ANIM-243, element completion, the action queue ANIM-022, layer changes inside action
+lists ANIM-311, the snapshot contract of its section 8); `spec-ai-combat.md` revision 3 (`e7b2cd4`, `AI-nnn`:
+the random stream, actor classes, line of sight in its section 3.2.2); `spec-script-vm.md` revision 5
+(`22a1e33`, `VM-nnn`: handles, the native table, sequence elements). Clock: the program requests a minimum frame of 40 ms and realises 46.875 ms on
 the reference host (ANIM-001/002); the engine's fixed logic frame of 46.875 ms is the decision of
 `docs/decisions/ADR-0010-logic-frame.md`, not a property of the original. "Frame" and "tick" below mean that
 logic frame; every count in frames transfers one to one.
@@ -35,9 +36,20 @@ logic frame; every count in frames transfers one to one.
   masks, the position record and the navigation natives (section 10). It must not implement any of them, and no
   implementer session may inherit its context, notes or tool output.
 - **Delegated readers**: none. The throwaway probes and overlays in `re/notes/nav/` are this session's.
-- **Spec reviewer**: Codex `gpt-6-astra`; review 15 (23 findings, redo) answered by revision 2, review 20 (20
-  findings, redo) answered by this revision; both archived under `docs/decisions/reviews/` (their session ids are
-  not recorded there). The reviewer read `re/` and this file; its output is corrections to this file only.
+- **Spec reviewer**: Codex `gpt-6-astra`. Review events (the reviewer's session identifiers were not captured
+  by the review tooling and are unavailable; the stable identities are the archived files, each naming the
+  revision, commit and blob it inspected):
+  - review 15, `docs/decisions/reviews/2026-09-13-codex-review-15-spec-navigation.md`: revision 1, blob
+    `cc6933a0781477bfd068f1df28b57b9ef2892133`; 23 findings, redo; answered by revision 2;
+  - review 20, `2026-09-13-codex-review-20-spec-navigation.md`: revision 2, commit `e5a2e0c`, blob
+    `a1718e313bf841807d1d457c6bae771a1eb42328`; 20 findings, redo; answered by revision 3;
+  - review 26, `2026-09-18-codex-review-26-spec-navigation.md`: revision 3, commit `d280c1f`, blob
+    `710e01793e83a327d31451ae1f5c9ba740a4c04a`; 12 findings, fix-then-clear (finding 9 of review 20 withdrawn;
+    the static format work except `TUPO` / `PPPP`, the availability predicate, NAV-110's overlap requirement,
+    NAV-057, NAV-123, NAV-143, the reconstruction direction and test 5, NAV-150(a), the native corrections and
+    8.4 cleared); answered by this revision.
+  The reviewer's exposure: the decompilation in `re/` and the analyst's navigation notes, the inspected revision
+  of this file; its output is corrections to this file only.
 - **Implementation reviewer**: pending, must be a session that has never read `re/`.
 - **Publication approval**: pending, separate from factual approval.
 - **Edition**: GOG English edition, the maintainer's lawfully acquired copy; the executable hash above.
@@ -334,13 +346,18 @@ Door {
   actions) is not revised. When the patch asks for it, every actor on that layer and sector whose walker box
   meets a newly enabled obstacle is marked and receives an eviction element whose behaviour is unread (section
   9, fallback 8.7).
-- NAV-058 (observed, `0x00555a10`, `0x00556260`; ordering consequence inferred, medium). **Ordering after a
-  toggle.** In the original, a node or edge that becomes unavailable leaves its list, and one that becomes
-  available again is appended at the **end** of its list (the region's node list, the node's edge list); after
-  a save and load, availability is recomputed from the file order, so the lists are the file order filtered by
-  availability. Consequently the original's tie-breaks of NAV-141 can differ between "after a toggle in this
-  session" and "after loading the same state". OpenSherwood's choice is 8.3 (canonical file order, a declared
-  deviation for the in-session case); test 7.2-14 fixes both orders.
+- NAV-058 (observed, `0x00555a10`, `0x00556260`, `0x00556470`, `0x0055aa60`; the append inferred from the
+  insertion used, medium). **Ordering after a toggle and after a load.** In the original, a node or edge that
+  becomes unavailable leaves its list, and one that becomes available again is appended at the **end** of its
+  list (the region's node list, the node's edge list) in the order the recomputation meets it. A load does not
+  rebuild the file order: the level is read (file order), the initial state `0x55555555` is applied (objects
+  unavailable at that state leave their lists), then the saved state words are applied to those lists, so every
+  object that the saved state makes available again is appended after the survivors. Therefore, after a load,
+  the order is: the objects available at the initial state in file order, followed by the objects the saved state
+  re-enabled, in the order they were removed; and in-session, the same rule applied toggle by toggle. The two can
+  differ after several toggles of one field (an object disabled and re-enabled twice moves to the end twice).
+  The examination and opening ties of NAV-141 depend on these orders. OpenSherwood's choice is 8.3; test 7.2-14
+  fixes the original's orders and the chosen one.
 
 ## 3. Behaviour
 
@@ -356,8 +373,9 @@ Door {
   therefore be consumed only at a consumer slot after the slot at which it started, i.e. a request created during
   the element updates of tick `t` starts at the slot of `t + 1` and is consumed at the slot of `t + 2` at the
   earliest, later if the search takes longer. Applying a patch (NAV-057) is a further point at which the head of
-  the queue starts executing. Cancelling an element removes its request from any state; an abandoned execution
-  produces nothing. OpenSherwood's deterministic policy for the same states is 8.1.
+  the queue starts executing, whatever the state of the requests. Cancelling an element removes its request from
+  any state; an abandoned execution produces nothing. The original has no work budget. OpenSherwood's
+  deterministic policy for the same states is 8.1 (a proposed deviation).
 
 ### 3.1 From a screen point to a layer, a sector and a target (the click)
 
@@ -388,19 +406,20 @@ Door {
   layer holds iff the box overlaps the level rectangle (a box wholly outside the map is not clear; partial
   overlap counts) and no enabled wall segment of the layer (sector outlines and obstacles alike) meets it.
   Clearance says nothing about sector membership: a box that overlaps the map but lies on no sector is clear.
-- NAV-111 (observed, `0x004f5890`, `0x0051fdc0`; the normal's side per NAV-012). **Unsticking a box.** First,
-  a box that does not overlap the map is translated onto it: if its right edge is left of the map it is moved so
-  that its left edge is at `x = 0`, if its left edge is right of the map so that its right edge is at the map
-  width; likewise vertically. Then at most 50 rounds; a round takes the enabled wall segments meeting the box in
-  cell order and, for each segment whose oriented normal `n` (NAV-012) has the box centre on its `n` side
-  (`n . (centre - p1) > 0`, `p1` an end of the segment), examines the box's corners in the order (min x, min y),
-  (max x, max y), (max x, min y), (min x, max y): a corner whose signed distance `d = n . (corner - p1)` is
-  below 0.1 moves the **whole box** along `n` by `1 - d`, so that the corner comes to lie exactly 1 px on the
-  `n` side; later corners are measured after that translation. A segment whose `n` side does not hold the box
-  centre does not move the box in that round. The box is clear when a round meets no segment; otherwise, after
-  50 rounds, unsticking fails and the box stays where the last round left it. A diagonal wall therefore
-  produces a diagonal translation, and two walls may move the box twice in one round, the second measured after
-  the first.
+- NAV-111 (observed, `0x004f5890`, `0x0051fdc0`; the normal's side per NAV-012). **Unsticking a box.**
+  Required outcome: a box `B0` becomes a box `B` of the same size such that either `B` is clear (NAV-110) or 50
+  rounds have been applied, in which case unsticking has failed and `B` is the box after the 50th round. A box
+  that does not overlap the map is first translated onto it: when its right edge is left of the map, so that
+  its left edge is at `x = 0`; when its left edge is right of the map, so that its right edge is at the map
+  width; likewise vertically. A **round** transforms a box by the composition, in cell order, of the
+  *separations* from the enabled wall segments meeting the box; the separation from a segment with end `p1` and
+  oriented normal `n` (NAV-012) is the identity unless `n . (c - p1) > 0` for the box centre `c`, in which case
+  it is a translation `t . n` with `t` the sum, over the four corners taken in the fixed order (min x, min y),
+  (max x, max y), (max x, min y), (min x, max y), of `max(0, 1 - d_i)` for each corner whose signed distance
+  `d_i = n . (corner_i - p1)` is below 0.1, and of 0 otherwise, where each `d_i` is taken with the translations
+  of the preceding corners already applied. The outcome is thus determinate: every such corner ends exactly 1 px
+  on the `n` side of the segment's line at the moment it is considered; a diagonal wall yields a diagonal
+  translation; two walls yield the composition of their separations in cell order (test 7.2-15).
 - NAV-112 (observed, `0x00556990`; `0x004f6c20` is the live variant the orders use). **Corridor test** from `p`
   to `q` for half-size `(w, h)`: the corridor is the rectangle spanned by the two boxes of half-size
   `(w - 1, h - 1)` centred at `p` and `q`, its sides taken from the boxes' corners according to the signs of
@@ -490,17 +509,20 @@ Door {
      the quadrant rule with respect to `goal` and has a free corridor `candidate -> goal` is the **answer**, its
      passing candidates remembered. "No path" when nothing remains to examine or the request was abandoned.
   4. **Reaching neighbours**: when an examined node (byte not 5 or 10) is not the answer, every available edge
-     that enters it and has a record for the size class reaches the far node `A` with cost `g + edge cost`; `A`'s
-     recorded `g` is the least cost by which it has been reached, its recorded predecessor the edge that produced
-     that least cost, its `h = |A - goal|` fixed when first reached; a reaching that improves `g` (and is below
-     the answer's `g` if one were recorded) makes `A` open again (its position in the examination order is that
-     of a newly opened node).
+     that enters it and has a record for the size class *reaches* the far node `A` at cost `g + edge cost`. A
+     node's `g` is the least cost of all reachings it has received so far (or its opening cost); its `h` is
+     `|A - goal|` from the first time it was reached or opened; the edge by which the path arrives at `A` is the
+     edge of the reaching that established its current `g`. A reaching that lowers a node's `g` places it in the
+     examination order as if newly opened at that moment (newest first among equal `f`), so a node can be
+     examined more than once and its later examination uses the lower `g`.
   5. **Waypoints** (NAV-144, NAV-145): the answer's predecessor chain fixes the sequence of graph nodes from the
      first opened node to the answer; the path is `start`, then the corner walks at those nodes in that order,
      then `goal`.
-  6. **Smoothing**: only when the path has more than three points: for `i = 2, 3, ...` while `i` is inside the
-     list, with `d = p[i] - p[i-2]`: if the corridor from `p[i-2] + 0.00005 d` to `p[i] - 0.00005 d` is free
-     (NAV-112), `p[i-1]` is removed and the same `i` tested again; otherwise `i` advances.
+  6. **Smoothing**: only when the path has more than three points. The smoothed path keeps `start` and `goal`
+     and decides each interior point in order: an interior point `q` is dropped iff, with `k` the last kept
+     point before `q` and `r` the point after `q` in the unsmoothed list, the corridor from
+     `k + 0.00005 (r - k)` to `r - 0.00005 (r - k)` is free (NAV-112); otherwise `q` is kept and becomes the
+     next `k`.
 - NAV-142 (observed, `0x00552290`). The answer is the first node found goal-visible in examination order (the
   program keeps a "candidates to collect" count initialised to 1); the result is not necessarily the shortest
   path.
@@ -546,14 +568,15 @@ Door {
   is 1.
 - NAV-146 (observed, `0x004d23d0`, `0x00554560`). **Consuming a result**: the waypoints become one move action
   each (ANIM-208, with the request's gait and run flag), followed by the element's own completion. An empty
-  result puts the request into the failed-pending state with the tick of arrival; when 100 ticks have passed the
-  element fails and a player character plays its refusal reaction; whether the request is searched again in
+  result puts the request into the failed-pending state with its arrival tick `a`; the element fails (a player
+  character plays its refusal reaction) at the first consumer slot of a tick `t` with `t > a + 100`: it is still
+  pending at `a + 100` and fails at `a + 101` in the ordinary case. Whether the request is searched again in
   between is unread (fallback 8.7: it is not).
 - NAV-147 (observed, `0x005532a0`; the reference box's meaning unread). **Queue order** when the head is taken:
   requests are ordered by priority 0 (first) to 3, stable for equal priority; before ordering, a non-player
   request at priority 3 whose reference box contains its reference point is promoted to 2 and one at 2 whose box
   no longer contains it is demoted to 3 (player requests stay at 0; the box and point are the request's own,
-  their meaning is unread, fallback 8.7).
+  their meaning is unread, fallback 8.7). Cancelling an element removes its request from the queue at once.
 
 ### 3.6 Movement along the waypoints
 
@@ -564,14 +587,15 @@ Door {
   branch: in its point form it is *done* when `max(|dx|, |dy|) < tolerance + 5` px between the character and its
   point and otherwise *cancels the rest of the sequence*; in its sector form it is done when the character's
   sector is the named sector and cancels otherwise;
-  (b) inside the collision-aware move, the mover's **proximity query** is the axis-aligned rectangle spanned by
-  `position + r . dir` and `position - r . dir`, where `dir` is the unit movement direction and `r` = the
-  element's proximity radius field plus 60 px (the field's source is unread, fallback 8.7: 0). A character
-  becomes a proximity partner when it is displayed, is not the mover and not the element the mover carries, is
-  on the mover's layer and sector, is eligible by class and state (ANIM-205a), its **position** lies in the
-  query rectangle, and the dot product of `(partner position - mover position)` with `dir` is at least 5 px. A
-  non-character object becomes a partner when it answers "blocking" and its position lies in the rectangle (no
-  dot-product test). The partner's response is ANIM-205 (open).
+  (b) inside the collision-aware move, the mover's **proximity query** is the axis-aligned square centred on
+  the mover's *proposed next position* (its position plus this frame's displacement) with half-extent `r` on
+  each axis, `r` = the element's proximity radius field plus 60 px (the field's source is unread, fallback 8.7:
+  0). Every candidate element must be displayed, must not be the mover nor the element the mover carries, and
+  must be on the mover's layer and sector (the common exclusions of ANIM-240). A **character** candidate is then
+  a partner iff it is eligible by class and state (ANIM-240's list), its position lies in the square, and the
+  dot product of `(candidate position - mover position)` with the unit movement direction is at least 5 px. A
+  **non-character** candidate is a partner iff it answers "blocking" and its position lies in the square (no
+  class list, no dot-product test). The partner's response is ANIM-240's open part (fallback 8.7).
 
 ### 3.7 Bonds: changing area (and height)
 
@@ -646,12 +670,21 @@ Door {
 
 - NAV-200 (observed, `0x00467a50`, `0x0046a900`, `0x00469770`, `0x0046a000`; the action ids are the animation
   table's, ANIM-010; the moment of the layer change is ANIM-311). Using a lift end from side `s`: admission
-  (NAV-170), then `C` records the door and side and plays, by `lift_type`: **stairs** - a move to the threshold
-  with the current gait, a marker, a move to the far point with the gait's stair variant, a marker; **ladder** -
-  mount at the threshold, the climb loop whose length is the animation table's loop length for that action, a
-  marker, dismount at the far point (distinct actions for up and down and for the carrying variant of
-  civilians); **climb** - the ivy actions likewise, with the distinct set for type-6 ends. The flight is an
-  ordinary kind-1 sector (walking on it is ordinary movement).
+  (NAV-170), then `C` records the door and side and plays, by `lift_type`:
+  - **stairs** (`0x0046a900`, observed): four action elements: a move to the threshold, a marker, a move to the
+    end's point, a marker; the gaits of the two moves depend on the **end type**: at a lower end (type 5) the
+    first move uses the stair variant of the current gait and the second the plain gait, the second move ending
+    at the A point; at an upper end (types 4, 6) the first move uses the plain gait and the second the stair
+    variant, the second move ending at the B point. The stair variant is: action 7 for the walk action 6, action
+    0x126 for the sneak action 10, the same action for every other gait (ANIM-010 ids); the run flag of the
+    moves is set iff the current gait is 0xc9. The layer changes at the first marker (ANIM-311). Timing is the
+    move actions' (ANIM-208).
+  - **ladder** (`0x00469770`) and **climb** (`0x0046a000`): the action lists were read (mount, loop, dismount,
+    with side- and end-dependent variants and the loop length from the animation table's second field) but
+    their playback requirements, end points and completion conditions are not established, and the pinned
+    movement revision leaves the animation-field identification open; these two crossings are **withheld** from
+    clearance with the fallback of 8.7 (they are executed as stairs).
+  The flight is an ordinary kind-1 sector (walking on it is ordinary movement).
 
 ### 3.11 Sight volumes
 
@@ -763,10 +796,12 @@ of N4 with {8,1} of N1); no other edges. Start `(100,100)`, goal `(300,100)`, un
    is available; toggling again removes it. An obstacle with mask 1 is enabled at the initial state; with mask
    2 it is disabled and its four wall segments do not block. A save taken after a toggle restores the toggled
    availability.
-2. **Clearance.** A `12 x 8` box centred at `(200,100)` (inside the obstacle, meeting its walls) is not clear; the
-   same box at `(100,100)` is clear; a box at `(100,100)` on a layer with no sector at all is clear; a box
-   wholly outside the map (`(-40,-40)` to `(-28,-32)`) is not clear; a box straddling the map's left edge
-   (`(-6,100)` to `(6,108)`) is clear when no segment meets it.
+2. **Clearance.** A `12 x 8` box centred at `(180,100)` (spanning `(174,96)`-`(186,104)`, crossed by the
+   obstacle's left wall) is not clear; the box centred at `(200,100)` (`(194,96)`-`(206,104)`, wholly inside the
+   obstacle, meeting no wall) **is clear** - clearance is not polygon membership; the box at `(100,100)` is
+   clear; a box at `(100,100)` on a layer with no sector at all is clear; a box wholly outside the map
+   (`(-40,-40)` to `(-28,-32)`) is not clear; a box straddling the map's left edge (`(-6,100)` to `(6,108)`) is
+   clear when no segment meets it.
 3. **Corridor.** Start `(100,100)`, goal `(200,100)`, class `(6, 4)`: the corridor's sides are at `y = 97` and
    `y = 103`. A segment `(150,96)-(150,104)` blocks; `(150,104)-(150,120)` does not; `(150,90)-(150,103)` blocks
    (an end inside).
@@ -780,17 +815,18 @@ of N4 with {8,1} of N1); no other edges. Start `(100,100)`, goal `(300,100)`, un
    run 1 -> 2 (one step) beats 1 -> 8 -> 4 -> 2: `2, 1`. `G = {3}` (bits 1 and 2), `S = {4}`: from `g = 1`
    both runs pass one candidate; from `g = 2` the run 2 -> 4 passes none: `4, 2`. `G = {1}`, `S = {1}`: `1`.
    `U = 7` (bit 8 unusable), `G = {1}`, `S = {4}`: only the run 1 -> 2 -> 4 is valid: `4, 2, 1`.
-6. **Search** on F1. Openable nodes: N1 through candidate bit 1 at `(174,76)` (`g = h` as below), N4 through
-   candidate bit 8 at `(174,124)`; N2 and N3 are not openable (every candidate corridor from the start crosses
-   the obstacle's left wall or fails the quadrant rule). `g = sqrt(6800)` and `h = sqrt(14800)` for both, so
-   `f` ties exactly; N4 was opened later and is examined first; it is not goal-visible (its candidate `(174,124)`
-   fails the quadrant rule for the goal); it reaches N3 with `g = sqrt(6800) + 40`, `h = sqrt(6800)`. N1 is
-   examined next (`f = sqrt(6800) + sqrt(14800) < sqrt(6800) + 40 + sqrt(6800)`), not goal-visible, reaches N2
-   with the same `f` as N3; N2 was opened later and is examined first: its candidate bit 2 at `(226,76)` passes
-   the quadrant rule for the goal and its corridor to the goal is free: N2 is the answer. Corner walks: at N2
+6. **Search** on F1. Openable nodes: N1 through candidate bit 1 at `(174,76)` and N4 through candidate bit 8
+   at `(174,124)`; N2 and N3 are not openable (every candidate corridor from the start crosses the obstacle's
+   left wall or fails the quadrant rule). Both have `g = sqrt(6800)` (82.46) and `h = sqrt(14800)` (121.66),
+   so `f` (204.12) ties exactly; N4 was opened later and is examined first; it is not goal-visible (its
+   candidate `(174,124)` fails the quadrant rule for the goal); it reaches N3 with `g = sqrt(6800) + 40`,
+   `h = sqrt(6800)`, `f = 204.92`. N1 is examined next (204.12 < 204.92), not goal-visible, reaches N2 with the
+   same `f = 204.92`; N2 was placed later and is examined first: its candidate bit 2 at `(226,76)` passes the
+   quadrant rule for the goal and its corridor to the goal is free: N2 is the answer. Corner walks: at N2
    `G = {2}`, `S = {1,2}` (the N1-N2 record) -> `(226,76)`; at N1 `G` = partners of 2 = `{1,2}`, `S = {1}` ->
    `(174,76)`. Path `(100,100), (174,76), (226,76), (300,100)`; smoothing removes nothing (both three-point
-   corridors cross the obstacle). Consumed as three move actions (the start is skipped).
+   corridors cross the obstacle). Consumed as three move actions (the start is skipped). The competing scores of
+   this fixture differ by 0.807 (204.12 versus 204.92); 8.5 states what an `f32` implementation must reproduce.
 7. **Smoothing.** In F1 with the obstacle removed, a path `(100,100), (150,100), (200,100), (300,100)` collapses
    to `(100,100), (300,100)`.
 8. **Route.** Sectors `X`, `Y`, `Z`; doors `D1` (A = X at `(200,100)`, threshold `(210,100)`, B = Y at
@@ -818,98 +854,183 @@ of N4 with {8,1} of N1); no other edges. Start `(100,100)`, goal `(300,100)`, un
 12. **Door-approach test** with tolerance 10: a character at `(dx, dy) = (14, 0)` completes; at `(15, 0)` the
     element cancels the rest of the sequence at once; at `(14, 14)` it completes. Sector form: completes iff the
     character's sector is the named one.
-13. **Scheduling** (8.1): a walk element that needs a search, executed during the element updates of tick `t`,
-    is dispatched at the slot of `t + 1` and its move actions exist after the slot of `t + 2`; two such requests
-    from a player character and a non-player character in the same tick are dispatched player first (`t + 1`)
-    and non-player second (`t + 2`), consumed at `t + 2` and `t + 3`. A patch applied during the updates of tick
-    `t + 1` (after the player's dispatch) makes the player's completed result be discarded and recomputed against
-    the new availability; its move actions still exist after the slot of `t + 2`.
-14. **Toggle, snapshot, restore** on F1 with N1 mask 2 (unavailable at the initial state). Initial search:
-    only N4 is openable; the path is `(100,100), (174,124), (226,124), (300,100)` (N3 answers through bit 4 at
-    `(226,124)`). After toggling field 0: with the original's in-session order (N1 appended after N4) the search
-    examines N1 first among the tied openings and the path is again `(100,100), (174,124), (226,124), (300,100)`
-    (N3 is opened before N2 and wins the tie); with the file order (after a save and load in the original, and
-    always in OpenSherwood per 8.3) the path is that of test 6. A snapshot taken after the toggle restores state
-    `0x55555556` for the sector (field 0 = `10`) and the file-order result.
+13. **Scheduling and snapshots** (8.1, 8.2) on **fixture F2** = F1 with N1 mask 2 (N1 unavailable at the initial
+    state; the initial search result is the "lower path" `(100,100), (174,124), (226,124), (300,100)` of test
+    14). A player character `P` at `(100,100)` and a non-player character `Q` at `(100,100)` both receive a walk
+    to `(300,100)` during the updates of tick `t` (`P` first). Expected: `P`'s request is dispatched at the slot
+    of `t + 1` (queue order player first) and `Q`'s at `t + 2`; `P`'s three move actions exist after the slot of
+    `t + 2`, `Q`'s after `t + 3`, both along the lower path. (a) *Snapshot before dispatch* taken at the end of
+    tick `t`: after restore the same dispatch ticks and paths result. (b) *Snapshot before delivery* taken at the
+    end of tick `t + 1`: it carries `P`'s completed lower path with delivery tick `t + 2` and `Q` queued; after
+    restore `P`'s actions appear at `t + 2` without recomputation. (c) *Patch*: with no snapshot, a patch
+    toggling field 0 applied during the updates of `t + 1` (after `P`'s dispatch) returns `P`'s completed result
+    to the queue head and dispatches it again at once against the new availability; `P`'s actions exist after
+    the slot of `t + 2` and follow the "upper path" of test 6 (canonical order, 8.3); `Q` is dispatched at the
+    slot of `t + 2` and also gets the upper path at `t + 3`. (d) *Cancellation*: `Q`'s element cancelled during
+    tick `t + 1` removes its queued request; no search for `Q` runs and `P`'s timing is unchanged; `P`'s element
+    cancelled during `t + 1` after its dispatch discards its completed result and nothing is delivered at `t + 2`.
+    (e) *Budget*: with the budget forced to 1 unit, `P`'s dispatch at `t + 1` produces an empty result delivered
+    at `t + 2` as failed-pending. (f) *Failure boundary*: a failed-pending result with arrival tick `a = t + 2`
+    is still pending at the slot of `a + 100` and fails at the slot of `a + 101`, when `P` plays its refusal
+    reaction; a snapshot taken at `a + 50` and restored reproduces that failure tick.
+14. **Toggle and orders** on F2. Initial search: only N4 is openable; the path is the lower path (N3 answers
+    through bit 4 at `(226,124)`). After toggling field 0, N1 is available and its opening ties with N4's:
+    - original in-session order (N1 appended after N4): N1 is examined first (newest opening), reaches N2
+      (`f = 204.92`, placed first); N4 is examined next and reaches N3 (`f = 204.92`, placed later); N3 is
+      examined before N2 as the newer equal-score candidate and answers: the lower path;
+    - original order after a save at that state and a load: the same lists as above (NAV-058: N1 re-enabled
+      after the survivors), hence the lower path;
+    - OpenSherwood's canonical file order (8.3): N1 precedes N4, so N4 is examined first and places N3, then N1
+      places N2 later; N2 answers: the upper path of test 6.
+    A snapshot taken after the toggle restores state `0x55555556` (field 0 = `10`) for the sector and, under 8.3,
+    the upper path.
+15. **Unsticking** (NAV-111), segments given with their oriented normals. (a) Vertical wall `(100,50)-(100,150)`,
+    normal `(-1,0)`, box `(91,96)-(103,104)`: centre `(97,100)` is on the normal side (`3 > 0`); corners in
+    order: `(91,96)` `d = 9` (no correction), `(103,104)` `d = -3` -> translation 4 along the normal: box
+    `(87,96)-(99,104)`; `(99,96)` `d = 1`, `(87,104)` `d = 13`: result `(87,96)-(99,104)`, clear after one
+    round. (b) Diagonal wall `(0,0)-(100,100)`, normal `(-1,1)/sqrt 2`, box `(42,48)-(54,56)`: centre `(48,52)`
+    is on the normal side; corner `(54,48)` has `d = -3 sqrt 2` (about -4.24) -> translation `1 + 3 sqrt 2`
+    (about 5.24) along the normal, i.e. by about `(-3.71, +3.71)`; the other corners need none: result about
+    `(38.29,51.71)-(50.29,59.71)`. (c) Two walls in cell order: the wall of (a) then a horizontal wall
+    `(50,102)-(150,102)`, normal `(0,-1)`, box `(91,96)-(103,104)`: after the first wall `(87,96)-(99,104)`;
+    the second wall's corner `(99,104)` has `d = -2` -> translation 3 along `(0,-1)`: `(87,93)-(99,101)`; the
+    next round meets no wall: result `(87,93)-(99,101)`. (d) The box of (a) with its centre at `(103,100)` (the
+    wrong side of the normal): the wall applies no separation; the round ends with the box unchanged and the
+    box still meeting the wall; after 50 rounds unsticking fails with the box unchanged.
+16. **Quadrant rule, all bits** (NAV-143), corner `(100,100)`; for each candidate a point for the first form,
+    a point on the first form's boundary, a point for the second form, and two failing points:
+    bit 1 at `(94,96)`: `(94,120)` first form (boundary `v_x = 0`), `(80,120)` first, `(120,96)` second form
+    (boundary `v_y = 0`), `(120,80)` second; fails: `(80,80)`, `(120,120)`, `(50,96)`, `(94,80)`.
+    bit 2 at `(106,96)`: `(106,120)` first (boundary), `(120,120)` first, `(80,96)` second (boundary), `(80,80)`
+    second; fails: `(120,80)`, `(80,120)`, `(140,96)`, `(106,80)`.
+    bit 4 at `(106,104)`: `(106,80)` first (boundary), `(120,80)` first, `(80,104)` second (boundary),
+    `(80,120)` second; fails: `(120,120)`, `(80,80)`, `(140,104)`, `(106,120)`.
+    bit 8 at `(94,104)`: `(94,80)` first (boundary), `(80,80)` first, `(120,104)` second (boundary), `(120,120)`
+    second; fails: `(80,120)`, `(120,80)`, `(50,104)`, `(94,120)`.
+17. **Corner walk with overlapping sets** (NAV-144), `U = 15`: `G = {1,2}`, `S = {2,4}`: `G & S = {2}`, one
+    bit: the single waypoint 2. `G = {1,2}`, `S = {1,2}`: two common bits, so the general case: from `g = 1` the
+    run to 2 passes nothing; from `g = 2` the run to 1 passes nothing; the smaller `g` wins: `2, 1`. `G = {4,8}`,
+    `S = {1}`: from `g = 4` the runs 4 -> 8 -> 1 and 4 -> 2 -> 1 both pass one candidate, the run whose travel
+    order is 8 -> 4 -> 2 -> 1 is taken: `1, 2, 4`; from `g = 8` the run 8 -> 1 passes nothing and wins overall:
+    `1, 8`.
 
 ### 7.3 Oracle procedures (pending, `harness/tools/original`)
 
-Record, on Lincoln from the first mission's start, a click on the servant's hall floor and on a door leaf: the
-route through the ramp, the stair lift and the passage doors of `layers-and-doors.md` section 4 must be the
-one NAV-121 produces from the data (door costs and link lengths), and the arrival frames must match ANIM-208
-within one frame.
+Procedure: run the original from `robinhood_oracle`, load the first Lincoln mission, and capture the screen at
+every rendered frame together with the frame counter; issue one left click on the servant's hall floor at
+screen `(1180, 830)` with the hero selected; from the captures, read the hero's foot position per frame (the
+sprite's anchor, `sprites.md`) and the frames at which his layer changes (the background layer he is drawn
+against changes). Measurements: (1) the sequence of sectors entered, compared with the route NAV-121 produces
+from the map data for the same start and target (a list of door indices; a mismatch is a failure); (2) the
+frame at which each door-approach test completes, compared with the engine's frame for the same click under
+ADR-0010's frame; tolerance one frame per crossing, accumulated (a route of `k` crossings may differ by `k`
+frames overall) because the original's realised cadence varies by one host tick per frame (ANIM-002). The same
+procedure with a click on a door leaf (the hall door's leaf) measures the door interaction of 8.7's fallback.
 
 ## 8. Implementation choices, determinism, departures
 
-1. **Scheduling policy (proposed deterministic replacement of the worker; requires the maintainer's
-   approval as a deviation).** Per tick, in this order: (P1) *consumer slot*: a completed request whose
-   delivery tick is at most the current tick is consumed (NAV-146); (P2) *dispatch*: if no request is executing
+1. **Scheduling policy (proposed deterministic replacement of the worker; a deviation pending the
+   maintainer's approval).** Per tick, in this order: (P1) *consumer slot*: a completed request whose delivery
+   tick is at most the current tick is consumed (NAV-146); (P2) *dispatch*: if no request is completed-pending
    and the queue is not empty, order it (NAV-147), take the head, run the search to completion synchronously
-   within a work budget, and mark the request completed with delivery tick = current tick + 1; (P3) element
-   updates, which submit requests (they enter the queue and are dispatched at P2 of the next tick at the
-   earliest). A request submitted during P3 of tick `t` is dispatched at `t + 1` and consumed at `t + 2`; this
-   equals the original's earliest case and never its later cases (the original may deliver later when its
-   search runs long). Applying a patch during P3 (NAV-057): an executing request cannot exist during P3; a
-   completed request is returned to the queue head, the availability is recomputed, and the head is dispatched
-   again immediately (still delivered at its original delivery tick or later, never earlier than P1 of the next
-   tick). Cancellation removes the request from any state. A search that exhausts the work budget is an empty
-   result (failed-pending), a deviation recorded here; the budget is a constant of the engine, large enough
-   that no retail map reaches it.
-2. **Snapshot contract (ADR-0004).** Authoritative and hashed: per sector the state word (NAV-055) and, if 8.3 is
-   not adopted, the availability list orders; per door the open flag, both lock sets, the "player barred" byte,
-   the leaf's enabled flag; per building the occupant list and the "displayed" marks; per character the layer,
-   sector number and area of NAV-003 (ANIM-021 for the rest); the request queue in order, each entry with its
-   owner element, layer, sector number, start, goal, gait, run flag, priority state, unstuck flag, submission
-   tick, reference box and point; every completed request with its owner, its waypoint list and its delivery
-   tick; every failed-pending request with its owner and arrival tick. There is never an executing request at a
-   snapshot boundary (P2 completes within the tick). A completed result is restored as data and never
-   recomputed: it is authoritative for its delivery tick, and a patch between its computation and its delivery
-   has already discarded it (8.1). Restore rebuilds availability from the state words.
-3. **Availability order (proposed deviation, requires approval).** OpenSherwood always keeps nodes and edges in
-   file order filtered by availability (the original's own order after a load). The original's in-session order
-   after a re-enable (NAV-058) is not reproduced; the difference is confined to tie-breaks among equal `f` after
-   a patch re-enables an object, within the same session. Test 7.2-14 fixes both orders.
+   under the work budget, and mark it completed with delivery tick = current tick + 1; (P3) element updates,
+   which submit requests (they join the queue and are dispatched at P2 of the next tick at the earliest) and may
+   apply patches or cancel elements. Exact results:
+   - a request submitted during P3 of tick `t` is dispatched at P2 of `t + 1` and consumed at P1 of `t + 2`
+     (the original's earliest case, never its later cases);
+   - a patch applied during P3 of tick `t` (NAV-057): a completed request (dispatched at P2 of `t`, delivery
+     `t + 1`) is returned to the queue head, availability is recomputed, and the head is dispatched again at once
+     with delivery tick `t + 1` (unchanged); with only queued work, the head is dispatched at once with delivery
+     tick `t + 1` (one tick earlier than the ordinary case, as the original's restart hands the head over at
+     once); a second patch in the same P3 repeats the same steps with the same delivery tick;
+   - cancelling an element during P3 removes its request whether queued, completed or failed-pending; a
+     subsequent submission or patch in the same P3 behaves as above with the remaining queue;
+   - **work budget**: one unit per corridor test (NAV-112, each evaluation), per node examination and per
+     reaching (NAV-141 steps 3 and 4), 1 000 000 units per search; exhaustion ends the search with an empty
+     result delivered at the request's delivery tick (as failed-pending). The value is a bound, not a
+     measurement: the analyst has none; the engine records the maximum consumed per map so that the harness can
+     assert that no retail map exhausts it. Exhaustion is a deviation from the original (which has no bound).
+2. **Snapshot contract (ADR-0004).** Authoritative and hashed: per sector the state word (NAV-055) and the
+   availability order of its nodes and edges when 8.3 is not adopted; per door the open flag, both lock sets,
+   the "player barred" byte, the leaf's enabled flag; per building the occupant list and the "displayed"
+   marks; per character: the layer, sector number and area of NAV-003, the **active crossing** (the door recorded
+   by NAV-171/200 and the side, or none), the recorded lift end when standing on one (NAV-130 step 1), the walk
+   element's state (waiting for a request, or executing move actions) together with the action queue and the
+   current action's progress as ANIM-022 and the movement specification's section 8 snapshot contract define
+   them (the position record is ANIM-021); the request queue in order, each entry with owner element, layer,
+   sector number, start, goal, gait, run flag, priority state, unstuck flag, submission tick, reference box and
+   point; every completed request with the same inputs, its waypoint list and its delivery tick; every
+   failed-pending request with its owner, inputs and arrival tick. A completed result is restored as data and
+   consumed at its delivery tick; it keeps its inputs so that a patch after the restore can recompute it (8.1).
+   There is never an executing request at a snapshot boundary. Restore rebuilds availability from the state
+   words (and the order from the stored order when kept).
+3. **Availability order (proposed deviation, requires approval).** OpenSherwood keeps the nodes and edges of a
+   sector in file order filtered by availability at all times. The original's orders of NAV-058 (in-session and
+   after a load, both with re-enabled objects appended) are not reproduced; the difference is confined to
+   tie-breaks among equal `f` after a field has been toggled. Test 7.2-14 fixes the original's outcomes and the
+   chosen one. If the deviation is rejected, the availability order becomes snapshot state (8.2) maintained by
+   the append rule of NAV-058, and restore reproduces the stored order rather than the original's load
+   transition.
 4. **Invalid inputs (OpenSherwood decisions where the original is undefined).** NAV-014: a request naming an
    obstacle or an unknown number is rejected (the element fails). Native 8 with any index outside `0 ..
    count - 1` returns none. Natives 182 and 186-189 with a null or unknown handle: 182 returns 0, the setters do
    nothing. Native 191 on a door without a leaf does nothing. Native 64 keeps the original's selection rule
    (section 6) including its exclusion of jump-line entries.
-5. **Numeric precision (deviation).** The original computes distances, costs, sums and cross products with
-   80-bit intermediates and stores 32-bit results; the comparisons of NAV-121 (`door_cost + g + h`), NAV-141
-   (`g + h`, `g + cost`) and NAV-143 are made on those intermediates. OpenSherwood evaluates every operation in
-   `f32` in the order written (`door_cost + g` then `+ h`; `g + h`; `g + cost`). Results may differ from the
-   original only when two candidates' sums are within about `1e-6` relative of each other; the acceptance
-   tests use inputs whose ties are exact in `f32` (identical operands) and whose non-ties are separated by more
-   than 1 px.
-6. **Clock.** Frame counts of section 5 are logic frames; the engine's fixed 46.875 ms frame is
-   ADR-0010's decision, the original's requested pacing is 40 ms and its realised cadence host-dependent.
-7. **Fallbacks for the unread items (narrowed clearance).** Each is an `Assumption` variant (ADR-0008) with the
-   behaviour below until an analyst reads the routine:
-   - *Goal check tail* (NAV-141 step 0): the goal is inadmissible iff any enabled wall segment meets the goal
+5. **Numeric precision (proposed deviation).** What is evidenced: the scores `f` that order the door queue and
+   the node examination are stored single-precision values and are compared as such (`0x004fa6f0`,
+   `0x00554360`); the sums that produce them, the distances (`0x005581a0`) and the cross products of the quadrant
+   and corridor tests are evaluated in extended precision and then either stored to single precision (the
+   scores, the distances) or compared with zero without storing (the cross products); the precision-control word
+   the program runs under was not read. OpenSherwood evaluates every operation in `f32` in the written order
+   (`door_cost + g` then `+ h`; `g + h`; `g + cost`) and compares the stored `f32` scores; no bound on the
+   resulting differences is claimed. Acceptance cases for the policy: (i) the exact ties of tests 6 and 14
+   (identical operands); (ii) a **near tie**: F1 with the obstacle moved to `(180,80) (220,80) (220,121)
+   (180,121)`: N4 opens with `g = sqrt(6841)`, `h = sqrt(14841)`, N1 with `sqrt(6800)`, `sqrt(14800)`; the
+   engine must examine N1 first (`f` smaller by about 0.42) and the path must be the upper path; (iii) a
+   **geometric boundary**: the corridor of test 3 with a segment `(150,103)-(150,120)`, whose end lies exactly
+   on the corridor's side: it blocks (an end inside or on the corridor counts, per the closed comparison of
+   NAV-112's containment test; the implementation must use the same closed test); (iv) the quadrant boundaries
+   of test 16; (v) an accumulated-cost case: a corridor of five collinear corners 40 px apart where the summed
+   `g` of the far corner (`sqrt(6800) + 160`) is compared with a direct reaching of `sqrt(46800)`: the engine
+   must prefer the direct reaching (216.33 < 242.46). These cases exercise the comparisons the policy affects;
+   a difference from the original outside such near ties is a defect to be reported against this section.
+6. **Clock.** Frame counts of section 5 are logic frames; the engine's fixed 46.875 ms frame is ADR-0010's
+   decision, the original's requested pacing is 40 ms and its realised cadence host-dependent.
+7. **Narrowed clearance: fallbacks for the unread items.** Each is an `Assumption` variant (ADR-0008) with the
+   executable behaviour below until an analyst reads the routine; the variant names are the identifiers to use:
+   - `NavGoalCheckTail` (NAV-141 step 0): the goal is inadmissible iff any enabled wall segment meets the goal
      box.
-   - *Node reset* (`0x005557c0`): every node's search state is cleared before each search (no carry-over).
-   - *Patch toggle parameters and eviction* (NAV-046/057): until the patch record's fields are read, a patch
-     toggles nothing and evicts nobody; the missions on the five maps with nonzero masks (Croisement01/02/03,
-     Nottingham, York) therefore keep the initial availability; an actor found inside a newly enabled obstacle
-     (when toggles are implemented) is unstuck by NAV-111 at once.
-   - *Player door interaction* (NAV-172): a click on a leaf routes to the door (NAV-122); on arrival, if the
-     character is admitted (NAV-170, crossing form) the door is opened when closed; nothing closes a door except
-     a script-driven patch (none read).
-   - *Jump elements* (NAV-130): a jump line in a route fails the sequence (no jump).
-   - *Failed-pending re-run* (NAV-146): none; the element fails after 100 ticks.
-   - *Reference box of NAV-147*: non-player requests keep priority 1 (no promotion or demotion).
-   - *Alternate resolution flag* (NAV-101): never set.
-   - *`unknown_flag` pair of actions* (NAV-171): the plain pair.
-   - *Proximity radius field* (NAV-150b): 0 (query half-extent 60 px).
-   - *Proximity response and sliding* (ANIM-205): a blocked step does not move the element this frame.
-   - *Line of sight* (NAV-210): owned by the AI specification's assumption.
+   - `NavNodeReset` (`0x005557c0`): every node's search state is cleared before each search.
+   - `NavPatches` (NAV-046/057/172, `TUPO` unread): patches are **not loaded**: no patch-target polygons take
+     part in click resolution (a click there resolves as if the polygon were absent), no availability field is
+     ever toggled (the five maps with nonzero masks keep the initial availability), no lock-set swap and no
+     bond/leaf switch occurs, and no eviction exists. The behaviours lost are the patch-driven map changes
+     (`rhp.md` `TUPO`); `layers-and-doors.md` section 2.5 lists the scripts' patch calls for the first mission.
+   - `NavJumpZones` (`PPPP` unread): jump-zone polygons are loaded with the framing of `rhp.md` and take part in
+     click pass 3 (NAV-100) as read; a jump-zone hit yields a valid cursor and a walk to the clicked point on the
+     candidate sector (the jump itself does not exist). Jump-line entries of the door list answer "cannot pass"
+     to every admission query, so no route contains one and NAV-130's jump element never arises.
+   - `NavDoorInteraction` (NAV-172, `0x004d7880`): a click on a leaf routes to the door (NAV-122) with the
+     door's admission evaluated as if the door were open (rule 3 waived); on arrival at the near point, if the
+     door is closed and the character is admitted under that waiver, the door opens; nothing closes a door.
+   - `NavLadderClimb` (NAV-200): ladders and climbs are executed as stairs (the stairs action list with the
+     end-type rule), admission per NAV-192 unchanged.
+   - `NavFailedRerun` (NAV-146): no re-run; the element fails per the boundary of NAV-146.
+   - `NavReferenceBox` (NAV-147): non-player requests keep priority 1 (no promotion or demotion).
+   - `NavAltResolution` (NAV-101): the alternate resolution is never selected.
+   - `NavUnknownFlagActions` (NAV-171): the plain pair of actions.
+   - `NavProximityRadius` (NAV-150b): the radius field is 0 (query half-extent 60 px).
+   - `NavLineOfSight` (NAV-210): the line-of-sight test is the AI specification's section 3.2.2 as written
+     there, with its own assumption for the unread geometry; nothing in this specification is consulted for it.
+   The collision reaction and the sliding are the movement specification's `CharacterPush` and
+   `CollisionSlide` assumptions (its section 8), not this one's.
 
 ## 9. Open questions
 
 1. Line of sight: the routine and its rule (perception in `0x00486260` / `0x0048b5d0`; sight lines from
    `0x004e99e0`).
 2. The sliding rule after a failed corridor test and the proximity response (`0x00561040` second half,
-   `0x00563e90`, `0x00564020`-`0x00564390`, `0x00560840`; ANIM-205c); the source of the proximity radius field.
+   `0x00563e90`, `0x00564020`-`0x00564390`, `0x00560840`; ANIM-240 reaction, ANIM-241 sliding); the source of the proximity radius field.
 3. The goal check's decision tail (`0x00558210` after the segment collection) and the node reset before a
    search (`0x005557c0`).
 4. Jump lines and jump zones (`PPPP`, `0x004fb510`, `0x0051e230`, `0x0051b6e0`, `0x00583630`, `0x0049dbc0`) and
@@ -922,6 +1043,8 @@ within one frame.
 8. `STAT` `sector_mask` use, `unknown_flag`, the second `WOAW` plane, the ` AZ ` trailer word, the node
    vectors' purpose (NAV-025).
 9. The request reference box (NAV-147) and re-runs within the failure window (NAV-146).
+12. The ladder and climb crossings (NAV-200): playback requirements, end points and completion of the mount,
+    loop and dismount actions (`0x00469770`, `0x0046a000`, the animation table's second field per ANIM-013).
 10. Which level flag selects the alternate click resolution (NAV-101); which input reaches the gait-6 and the
     gait-10 click handlers (`0x004ccad0`, `0x004cd600`).
 11. Lift and door action ids as animation names (`0x005bddb0` table; `sprite-animations.md`).
@@ -986,8 +1109,14 @@ triple is unchanged.
 3. Layer and sector change only through doors and lift ends; bonds change the area only (3.7).
 4. A door-graph route (NAV-121) and the walk sequence (NAV-130) precede any path search.
 5. Click resolution per NAV-100/101/102 (top layer first, one cell traversal in file order, blocked layers stop).
-6. One search per tick with next-tick delivery (NAV-090, 8.1) instead of a synchronous unlimited search.
+6. One dispatch per consumer slot plus the patch-triggered re-dispatches, with next-tick delivery (NAV-090,
+   8.1), instead of a synchronous unlimited search.
 7. Door semantics of NAV-170/172 and section 6 (lock bytes, unlock-opens, 191 = click target).
 8. Buildings, tenants and occupancy (3.9); lifts with admission kinds (NAV-192, 3.10).
-9. Patches toggle availability (NAV-057); the sector state words are simulation state.
+9. Patches toggle availability (NAV-057); the sector state words are simulation state. Under the narrowed
+   clearance (8.7, `NavPatches`) this item is deferred until `TUPO` is read; the state words exist from the
+   start so that the save format does not change when patches arrive.
 10. Movement is the sibling specification's; the engine's constant grid speed goes.
+
+The items above are required to the extent of section 8.7: where a fallback applies, the fallback is the
+requirement until the corresponding routine is read.
