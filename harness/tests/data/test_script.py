@@ -16,60 +16,65 @@ from opensherwood_harness import Engine, key_press, pointer_click
 
 FIRST_MISSION = "H01_Lin_VL"
 
-# Ticks every mission runs in strict mode without a fault (`docs/formats/scb.md`, "Natives at load per
-# mission": the lenient run of 2026-09-02 reached tick 500 everywhere; the strict run of 2026-09-03 too, and
-# the strict run of 2026-09-05 over all 39 files under the corrected element table).
+# Logic frames every mission runs without a fault (ADR-0010: one clock of 46.875 ms, so 300 frames are
+# 14 s of play). The lenient run of 2026-09-02 reached tick 500 everywhere; the strict runs of 2026-09-03
+# and 2026-09-05 too.
 EARLY_TICKS = 300
 
-# Script state right after loading each mission with seed 1 (`PostInitialize` ran): whether an unknown
-# native trapped (`faulted`), how many traps, and the stub natives called (`{id: calls}`). Derived from the
-# engine on 2026-09-03 (ruleset 7, hash schema 9: every native the load-time closure reaches is implemented
-# or a recorded stub, so no loadable script traps) and re-recorded on 2026-09-05 with the corrected element
-# table (`docs/formats/sherwood-hub.md`, section 4: the player slots at the tail, the map prefix from the
-# `.rhp`): the forest missions now report their hidden player slots through stub 244 (slot empty), the
-# "every element" loops of H05 / Str01 / Str02 (stubs 80 / 81) cover the `ZORG` / `TING` entries, and the two
-# Sherwood missions load strictly. A change here is a deliberate edit that goes with the native or binding
-# that caused it, never a silent drift.
+# Script state right after loading each mission with seed 1 (`PostInitialize` ran): whether a fault was
+# recorded, how many traps, and the stub natives called (`{id: calls}`). Re-recorded on 2026-09-18 with the
+# rebuilt VM (ruleset 19, `docs/original/spec-script-vm.md` revision 9): the recording natives of VM-203
+# build sequence elements instead of acting, every call of a stubbed id is counted where the wrapper
+# dispatches it (not only the ones a sequence later runs), and the ids the specification excludes from
+# clearance (4.2) answer their prescribed placeholder and are counted under `unknown_natives` instead.
+# A change here is a deliberate edit that goes with the native or binding that caused it, never a silent
+# drift.
+# The two scripts whose `CheckVictoryCondition` reaches a `return_value 1` on the first tick, because the
+# property it tests is not modelled: Emb02 asks native 118 for an NPC's money (property 1, which this
+# engine keeps at 0) and the outro's check has no precondition of its own. Both are honest consequences of
+# `0x07` returning at once (`docs/original/spec-script-vm.md` 8.4 item 1), which the old engine did not do.
+WINS_AT_LOAD = {"Emb02_FoC_MK", "SherwoodOutro"}
+
 EXPECTED_AT_LOAD: dict[str, tuple[bool, int, dict[str, int]]] = {
-    "Emb01_FoA_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 3, "244": 4}),
-    "Emb02_FoC_MK": (False, 0, {"54": 1, "224": 3}),
-    "Emb03_FoC_MP": (False, 0, {"51": 1, "54": 1, "73": 1, "224": 3, "244": 4}),
-    "Emb04_FoA_MP": (False, 0, {"51": 1, "54": 1, "73": 1, "224": 3, "244": 5}),
-    "Emb05_FoB_MP": (False, 0, {"20": 1, "54": 1, "73": 1, "224": 4}),
-    "Emb06_FoC_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 4, "244": 5}),
-    "Emb07_FoB_JMS": (False, 0, {"54": 1, "188": 1, "224": 4}),
-    "Emb08_FoA_JMS": (False, 0, {"51": 1, "54": 1, "180": 1, "224": 4, "228": 2}),
-    "Emb09_FoB_JMS": (False, 0, {"54": 1, "73": 2, "195": 1, "224": 4}),
-    "EmbTut_FoC_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 3, "244": 4}),
-    "H01_Lin_VL": (False, 0, {"186": 2, "191": 6, "198": 5}),
-    "H02_Not_EC": (False, 0, {"24": 1, "186": 10, "187": 2, "188": 9, "189": 9, "191": 8, "198": 17, "264": 3}),
-    "H03_Der_MK": (False, 0, {"42": 2, "50": 1, "51": 1, "53": 7, "54": 1, "99": 17, "186": 6, "188": 1, "189": 4, "191": 1, "195": 1, "218": 6}),
-    "H04_Lei_VL": (False, 0, {"38": 1, "51": 2, "191": 2, "195": 1, "198": 17, "254": 1}),
-    "H05_Lin_EC": (False, 0, {"24": 2, "80": 198, "99": 1, "177": 2, "186": 9, "191": 7, "198": 48}),
-    "H07_Not_MK": (False, 0, {"20": 1, "50": 1, "80": 2, "92": 1, "99": 1, "177": 3, "180": 5, "186": 15, "187": 15, "188": 15, "189": 15, "191": 4, "195": 1, "205": 2, "218": 3, "244": 1, "247": 1, "264": 5}),
-    "H09_Not_VL": (False, 0, {"186": 4, "187": 4, "188": 1, "189": 1, "191": 8, "198": 8}),
-    "H10_Yor_VL": (False, 0, {"24": 2, "35": 1, "51": 1, "54": 1, "99": 1, "186": 3, "187": 3, "191": 4, "195": 2, "198": 8}),
-    "H12_Not_MP": (False, 0, {"20": 1, "50": 1, "52": 1, "156": 32, "177": 7, "186": 16, "187": 8, "188": 5, "189": 3, "191": 8}),
-    "S01_Not_VL": (False, 0, {"24": 1, "35": 1, "54": 1, "186": 9, "187": 9, "188": 1, "189": 3, "191": 8, "198": 9}),
-    "S02_Lei_MP": (False, 0, {"20": 1, "24": 1, "50": 1, "51": 2, "99": 1, "156": 24, "177": 3, "186": 3, "187": 1, "189": 2, "191": 5, "254": 1, "264": 1}),
-    "S03_FoB_MP": (False, 0, {"20": 1, "38": 1, "54": 1, "125": 3, "156": 1, "177": 14, "232": 1}),
-    "S04_Der_EC": (False, 0, {"186": 5, "187": 1, "188": 5, "189": 5, "191": 3, "198": 7}),
-    "S05_Yrk_EC": (False, 0, {"20": 1, "24": 3, "51": 1, "54": 1, "99": 3, "156": 1, "186": 7, "188": 4, "189": 6, "191": 4, "198": 10, "218": 7, "264": 3}),
-    "SherwoodOutro": (False, 0, {"54": 1, "180": 11}),
-    "Str01_Lin_EC": (False, 0, {"80": 241, "99": 12, "186": 1, "188": 1, "189": 1, "191": 7, "198": 42}),
-    "Str02_Der_MP": (False, 0, {"20": 1, "81": 182, "189": 4, "191": 1, "195": 2, "198": 11}),
-    "Str03_Yor_MK": (False, 0, {"51": 1, "99": 4, "143": 14, "186": 7, "188": 1, "189": 3, "191": 4, "195": 1}),
-    "Tac01_FoA_MP": (False, 0, {"20": 1, "54": 1, "224": 6, "244": 5}),
-    "Tac02_FoB_EC": (False, 0, {"20": 1, "54": 1, "198": 55, "224": 9, "244": 5}),
-    "Tac03_FoC_MP": (False, 0, {"39": 1, "52": 1, "54": 1, "224": 2, "244": 5}),
-    "Tac04_FoA_EC": (False, 0, {"20": 1, "54": 1, "224": 5, "244": 5}),
-    "Tac05_FoC_MP": (False, 0, {"177": 8, "198": 8}),
-    "Tac06_FoB_EC": (False, 0, {"20": 1, "54": 1, "224": 3}),
-    "Tac17_FoC_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 4, "244": 5}),
-    "Tac18_FoA_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 3}),
-    "Tac19_FoB_EC": (False, 0, {"20": 1, "51": 1, "54": 1, "73": 1, "224": 2, "244": 4}),
-    "Tac21_FoB_EC": (False, 0, {"20": 1, "186": 1, "188": 1, "189": 1, "224": 4, "244": 5}),
-    "sherwood": (False, 0, {"7": 1, "150": 1, "195": 25, "210": 10, "214": 1, "215": 14, "256": 50, "261": 1}),
+    "Emb01_FoA_EC": (False, 0, {"51": 4, "54": 2, "55": 1, "69": 5, "72": 1, "73": 2}),
+    "Emb02_FoC_MK": (False, 0, {"54": 2}),
+    "Emb03_FoC_MP": (False, 0, {"51": 5, "54": 2, "55": 1, "72": 1, "73": 2}),
+    "Emb04_FoA_MP": (False, 0, {"51": 4, "54": 2, "55": 1, "72": 1, "73": 2}),
+    "Emb05_FoB_MP": (False, 0, {"51": 3, "54": 2, "55": 1, "72": 1, "73": 2}),
+    "Emb06_FoC_EC": (False, 0, {"51": 5, "54": 2, "55": 1, "69": 5, "72": 1, "73": 2}),
+    "Emb07_FoB_JMS": (False, 0, {"54": 2}),
+    "Emb08_FoA_JMS": (False, 0, {"51": 2, "54": 2, "180": 1, "228": 2}),
+    "Emb09_FoB_JMS": (False, 0, {"51": 2, "54": 2, "72": 1, "73": 4}),
+    "EmbTut_FoC_EC": (False, 0, {"51": 5, "54": 2, "55": 1, "69": 3, "72": 1, "73": 2}),
+    "H01_Lin_VL": (False, 0, {}),
+    "H02_Not_EC": (False, 0, {"24": 1, "233": 1, "264": 3}),
+    "H03_Der_MK": (False, 0, {"50": 2, "51": 2, "53": 7, "54": 2, "99": 17, "218": 6, "233": 1}),
+    "H04_Lei_VL": (False, 0, {"38": 2, "51": 4, "233": 1}),
+    "H05_Lin_EC": (False, 0, {"24": 2, "99": 1, "177": 2}),
+    "H07_Not_MK": (False, 0, {"50": 3, "54": 2, "99": 68, "177": 3, "180": 5, "218": 3, "244": 1, "247": 1, "264": 5}),
+    "H09_Not_VL": (False, 0, {"233": 2}),
+    "H10_Yor_VL": (False, 0, {"24": 2, "35": 2, "51": 2, "54": 2, "55": 1, "99": 1, "233": 1}),
+    "H12_Not_MP": (False, 0, {"50": 2, "52": 1, "156": 32, "177": 7, "233": 6}),
+    "S01_Not_VL": (False, 0, {"24": 1, "35": 2, "54": 2, "55": 1}),
+    "S02_Lei_MP": (False, 0, {"24": 1, "50": 5, "51": 4, "99": 1, "156": 24, "177": 3, "233": 2, "264": 1}),
+    "S03_FoB_MP": (False, 0, {"38": 2, "54": 2, "55": 1, "70": 1, "156": 1, "177": 14, "232": 1, "233": 3}),
+    "S04_Der_EC": (False, 0, {"233": 3}),
+    "S05_Yrk_EC": (False, 0, {"24": 3, "51": 2, "54": 2, "55": 1, "99": 3, "156": 1, "218": 7, "264": 3}),
+    "SherwoodOutro": (False, 0, {"54": 2, "180": 11}),
+    "Str01_Lin_EC": (False, 0, {"99": 12}),
+    "Str02_Der_MP": (False, 0, {"177": 130}),
+    "Str03_Yor_MK": (False, 0, {"51": 2, "99": 4, "143": 14}),
+    "Tac01_FoA_MP": (False, 0, {"49": 4, "54": 2, "55": 1, "69": 4}),
+    "Tac02_FoB_EC": (False, 0, {"49": 4, "54": 2, "55": 1, "69": 7}),
+    "Tac03_FoC_MP": (False, 0, {"39": 2, "52": 1, "54": 2}),
+    "Tac04_FoA_EC": (False, 0, {"54": 2, "69": 12}),
+    "Tac05_FoC_MP": (False, 0, {"177": 8}),
+    "Tac06_FoB_EC": (False, 0, {"54": 2, "55": 1}),
+    "Tac17_FoC_EC": (False, 0, {"51": 5, "54": 2, "55": 1, "69": 5, "72": 1, "73": 2}),
+    "Tac18_FoA_EC": (False, 0, {"51": 4, "54": 2, "55": 1, "69": 3, "72": 1, "73": 2, "244": 5}),
+    "Tac19_FoB_EC": (False, 0, {"51": 4, "54": 2, "55": 1, "69": 6, "72": 1, "73": 2}),
+    "Tac21_FoB_EC": (False, 0, {"39": 2, "54": 2, "69": 7}),
+    "sherwood": (False, 0, {"7": 1, "150": 1, "210": 10, "214": 1, "215": 14, "256": 50}),
 }
 
 
@@ -127,11 +132,18 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
         assert vm["camera_target"] == [(hero["x"] + 128) // 256, (hero["y"] + 128) // 256]
         # The taint is dependency-closed (ADR-0008, "Hypotheses and taint"; Codex review 8): the
         # level's `Initialize` already took hypotheses at load, before any tick, so the mission is
-        # tainted from the start: it locks doors (effect stubs 186 / 191), hides an actor (198),
-        # locks AI (policy native 134: the halting is a low-confidence reading) and sets action
-        # availability (policy native 196: stored, not modelled). The briefing pages themselves
-        # (natives 26 / 30 / 203 / 32 / 34 / 95 / 211 / 31) add nothing.
-        AT_LOAD = [{"stub_result": 186}, {"stub_result": 191}, {"stub_result": 198}, {"policy": 134}, {"policy": 196}]
+        # tainted from the start. With the rebuilt VM (ruleset 19) the door bytes (182 - 191) and the
+        # NPC values (197 / 198) are settled rows that record nothing, while the partly modelled ones
+        # do: the door handle of native 4, the camera jump the briefing records (34), the element
+        # properties of 117, the AI lock of 134, the modal page of 203 and the leader of 211.
+        AT_LOAD = [
+            {"policy": 4},
+            {"policy": 34},
+            {"policy": 117},
+            {"policy": 134},
+            {"policy": 203},
+            {"policy": 211},
+        ]
         sc = e.observe(entities=False)["script"]
         assert sc["tainted"] is True and sc["assumptions"] == AT_LOAD, sc["assumptions"]
         # Nothing left to dismiss: Enter in the world is not a page dismissal.
@@ -147,19 +159,21 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
         assert not vm["mission_won"]
         sc = e.observe(entities=False)["script"]
         assert sc["objectives"][0]["done"] is False
-        # The taint of a normal run: the archery training plays animations (49 / 51) and shoots (59),
-        # the steward objective polls the purse item's "taken" predicate (235: implemented on the
-        # pick-up items, a policy reading of a low row), the scroll
-        # states are read and written (193 / 194: low-confidence rows), a wait / the Hourglass time
-        # was consumed under the 25-versus-60 tick reading, a sequence walk completed without
-        # arriving (the sergeant walks to an archer's spot) and `ActionChange` handlers ran (the
-        # parameter order is a hypothesis); neither perception nor a knock-out reached the script.
+        # The taint of a normal run under ruleset 19: the archery training records animations
+        # (49 / 51, stubs), shoots (59, one of the ids whose effect is settled only up to its
+        # action code - `spec-script-vm.md` 4.3), turns actors (48) and reads their state (90 /
+        # 118); the steward objective polls the purse item's "taken" predicate (235); the door
+        # handles (4), the camera jump (34), the element properties (117), the AI lock (134),
+        # the modal page (203) and the leader (211) are the partly modelled rows of the load;
+        # and one sequence walk completed without arriving (the sergeant walks to an archer's
+        # spot). Neither perception nor a knock-out reached the script.
         assert sc["tainted"] is True
         assert sc["assumptions"] == [
-            {"stub_result": 49}, {"stub_result": 51}, {"stub_result": 59},
-            {"stub_result": 186}, {"stub_result": 191}, {"stub_result": 198},
-            {"policy": 134}, {"policy": 193}, {"policy": 194}, {"policy": 196}, {"policy": 235},
-            "tick_rate", "walk_completion", "action_change_order",
+            {"stub_result": 49}, {"stub_result": 51},
+            {"policy": 4}, {"policy": 34}, {"policy": 48}, {"policy": 90}, {"policy": 117},
+            {"policy": 118}, {"policy": 134}, {"policy": 203}, {"policy": 211}, {"policy": 235},
+            {"unresolved_effect": 59},
+            "walk_completion",
         ], sc["assumptions"]
         assert "sight_cone" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
         assert vm["fault"] is None and vm["counters"]["transactions_rolled_back"] == 0
@@ -325,8 +339,10 @@ def test_every_mission_script_translates_and_runs_300_ticks_strictly(binary, gam
                     f"{name}: after {EARLY_TICKS} ticks faulted={vm['faulted']} traps={c['traps']} "
                     f"faults={c['faults']} budget_aborts={c['budget_aborts']} unknown={c['unknown_natives']}"
                 )
-            if vm["mission_won"] or vm["mission_lost"]:
+            if (vm["mission_won"] and name not in WINS_AT_LOAD) or vm["mission_lost"]:
                 mismatches.append(f"{name}: won={vm['mission_won']} lost={vm['mission_lost']} by tick {EARLY_TICKS}")
+            if name in WINS_AT_LOAD and not vm["mission_won"]:
+                mismatches.append(f"{name}: expected the unmodelled victory check to win")
             if c["arity_mismatches"]:
                 mismatches.append(f"{name}: native arity mismatches {c['arity_mismatches']}")
             sc = e.observe(entities=False)["script"]
@@ -393,7 +409,7 @@ def test_sherwood_camp_and_outro_load_strictly_and_run(binary, game_dir, tmp_pat
 def test_starting_money_is_seeded_before_initialize(binary, game_dir, tmp_path):
     """`MissionSpec.starting_money` (the profile's money, 100 by default) reaches the VM before
     `Initialize` runs and nothing overwrites it afterwards (review 7, finding 3): H10's `Initialize`
-    sets 100000 with native 237 (`docs/formats/scb.md`, "Natives at load per mission") and holds it
+    sets 100000 with native 237 (`docs/original/spec-script-vm.md`, row 237) and holds it
     right after `reset`; H01, whose script only reads the money, keeps the seed."""
     with Engine(binary=binary, game_dir=game_dir, artifacts=tmp_path, timeout=300) as e:
         e.reset({"mission": "H10_Yor_VL"}, seed=1)
@@ -492,7 +508,7 @@ def test_clicking_a_scroll_stops_short_of_it_and_pauses_before_its_text(binary, 
             if p["target"] is None:
                 # Already within the stop distance: the pause starts on the click's tick.
                 arrived = 0
-                assert p["pickup_ticks"] == 42, p
+                assert p["pickup_ticks"] == 15, p
             o = None
             for t in range(2000):
                 e.step(1)
@@ -502,9 +518,9 @@ def test_clicking_a_scroll_stops_short_of_it_and_pauses_before_its_text(binary, 
                     arrived = t + 1
                     short = math.hypot(p["x"] / 256 - s["x"], p["y"] / 256 - s["y"])
                     assert (12 if was_far else 0) <= short <= 26, f"stopped {short:.1f} px short of scroll {s['element']}"
-                    assert p["pickup_ticks"] == 42, p
+                    assert p["pickup_ticks"] == 15, p
                 if p["pickup"] is None:
-                    assert arrived is not None and t + 1 == arrived + 42, (t + 1, arrived)
+                    assert arrived is not None and t + 1 == arrived + 15, (t + 1, arrived)
                     break
             else:
                 raise AssertionError(f"the reading of scroll {s['element']} never resolved")

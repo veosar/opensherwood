@@ -22,7 +22,9 @@ harness/       Python: RPC client, pytest suites (synthetic in CI, data-backed l
 
 ## Determinism contract
 
-- The simulation advances in fixed ticks. Tick rate is a rational stored in every replay.
+- The simulation advances one **logic frame** at a time: 46.875 ms, `TICK_RATE` = (64, 3) Hz, the single clock
+  of ADR-0010 (animation, script and world all count the same frame). The rate is a rational stored in every
+  replay.
 - All randomness comes from named, seeded RNG streams owned by core. `std::collections::HashMap` iteration never
   influences simulation; use `BTreeMap` / sorted vectors / arena order.
 - Positions and timers are fixed-point unless the oracle proves the original used floats in a way we must mirror;
@@ -41,16 +43,22 @@ camera target, patches / attributes / states, the `script` RNG stream and diagno
 `World::vm`, in the snapshot, validated on restore and hashed (`scripts`: program digest and script-visible
 state; `scheduler`: queues, sequences, texts, frames).
 
-Load: `Initialize` on every class (level first, then the element classes in table order), `PostInitialize` on
-the level, then the first sequence elements. Each tick, before the entities move: deliver the messages queued
-during the previous tick (to the class bound to the target element, else the level class), `Hourglass(tick)` on
-every class that defines it, `EnterZone` / `ExitZone` for player characters crossing a zone class's polygon,
-the running sequence (one at a time, FIFO; elements block on a text until the app dismisses it with
-`World::vm_dismiss_text`, on a wait for its tick count, everything else completes at once), then
-`CheckVictoryCondition` (1 = `mission_won`, 2 = `mission_lost`; both sticky). A callback runs to completion within a per-tick work budget (instructions, natives' argument and polygon work, zone and scroll checks, sequence elements, path search);
-natives never call back into the script (they queue messages), so the frame stack is empty between ticks.
-Unknown natives trap (see the ADR); the `IsTaken`, `ActivatedBy*`, `ReachPoint` and `ActionChange` callbacks
-are exposed as `World::vm_*` hooks that nothing triggers yet.
+The behaviour is `docs/original/spec-script-vm.md` (revision 9): the instruction set, the calling convention,
+the native protocol, the messages and the failure classes are implemented from it; the scheduler (its 3.5) and
+the sequence machinery (3.7) are not cleared yet and keep this engine's own reading behind the same
+interfaces, marked with `Assumption` variants.
+
+Load: `Initialize` on every class (the level first with its parameter 0, then the element classes in table
+order), `PostInitialize` on the level, then the first sequence elements. Each logic frame, before the entities
+move: the action changes the previous frame left over, `Hourglass` on every class that defines it,
+`EnterZone` / `ExitZone` for player characters crossing a zone class's polygon, the running sequences
+(elements block on a text until the app dismisses it with `World::vm_dismiss_text`, on a timer for its frame
+count, everything else completes at once), then `CheckVictoryCondition`. Messages are **synchronous**: natives
+109 / 110 run the target's `ProcessMessage` inside the call (a nested callback on top of the running one,
+VM-095), and a recorded message element delivers when its sequence reaches it. A callback runs to completion
+within a per-frame work budget (instructions, the arity a native call transfers, polygon work, zone and scroll
+checks, sequence elements, path search). The `IsTaken`, `ActivatedBy*`, `ReachPoint` and `ActionChange`
+callbacks are `World::vm_*` hooks, each installing the current actor or current scroll of VM-093 / VM-094.
 
 ## Presentation
 

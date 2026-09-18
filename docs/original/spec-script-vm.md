@@ -1,12 +1,17 @@
 # Script VM, natives and callback scheduler (behaviour specification)
 
-Status: `reviewed`, revision 9 (Codex review 39, 2026-09-18: **cleared for implementation** — the interpreter core
+Status: `implemented (partial: interpreter core, messages, settled natives) ruleset 19`, revision 9
+(Codex review 39, 2026-09-18: **cleared for implementation** — the interpreter core
 including the sentinel departure, the scheduler-independent individually settled native effects, the message
 contracts and the snapshot / fault contract, all **for scheduler-independent use**). Waiting (excluded from that
 clearance): the scheduler integration (3.5, 3.7 as a whole), deferred execution (the 8.1 deferred-fault policy
 beyond its stated boundary), the camera integration (VM-219's conversion and interference), and every
 sibling-gated effect (1.1), the 12 exclusions of 4.2 and the 18 unresolved effects of 4.3. 235 remains an
 accounting total, not a blanket clearance. Publication approval is separate (identity block).
+Implementer batch 1 (2026-09-18, ruleset 19) built the cleared parts in
+`crates/opensherwood-core/src/vm.rs`, `crates/opensherwood-core/src/natives.rs` and
+`crates/opensherwood-script`; what is still the engine's own reading, and the questions the build raised, are
+in section 11.
 
 Identity and handoff record:
 - Analyst: 2026-09-13 and 2026-09-18, session `a45d5359e8dec5140` (Claude agent, analyst role under ADR-0009),
@@ -859,3 +864,38 @@ ANIM-320 - ANIM-326, ANIM-330 - ANIM-333, ANIM-340, ANIM-521, element table 3.4)
 `2026-09-13-codex-review-17-spec-script-vm.md`, `2026-09-13-codex-review-21-spec-script-vm.md`,
 `2026-09-18-codex-review-25-spec-script-vm.md` (identity block), and the sibling reviews 20, 22, 23, 24 cited in 1.1. Tests that will depend on this
 spec: section 7 (the VM rebuild, ADR-0009).
+## 11. Implementer questions (batch 1, 2026-09-18)
+
+Written by the implementer session that built the cleared parts (ADR-0009: an implementer may add to this
+section and must never guess silently). Every item names what the implementation chose meanwhile.
+
+1. **Native 192's arity.** Row 192 takes no argument (`Args` column: none), but the arity-0 list of VM-087
+   does not name it, while it names the other 36 arity-0 ids. Is the list simply missing 192, or does its
+   wrapper pop a cell? The implementation follows the row (arity 0) and pins the list, 192 included, in
+   `the_call_table_follows_the_specification`.
+2. **The size of the global block** (storage class `00`, VM-010 / VM-011). The specification says a shared
+   global block exists and that the retail files never address it, but not how large it is. The engine
+   allocates 1024 cells (`GLOBAL_CELLS`) and treats anything beyond as an unchecked access.
+3. **Float rounding of `0x20` - `0x23`.** VM-066 says "extended intermediate, stored as single". The engine
+   computes each operation directly in `f32`, which is correctly rounded once; the x87 rounds twice (80-bit
+   then single) and can differ in the last bit for a pathological pair. Is a double-rounded result ever
+   observable in the shipped data (the corpus has 9 float multiplies and 1 float comparison), or is the
+   single-rounding reading safe to keep?
+4. **The `Hourglass` cadence while the scheduler is uncleared.** VM-103 step 4 runs the level's `Hourglass`
+   every 25 frames with `T / 25`; the engine still runs `Hourglass` on **every** class every frame with the
+   frame counter, because 3.5 is not cleared. No `Assumption` variant of 4.1 covers that departure - should
+   the scheduler's departures get one (say `SchedulerCadence`) until 3.5 is cleared, or is the batch that
+   implements 3.5 close enough that the gap can stay unnamed?
+5. **Natives 4 / 5 / 8 / 11 / 12 / 15 over lists this engine does not keep.** The rows describe indices into
+   the map's door, patch and building lists; the engine has no such lists, so the handle *is* the index and
+   the inverse natives are the identity. Every one of them records `Policy(id)`. Is that the reading the
+   navigation specification will settle (NAV section 5), or will the handles become opaque?
+6. **Native 118's unmodelled properties.** Row 118 lists twelve properties; the engine keeps them in one
+   hashed table and answers 0 for a property nothing has written. `Emb02_FoC_MK` wins on its first tick
+   because its `CheckVictoryCondition` tests property 1 (an NPC's money) and reads 0; with `0x07` returning
+   at once (8.4 item 1) that reaches the `return_value 1`. Should an unwritten property answer something
+   other than 0, or does the money have to come from the mission record before that mission behaves?
+7. **The strict mode of 4.2.** The specification allows a strict mode that faults on an excluded id instead
+   of answering the placeholder. The engine always answers the placeholder (the retail scripts call 224 at
+   load, so a strict fault would stop every forest mission); `MissionSpec::lenient_natives` now only decides
+   whether the call is also logged with its arguments. Is that the intended default?

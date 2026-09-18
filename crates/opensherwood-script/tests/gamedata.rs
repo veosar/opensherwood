@@ -14,9 +14,6 @@ use opensherwood_script::{
     MissionBinding, known_map_element_count, map_element_count, translate_with_report,
 };
 
-/// World tick rate the app binds with (`opensherwood_app::engine::TICK_RATE`).
-const TICK_RATE: (u32, u32) = (60, 1);
-
 fn levels_dir() -> Option<PathBuf> {
     let p = PathBuf::from(std::env::var_os("OPENSHERWOOD_GAME_DIR")?);
     let levels = p.join("DATA").join("Levels");
@@ -128,7 +125,7 @@ fn every_retail_mission_binds_with_the_player_slots_at_the_tail() {
         let mission = rhm::parse(&std::fs::read(&missions[stem]).unwrap()).unwrap();
         let script = scb::parse(&std::fs::read(scb_path).unwrap()).unwrap();
         let map = &maps[&mission.header.map.to_ascii_lowercase()];
-        let binding = MissionBinding::from_mission(&mission, map_element_count(map), TICK_RATE);
+        let binding = MissionBinding::from_mission(&mission, map_element_count(map));
         let (program, report) =
             translate_with_report(&script, &binding).unwrap_or_else(|e| panic!("{stem}: {e}"));
         assert!(

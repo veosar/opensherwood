@@ -1836,29 +1836,29 @@ impl SaveScreen {
 /// Escape, Enter or a click returns to the main menu.
 #[derive(Debug)]
 pub struct Credits {
-    /// Scroll position in pixels times `tick_rate` (exact integer accumulation; 0 = the strip's top edge
-    /// at the bottom of the frame).
+    /// Scroll position in pixels times the tick rate's numerator (exact integer accumulation;
+    /// 0 = the strip's top edge at the bottom of the frame).
     offset_num: i64,
-    /// Ticks per second, to turn the observed speed into a per-tick step.
-    tick_rate: u32,
+    /// Logic frames per second as a rational, to turn the observed speed into a per-frame step.
+    tick_rate: (u32, u32),
 }
 
 impl Credits {
     /// Observed scroll speed in pixels per second.
     pub const SPEED_PX_PER_S: i64 = 20;
 
-    /// New credits screen.
+    /// New credits screen at the given tick rate (frames per second as a rational).
     #[must_use]
-    pub fn new(tick_rate: u32) -> Self {
+    pub fn new(tick_rate: (u32, u32)) -> Self {
         Self {
             offset_num: 0,
-            tick_rate: tick_rate.max(1),
+            tick_rate: (tick_rate.0.max(1), tick_rate.1.max(1)),
         }
     }
 
-    /// Advance one tick.
+    /// Advance one logic frame.
     pub fn tick(&mut self) {
-        self.offset_num += Self::SPEED_PX_PER_S;
+        self.offset_num += Self::SPEED_PX_PER_S * i64::from(self.tick_rate.1);
     }
 
     /// Whether an input event leaves the screen.
@@ -1875,7 +1875,7 @@ impl Credits {
     /// Current scroll position in pixels.
     #[must_use]
     pub fn offset(&self) -> i32 {
-        (self.offset_num / i64::from(self.tick_rate)) as i32
+        (self.offset_num / i64::from(self.tick_rate.0)) as i32
     }
 
     /// State for `observe`.
@@ -2644,11 +2644,12 @@ mod tests {
 
     #[test]
     fn credits_scroll_at_the_observed_speed_and_leave_on_escape() {
-        let mut c = Credits::new(60);
-        for _ in 0..60 {
+        // One second of logic frames (64 frames in 3 s) scrolls the observed 20 px.
+        let mut c = Credits::new(crate::engine::TICK_RATE);
+        for _ in 0..64 {
             c.tick();
         }
-        assert_eq!(c.offset(), 20);
+        assert_eq!(c.offset(), 3 * 20);
         assert!(!Credits::leaves(mv(1, 1)));
         assert!(Credits::leaves(InputEvent::KeyDown { key: Key::Escape }));
         let fb = c.render(None);

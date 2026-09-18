@@ -18,8 +18,11 @@ use winit::window::{Window, WindowId};
 use crate::engine::Session;
 use crate::rpc;
 
-/// Simulation ticks per second in window mode.
-pub const TICK_RATE: u32 = 60;
+/// Length of one logic frame in window mode: the core's 46.875 ms (ADR-0010; the presentation
+/// renders at the display's rate and shows the last simulated frame).
+pub const FRAME_TIME: Duration = Duration::from_nanos(
+    1_000_000_000 * opensherwood_core::TICK_RATE.1 as u64 / opensherwood_core::TICK_RATE.0 as u64,
+);
 
 /// How the window is presented.
 #[derive(Debug, Clone, Copy)]
@@ -427,7 +430,7 @@ impl App {
         let now = Instant::now();
         self.accumulator += now - self.last_tick;
         self.last_tick = now;
-        let dt = Duration::from_secs(1) / TICK_RATE;
+        let dt = FRAME_TIME;
         // Cap catch-up so a stalled window does not spin through hundreds of ticks.
         if self.accumulator > dt * 10 {
             self.accumulator = dt * 10;
@@ -674,7 +677,7 @@ impl ApplicationHandler for App {
         {
             g.window.request_redraw();
         }
-        let dt = Duration::from_secs(1) / TICK_RATE;
+        let dt = FRAME_TIME;
         let next = if self.rpc.is_some() {
             Instant::now() + Duration::from_millis(1)
         } else {

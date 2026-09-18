@@ -35,4 +35,11 @@ pub use world::{
 };
 
 /// Ruleset version: bump when simulation semantics change so old replays/hashes are not compared.
-pub const RULESET_VERSION: u32 = 18;
+pub const RULESET_VERSION: u32 = 19;
+
+/// The simulation's tick rate as a rational in Hz: one **logic frame** of 46.875 ms (ADR-0010,
+/// `docs/original/spec-script-vm.md` VM-100). 64 frames span exactly 3 s. Everything the
+/// behaviour specifications count in frames - script ticks, AI timers, animation timers, camera
+/// updates, sequence timers - counts engine ticks one to one; the 64 Hz animation sub-clock and
+/// the 25 Hz script sub-clock of the earlier engine are gone, and so are their conversions.
+pub const TICK_RATE: (u32, u32) = (64, 3);

@@ -14,7 +14,6 @@ pub mod text;
 
 use std::sync::Arc;
 
-use opensherwood_core::anim::{UNITS_PER_TABLE_TICK, UNITS_PER_WORLD_TICK};
 use opensherwood_core::vm::ItemKind;
 use opensherwood_core::{EntityKind, Fixed, World};
 
@@ -694,7 +693,7 @@ pub struct ItemAnimation {
 }
 
 impl ItemAnimation {
-    /// Length of one cycle in table ticks (every frame at least 1).
+    /// Length of one cycle in logic frames (every frame at least 1).
     #[must_use]
     pub fn length(&self) -> u32 {
         self.frames
@@ -702,18 +701,17 @@ impl ItemAnimation {
             .fold(0u32, |acc, (_, d)| acc.saturating_add((*d).max(1)))
     }
 
-    /// The frame shown at world tick `tick` (`None` for an empty block): the cycle runs from
-    /// tick 0 in clock units, [`UNITS_PER_WORLD_TICK`] per world tick and
-    /// [`UNITS_PER_TABLE_TICK`] per table tick of a frame's duration.
+    /// The frame shown at logic frame `tick` (`None` for an empty block): the cycle runs from
+    /// frame 0, one engine tick per frame of a frame's duration (ADR-0010).
     #[must_use]
     pub fn frame_at(&self, tick: u64) -> Option<ItemFrame> {
-        let length = u64::from(self.length()) * u64::from(UNITS_PER_TABLE_TICK);
+        let length = u64::from(self.length());
         if length == 0 {
             return None;
         }
-        let mut phase = (tick % length) * u64::from(UNITS_PER_WORLD_TICK) % length;
+        let mut phase = tick % length;
         for (frame, d) in &self.frames {
-            let span = u64::from((*d).max(1)) * u64::from(UNITS_PER_TABLE_TICK);
+            let span = u64::from((*d).max(1));
             if phase < span {
                 return Some(*frame);
             }
@@ -1002,9 +1000,9 @@ mod tests {
     use super::*;
     use opensherwood_core::Scenario;
 
-    /// The sparkle: every frame of an item block is shown in turn on the animation clock
-    /// (16 units per world tick, 45 per table tick), the cycle restarting from world tick 0;
-    /// a stack beyond the loaded blocks uses the last block, an empty block nothing.
+    /// The sparkle: every frame of an item block is shown in turn, one logic frame per unit
+    /// of its duration (ADR-0010), the cycle restarting from frame 0; a stack beyond the
+    /// loaded blocks uses the last block, an empty block nothing.
     #[test]
     fn item_animations_cycle_every_frame_on_the_animation_clock() {
         let pic = |frame: u32| ItemFrame {
@@ -1016,16 +1014,16 @@ mod tests {
             frames: vec![(pic(1), 1), (pic(2), 2)],
         };
         assert_eq!(anim.length(), 3);
-        // 135 units per cycle: frame 1 for the first 45, frame 2 for the next 90.
-        for (tick, frame) in [(0, 1), (2, 1), (3, 2), (8, 2), (9, 1), (11, 1), (12, 2)] {
+        // Three frames per cycle: frame 1 for the first, frame 2 for the next two.
+        for (tick, frame) in [(0, 1), (1, 2), (2, 2), (3, 1), (4, 2), (5, 2), (6, 1)] {
             assert_eq!(
                 anim.frame_at(tick).map(|f| f.frame),
                 Some(frame),
                 "tick {tick}"
             );
         }
-        // The largest tick: 2^64 - 1 = 105 (mod 135), 105 x 16 = 60 (mod 135): the second frame.
-        assert_eq!(anim.frame_at(u64::MAX).map(|f| f.frame), Some(2));
+        // The largest tick: 2^64 - 1 = 0 (mod 3): the first frame.
+        assert_eq!(anim.frame_at(u64::MAX).map(|f| f.frame), Some(1));
         assert_eq!(ItemAnimation::default().frame_at(0), None);
         let art = ItemArt {
             arrows: vec![Some(anim.clone()), None],
@@ -1221,9 +1219,9 @@ mod tests {
             "the 5's left stroke"
         );
         assert_eq!(px(&fb, 83, 176), palette::GROUND, "the 5's open right side");
-        assert_eq!(damage_numbers::rise(45), 25);
-        assert_eq!(damage_numbers::rise(90), 50);
-        w.damage_numbers[0].age = 45;
+        assert_eq!(damage_numbers::rise(16), 25);
+        assert_eq!(damage_numbers::rise(32), 50);
+        w.damage_numbers[0].age = 16;
         let fb2 = render(&w, None, &mut NoSprites);
         assert_eq!(px(&fb2, 78, 148), palette::DAMAGE_NUMBER);
         assert_eq!(px(&fb2, 78, 173), palette::GROUND);
