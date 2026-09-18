@@ -120,7 +120,7 @@ an entry by repeating its two strings.
 | 0x1a | u8 | unknown_0x1a | 0 or 1 (127 records); "patrol chief" is the hypothesis |
 | 0x1b | u32 | unknown_0x1b | 0 (2073), 1..=20, 50, 99, 100 |
 | 0x1f | u32 | unknown_0x1f | always 0 |
-| 0x23 | u32 | unknown_0x23 | 0 (2293) or 10..=100 (a percentage) |
+| 0x23 | u32 | money | 0 (2293) or 10..=100; the unit's purse: property 1 of native 118 and the loot threshold AI-043 reads (`spec-script-vm.md` revision 10) |
 | 0x27 | u16 + u16[] | members | list of `BORG` indices (0..=count-1); 63 records have one, 1..=7 entries |
 | | i16 | rail | index into `RAIL` (patrol path) or -1 (1748 of 2463) |
 | | i16 | unknown_i16 | -1 (2152) or 7..=22 |
@@ -133,9 +133,8 @@ an entry by repeating its two strings.
 | 0x00 | Placement | placement | `unknown_0x08` 3, 159, 270, 47, 45, or 0 |
 | 0x12 | u32 | unknown_0x12 | 0..=3 |
 | 0x16 | u32 | profile | 0-based index into the **CV table of `profile.cpf`** (24 entries; all used; index roles in [profile.md](profile.md): tax collector, beggar, child, six generic townspeople, the story notables, unarmed versions of heroes and antagonists, a corpse, a soldier sprite reused as a civilian in `H12`) |
-| 0x1a | i16 | unknown_i16_a | -1 (322 of 427) or 0..=63 |
-| 0x1c | i16 | unknown_i16_b | 0, 25, 1500, 2000, 3000, 4000, 4500 |
-| 0x1e | u16 | unknown_u16 | always 0 |
+| 0x1a | u16 | unknown_u16_a | 0xffff (322 of 427) or 0..=63 |
+| 0x1c | u32 | money | 0, 25, 1500, 2000, 3000, 4000, 4500; the civilian's purse, property 1 of native 118 (`spec-script-vm.md` revision 10; earlier revisions of this table split the field into two i16 and left the parser two bytes short) |
 | 0x20 | lists | lists | **only when `profile == 1`** (the beggar; 28 records, all with `unknown_0x08 == 0`): ten lists, each `u16 n` + `n x u16` (ids up to 0x2c; 0..=3 per list). Beggars sell information for a purse (tutorial popup), so the lists are hypothesised to be the information / dialogue ids per topic |
 | | opt name | name | `<label>_<8 hex digits>` |
 
