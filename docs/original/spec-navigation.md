@@ -1,9 +1,9 @@
 # Navigation: layers, sectors, doors, lifts and the path finder (behaviour specification)
 
-Status: `draft`, revision 4 (answers Codex review 26; awaiting the next review). Build: GOG English edition,
+Status: `draft`, revision 5 (answers Codex review 32; awaiting the next review). Build: GOG English edition,
 `Robin Hood.exe` SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`, image base
 `0x00400000`; every address below is a virtual address in that image. Analyst: 2026-09-13, session
-`a275bfc2e1e321f17` (analyst role, ADR-0009). Reviewer: Codex `gpt-6-astra`, reviews 15, 20 and 26 (the
+`a275bfc2e1e321f17` (analyst role, ADR-0009). Reviewer: Codex `gpt-6-astra`, reviews 15, 20, 26 and 32 (the
 review events are listed in "Identity and exposure"). Publication approval: pending (separate from factual
 approval).
 
@@ -18,12 +18,16 @@ Claim ids are `NAV-nnn`, inline; every statement an implementer relies on carrie
 the program at the address, and where possible confirmed on the nine `.rhp` maps), `inferred` (the reading that
 fits every branch and every map, with the evidence), `unknown`. Confidence is high unless stated.
 
-Sibling specifications, pinned: `spec-movement-animation-camera.md` revision 2 (commit `b0cd053`, `ANIM-nnn`:
-the frame, play modes, per-frame displacement, turning, the proximity scan ANIM-240, the failed move ANIM-241,
-arrival ANIM-242, bonds ANIM-243, element completion, the action queue ANIM-022, layer changes inside action
-lists ANIM-311, the snapshot contract of its section 8); `spec-ai-combat.md` revision 3 (`e7b2cd4`, `AI-nnn`:
-the random stream, actor classes, line of sight in its section 3.2.2); `spec-script-vm.md` revision 5
-(`22a1e33`, `VM-nnn`: handles, the native table, sequence elements). Clock: the program requests a minimum frame of 40 ms and realises 46.875 ms on
+Sibling specifications, pinned: `spec-movement-animation-camera.md` revision 3 (commit `03b413e`, `ANIM-nnn`:
+the frame, play modes, per-frame displacement, turning, the proximity comparison ANIM-240, the failed-move
+counter ANIM-241, arrival ANIM-242, bonds ANIM-243, element completion, the action queue ANIM-022, layer changes
+inside action lists ANIM-311, the snapshot contract of its section 8; its ANIM-240 names NAV-150(b) as the
+fuller statement of the proximity eligibility, so that list is owned here); `spec-ai-combat.md` revision 3
+(`e7b2cd4`, `AI-nnn`: the random stream, actor classes, line of sight AI-065); `spec-script-vm.md` revision 5
+(`22a1e33`, `VM-nnn`: handles VM-030, the native table, sequence elements). What the pinned movement revision
+does **not** supply and this specification therefore withholds or defines as its own fallback: the proximity
+reaction and the collision resolution (its `CharacterPush` and `CollisionSlide` entries name unknowns without
+executable outcomes) - see 8.7. Clock: the program requests a minimum frame of 40 ms and realises 46.875 ms on
 the reference host (ANIM-001/002); the engine's fixed logic frame of 46.875 ms is the decision of
 `docs/decisions/ADR-0010-logic-frame.md`, not a property of the original. "Frame" and "tick" below mean that
 logic frame; every count in frames transfers one to one.
@@ -47,7 +51,13 @@ logic frame; every count in frames transfers one to one.
     `710e01793e83a327d31451ae1f5c9ba740a4c04a`; 12 findings, fix-then-clear (finding 9 of review 20 withdrawn;
     the static format work except `TUPO` / `PPPP`, the availability predicate, NAV-110's overlap requirement,
     NAV-057, NAV-123, NAV-143, the reconstruction direction and test 5, NAV-150(a), the native corrections and
-    8.4 cleared); answered by this revision.
+    8.4 cleared); answered by revision 4;
+  - review 32, `2026-09-18-codex-review-32-spec-navigation.md`: revision 4, commit `5c380b6`, blob
+    `ec30e08cfcde7b6620cd3c3d2879095c702f0f25`; 7 findings, fix-then-clear with a per-component clearance
+    table (static formats except `TUPO` / `PPPP`; graph decoding, availability predicate, quadrant rules,
+    corner walks and waypoint ordering; click resolution; door admission, native state changes and passage
+    action ordering; building semantics; stairs; waypoint delivery, approach test and crossing state);
+    answered by this revision.
   The reviewer's exposure: the decompilation in `re/` and the analyst's navigation notes, the inspected revision
   of this file; its output is corrections to this file only.
 - **Implementation reviewer**: pending, must be a session that has never read `re/`.
@@ -346,18 +356,29 @@ Door {
   actions) is not revised. When the patch asks for it, every actor on that layer and sector whose walker box
   meets a newly enabled obstacle is marked and receives an eviction element whose behaviour is unread (section
   9, fallback 8.7).
-- NAV-058 (observed, `0x00555a10`, `0x00556260`, `0x00556470`, `0x0055aa60`; the append inferred from the
-  insertion used, medium). **Ordering after a toggle and after a load.** In the original, a node or edge that
-  becomes unavailable leaves its list, and one that becomes available again is appended at the **end** of its
-  list (the region's node list, the node's edge list) in the order the recomputation meets it. A load does not
-  rebuild the file order: the level is read (file order), the initial state `0x55555555` is applied (objects
-  unavailable at that state leave their lists), then the saved state words are applied to those lists, so every
-  object that the saved state makes available again is appended after the survivors. Therefore, after a load,
-  the order is: the objects available at the initial state in file order, followed by the objects the saved state
-  re-enabled, in the order they were removed; and in-session, the same rule applied toggle by toggle. The two can
-  differ after several toggles of one field (an object disabled and re-enabled twice moves to the end twice).
-  The examination and opening ties of NAV-141 depend on these orders. OpenSherwood's choice is 8.3; test 7.2-14
-  fixes the original's orders and the chosen one.
+- NAV-058 (observed, `0x00555a10`, `0x00556260`, `0x00556470`, `0x0055aa60`; the insertion at the end
+  inferred from the operation used, medium). **Availability order.** Every collection whose order the search
+  consumes (the nodes of a region, the edges entering a node, the obstacles of a sector) exists as two ordered
+  sequences: the **available** sequence (what the search and the grid see, NAV-141 opening order and reaching
+  order) and the **unavailable** sequence. At load both are: available = file order, unavailable = empty. A
+  **recomputation** for state `s` transforms the pair as follows, and its outcome is the observable order:
+  - nodes: the members of the available sequence that are unavailable under `s` are moved to the end of the
+    unavailable sequence **in reverse available order** (the last such node first); then the members of the
+    unavailable sequence that are available under `s` are moved to the end of the available sequence **in
+    reverse unavailable order**;
+  - edges of a node, and obstacles of a sector: the same two moves, but each **in forward order**.
+  Example (nodes, file order `A, B, C`, `A` and `B` unavailable at the initial state, `C` available): after the
+  initial recomputation, available `C`, unavailable `B, A`; enabling both: available `C, A, B`; disabling both
+  again: unavailable `B, A` (the moves are `B` then `A` in reverse available order); enabling again: `C, A, B`.
+  Repeated toggles of one field are therefore stable after the first re-enablement; two fields toggled in
+  succession compose these moves in the order of the toggles.
+  A **load** applies the initial state to the file-order sequences and then the saved state words: the result
+  is the file order of the objects available under the initial state, less those the saved state makes
+  unavailable (moved to the unavailable sequence in reverse order), followed by the objects the saved state
+  re-enables in the order the rule above yields (for nodes: the reverse of their unavailable order, that is, the
+  file order of the initially unavailable nodes that the saved state enables). The original does not preserve an
+  in-session order across a save and a load when the two rules produce different sequences (e.g. after a field
+  was toggled twice). OpenSherwood's choice is 8.3; test 7.2-14 fixes the original's outcomes and the chosen one.
 
 ## 3. Behaviour
 
@@ -407,19 +428,23 @@ Door {
   overlap counts) and no enabled wall segment of the layer (sector outlines and obstacles alike) meets it.
   Clearance says nothing about sector membership: a box that overlaps the map but lies on no sector is clear.
 - NAV-111 (observed, `0x004f5890`, `0x0051fdc0`; the normal's side per NAV-012). **Unsticking a box.**
-  Required outcome: a box `B0` becomes a box `B` of the same size such that either `B` is clear (NAV-110) or 50
-  rounds have been applied, in which case unsticking has failed and `B` is the box after the 50th round. A box
-  that does not overlap the map is first translated onto it: when its right edge is left of the map, so that
-  its left edge is at `x = 0`; when its left edge is right of the map, so that its right edge is at the map
-  width; likewise vertically. A **round** transforms a box by the composition, in cell order, of the
-  *separations* from the enabled wall segments meeting the box; the separation from a segment with end `p1` and
-  oriented normal `n` (NAV-012) is the identity unless `n . (c - p1) > 0` for the box centre `c`, in which case
-  it is a translation `t . n` with `t` the sum, over the four corners taken in the fixed order (min x, min y),
-  (max x, max y), (max x, min y), (min x, max y), of `max(0, 1 - d_i)` for each corner whose signed distance
-  `d_i = n . (corner_i - p1)` is below 0.1, and of 0 otherwise, where each `d_i` is taken with the translations
-  of the preceding corners already applied. The outcome is thus determinate: every such corner ends exactly 1 px
-  on the `n` side of the segment's line at the moment it is considered; a diagonal wall yields a diagonal
-  translation; two walls yield the composition of their separations in cell order (test 7.2-15).
+  Required outcome: from a box `B0`, a box `B` of the same size such that either `B` is clear (NAV-110), or 50
+  rounds have been applied and unsticking has **failed** with `B` the box after the 50th round. A box that does
+  not overlap the map is first translated onto it: when its right edge is left of the map, so that its left edge
+  is at `x = 0`; when its left edge is right of the map, so that its right edge is at the map width; likewise
+  vertically. One **round** applies, for each enabled wall segment meeting the box, in cell order, the wall's
+  **separation**: a translation along the wall's oriented unit normal `n` (NAV-012) by the distance `T(wall,
+  box)` defined below; the box handed to the next wall is the translated one (wall order is observable, test
+  7.2-15c). The separation of a wall whose `n` side does not contain the box centre `c` (`n . (c - p1) <= 0`,
+  `p1` an end of the wall) is zero. Otherwise `T` is the function of the four signed corner distances
+  `d_i = n . (corner_i - p1)`, taken in the fixed corner order (min x, min y), (max x, max y), (max x, min y),
+  (min x, max y), given by `T_0 = 0` and `T_i = 1 - d_i` when `d_i + T_(i-1) < 0.1`, else `T_i = T_(i-1)`;
+  `T = T_4`. The observable consequences: after a separation the last corner that determined `T` lies exactly
+  1 px on the `n` side; a corner deeper than that one by more than 0.9 px would have determined `T` itself, so
+  the deepest corner of the box ends at exactly 1 px unless a corner earlier in the fixed order and within 0.9
+  px of it determined `T`, in which case the deepest ends between 0.1 and 1 px (test 7.2-15e); a diagonal wall
+  yields a diagonal translation; a box whose centre is on a wall's blocked side is not moved by that wall in
+  that round.
 - NAV-112 (observed, `0x00556990`; `0x004f6c20` is the live variant the orders use). **Corridor test** from `p`
   to `q` for half-size `(w, h)`: the corridor is the rectangle spanned by the two boxes of half-size
   `(w - 1, h - 1)` centred at `p` and `q`, its sides taken from the boxes' corners according to the signs of
@@ -591,11 +616,18 @@ Door {
   the mover's *proposed next position* (its position plus this frame's displacement) with half-extent `r` on
   each axis, `r` = the element's proximity radius field plus 60 px (the field's source is unread, fallback 8.7:
   0). Every candidate element must be displayed, must not be the mover nor the element the mover carries, and
-  must be on the mover's layer and sector (the common exclusions of ANIM-240). A **character** candidate is then
-  a partner iff it is eligible by class and state (ANIM-240's list), its position lies in the square, and the
-  dot product of `(candidate position - mover position)` with the unit movement direction is at least 5 px. A
-  **non-character** candidate is a partner iff it answers "blocking" and its position lies in the square (no
-  class list, no dot-product test). The partner's response is ANIM-240's open part (fallback 8.7).
+  must be on the mover's layer and sector (the common exclusions; ANIM-240 at the pinned revision names this
+  claim as the fuller statement, so the list is owned here). A **character** candidate (the two low class bits
+  clear) is then a partner iff all of: it is not marked out of action; the mover's displacement this frame is
+  nonzero; it is not a soldier-family character whose current action id (ANIM-010) is 7; when the mover is a
+  soldier-family character with its "engaged" field set (a field read at the comparison but not named by any
+  routine read; fallback 8.7: treated as clear), the candidate's current action id is none of 3, 12, 17; its
+  position lies in the square; and the dot product of `(candidate position - mover position)` with the unit
+  movement direction is at least 5 px. A **non-character** candidate (both low class bits set) is a partner iff
+  it answers "blocking" and its position lies in the square (no other test). What happens to a partner and to
+  the mover is the proximity reaction, unread by both specifications; 8.7 (`NavProximityReaction`) supplies the
+  executable fallback and takes precedence over the movement specification's `CharacterPush` entry, which names
+  no outcome.
 
 ### 3.7 Bonds: changing area (and height)
 
@@ -714,7 +746,7 @@ confidence. Claims with an unread part and their fallbacks are collected in 8.7.
 | door-approach test | `max(|dx|, |dy|) < tolerance + 5` | px | `0x00467a50`, `0x005fc700` | high |
 | door approach tolerance | 10 | px | `0x00582640` | high |
 | building entry waits | 50; then `(r1 & 15) + (r2 & 15)` | frames | `0x00582640` | high |
-| proximity query half-extent | element radius field + 60, along the movement direction | px | `0x00561040` | high |
+| proximity query half-extent | element radius field + 60, on each coordinate axis, around the proposed next position | px | `0x00561040` | high |
 | proximity partner threshold | dot product >= 5 | px | `0x00561040` | high |
 | path failure window | 100 | ticks | `0x004d23d0` | high |
 | smoothing endpoint shrink | 0.00005 of the leg | - | `0x005547c0` | high |
@@ -859,44 +891,66 @@ of N4 with {8,1} of N1); no other edges. Start `(100,100)`, goal `(300,100)`, un
     14). A player character `P` at `(100,100)` and a non-player character `Q` at `(100,100)` both receive a walk
     to `(300,100)` during the updates of tick `t` (`P` first). Expected: `P`'s request is dispatched at the slot
     of `t + 1` (queue order player first) and `Q`'s at `t + 2`; `P`'s three move actions exist after the slot of
-    `t + 2`, `Q`'s after `t + 3`, both along the lower path. (a) *Snapshot before dispatch* taken at the end of
-    tick `t`: after restore the same dispatch ticks and paths result. (b) *Snapshot before delivery* taken at the
-    end of tick `t + 1`: it carries `P`'s completed lower path with delivery tick `t + 2` and `Q` queued; after
-    restore `P`'s actions appear at `t + 2` without recomputation. (c) *Patch*: with no snapshot, a patch
-    toggling field 0 applied during the updates of `t + 1` (after `P`'s dispatch) returns `P`'s completed result
-    to the queue head and dispatches it again at once against the new availability; `P`'s actions exist after
-    the slot of `t + 2` and follow the "upper path" of test 6 (canonical order, 8.3); `Q` is dispatched at the
-    slot of `t + 2` and also gets the upper path at `t + 3`. (d) *Cancellation*: `Q`'s element cancelled during
-    tick `t + 1` removes its queued request; no search for `Q` runs and `P`'s timing is unchanged; `P`'s element
-    cancelled during `t + 1` after its dispatch discards its completed result and nothing is delivered at `t + 2`.
+    `t + 2`, `Q`'s after `t + 3`, both along the lower path. Cases (c), (g), (h) and (i) test the **future patch
+    contract** (toggles enabled, 8.7 `NavPatches` lifted); under the active `NavPatches` fallback a patch changes
+    nothing and those cases reduce to the unpatched expectations stated with them.
+    (a) *Snapshot before dispatch* taken at the end of tick `t`: after restore the same dispatch ticks and paths
+    result. (b) *Snapshot before delivery* taken at the end of tick `t + 1`: it carries `P`'s completed lower
+    path with delivery tick `t + 2` and `Q` queued; after restore `P`'s actions appear at `t + 2` without
+    recomputation. (c) *Patch*: with no snapshot, a patch toggling field 0 applied during the updates of `t + 1`
+    (after `P`'s dispatch) returns `P`'s completed result to the queue head and dispatches it again at once
+    against the new availability; `P`'s actions exist after the slot of `t + 2` and follow the "upper path" of
+    test 6 (canonical order, 8.3); `Q` is dispatched at the slot of `t + 2` and also gets the upper path at
+    `t + 3` (under `NavPatches`: both lower). (d) *Cancellation*: `Q`'s element cancelled during tick `t + 1`
+    removes its queued request; no search for `Q` runs and `P`'s timing is unchanged; `P`'s element cancelled
+    during `t + 1` after its dispatch discards its completed result and nothing is delivered at `t + 2`.
     (e) *Budget*: with the budget forced to 1 unit, `P`'s dispatch at `t + 1` produces an empty result delivered
     at `t + 2` as failed-pending. (f) *Failure boundary*: a failed-pending result with arrival tick `a = t + 2`
     is still pending at the slot of `a + 100` and fails at the slot of `a + 101`, when `P` plays its refusal
-    reaction; a snapshot taken at `a + 50` and restored reproduces that failure tick.
+    reaction; a snapshot taken at `a + 50` and restored reproduces that failure tick. (g) *Patch after a
+    restore*: the snapshot of (a) is restored; at `t + 1` `P` is dispatched (completed, lower path, delivery
+    `t + 2`); the patch of (c) is then applied during the updates of `t + 1`: the restored inputs are recomputed
+    and `P` gets the upper path at `t + 2`, `Q` the upper path at `t + 3` (under `NavPatches`: lower, lower).
+    (h) *Repeated patches*: two toggles of field 0 in the same updates of `t + 1`: the state ends as it began;
+    `P`'s result is recomputed twice, the second time against the initial availability; `P` gets the lower path
+    at `t + 2` (under `NavPatches`: lower). (i) *Cancellation, submission, patch* in one updates phase of
+    `t + 1`, in this order: `P`'s element is cancelled (its completed result discarded), `P` submits a new walk
+    to `(300,100)` (the queue orders by priority, so `P`'s new request precedes `Q`'s), then the patch of (c)
+    is applied: the head (`P`'s new request) is dispatched at once with delivery
+    tick `t + 2` and yields the upper path; `Q` is dispatched at the slot of `t + 2` and gets the upper path at
+    `t + 3` (under `NavPatches`: the patch dispatches nothing; `P`'s new request is dispatched at the slot of
+    `t + 2` and delivered at `t + 3` with the lower path, `Q` at `t + 3` / `t + 4`).
 14. **Toggle and orders** on F2. Initial search: only N4 is openable; the path is the lower path (N3 answers
     through bit 4 at `(226,124)`). After toggling field 0, N1 is available and its opening ties with N4's:
-    - original in-session order (N1 appended after N4): N1 is examined first (newest opening), reaches N2
-      (`f = 204.92`, placed first); N4 is examined next and reaches N3 (`f = 204.92`, placed later); N3 is
-      examined before N2 as the newer equal-score candidate and answers: the lower path;
-    - original order after a save at that state and a load: the same lists as above (NAV-058: N1 re-enabled
-      after the survivors), hence the lower path;
+    - original order (in-session, and after a save at that state and a load: NAV-058 gives `N2, N3, N4, N1`
+      in both cases): N1 is examined first (newest opening), reaches N2 (`f = 204.92`, placed first); N4 is
+      examined next and reaches N3 (`f = 204.92`, placed later); N3 is examined before N2 as the newer
+      equal-score candidate and answers: the lower path;
     - OpenSherwood's canonical file order (8.3): N1 precedes N4, so N4 is examined first and places N3, then N1
       places N2 later; N2 answers: the upper path of test 6.
     A snapshot taken after the toggle restores state `0x55555556` (field 0 = `10`) for the sector and, under 8.3,
-    the upper path.
-15. **Unsticking** (NAV-111), segments given with their oriented normals. (a) Vertical wall `(100,50)-(100,150)`,
-    normal `(-1,0)`, box `(91,96)-(103,104)`: centre `(97,100)` is on the normal side (`3 > 0`); corners in
-    order: `(91,96)` `d = 9` (no correction), `(103,104)` `d = -3` -> translation 4 along the normal: box
-    `(87,96)-(99,104)`; `(99,96)` `d = 1`, `(87,104)` `d = 13`: result `(87,96)-(99,104)`, clear after one
-    round. (b) Diagonal wall `(0,0)-(100,100)`, normal `(-1,1)/sqrt 2`, box `(42,48)-(54,56)`: centre `(48,52)`
-    is on the normal side; corner `(54,48)` has `d = -3 sqrt 2` (about -4.24) -> translation `1 + 3 sqrt 2`
-    (about 5.24) along the normal, i.e. by about `(-3.71, +3.71)`; the other corners need none: result about
-    `(38.29,51.71)-(50.29,59.71)`. (c) Two walls in cell order: the wall of (a) then a horizontal wall
-    `(50,102)-(150,102)`, normal `(0,-1)`, box `(91,96)-(103,104)`: after the first wall `(87,96)-(99,104)`;
-    the second wall's corner `(99,104)` has `d = -2` -> translation 3 along `(0,-1)`: `(87,93)-(99,101)`; the
-    next round meets no wall: result `(87,93)-(99,101)`. (d) The box of (a) with its centre at `(103,100)` (the
-    wrong side of the normal): the wall applies no separation; the round ends with the box unchanged and the
-    box still meeting the wall; after 50 rounds unsticking fails with the box unchanged.
+    the upper path. **Simultaneous re-enablement**: F1 with N1 and N2 masks 2: after the initial recomputation
+    the available node order is `N3, N4` and the unavailable order `N2, N1`; toggling field 0 yields the
+    available order `N3, N4, N1, N2` (the reverse of the unavailable order appended); disabling again yields
+    unavailable `N2, N1` and enabling again `N3, N4, N1, N2` (stable). The search on that order: N4 opened, N1
+    opened later (N2 and N3 are not openable): the lower path as above; under 8.3: the upper path. When 8.3 is
+    rejected, a snapshot taken between the two toggles must restore both sequences (`N3, N4` / `N2, N1`) so that
+    the second toggle yields `N3, N4, N1, N2`.
+15. **Unsticking** (NAV-111), segments given with their oriented normals; inputs and final outputs only.
+    (a) Vertical wall `(100,50)-(100,150)`, normal `(-1,0)`, box `(91,96)-(103,104)`: result `(87,96)-(99,104)`,
+    clear after one round (the deepest corners end 1 px on the free side). (b) Diagonal wall `(0,0)-(100,100)`,
+    normal `(-1,1)/sqrt 2`, box `(42,48)-(54,56)`: result translated by `(1 + 3 sqrt 2) . (-1,1)/sqrt 2`, about
+    `(-3.71, +3.71)`: `(38.29,51.71)-(50.29,59.71)`. (c) Two walls in cell order, the wall of (a) then a
+    horizontal wall `(50,102)-(150,102)` with normal `(0,-1)`, box `(91,96)-(103,104)`: result
+    `(87,93)-(99,101)` (the first wall's separation is 4 along `(-1,0)`, the second's, measured on the translated
+    box, 3 along `(0,-1)`); with the two walls in the opposite cell order the result is the same box here, but
+    in general the order is observable. (d) The box of (a) with its centre at `(103,100)` (the wall's blocked
+    side): the wall's separation is zero; after 50 rounds unsticking fails with the box unchanged.
+    (e) Order-sensitive case: wall through `(100,100)` with unit normal `(-cos 5 deg, sin 5 deg)` (about
+    `(-0.99619, 0.08716)`), box `(91,96)-(103,104)`: corner distances in the fixed order are about 8.617,
+    -2.640, -3.338, 9.315; the translation is `1 - (-2.640) = 3.640` along the normal (the third corner is then
+    at about 0.302, above 0.1, and determines nothing): result about `(87.374,96.317)-(99.374,104.317)`; the
+    deepest corner ends 0.302 px on the free side, not 1 px.
 16. **Quadrant rule, all bits** (NAV-143), corner `(100,100)`; for each candidate a point for the first form,
     a point on the first form's boundary, a point for the second form, and two failing points:
     bit 1 at `(94,96)`: `(94,120)` first form (boundary `v_x = 0`), `(80,120)` first, `(120,96)` second form
@@ -944,14 +998,20 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
      tick `t + 1` (one tick earlier than the ordinary case, as the original's restart hands the head over at
      once); a second patch in the same P3 repeats the same steps with the same delivery tick;
    - cancelling an element during P3 removes its request whether queued, completed or failed-pending; a
-     subsequent submission or patch in the same P3 behaves as above with the remaining queue;
+     subsequent submission in the same P3 joins the queue (ordered by NAV-147), and a subsequent patch in the
+     same P3 dispatches the then head at once with delivery tick = current tick + 1 (test 7.2-13i); repeated
+     patches in one P3 each recompute the completed request against the state at that moment, the delivery tick
+     unchanged (test 7.2-13h); a patch after a restore recomputes from the restored inputs (test 7.2-13g);
    - **work budget**: one unit per corridor test (NAV-112, each evaluation), per node examination and per
      reaching (NAV-141 steps 3 and 4), 1 000 000 units per search; exhaustion ends the search with an empty
      result delivered at the request's delivery tick (as failed-pending). The value is a bound, not a
      measurement: the analyst has none; the engine records the maximum consumed per map so that the harness can
      assert that no retail map exhausts it. Exhaustion is a deviation from the original (which has no bound).
-2. **Snapshot contract (ADR-0004).** Authoritative and hashed: per sector the state word (NAV-055) and the
-   availability order of its nodes and edges when 8.3 is not adopted; per door the open flag, both lock sets,
+2. **Snapshot contract (ADR-0004).** Authoritative and hashed: per sector the state word (NAV-055) and, when
+   8.3 is not adopted, for every ordered collection of NAV-058 (the nodes of each region, the edges entering each
+   node, the obstacles of each sector) **both** its available and its unavailable sequence, since the next
+   toggle's outcome depends on the unavailable order as much as on the available one; per door the open flag,
+   both lock sets,
    the "player barred" byte, the leaf's enabled flag; per building the occupant list and the "displayed"
    marks; per character: the layer, sector number and area of NAV-003, the **active crossing** (the door recorded
    by NAV-171/200 and the side, or none), the recorded lift end when standing on one (NAV-130 step 1), the walk
@@ -963,37 +1023,53 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
    failed-pending request with its owner, inputs and arrival tick. A completed result is restored as data and
    consumed at its delivery tick; it keeps its inputs so that a patch after the restore can recompute it (8.1).
    There is never an executing request at a snapshot boundary. Restore rebuilds availability from the state
-   words (and the order from the stored order when kept).
-3. **Availability order (proposed deviation, requires approval).** OpenSherwood keeps the nodes and edges of a
-   sector in file order filtered by availability at all times. The original's orders of NAV-058 (in-session and
-   after a load, both with re-enabled objects appended) are not reproduced; the difference is confined to
-   tie-breaks among equal `f` after a field has been toggled. Test 7.2-14 fixes the original's outcomes and the
-   chosen one. If the deviation is rejected, the availability order becomes snapshot state (8.2) maintained by
-   the append rule of NAV-058, and restore reproduces the stored order rather than the original's load
-   transition.
+   words (and both sequences from the stored ones when kept).
+3. **Availability order (proposed deviation, requires approval).** OpenSherwood keeps the nodes, edges and
+   obstacles of a sector in file order filtered by availability at all times. The original's orders of NAV-058
+   (re-enabled objects moved to the end, nodes in reverse order, edges and obstacles in forward order) are not
+   reproduced; the difference is confined to the opening and examination ties of NAV-141 after a field has been
+   toggled. Test 7.2-14 fixes the original's outcomes and the chosen one. If the deviation is rejected, the two
+   sequences of every collection become snapshot state (8.2), maintained by the moves of NAV-058 at every
+   recomputation, and restore reproduces the stored sequences (not the original's load transition, which the
+   original itself does not keep consistent with its in-session order).
 4. **Invalid inputs (OpenSherwood decisions where the original is undefined).** NAV-014: a request naming an
    obstacle or an unknown number is rejected (the element fails). Native 8 with any index outside `0 ..
    count - 1` returns none. Natives 182 and 186-189 with a null or unknown handle: 182 returns 0, the setters do
    nothing. Native 191 on a door without a leaf does nothing. Native 64 keeps the original's selection rule
    (section 6) including its exclusion of jump-line entries.
-5. **Numeric precision (proposed deviation).** What is evidenced: the scores `f` that order the door queue and
-   the node examination are stored single-precision values and are compared as such (`0x004fa6f0`,
-   `0x00554360`); the sums that produce them, the distances (`0x005581a0`) and the cross products of the quadrant
-   and corridor tests are evaluated in extended precision and then either stored to single precision (the
-   scores, the distances) or compared with zero without storing (the cross products); the precision-control word
-   the program runs under was not read. OpenSherwood evaluates every operation in `f32` in the written order
-   (`door_cost + g` then `+ h`; `g + h`; `g + cost`) and compares the stored `f32` scores; no bound on the
-   resulting differences is claimed. Acceptance cases for the policy: (i) the exact ties of tests 6 and 14
-   (identical operands); (ii) a **near tie**: F1 with the obstacle moved to `(180,80) (220,80) (220,121)
-   (180,121)`: N4 opens with `g = sqrt(6841)`, `h = sqrt(14841)`, N1 with `sqrt(6800)`, `sqrt(14800)`; the
-   engine must examine N1 first (`f` smaller by about 0.42) and the path must be the upper path; (iii) a
-   **geometric boundary**: the corridor of test 3 with a segment `(150,103)-(150,120)`, whose end lies exactly
-   on the corridor's side: it blocks (an end inside or on the corridor counts, per the closed comparison of
-   NAV-112's containment test; the implementation must use the same closed test); (iv) the quadrant boundaries
-   of test 16; (v) an accumulated-cost case: a corridor of five collinear corners 40 px apart where the summed
-   `g` of the far corner (`sqrt(6800) + 160`) is compared with a direct reaching of `sqrt(46800)`: the engine
-   must prefer the direct reaching (216.33 < 242.46). These cases exercise the comparisons the policy affects;
-   a difference from the original outside such near ties is a defect to be reported against this section.
+5. **Numeric precision (proposed deviation).** Evidenced rounding boundaries of the original: (i) the scores
+   `f` that order the door queue and the node examination are stored single-precision values and are compared
+   as such (`0x004fa6f0`, `0x00554360`); (ii) a node's recorded `g`, the distances (`0x005581a0`) and the door
+   costs are stored single-precision values; (iii) the **improvement comparison** of NAV-141 step 4 is made
+   between the tentative cost as an extended-precision sum (`g + edge cost` before rounding) and the stored
+   single-precision `g` of the far node (`0x00556839`-`0x0055688c`); when the reaching improves, the stored `g`
+   becomes the rounded sum; (iv) the route search's three-term score is summed in extended precision and stored
+   (`0x004f9ff5`-`0x004fa01f`); (v) the cross products of the quadrant and corridor tests are compared with zero
+   in extended precision without storing; (vi) the precision-control word the program runs under was not read.
+   **OpenSherwood's policy** (deviation): every operation in `f32`, in the written order (`door_cost + g` then
+   `+ h`; `g + h`; `g + cost`), stored scores compared as `f32`, and the improvement comparison made on the
+   **rounded** tentative cost. Where the two evaluations can differ: (a) an improvement comparison whose exact
+   tentative cost lies below the stored `g` by less than half an `f32` step at that magnitude (the original
+   improves, the policy does not); (b) sums and square roots whose double rounding differs from a single
+   rounding; (c) nothing in the geometric tests with retail data, because map coordinates, candidates
+   (`corner +- (6, 4)`) and corridor sides (`+- (5, 3)`) are integers, so cross products are exact in both
+   evaluations, and the smoothing shrink `0.00005 (r - k)` lands within one `f32` step of an integer only for
+   legs longer than 20 000 px (none exist). No bound on the frequency of (a) and (b) on retail maps is claimed.
+   Acceptance fixtures for the policy, with the corridor and quadrant tests stubbed as always passing and the
+   goal visible only from the node named (search-kernel fixtures): (1) **rounding-sensitive improvement**: start
+   `(0,0)`, goal `(100,200)`; nodes A `(100,0)`, M `(10,0)`, N `(10,40)` in that list order, all openable from
+   the start with `g` = their distance (100, 10, `sqrt 1700`); edges M -> N with file cost exactly
+   `20 - 2^-19` (an `f32` value) and N -> A with cost 70; `h`: A 200, M about 219.3, N about 183.6. M is examined
+   first (`f` about 229.3), reaches N with `g = 10 + (20 - 2^-19) = 30 - 2^-19` exactly (stored), which improves
+   N; N is examined next (`f` about 213.6) and reaches A with the exact tentative cost `100 - 2^-19`; the
+   original improves A (`100 - 2^-19 < 100`) and the path is start, M, N, A, goal; under the policy the rounded
+   tentative cost is `100.0`, A is not improved, and the path is start, A, goal. The expected outcome under the
+   policy is the second; the first documents the original. (2) The exact ties of tests 6 and 14 (identical
+   operands: both evaluations agree). (3) The 0.807 separation of test 6 and the 0.42 separation of F1 with the
+   obstacle moved to `(180,80) (220,80) (220,121) (180,121)` are far above any `f32` step and must give the same
+   examination order under both evaluations (upper path in both). (4) Geometric exactness: the quadrant cases of
+   test 16 and the corridor cases of test 3 must be decided identically under `f32` and under extended
+   evaluation (integers); an implementation is expected to pass them with either.
 6. **Clock.** Frame counts of section 5 are logic frames; the engine's fixed 46.875 ms frame is ADR-0010's
    decision, the original's requested pacing is 40 ms and its realised cadence host-dependent.
 7. **Narrowed clearance: fallbacks for the unread items.** Each is an `Assumption` variant (ADR-0008) with the
@@ -1001,11 +1077,18 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
    - `NavGoalCheckTail` (NAV-141 step 0): the goal is inadmissible iff any enabled wall segment meets the goal
      box.
    - `NavNodeReset` (`0x005557c0`): every node's search state is cleared before each search.
-   - `NavPatches` (NAV-046/057/172, `TUPO` unread): patches are **not loaded**: no patch-target polygons take
-     part in click resolution (a click there resolves as if the polygon were absent), no availability field is
-     ever toggled (the five maps with nonzero masks keep the initial availability), no lock-set swap and no
-     bond/leaf switch occurs, and no eviction exists. The behaviours lost are the patch-driven map changes
-     (`rhp.md` `TUPO`); `layers-and-doors.md` section 2.5 lists the scripts' patch calls for the first mission.
+   - `NavPatches` (NAV-046/057/172, `TUPO` unread): patch **records are loaded as inert elements**: the
+     `TUPO` count and names are read (`rhp.md`), every patch occupies its slot in the level's element table
+     (`scb.md` "Index spaces", VM-030: the map elements first, then the patches, so that no subsequent index
+     shifts), native 5 returns the patch handle for a valid index (and none for `-1` or out of range, as native
+     4), native 12 returns its index, native 144 returns the patch's active flag, natives 145 / 146 set and
+     clear that flag and invalidate the cached view (VM section 6 rows 144-146), with the flag initially clear
+     and part of the snapshot; but a patch has **no geometry and no effect**: no patch-target polygon takes part
+     in click resolution (a click there resolves as if the polygon were absent), no availability field is
+     toggled (the five maps with nonzero masks keep the initial availability), no lock-set swap, no bond or leaf
+     switch, no eviction and no background alteration occur. The behaviours lost are the patch-driven map
+     changes (`rhp.md` `TUPO`); `layers-and-doors.md` section 2.5 lists the scripts' patch calls for the first
+     mission.
    - `NavJumpZones` (`PPPP` unread): jump-zone polygons are loaded with the framing of `rhp.md` and take part in
      click pass 3 (NAV-100) as read; a jump-zone hit yields a valid cursor and a walk to the clicked point on the
      candidate sector (the jump itself does not exist). Jump-line entries of the door list answer "cannot pass"
@@ -1020,10 +1103,19 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
    - `NavAltResolution` (NAV-101): the alternate resolution is never selected.
    - `NavUnknownFlagActions` (NAV-171): the plain pair of actions.
    - `NavProximityRadius` (NAV-150b): the radius field is 0 (query half-extent 60 px).
-   - `NavLineOfSight` (NAV-210): the line-of-sight test is the AI specification's section 3.2.2 as written
-     there, with its own assumption for the unread geometry; nothing in this specification is consulted for it.
-   The collision reaction and the sliding are the movement specification's `CharacterPush` and
-   `CollisionSlide` assumptions (its section 8), not this one's.
+   - `NavProximityEngaged` (NAV-150b): the mover's "engaged" field is treated as clear (the action-id
+     exclusions 3, 12, 17 never apply).
+   - `NavProximityReaction` (NAV-150b; the reaction unread): when the proximity scan of a move finds at least
+     one partner, the mover does not move this frame (its position, facing and animation state are unchanged
+     and its failed-move counter of ANIM-241 is not incremented), and no partner is affected. This takes
+     precedence over the movement specification's `CharacterPush` entry, which names the unknown without an
+     outcome.
+   - `NavSliding` (ANIM-241's unread resolution): when the corridor test of a move fails, the mover does not
+     move this frame and its failed-move counter is incremented per ANIM-241's counting rule; no position is
+     rolled back or slid. This takes precedence over the movement specification's `CollisionSlide` entry.
+   Line of sight is **AI-065** of the pinned AI revision (observed there, with its own clearance boundary and
+   its cache quirk); this specification adds nothing to it and the earlier `NavLineOfSight` variant is
+   withdrawn.
 
 ## 9. Open questions
 
@@ -1045,6 +1137,8 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
 9. The request reference box (NAV-147) and re-runs within the failure window (NAV-146).
 12. The ladder and climb crossings (NAV-200): playback requirements, end points and completion of the mount,
     loop and dismount actions (`0x00469770`, `0x0046a000`, the animation table's second field per ANIM-013).
+13. The mover's "engaged" field consulted by the proximity scan (NAV-150b, `0x00561040`) and the meaning of
+    the excluded action ids 3, 7, 12, 17 in that scan.
 10. Which level flag selects the alternate click resolution (NAV-101); which input reaches the gait-6 and the
     gait-10 click handlers (`0x004ccad0`, `0x004cd600`).
 11. Lift and door action ids as animation names (`0x005bddb0` table; `sprite-animations.md`).
