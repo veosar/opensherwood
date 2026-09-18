@@ -1,6 +1,7 @@
 # Movement, animation and camera (behaviour specification)
 
-Status: `draft`, **revision 5** (answers Codex re-review 38 finding by finding; awaiting re-review). Build: GOG
+Status: `draft`, **revision 6** (answers Codex re-review 44 finding by finding and resolves five of the
+reviewer's outstanding boundaries; awaiting re-review). Build: GOG
 English edition, `Robin Hood.exe` SHA-256
 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`, image base `0x00400000`; every address below
 is a virtual address in that image.
@@ -70,8 +71,12 @@ it: the callback name **`ActionChange`** (section 6). Nothing else in this file 
     directional comparison itself with the failure-region rules, the cart integration and traversal, the
     sign-dependent small-map conversion with both cleared latches and the first-refresh reset, and the drawing
     order with the ground-mark ageing invariant.
-  This revision 5 answers all 9 findings of review 38; section 4.3 and the accompanying report record what is
-  disputed and what remains excluded.
+  - **Review 44** (`docs/decisions/reviews/2026-09-18-codex-review-44-spec-movement-animation-camera.md`) reviewed
+    **revision 5**: 8 findings, verdict *fix-then-clear*, accepting the expression filter and the `Assumption`
+    hand-off, and judging the document "not yet cleared as an implementable whole" with a list of outstanding
+    boundaries.
+  This revision 6 answers all 8 findings of review 44 and closes the boundaries listed in 4.4; section 4.3 records
+  what remains excluded and why.
 - **Implementation reviewer**: pending; must be a session that has never read `re/`.
 - **Publication approval**: pending, separate from factual approval.
 
@@ -166,12 +171,16 @@ timer counts on, and the residual amendments of section 12.
   - *none at all*: the admitting call of the **play-only** entry (ANIM-035); any call while the **freeze-all** flag
     is set (ANIM-005); any call for an action the profile does not have (status 4); and the **exact-equality
     immediate completion** of the play-and-move entry, which answers 3 without stepping (ANIM-035).
-  An actor update performs one play call for its current action, **except** that the repeated-operation cases of
-  ANIM-212 make up to two.
-  An animation frame is displayed for `hold + 1` steps **in the modes that honour the hold values** - 0, 1, 3 to 9,
-  13 and 14; mode 2 ignores them and advances on every step, modes 11 and 12 force an index on every step, and mode
-  10 does not step at all (ANIM-036). In the ordinary case - one call per update, one step per call, a
-  hold-honouring mode - a frame therefore lasts `hold + 1` updates, which is what the shipped timings and the
+  An actor update performs one play call for its current action, **except** for the five action ids of ANIM-212:
+  294 makes exactly two calls, and 296 to 299 make two unless the first answers status 3.
+  An animation frame is displayed for `hold + 1` steps **only while the clip is advancing by the hold values**.
+  That is the ordinary case of modes 0, 1, 3 to 9, 13 and 14, and it has exceptions of state as well as of mode:
+  mode 2 ignores the hold values and advances on every step; modes 11 and 12 force an index on every step and mode
+  10 does not step at all (ANIM-036); modes 4 and 5 hold their **first** frame for as long as their stochastic
+  wait lasts (ANIM-040); mode 7 holds its **marker** frame for as long as its rotation counter runs (ANIM-043);
+  and modes 8, 9 and 14 hold their **stopping** frame indefinitely once they reach it. In the ordinary case - one
+  call per update, one step per call, a hold-honouring mode, a frame that is not one of those held frames - a
+  frame lasts `hold + 1` updates, which is what the shipped timings and the
   recordings agree on (section 9), and every quoted duration in this document assumes that case. The "table tick"
   of `docs/formats/sprite-animations.md` rule 2 is one step. The program keeps **no** 64 Hz clock and no sub-frame
   accumulator; the "three clocks of about 64 Hz" of `stealth-and-combat.md` 8 is that document measuring the
@@ -290,7 +299,7 @@ order belongs to the save specification.
   **per-axis rattle accumulators** of ANIM-301 (which are clamped to the range -1 to 1 and carry across updates) -
   **none of which has an established initial value or reset rule**, because the cart's construction and the
   program's container were not read (4.3, `CartInitialState`); per element, the footstep effect phase counter of
-  ANIM-207, whose **initial value was not read** (4.3); per level, the freeze-all flag (ANIM-005), the camera
+  ANIM-207, which starts at **0**; per level, the freeze-all flag (ANIM-005), the camera
   state of ANIM-320 - whose established initial values are zoom 1.0, no scroll destination, the neutral step
   length 1.0, both ramp indices 0 and **both** direction latches clear (the constructor writes both, which is why
   the fresh-level asymmetry of ANIM-323 arises) - and the ground marks with their animation frames.
@@ -351,7 +360,8 @@ One state machine. State: the animation index, the frame index `f`, the frame ti
   `f := 0, t := -1` or `f := n - 1, t := -1` whatever the mode.
 - **ANIM-031** (observed, 005b7820; high). One step of an ordinary forward mode: `t := t + 1`; if `hold(f) < t`
   (unsigned) then advance `f` (by one, or by two in modes 3 and 14) and `t := 0`; then wrap or clamp `f` as the mode
-  says. Consequences: a frame is displayed for `hold + 1` steps; the value `-1` used by a reset makes the first step
+  says. Consequences: a frame is displayed for `hold + 1` steps **while the clip is advancing** (ANIM-003 lists the
+  states in which a frame is held longer); the value `-1` used by a reset makes the first step
   land on `t = 0`, which is the same state a frame is in when it becomes current in the ordinary flow, so the first
   frame of a clip gets its full `hold + 1` steps. Mode 10 resets to `t = 0` and has no step of its own, so its first
   frame is short by one step and the clip never advances.
@@ -629,9 +639,12 @@ produced:
   through a **sequence of queued action records** rather than a single target. Two completion triggers were read and
   neither is "the records are exhausted":
   - when the arrival test answers for the current record, the element moved this update, and its movement direction
-    is non-zero, the mover re-derives the position from the records - and if the **next queued action element names
-    the same target as the current one**, it answers status **3** at once (a look-ahead that ends an element whose
-    successor continues to the same place);
+    is non-zero, the mover re-derives the position from the records - and if a **next queued action element exists
+    and carries the same action id as the current one**, it answers status **3** at once. The comparison is of
+    **action ids**, not of targets or destinations: it ends an element whose successor will go on playing the same
+    action, so that the successor takes over without the clip being restarted (ANIM-030 resets on a change of
+    action id, and there is none). With no successor, or a successor carrying a different action id, this path
+    does not fire;
   - when the animation's **completion signal** was produced by this call's stepping, the mover walks the record
     list, and several of those branches answer **3**.
   Both can fire on the admitting update, so mode 5 does **not** invariably answer 1 there. The walk-start action and
@@ -658,14 +671,18 @@ produced:
 - **ANIM-212** (observed, 00464b20, 005b86b0, 0055f0f0; high). **Ordering**: within one execution of an action,
   the turn operation happens **before** the animation is played and before the displacement is computed, so the
   facing the displacement of ANIM-203 is scaled against is the facing *after* this execution's turn. **Count**: the
-  ordinary action performs **one** turn-and-play execution per actor update. Four action ids - **296, 297, 298 and
-  299** - perform the execution in a loop of **at most two** iterations, each iteration a turn operation followed
-  by a play-and-move call in movement mode 2, and the loop **stops after the first iteration when that call answers
-  status 3**; it never runs more than twice. So on those four actions the facing moves **two** sixteenths in one
-  update unless the first execution completes the action, in which case it moves one. Those four actions also,
-  **on the update where the element is freshly started**, take their target facing from the sector the element
-  stands on rather than from the movement direction, and clear the element's freshly-started mark. A measurement
-  or test that assumes "one turn step per update" disagrees with the original on these four ids.
+  ordinary action performs **one** turn-and-play execution per actor update. The human dispatcher has exactly
+  **five** action ids that execute twice, in two shapes:
+  - **294**: **exactly two** executions, each a turn operation followed by a play-and-move call in movement mode 2;
+    the second runs **even when the first answers status 3**;
+  - **296, 297, 298 and 299**: **at most two**; the loop stops after the first when that call answers status 3.
+    These four also, **on the update where the element is freshly started**, take their target facing from the
+    sector the element stands on rather than from the movement direction, and clear the freshly-started mark.
+  No id executes more than twice. A **turn operation is not a facing change**: it changes nothing when the facing
+  already equals the target facing, and the damped variant (ANIM-211c) consumes calls without moving the facing
+  until its counter reaches the third same-sign call. So the observable rule is "one or two turn/play executions
+  per update, by action id", and the facing moves once per execution **only** with the ordinary turn variant and
+  a remaining angular distance of at least one sixteenth.
 - **ANIM-213** (observed, 0055fc20; high). The **target facing** of a moving element is derived from its movement
   direction: the direction is converted to world space through the projection plane, quantised to one of 16
   directions, and mirrored (index exclusive-or 8) when the element's reverse flag is set. The refresh happens when
@@ -732,6 +749,11 @@ The geometric comparisons are established; the resolution that follows a failed 
   - the region is **invalid, or the point lies outside it**: a new region is established around the tested point
     with half-extents of about **0.49** px, and the counter is set to 0 and the tolerance restored to its stored
     default.
+  **When the check runs**: once per update, **after** the whole deflection sequence of ANIM-244 has finished, on
+  the **resulting candidate position** - not once per deflection attempt and not on the element's current position.
+  Two earlier points in the same update increment the counter and shrink the tolerance the same way without
+  consulting the region: when the candidate position is found not to be free ground, and when the corridor from the
+  element's goal is found blocked.
   A **new action element** resets the counter and the tolerance **and invalidates the region**. The first progress
   check after that therefore takes the second branch - it establishes a region and leaves the counter at 0 - so a
   fresh action needs one failure to establish the region and only its *subsequent* in-region failures count. The
@@ -740,17 +762,79 @@ The geometric comparisons are established; the resolution that follows a failed 
   After the resolution the caller checks the counter and, when it exceeds **50**, reports a failure and answers
   status **4** (ANIM-120), which refuses the action element. Whether the position is rolled back on a failed
   update, and what the resolution does geometrically (sliding along walls and bonds), was not read.
-- **ANIM-242** (observed, 00560460, 00467a50 case 2, 005fc660, 005fc700; high for the two comparisons read, medium
-  for the rest). Two different tests exist and must not be conflated.
-  - The **plain arrival** test of the mover compares the **dot product of the remaining displacement with the
-    element's direction vector** against the element's stopping tolerance, and answers "arrived" when the product
-    is **not greater** than the tolerance (inclusive). It is a projection, not a radius.
+- **ANIM-242** (observed, 00560460, 00467a50 case 2, 005fc660, 005fc700, 004f6c20 (call only), 004a4a10; high for
+  the selectors and the comparisons, medium for the tolerance's source). Two different tests exist and must not be
+  conflated.
   - The **door-approach element** (kind 2) uses the **Chebyshev distance** - the larger of the two axis
     separations - and answers "done" when it is **strictly less than** `tolerance + 5` px, with 10 px as the
     tolerance the walk pipeline sets, so the effective bound is 15 px. `spec-navigation.md` NAV-150(a) states the
     same rule.
-  The mover's arrival helper has further branches that consult the movement direction and the live straight-line
-  test, so an obstructed case can answer differently; those branches were not read.
+  - The **mover's own arrival test** has **four** cases, selected by two flags and the failure counter. The first
+    selector is the element's **blocked latch** (set at the end of an update whose move had to be deflected,
+    cleared when a straight move succeeds); the second is an **isometric-metric flag**; in the blocked case a third
+    is an **arrival-mode flag**.
+    1. *Not blocked, plain metric*: the **dot product of the remaining displacement with the element's direction**
+       against the stopping tolerance, arriving when it is **not greater** (inclusive). A projection, not a radius.
+    2. *Not blocked, isometric metric*: the same comparison after the remaining displacement's **second component
+       is multiplied by 1.7434** - the vertical correction of the 2:1 projection - so the test is a screen-space
+       ellipse rather than a plane projection.
+    3. *Blocked, arrival-mode flag set*: arrival is decided **entirely by a walkability test** from the element's
+       position to its stored goal, using the element's sector and its owning element's world position. Distance
+       does not enter.
+    4. *Blocked, flag clear, failure counter non-zero* (the wedged case): a **slack** test on the **Chebyshev**
+       metric, **strictly** below either `10.0` px or, when the element's order object is present and is not of one
+       particular kind, `the target's nominal collision radius + the element's current collision radius + 10.0` px.
+       With the counter at zero this case falls back to 1.
+    The observable consequence that matters: a character that cannot reach its exact goal because it is wedged
+    **still arrives** once it is within about 10 px plus the two radii, and stops cleanly instead of grinding.
+  **What sets the stopping tolerance** was not found in the mover, the arrival test or the play call (4.3).
+- **ANIM-244** (observed, 00561040, 00560840, 00520ce0, 00520e10, 0051fea0, 0051ff60; high for the shape and the
+  ordering, medium for the two solves' exact operands). **Sliding is a deflection, not a retry.** The required
+  results:
+  - The step is **not shortened, not split per axis, and not retried from a list of candidate directions**. It is
+    **rotated, keeping its length**, so that it runs along the blocker. A character walking into a wall at an angle
+    therefore slides along it at full speed; it does not stop and does not stutter.
+  - Two kinds of blocker take part: **round obstacles** and **wall segments**. Each is given a signed **clearance
+    gap** - the separation along the relevant direction minus the element's own current collision radius and the
+    blocker's clearance - and any blocker whose gap exceeds its own reach is **discarded**. The remainder is
+    **sorted by that gap, nearest first**, in both lists.
+  - The lists are then walked as a **merge**, always taking whichever head has the smaller gap, so blockers are
+    resolved strictly **nearest first**. A blocker that is found relevant produces a replacement step; the step is
+    replaced, a "deflected" mark is set, that blocker is **removed**, the remainder is **re-sorted with the new
+    step**, and the walk restarts. Each blocker therefore sees the deflection the previous one caused. This
+    ordering is observable and must be reproduced: it is what makes a doorway work as two successive jamb slides.
+  - **Round obstacle**: the replacement step is the circle-circle solution - with the step length `r`, the distance
+    to the obstacle `d` and the effective avoidance radius `R`, the along-component is `a = (r^2 - R^2 + d^2) / 2d`
+    and the across-component is `sqrt(r^2 - a^2)`, combined as `along x direction + across x perpendicular`, the
+    side chosen by the sign of the cross product of the step with the direction to the obstacle. It is **accepted
+    only when `|a| <= r`**; otherwise that obstacle is skipped entirely.
+  - **Wall segment**: the required normal component `n` is derived from the signed distance to the wall and the
+    wanted clearance, and the replacement step is `sqrt(r^2 - n^2) x tangent + n x normal`, the tangent's sign
+    chosen so that the step keeps moving forward. **Accepted only when `|n| <= r`**; an element already deeper than
+    the wall's clearance plus reach gives up on that wall.
+  - Two degenerate fallbacks exist and are visible to the player: a wall that cannot be solved (a head-on
+    approach) slides sideways at **0.95** of the step length, and a degenerate circle case uses **0.99**.
+  - A relevance test precedes each solve (a distance-and-side test for a round obstacle, a signed-distance and
+    within-span test for a wall); a blocker that fails it is skipped without being solved.
+- **ANIM-245** (observed, 00561040; high). **There is no rollback, because there is nothing to roll back.** The
+  element's own position is not modified while the deflection of ANIM-244 runs: the resolution works on a candidate
+  and **commits once**, by publishing a translated transform for the element and marking it moved. If no branch
+  commits, the element **simply does not move this update** - it is never left partially moved and never left
+  inside geometry by this path.
+- **ANIM-246** (observed, 004f5890, 00561040; high). **The unstick is the last resort inside the move**, not only a
+  step of the walk order (`spec-navigation.md` NAV-111 describes the same routine). It runs when the candidate has
+  been found not to be free ground and the step has been backed off - repeatedly multiplied by **0.8** - below
+  **0.1** px. Then: the resolution box is inflated by **0.2** px on every side and clamped inside the map; up to
+  **50** passes are made; each pass collects the overlapping wall segments and, for every corner of the box whose
+  signed distance to a segment exceeds **-0.1**, translates the box along that segment's normal by **its
+  penetration plus 1.0** px; a pass that finds no overlap succeeds. On success the box's centre is committed as the
+  position. The observable result: a character genuinely inside geometry is shoved straight out perpendicular to
+  the offending wall, one wall at a time, and reappears at the nearest clear spot.
+- **ANIM-247** (inferred from the absence of any special case, 00561040; medium). **Doors, thresholds and corners
+  have no special handling in the move.** They enter as ordinary wall segments of the element's current sector, and
+  their passability is decided inside the corridor test, which was not read (4.3). What makes a doorway passable is
+  the generic machinery: the tolerance shrink of ANIM-241 narrows the element until it fits, and the nearest-first
+  deflection of ANIM-244 handles the two jambs as two successive slides.
 - **ANIM-243** (observed, 00561040; high). The bonds crossed by the step are applied after it (`spec-navigation.md`
   NAV-160), which is where the height and the ground kind change.
 
@@ -889,17 +973,38 @@ A cart is speed-driven: its speed produces its motion and drives its sub-sprites
   update after *changing* direction produces **no movement**. Starting from rest is **not** symmetric: the level's
   construction clears **both** latches, and a cleared latch is what the positive directions (right, down) match, so
   the first right or down command increments the index to 1 and moves by the first non-zero entry at once, while
-  the first left or up command resets the index to 0 and produces no movement on that update. On an update where no command arrived for an axis
+  the first left or up command resets the index to 0 and produces no movement on that update. On an update where no
+  command arrived for an axis
   the index is **decreased** and the camera keeps moving, so it coasts to a stop.
-  The two ramps (one per axis) are built once from the same rule: entry 0 is 0, then a **fractional working value**
-  that starts at 6.0 is adjusted and stored as an integer and multiplied by **1.05** while it is below **31.0**,
-  for 31 entries - the working value keeps its fraction across the adjustment, so the stored sequence is not simply
-  the rounded powers of 1.05. The stored sequence rises from 6 to a ceiling of 32 px per update over roughly twenty
-  entries; **the individual entries are not settled** (4.3) and only the endpoints and the monotonic shape are
-  established.
-- **ANIM-324** (observed, 004d0400; high for the negative, **unknown** for the trigger). There is **no drag
-  panning**: the mouse-drag state drives the rubber-band selection rectangle. Where a mouse position near a screen
-  border is turned into the four scroll commands was not found, and the border width is unknown.
+  **The ramp is generated, and the rule is now settled** (004bef6e to 004bf008, read as instructions). There are
+  two tables, one per axis, and they are filled with **the same values** from one working value - one ramp, stored
+  twice. Entry 0 of both is **0**. Then, with a **single-precision** working value `w` seeded to **6.0** and stored
+  back as single precision at every step, for each of the 31 remaining entries in order:
+  1. if the integer part of `w`, taken by **truncation toward zero**, is **odd**, then `w := w + 1` - the
+     adjustment is written back into the working value, so it persists into the following entries;
+  2. both tables' entry `i` := `w` **rounded to the nearest integer, ties to even**;
+  3. if `w < 31.0` then `w := w x 1.05`.
+  The two roundings are different operations and using one for both gives the wrong table. The sequence this
+  produces is 0, 6, 6, 7, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 26, 28, 31 and then **32** for every
+  remaining index: the working value stops growing once it passes 31 and its integer part is even, so the step
+  rises from 6 to a ceiling of 32 px per update over twenty entries and stays there, and the index is clamped to
+  31. An implementation should generate the table from the rule rather than store it; the rule, not the values, is
+  what this specification fixes.
+- **ANIM-324** (observed, 004d0400, 00517900, 005186a0; high). There is **no drag panning**: the mouse-drag state
+  drives the rubber-band selection rectangle. **Screen-edge scrolling is settled**: once per input poll, immediately
+  after the keyboard is read, the pointer's position is compared with the screen's edges and **the same four scroll
+  commands the keys raise** are posted, into the same dispatcher, so everything ANIM-323 says about gating, latches,
+  the ramp and the zoom division applies unchanged. The details that decide what the player feels:
+  - **the border is one pixel**: the left edge fires only at x exactly 0 and the top only at y exactly 0, while the
+    right and bottom fire at or beyond the screen dimension minus 1;
+  - the four tests are **independent**, so a **corner scrolls diagonally** (two commands in the same poll);
+  - there is **no edge detection and no latch**: the commands are re-posted on **every** input poll while the
+    pointer rests on the edge, which is what feeds the ramp's acceleration;
+  - it is gated twice: a global flag suppresses the whole poll, and a list of **exclusion rectangles** (the HUD's
+    own areas) suppresses an individual command when the pointer is inside one - a different gate from the one the
+    four handlers apply;
+  - the same poll turns the **mouse wheel** into the two zoom commands, one per wheel step.
+  Who fills the exclusion-rectangle list was not read (4.3).
 - **ANIM-325** (observed, 00571200, 004bef3b, 004c7cf0, 004c7cd0; high). The zoom has exactly three values, **0.5,
   1.0 and 2.0**, held as an index into a three-entry table, and 1.0 at level start. Native 21 accepts only those
   three and otherwise reports an error and changes nothing. **Native 21 and element kind 8 write a *requested*
@@ -968,8 +1073,10 @@ A cart is speed-driven: its speed produces its motion and drives its sub-sprites
   normally again (ANIM-330). It shifts the ramp trace by that one reset; it does **not** reset the index on every
   later update;
   (d) they do not touch the actor lock or a pending zoom request - and by ANIM-334 that has two different
-  consequences: an enabled, active lock **suspends the scroll's motion**, while a zoom completion does not stop the
-  motion but can **take the camera element away** so that nothing is completed when the scroll arrives;
+  consequences: a lock that is enabled **and producing movement** suspends the scroll's motion, but a lock whose
+  own step is clipped to a **zero** delta at a map bound does not (processing falls through to the scroll on that
+  update); while a zoom completion never stops the motion, but can **take the camera element away** so that
+  nothing is completed when the scroll arrives;
   (e) through ANIM-329 they can, on a map smaller than the view, set the zoom to 1.0.
 - **ANIM-332** (observed, 005713f0, 004ca410 kind 7, confirmed against the raw instructions; high). **Native 20 and
   element kind 7 are the jumps.** Native 20 requires a non-null location, converts its point by ANIM-329 and writes
@@ -986,19 +1093,49 @@ A cart is speed-driven: its speed produces its motion and drives its sub-sprites
   **already equal** to the current zoom completes on the element's first camera check; a request that is **refused**
   completes on the check after the refusal; and a request that is **accepted** completes when the current zoom has
   become equal, whose update count is not settled because ANIM-326 does not say when the current zoom changes.
-- **ANIM-340** (observed, 004d90b0, 004cdfc0; medium). **Lock on an actor** (element kinds 0xD and 0xE, natives 39
-  and 40). Setting a lock stores the actor and enables the lock, and it **can move the camera immediately**: the
-  setter positions the camera when the actor is not within the checked view, so "the camera never re-centres" is
-  wrong. While the lock is enabled: the lock is dropped when the target reports itself gone or dead; otherwise, when
-  the burst counter is zero, a per-axis correction is recomputed from the actor's position, the remembered offset
-  and the zoom, with an overshoot guard that zeroes an axis whose new correction is smaller in magnitude than the
-  stored one. The burst counter is then set to **15** when either axis's correction magnitude is **at least 1.0**
-  (an inclusive comparison), and an axis whose correction magnitude is **greater than 1.0** (a strict comparison)
-  has its velocity replaced by `sign x the actor's own published speed` (ANIM-206), so the camera matches the
-  followed character's gait; corrections are rounded to whole pixels. While the burst counter is non-zero the
-  stored per-axis velocity is applied, the counter is decremented, an axis whose correction has been consumed is
-  zeroed, and the step is bounded like any other. A separate closing rate for small corrections exists in the part
-  of this routine whose decompilation is folded and was not confirmed.
+- **ANIM-340** (observed, 004d90b0, 004c8120, 004c7f60, 004cdfc0, 005bdcb0; high). **Lock on an actor** (element
+  kinds 0xD and 0xE, natives 39 and 40).
+  **Setting the lock**: a visibility rectangle is built from the camera corner - the view, its top edge raised by
+  the 80 px HUD strip - and the actor's position is tested against it **inclusively**. Only when the actor is
+  **outside** that rectangle is the camera moved at once, and it is then **centred** on the actor: the corner
+  becomes the actor's position minus half the view, **rounded to nearest**, bounded to the map, and forced to even
+  coordinates at zoom 0.5. This is a **different** conversion from the one script points take (ANIM-329), which
+  does not subtract half the view, truncates instead of rounding and has the zoom-reset fallback. Setting the lock
+  also clears both ramp direction indices. Afterwards the camera **remembers the offset** the actor then had -
+  `(actor position - corner) x zoom` - and that remembered offset is **never recaptured** while the lock holds: the
+  camera's job is to keep the actor at the screen position it had when the lock was taken, not to centre it.
+  **Per update**, in order:
+  1. the lock is dropped when the target reports itself gone or dead;
+  2. if the **burst counter** is non-zero, the recompute is **skipped** entirely and the stored correction is
+     applied (step 6);
+  3. otherwise the per-axis **correction** is `(actor position - corner) x zoom - remembered offset`;
+  4. a **prediction** is formed by adding the actor's own per-update movement to its position and repeating that
+     computation - the actor's movement is taken only when its sprite is marked as having moved, otherwise it is
+     zero;
+  5. the decision:
+     - if the prediction's length is **zero** - the actor will land exactly on the remembered offset by itself -
+       the correction is scaled by **1/30** and the burst counter is set to **15**: the residue is bled away
+       slowly;
+     - otherwise the **overshoot guard** zeroes, per axis, a correction whose predicted magnitude is **smaller**
+       than the current one (the actor is already closing the gap by itself);
+     - the burst counter is set to **15** when either axis's correction magnitude is **at least 1.0** (inclusive);
+     - an axis whose correction magnitude is **greater than 1.0** (strict) has its correction **replaced by
+       `sign x the actor's own current speed`** - so the camera matches the actor's gait rather than easing. A
+       correction of exactly 1.0 arms the burst but is left at 1 px;
+     - both corrections are **rounded to nearest**;
+     - if the burst counter is still zero the camera does **not** move this update;
+  6. applying: the burst counter is decremented, the stored correction becomes this update's camera delta, and an
+     axis whose remembered offset and current offset **round to the same whole pixel** has its delta zeroed;
+  7. the delta is bounded (ANIM-322); the update then ends - skipping the zoom and scroll stages - **unless** the
+     bounding both clipped and left a zero delta (ANIM-334).
+  The **actor's own speed** is read from the actor's current animation state, so it is the speed of the clip being
+  played, not a constant. Required observable traces: an actor **walking steadily** drifts until an axis reaches
+  1 px and the camera then follows for 15 updates at the actor's own speed without recomputing; an actor
+  **stopping** leaves the camera still, because the zero-length prediction path and the whole-pixel test between
+  them produce no delta; an actor **reversing** has that axis's correction zeroed, so the camera never overshoots
+  while the other axis continues; an actor **far away** is approached at its own speed per update, never in a jump;
+  and at a **map bound** the camera stops while the actor walks on, the correction grows without being recaptured,
+  and control falls through to the scroll stage.
 - **ANIM-341** (observed, 004ca410, 004dba50; high). The actor lock is **set or replaced** by element kind 0xD, and
   **released** by element kinds 0xE, 6 and 7 (each of which calls the same setter, with the actor for 0xD and with
   nothing for the others); it is also dropped when the target is gone. **Player scrolling does not release it**: it
@@ -1037,19 +1174,48 @@ required; how it is organised is not.
   (12) a final flush of the deferred queue; (13) the stretched sprites; (14) the movement-path line and its trail
   marks, only while the cursor is not over a pickable element; (15) floating text and labels; (16) a clearing of the
   per-element "drawn" flags. Everything after that is debug overlay, unreachable in the retail build's default state.
-- **ANIM-363** (observed, 004d1d00, 004d1800, 00462a30, 004aa980; high for the actor comparison, medium for the
-  merge). The movable elements are **sorted** and then **merged** into the scenery order. The sort's comparison is
-  the one at 00462a30, which the sort invokes directly: **the depth key ascending, ties broken by the element's own
-  identity ascending** - a total, deterministic order (**cleared by review 24** for actors). The scenery order comes
-  from the level file and is treated as already correct; walking it in that order, the remaining movable candidates
-  are examined for each piece and every one the scenery test places on the **far** side of the piece - behind it, so
-  that the piece must cover it - is emitted **before** it in the painter's order; the movables left over are emitted
-  after the last piece. **The merge does not stop at the first candidate that fails**, so a failing candidate does
-  not block the ones behind it in the sorted order. The scenery test is the classic 2.5-dimensional **sort line**:
-  the piece carries a polyline, the segment spanning the movable's screen x is found, and the movable's side of that
-  segment decides. **A piece with no polyline falls back to comparing the movable's screen row with the piece's
-  screen row** - screen rows, not the world rows the sort uses. **Not established**: the endpoint and equality
-  results of the sort line, and whether every sortable family uses the same comparison as the actor one.
+- **ANIM-363** (observed, 004d1d00, 004d1800, 00462a30, 004aa980, 004d8460, 004d1f50, 004d1810, 004bb820; high).
+  The movable elements are **sorted** and then **merged** into the scenery order.
+  - **The movable sort** uses the comparison at 00462a30, which the sort invokes directly: **the depth key
+    ascending, ties broken by the element's own identity ascending** - a total, deterministic order.
+  - **The scenery order is not file order.** It is produced **once, at level start**, by sorting the scenery list by
+    the **smallest screen row among the vertices of the piece's profile polyline**, ascending and **strictly**, with
+    **no tiebreak** - so pieces whose polylines share a topmost row keep whatever relative order the sort leaves, and
+    an implementation must choose a stable order and record that as a divergence. The key is computed while the
+    piece's polyline is read.
+  - **The merge**: walking the scenery in that order and consuming the sorted movables **from the front**, every
+    movable the sort-line test answers **true** for is emitted **before** the piece - so the piece is drawn later and
+    **covers** it - and the movables left over are emitted after the last piece. The merge does **not** stop at the
+    first candidate that fails. Both sides skip an element whose **visible mark** is clear, so an invisible scenery
+    piece stops occluding. With **no** scenery pieces at all, every movable is emitted in pure sort order.
+  - **The sort-line test, exactly.** The movable's **screen point** is tested against the piece's profile polyline,
+    whose vertices are stored **ascending in x**:
+    1. no polyline: answer `movable screen row < the piece's own screen row` (**strict**);
+    2. the movable's x is **left of the first vertex**: answer `movable screen row < the first vertex's row`;
+    3. the movable's x is **right of the last vertex**: answer `movable screen row < the last vertex's row`;
+    4. otherwise: scan **forward** from the second vertex for the first whose x is **not less than** the movable's x,
+       take that vertex and its predecessor as the segment, and answer `cross(segment vector, movable - segment
+       start) < 0` (**strict**), which for a left-to-right segment is "the movable's row is above the segment's
+       interpolated row".
+    The scan has no index bound of its own: case 3 is what keeps it inside the polyline, and the polyline must have
+    at least two vertices.
+  - **The equality case**: a movable lying exactly on the line answers **false**, so it is emitted **after** the
+    piece and is **drawn on top of it**. All three degenerate cases use the same strict comparison.
+  Cases 2 and 3 have an observable consequence: beyond its ends the polyline behaves as if extended **flat** at the
+  height of its first and last vertex, so a character walking past the end of a wall is judged against that flat
+  extension.
+- **ANIM-368** (observed, 004d8460, 004d88e0, 004d1d00; high for the split, medium for the family encoding). **Which
+  elements take part.** At registration each element is put into exactly one of three drawing roles by its family
+  word and its geometry, and the roles decide its ordering for the rest of the level:
+  - **movable** - everything that is not of the scenery family; it is sorted by the depth key every frame;
+  - **scenery** - a scenery-family element **that has a profile polyline**; it is a merge partner and can occlude;
+  - **flat** - a scenery-family element whose sprite is marked flat; it is kept in a separate list and never enters
+    the merge.
+  The case an implementation is most likely to get wrong: **a scenery-family element with no polyline is registered
+  as a movable** and is sorted by its own depth key exactly like a character - it does not occlude by a sort line
+  and takes part in the depth ordering instead. Removal mirrors every list. A second, different comparison exists in
+  the program (a family-class priority key first, then the depth key, then identity) but the routine using it has no
+  traced caller and is **not** part of the mission frame (4.3).
 - **ANIM-364** (observed, 00462a30, 005bd560, 0055f290; high; **cleared by review 24**). **The depth key is the
   element's world row** (the world y, not the screen row: an object lifted onto a roof sorts at the depth of the
   ground under it). Two adjustments exist: an element bound to another takes the other's key plus or minus
@@ -1060,11 +1226,18 @@ required; how it is organised is not.
 - **ANIM-365** (observed, 004d0a10, 005c73e0, 005c2ec0; high). Effects and decorations are not a separate pass: they
   are queued with their own depth value and flushed into the main pass at the point where the queue's head is no
   longer nearer than the element about to be drawn, with a final flush at a sentinel depth of 1 000 000.
-- **ANIM-366** (observed, 004d0a10; high for the negative at the top level, **unknown** for the rest). There is **no
-  separate occluder or mask pass** in the scene's pass list: a building hides a character because it is an element in
-  the merged list drawn after the character. That is not proof that no element's own drawing uses mask data: the
-  level file's mask and sector data is loaded with the background and **how it becomes the drawable pieces was not
-  read**.
+- **ANIM-366** (observed, 004d0a10, 004c0510, 004fbc30, 00523df0, 004eda80, 005243a0, 005246c0; medium-high).
+  **Masks are not a drawing mechanism.** There is no separate occluder or mask pass in the scene's pass list, and
+  the level file's mask records do not reach the drawing at all: each one is built from its own chunk into an object
+  carrying one or two polylines, a topmost row, two points, a small opaque byte blob and, for one variant, a list of
+  obstacle elements; the objects are registered into a **spatial grid of 64-unit cells** and every consumer traced
+  from them is **sight and obstacle** code - the same "is this point above the polyline" test the sort line uses,
+  extended with a height test - reached from the AI, the ground marks and the effects, **never from the scene pass**.
+  The required conclusion for an implementer: **occlusion comes entirely from the ordering of ANIM-363**, using each
+  element's own profile polyline; mask records belong to the perception model (`spec-navigation.md` NAV-210), not to
+  the painter. What remains unsettled is narrow: a drawable effect class exists whose serialised form carries one
+  extra value that may name a mask, and whether that class's own drawing consumes a mask's byte blob was not read
+  (4.3).
 - **ANIM-367** (observed, 004d0a10, 004c0510; high for the ordering, medium for the meaning). Drawing is **not layer
   by layer**: there is one merged list for the whole view. The layer index is a field of the element and selects
   which background and mask set it belongs to; the loader accepts indices from 0 to the layer count inclusive, one
@@ -1157,8 +1330,9 @@ profile.
   lists** - movement mode 3's second step, movement mode 6's conditional extra step, the repeated-operation
   actions of ANIM-212, and the four calls that step **nothing** (the play-only admitting call, a call under
   freeze-all, a call for a missing action, and the exact-equality immediate completion) - and the restriction of
-  the `hold + 1` display duration to the modes that honour the hold values. *Not* the realised frame length, which
-  is ANIM-002's host-dependent reference value and `ADR-0010`'s engine decision.
+  the `hold + 1` display duration to a clip that is **advancing**, with the held-frame states ANIM-003 lists.
+  *Not* the realised frame length, which is ANIM-002's host-dependent reference value and `ADR-0010`'s engine
+  decision.
 - **Animation table**: action-id lookup and `block + facing` (ANIM-010); the per-animation quantities the player
   needs (ANIM-011); the replacement lookup of natives 60/61 (ANIM-014a).
 - **Frame timer, for supplied values**: the reset rule including the modes that have no reset case (ANIM-030);
@@ -1184,21 +1358,33 @@ profile.
   freeze element (3.4).
 - **Displacement**: the magnitude rule and the caller-supplied factor (ANIM-200); the direction and the recorded
   start position (ANIM-201); the mode-3 four-case arithmetic (ANIM-202, **cleared**); the turning scale and floor
-  (ANIM-203); the collision-free modes (ANIM-204); the published velocity (ANIM-206); arrival as the trigger for
-  status 3 (ANIM-208).
+  (ANIM-203); the collision-free modes (ANIM-204); the published velocity (ANIM-206); the footstep effect with its
+  **confirmed ground-kind selector** and its phase counter (ANIM-207); arrival as the trigger for status 3
+  (ANIM-208). Movement mode 3's arithmetic **and its single caller, action id 304** (ANIM-202).
 - **Turning**: the shorter-arc rule with the counter-clockwise tie (ANIM-210, **cleared**); the four variants
   including the damped one's third-call rule and the delayed one's spacing (ANIM-211, **cleared**); the ordering of
   the turn operation before the play and the displacement, and the counts of ANIM-212 - one execution for an
-  ordinary action, at most two for action ids 296 to 299 with the stop-on-status-3 rule; the target-facing refresh conditions (ANIM-213); mode 7 as the only player-side facing change
+  ordinary action, exactly two for action id 294 and at most two for 296 to 299 with the stop-on-status-3 rule,
+  together with the rule that a turn operation is not necessarily a facing change; the target-facing refresh
+  conditions (ANIM-213); mode 7 as the only player-side facing change
   (ANIM-214); stride preserved through a turn (ANIM-215).
-- **Placement**: the placement order and the copied facing (ANIM-220); the placed facing (ANIM-221); off-map
-  behaviour (ANIM-222).
+- **Placement and initial state**: the placement order and the copied facing (ANIM-220); the placed facing
+  (ANIM-221); off-map behaviour (ANIM-222); and the **established construction-time values** of ANIM-020, ANIM-021
+  and ANIM-023 - animation index 0, frame 0, timer -1, an unreachable early-marker pair, last-reset action id 283,
+  facing and target facing 0, turn delay counter 2, turn hysteresis counter 0, the damped-turn selector clear, the
+  ground kind from the level default, failed-move counter 0, progress region invalid, default collision tolerance
+  4.0, footstep phase 0, and the camera values ANIM-023 lists.
 - **Collision and arrival**: the guard list of ANIM-240 **as corrected** (no projection-area comparison) and the
   directional projection against 5 **for character candidates only**, with the operand being the **normalised
   direction** (that list and that comparison only); the failure counter's two resets, the
   region's validity mark and inclusive containment, and the threshold that refuses the element (ANIM-241, the
-  counting rule only, **both resets cleared by review 30**); the plain arrival projection and the door-approach
-  Chebyshev bound (ANIM-242, those two comparisons only); bonds (ANIM-243).
+  counting rule only, **both resets cleared by review 30**) together with **where the progress check runs in the
+  update** and the two earlier increments; the **four** arrival cases of ANIM-242 with their selectors, metrics and
+  inclusive/strict boundaries (but not what sets the stopping tolerance); the **deflection** of ANIM-244 - its
+  gap-sorted, nearest-first, one-at-a-time-with-re-sort ordering, the two solves with their acceptance conditions,
+  and the two degenerate fallbacks; the **absence of rollback** and the single commit (ANIM-245); the in-move
+  **unstick** with its backoff, inflation, pass limit and push rule (ANIM-246); the **absence** of any door or
+  corner special case (ANIM-247); bonds (ANIM-243).
 - **Cart**: the speed integration (ANIM-300); the program's block structure and the **conditional** weighted draw
   (ANIM-302); the five instruction effects stated and the one instruction that advances without reducing the block
   length (ANIM-303, those only); bonds (ANIM-304); the pre-update pair traversal and the two parameter pairs
@@ -1206,19 +1392,32 @@ profile.
 - **Camera**: the state list and the view rectangle (ANIM-320, with the bounding qualification it states); the
   location conversion in all five steps including the conditional zoom-reset fallback (ANIM-329, **cleared by
   review 30**); the advance timing and the 32nd-frame return (ANIM-321); border clipping and scroll termination
-  (ANIM-322); the key-scroll gating, latch rule, asymmetric start, coasting and zoom division (ANIM-323, except the
-  ramp entries); the absence of drag panning (ANIM-324); the three zoom values and the request semantics
-  (ANIM-325); the eight transition steps and the busy gate (ANIM-326, except when the current zoom changes); zoom
+  (ANIM-322); the key-scroll gating, latch rule, asymmetric start, coasting and zoom division (ANIM-323), **including
+  the generating rule of its ramp**; the absence of drag panning (ANIM-324); the three zoom values and the request
+  semantics
+  (ANIM-325); the eight transition steps and the busy gate (ANIM-326, except when the current zoom changes); the
+  **whole of ANIM-324**, including the
+  one-pixel border, the diagonal corners, the absence of a latch and the two gates; zoom
   as a global draw scale (ANIM-327); the scroll element's per-update rule and its arrival-on-a-later-update
   completion (ANIM-330); natives 18/19 as scroll requests with all five consequences (ANIM-331); native 20 and
   kind 7 as jumps (ANIM-332); the zoom element's three completion cases (ANIM-333, except the accepted case's
-  count); the lock-zoom-scroll precedence and the lock's ability to end a camera update (ANIM-334); the lock's
-  inclusive 1.0 burst threshold and strict 1.0 speed replacement (ANIM-340, those comparisons only, **cleared by
-  review 30**); lock set/replace/release (ANIM-341); the modal loop's isolation (ANIM-342).
+  count); the lock-zoom-scroll precedence and the lock's ability to end a camera update (ANIM-334); **the whole of
+  ANIM-340** - the
+  visibility test that decides whether setting a lock recentres, the centring conversion it then uses, the
+  remembered offset that is never recaptured, the skip while a burst runs, the prediction and its overshoot guard,
+  the zero-length 1/30 path, the inclusive 1.0 burst threshold and the strict 1.0 speed replacement (**those two
+  cleared by review 30**), the rounding, the whole-pixel zeroing and the end-of-update behaviour; lock
+  set/replace/release (ANIM-341); the modal loop's isolation (ANIM-342).
 - **Drawing**: the frame order (ANIM-360); backdrop reuse and the absence of dirty rectangles (ANIM-361); the pass
-  list (ANIM-362); the actor comparison and its identity tie-break (ANIM-363, that comparison only, **cleared**);
+  list (ANIM-362); **the whole of ANIM-363** - the movable comparison with its identity tie-break (**cleared**),
+  the load-time scenery order by the polyline's topmost row with its instability, the merge's front-consuming walk
+  and its visible-mark skip, and the sort-line test with its four cases, its strict comparisons and its
+  draw-on-top equality; the three drawing roles and the "scenery piece without a polyline is a movable" case
+  (ANIM-368);
   the depth key as the world row with its three offsets and their non-adjacency (ANIM-364, **cleared**); the
-  deferred queue (ANIM-365); the absence of a top-level mask pass (ANIM-366, that negative only); the single merged
+  deferred queue (ANIM-365); the absence of a top-level mask pass and the positive finding that mask records belong to
+  the perception
+  model and never reach the scene pass (ANIM-366); the single merged
   list and the extra layer index (ANIM-367); ground marks' six eligible ageing events and the conditions on them
   (ANIM-370); the resolutions and the 80 px strip (ANIM-380, except whether the wide modes are original); the
   surfaces (ANIM-381).
@@ -1237,7 +1436,7 @@ recording or a further read before treating it as fact.
 | ANIM-012, ANIM-013: which animation-record field is the marker and which the loop length | the mapping to the file fields; everything that consumes a marker or a loop length read from a profile - play modes 6 and 7, the early marker of ANIM-034 as computed from real data, the climb loop count | `AnimMarkerField` - the arithmetic is cleared for supplied values only |
 | ANIM-014(b): the animation override list | its contents, population, the mark's consumer | `AnimOverrideList` - treat the list as empty |
 | ANIM-134: the in-place action-id substitutions | which executor branches change their element's action id in place, besides the idle pair and the missing-action fallback | `ActionIdSubstitution` - implement the idle pair only and log any other need |
-| ANIM-020, ANIM-021: initial values | three animation flags, the turn delay and hysteresis counters, the footstep phase counter | `AnimInitialState` - start each at 0 and expose it |
+| ANIM-020: three animation flag bytes | their meaning and their construction-time value (everything else in ANIM-020 to ANIM-023 is now established) | `AnimUnknownFlags` - leave them out of the model until a consumer is found; the action-id lookup selection starts at the normal lookup |
 | ANIM-023: the cart's initial and reset state | the cart's construction and its program container were not read, so the program position, block remainder, speed, target speed, acceleration, waypoint index and rattle accumulators have no established defaults and no established reset on activation | `CartInitialState` - zero them on activation and expose it |
 | ANIM-034: the early marker's purpose | why it is pulled back, and which actions outside the profiles read depend on it | `AnimEarlyMarker` |
 | ANIM-042: frames outside a clip | for mode 7's terminal-marker case the consumer is **demonstrated** (the next step reads that index's hold value): what is unknown is the value read and its effect on the following cycle. For the mode-2 and mode-3 states no consumer was traced | `AnimOutOfRangeFrame` - clamp and log |
@@ -1245,24 +1444,45 @@ recording or a further read before treating it as fact.
 | ANIM-120 (unestablished parts), ANIM-122 | the per-kind admission tests and their refusals; whether any status but 4 refuses; whether the next element also executes in the same update | `ActorAdmission` (also `spec-script-vm.md` VM-216) |
 | ANIM-123: non-human targets of natives 49/50/51 | those executors | `AnimTargetFamily` |
 | ANIM-140: the speech duration | its source and its fallback | `SpeechDuration` |
-| ANIM-202: movement mode 3 | which class passes it | `MoveMode3` - refuse with a diagnostic |
-| ANIM-207: the footstep selector | confirmation of the stored value's identity | `FootstepGroundKind` |
 | ANIM-209: movement mode 5's completion contract | what the records are, their order, re-entry after an interruption, which record-walking branches answer 3, and hence the admitting-update status of a mode-5 element | `WaypointRecords` - two triggers are described, exhaustion is **not** the contract |
 | ANIM-240: the proximity partner's eligibility and query box | the class and state tests that were read only in part, and the geometry of the query box itself; the target-family branch's "is solid" answer | `ProximityEligibility` |
 | ANIM-240: the proximity reaction | pushing, waiting, stepping aside; whether it moves either element | `CharacterPush` (also `spec-navigation.md`) |
-| ANIM-241: the failed move | the resolution geometry (sliding) and whether the position is rolled back | `CollisionSlide` |
-| ANIM-242: arrival | the mover's branches that consult the direction and the straight-line test | `ArrivalGeometry` |
+| ANIM-242: the stopping tolerance | what writes the element's stopping tolerance (it is not written by the mover, the arrival test or the play call) | `ArrivalTolerance` - take it from the walk order's radius and expose it |
+| ANIM-244, ANIM-247: the corridor test | the passability rule the deflection and the arrival test both call, including whether doors are special inside it | `CorridorRule` - the single largest routine still unread |
 | ANIM-301: the cart's sub-sprites | which condition selects case A, B or C; what consumes the reciprocal | `CartSubSprites` |
 | ANIM-303: the cart program | two unread instructions, the container in the mission file | `CartProgram` |
 | ANIM-305: the cart hit | which comparison selects the larger parameters | `CartHitSeverity` |
-| ANIM-323: the scroll ramp's entries | the rounding of the fractional working value | `CameraRamp` - only the endpoints and the shape are established |
-| ANIM-324: edge scrolling | the trigger and the border width | `EdgeScroll` |
+| ANIM-324: the edge-scroll exclusion rectangles | who fills the list of rectangles that suppress an individual edge command (the HUD's own areas) | `EdgeExclusion` - suppress edge scrolling over the HUD panel and expose it |
 | ANIM-326, ANIM-333: the zoom transition | when the current zoom changes, hence an accepted request's duration | `ZoomTransition` |
-| ANIM-340: the follow controller | its traces for visible, off-screen, stopping, reversing and clipped cases; the folded small-correction path | `CameraFollow` |
-| ANIM-363: the scenery comparison | the sort line's endpoint and equality results; whether every family uses the actor comparison | `DrawOrderScenery` |
-| ANIM-366: masks | how the level's mask data becomes drawable pieces | `MaskIntegration` |
+| ANIM-340: the follow's screen-size inputs | the visibility rectangle and the centring use the configured screen size, read from a display-configuration object whose fields were identified by use, not by their writer | `CameraScreenSize` - take them from the configured resolution |
+| ANIM-363, ANIM-368: the family word | the encoding of the family bits was read only as far as the three-way split needs, and the alternate comparison's routine has no traced caller | `DrawFamilyBits` - implement the split by role and log an element that fits none |
+| ANIM-366: the masked effect class | whether the one drawable effect class whose serialised form carries an extra value consumes a mask's byte blob when it draws | `MaskedEffect` - draw it as an ordinary element |
 | ANIM-380: the wide resolutions | whether they are original | `WideModes` |
 | ANIM-520: slow motion's realised ratio | the realised ratio on any host | `SlowMotionRatio` - the mode need not be implemented (`ADR-0010`) |
+
+### 4.4 Boundaries closed in revision 6, and what is left
+
+Review 44 judged revision 5 "not yet cleared as an implementable whole" and listed the boundaries in the way of
+that. This section records what revision 6 did with each, in the priority order the movement batch needs.
+
+| Boundary (review 44) | Revision 6 |
+|---|---|
+| **Arrival geometry** | **Closed.** ANIM-242 now gives all **four** cases of the mover's test with their selectors, metrics and inclusive/strict boundaries, separately from the door-approach element's Chebyshev rule. What is left is narrow and named: what writes the stopping tolerance (`ArrivalTolerance`). |
+| **Collision sliding** | **Closed.** ANIM-244: a deflection that keeps the step's length, blockers gap-sorted nearest first, resolved one at a time with a re-sort between, a circle solve and a plane solve with explicit acceptance conditions, and two degenerate fallbacks. The one dependency left is the corridor rule it calls (`CorridorRule`). |
+| **Rollback** | **Closed.** ANIM-245: there is no rollback because the position is not mutated during resolution; a single commit, or the element does not move. ANIM-246 adds the in-move unstick. |
+| **The mode-3 caller** | **Closed.** ANIM-202: movement mode 3 is selected by **one** action id (304) on the human executor's second dispatcher; no other caller passes it. |
+| **Execution accounting** | **Closed.** ANIM-003 lists every exception in both directions (extra steps, and the four calls that step nothing); ANIM-212 gives the five repeated-execution action ids in their two shapes, and states that a turn operation is not necessarily a facing change. |
+| **The initial turning counters and the frame-timer initial state** | **Closed.** ANIM-020, ANIM-021 and ANIM-023 now give the construction-time values: animation index 0, frame 0, timer -1, an unreachable early-marker pair, last-reset action id 283, facing and target facing 0, turn delay 2, turn hysteresis 0, the damped-turn selector clear, ground kind from the level default, failed-move counter 0, region invalid, default tolerance 4.0, footstep phase 0. Three animation flag bytes remain (`AnimUnknownFlags`). |
+| **The footstep selector** | **Closed.** ANIM-207: the selector is the ground kind of `spec-navigation.md` NAV-003, initialised from the level default and re-established from the area or the material. |
+| **The drawing order's scenery boundaries** | **Closed.** ANIM-363 gives the sort line's four cases, its strict comparisons, its draw-on-top equality and its flat extension beyond the polyline's ends; the load-time scenery order by the polyline's topmost row, unstable; and the merge's front-consuming walk with its visible-mark skip. ANIM-368 gives the three drawing roles. |
+| **Mask integration** | **Closed as a negative.** ANIM-366: mask records are perception geometry, registered into a spatial grid and consumed by sight and obstacle code; they never reach the scene pass. Occlusion is the ordering alone. One narrow question remains (`MaskedEffect`). |
+| **Proximity eligibility and query geometry** | **Partly closed.** ANIM-240's guard list is corrected and the comparison is cleared; the class and state tests and the query box's geometry stay excluded (`ProximityEligibility`), as does the reaction (`CharacterPush`). |
+| **The camera ramp** | **Closed.** ANIM-323 now gives the generating rule - a working value from 6.0, its integer part bumped to even, floored into both tables, multiplied by 1.05 while below 31 - and the sequence it produces, rising from 6 to a ceiling of 32 px per update. |
+| **Edge scrolling** | **Closed.** ANIM-324: the pointer is polled once per input poll against a **one-pixel** border on each edge, the four independent tests let a corner scroll diagonally, there is no latch so the commands repeat every poll, and the same poll turns the wheel into the two zoom commands. What is left is who fills the HUD exclusion rectangles (`EdgeExclusion`). |
+| **The follow behaviour** | **Closed.** ANIM-340 now gives the whole controller: the visibility test that decides whether setting a lock recentres and the centring conversion it uses, the remembered offset that is never recaptured, the burst skip, the prediction with its overshoot guard, the zero-length 1/30 bleed, the inclusive and strict 1.0 thresholds, the speed replacement from the actor's current animation, the rounding and the whole-pixel zeroing, with the five required traces. What is left is only the source of the configured screen size (`CameraScreenSize`). |
+| **Accepted zoom completion timing** | **Open** (`ZoomTransition`): it needs a recording, and section 7's zoom test says so. |
+| **Frame-timer marker mapping, overrides, out-of-range consequences, the other in-place action-id substitutions, admission, speech** | **Open**, each with its row in 4.3 and its address in section 10. |
+| **Cart initial state, program and sub-sprites** | **Withheld deliberately** (`CartInitialState`, `CartProgram`, `CartSubSprites`). Review 44 allows this; the observable contract the implementer needs is in 3.10: a cart is speed-driven, it runs a program with a conditional weighted branch, it rattles its sub-sprites with two draws each per update, and it runs people over through a pass that precedes the element updates. |
 
 ## 5. Constants
 
@@ -1292,7 +1512,16 @@ excluded rule and must be carried as an assumption.
 | plain arrival | directional product not greater than the element's tolerance | same | 00560460, 005fc660 | high |
 | door-approach tolerance | Chebyshev distance strictly below tolerance + 5 (tolerance 10 in the walk pipeline) | px | 00467a50 case 2, 005fc700 | high |
 | failed-move limit without progress | 50 (the 51st fails) | failures | 00563e90 | high |
-| collision tolerance decrement per failure | 0.2, while above 1.0 | tolerance units | 00563ed0, constant at 00677b3c | high |
+| collision tolerance: default, decrement per failure, floor | 4.0, 0.2, 1.0 | px | 0055eee0, 00563ed0 (00677b3c), 0067749c | high |
+| deflection fallback fraction, wall / round | 0.95 (and its negative) / 0.99 | of the step length; 8-byte constants | 00679100, 00679108, 00679118 | medium |
+| step backoff factor before the unstick | 0.8 | of the step length | 00679724 | medium |
+| minimum step length before the unstick | 0.1 | px | 00677580 | medium |
+| unstick box inflation / passes / corner threshold / push | 0.2 / 50 / -0.1 / penetration + 1.0 | px, passes | 004f5890, 006787f8 | high |
+| wedged arrival slack (Chebyshev, strict) | 10.0, plus both collision radii when an order object applies | px | 00560460, 00677438 | medium |
+| isometric arrival correction | 1.7434 | factor on the second component | 00560460, 006774ec | medium |
+| turn delay counter at construction | 2 | calls | 0055eee0 | high |
+| frame timer at construction | -1 | timer units | 005b5890 | high |
+| last-reset action id at construction | 283 | action id | 005b5890 | high |
 | progress region half-size | about 0.49 | px | 00563ed0 | medium |
 | footstep effect selector value | 5 | ground kind | 005b86b0 | medium (4.3) |
 | footstep displacement threshold | 2.0 | px per update | 005b86b0, constant at 006774f4 | high |
@@ -1308,13 +1537,15 @@ excluded rule and must be carried as an assumption.
 | location conversion: bounds | 0 and map size minus view size (view = width / zoom by (height - 80) / zoom) | px | 005758d0 | high |
 | location conversion: fallback | current zoom := 1.0, corner := (0, 0) | - | 005758d0 | high |
 | location conversion: alignment at zoom 0.5 | both components even | px | 005758d0 | high |
-| camera scroll ramp: entry 0, first moving value, growth, bound, entries | 0.0, 6.0, x1.05, 31.0, 32 | px per update | 004bef74, 006777d0, 00678b30 | medium (4.3) |
+| camera scroll ramp: entry 0, working start, parity rule, store, growth, bound, entries | 0, 6.0 (single precision), bump to an even truncated integer part, round to nearest (ties to even), x1.05, 31.0, 32 | px per update | 004bef6e-004bf008, 0067749c, 006777d0, 00678b30 | high |
 | camera scroll step scaling | ramp entry / zoom | px per update | 004dba50, 004db920 | high |
 | script scroll step length at element start and from native 18 | 2.0 | px per update | 004ca410, 00571270 | high |
 | script scroll step length, neutral (also the value that resets the ramp index) | 1.0 | px per update | 004cdfc0 | high |
 | script scroll speed parameter | unsigned 16-bit, 0 = use the step length and the ramp | px per update | 004cdfc0 | high |
 | camera lock: burst threshold (inclusive) and speed-replacement threshold (strict) | 1.0 | px | 004cdfc0, 8-byte constant at 00677d90 | high |
-| camera lock: burst length | 15 | updates | 004cdfc0 | medium (4.3) |
+| camera lock: burst length | 15 | updates | 004cdfc0 | high |
+| camera lock: small-correction bleed | 1/30 | per update | 004cdfc0 | high |
+| edge-scroll border | 1 | px on each edge | 00517900 | high |
 | HUD strip excluded from the world view | 80 | px | 00677598 | high |
 | depth key sibling offset | 0.001 | world rows | 005bd560, constant at 006774cc | high |
 | depth key attached-effect offset | 0.01 | world rows | 005c72a0, constant at 006774f0 | high |
@@ -1336,8 +1567,8 @@ used; "the point" in this table always means its conversion.
 
 | Id / kind | What it really does | Completion | Claim |
 |---|---|---|---|
-| 18 `(loc)` | requires a non-null location; sets the camera's **scroll destination** (as given and converted) and the **scroll step length to 2.0**. No jump, no zoom request, no new camera element, no effect on the scroll speed or the ramp index - but an existing camera element is **kept**, and the scroll's arrival completes it. The first step is 2 px **only when the leftover scroll speed is 0**; otherwise that speed is used instead | nothing new waits for it; an enabled, active actor lock **suspends the motion** (ANIM-334), while a zoom that completes first removes the camera element so that the arrival completes nothing | ANIM-331, ANIM-334 |
-| 19 `(loc, f)` | as 18 with the step length := `f`. Effective on the scroll's first update only when the leftover scroll speed is 0; the value **1.0** makes the **first** ramp refresh set the index to 0 - a zero step on the next update - after which the refreshes advance normally | as 18 | ANIM-331, ANIM-334 |
+| 18 `(loc)` | requires a non-null location; sets the camera's **scroll destination** (as given and converted) and the **scroll step length to 2.0**. No jump, no zoom request, no new camera element, no effect on the scroll speed or the ramp index - but an existing camera element is **kept**, and the scroll's arrival completes it. The first step is 2 px **only when the leftover scroll speed is 0**; otherwise that speed is used instead | nothing new waits for it; an actor lock that is enabled and producing movement **suspends the motion** (ANIM-334) unless its own step is clipped to a zero delta, while a zoom that completes first removes the camera element so that the arrival completes nothing | ANIM-331, ANIM-334 |
+| 19 `(loc, f)` | as 18 with the step length := `f`. Effective on the scroll's first update only when the leftover scroll speed is 0; the value **1.0** makes the **first** ramp refresh set the index to 0, so the **ramp length** for the next update is the ramp's zero entry - which stops the camera only when the leftover scroll speed is also 0, since a non-zero retained speed is used instead of the length - after which the refreshes advance normally | as 18 | ANIM-331, ANIM-334 |
 | 20 `(loc)` | sets the camera **corner** to the converted point - an immediate jump - and invalidates the cached view. Does not touch the scroll destination, the zoom request or the actor lock | immediate | ANIM-332, ANIM-329 |
 | 21 `(f)` | sets the **requested** zoom; only 0.5, 1.0, 2.0 accepted, else an error and no change | the camera update performs it | ANIM-325, ANIM-326 |
 | 33 / 42, kind 6 | scroll the camera to a point; 33 records speed 0 ("use the step length and the ramp"), 42 records an unsigned 16-bit speed in px per update. Starting it completes any previous camera element, releases the actor lock, sets the destination, the speed, step length 2.0 and ramp index 0 | when the destination is found to be reached at the **start of a later** camera update, or when a step clips at a map bound; at once when the level's no-presentation flag is set | ANIM-330, ANIM-322 |
@@ -1423,10 +1654,15 @@ assert a rule listed in 4.3 as fact; where one appears below it is marked *(assu
    the cart's sub-sprite animations stop. A recorded freeze element must mark itself completed **before** the flag
    is written, so a sequence whose next level is dispatched in the same drain observes the flag already set; native
    139 must set it inside the call. The consequence for the next sequence level must be tested in **both**
-   directions, because completion precedes the write: a successor element of a kind that is dispatched
-   **immediately** when the level starts runs **before** the flag is written and therefore observes it **clear**,
-   while a successor that goes through the **deferred queue** runs on a later drain and observes it **set**. A test
-   that asserts the next level always sees the flag set is wrong.
+   directions, and the distinction is **synchronous execution before the write versus queued execution after it**,
+   not "this drain versus a later drain": completing the freeze element advances its sequence level, and a
+   successor of a kind that the level start dispatches **synchronously** runs inside that advance, **before** the
+   flag is written, so it observes the flag at its **previous** value; a successor that is **queued** runs when the
+   queue is drained, which may be later in the **same** drain, and observes the written value. Both fixtures must
+   state the flag's value before the element ran: assert "observes it clear" only with the flag initially clear and
+   the element setting it, and "observes it set" only with the flag initially set and the element clearing it - or
+   the reverse, so long as the initial value is fixed. A test that asserts the next level always sees the flag set
+   is wrong.
 
 **Actions and completion**
 
@@ -1454,13 +1690,37 @@ assert a rule listed in 4.3 as fact; where one appears below it is marked *(assu
     the element is refused when the counter exceeds 50. Blocking a character for 51 updates is **not** sufficient
     to refuse it, and a restore that drops the region's validity mark must change the refusing update - assert
     that it does.
+13a. **[S]** *Sliding.* A synthetic level with one straight wall. A character stepping 4 px at 45 degrees into the
+    wall must end the update **4 px away from where it started** - the step keeps its length - displaced **along**
+    the wall, not stopped and not shortened. Stepping **head-on** into the same wall it must move **0.95 x 4 px**
+    sideways. With a round obstacle of radius `R` at distance `d` on its path, the resulting step must satisfy the
+    circle solve of ANIM-244 and must be rejected - the obstacle skipped, the step unchanged by it - when the
+    along-component would exceed the step length. With **two** walls forming a doorway narrower than twice the
+    step, the character must resolve the **nearer** jamb first, then the second with the already-deflected step,
+    and must pass through; reversing the resolution order must give a different, wrong result, which the test
+    asserts is not what the engine produces.
+13b. **[S]** *No rollback, and the unstick.* A character whose every deflection is rejected must end the update at
+    **exactly** its starting position - not partially moved, not inside the wall. A character **placed inside** a
+    wall must be pushed out perpendicular to it within the pass limit and must reappear outside; with two walls
+    meeting at a corner it must take more than one pass and must still end outside both.
+13c. **[S]** *The four arrival cases.* Build one fixture per case of ANIM-242: not blocked with the plain metric
+    (arrival when the projection equals the tolerance exactly - inclusive); not blocked with the isometric flag
+    (a destination 10 px away on the second axis must **not** arrive at a tolerance of 10, because the component
+    is scaled by 1.7434); blocked with the arrival-mode flag (arrival decided by walkability to the stored goal,
+    at any distance); and blocked with a non-zero failure counter (arrival at a Chebyshev distance strictly below
+    10, and strictly below the radii-plus-10 bound when an order object applies). The door-approach element's
+    Chebyshev bound must stay separate from all four.
 14. **[S]** *Turning.* From facing 0: target 5 in 5 calls, target 11 in 5 calls the other way, target 8 downward
     (15, 14, ...) in 8 calls. The damped variant must first move on the third same-sign call and spend one call
     resetting after a reversal. The delayed variant with argument 2 must move every third call. Counts are **per
-    execution of the action**, not per update, and the repeated case has a fixture of its own: on action ids 296 to
-    299 the facing must move **twice** in one update when neither execution completes the action, and **once** when
-    the **first** execution answers status 3 - the second must not run. The turn must be applied **before** each
-    execution's play and displacement, so the displacement's turning scale uses the post-turn facing (ANIM-212).
+    execution of the action**, not per update, and the repeated cases have fixtures of their own. Every fixture
+    that asserts a **facing change** must use the **ordinary** turn variant (the damped one consumes calls without
+    moving) and must leave at least one sixteenth of angular distance per asserted change, because a turn
+    operation on an already-aligned element changes nothing. With that set up: action id **294** must perform
+    **two** turn/play executions even when the first answers status 3; action ids **296 to 299** must perform two
+    when neither completes the action and **one** when the first answers status 3. The turn must be applied
+    **before** each execution's play and displacement, so the displacement's turning scale uses the post-turn
+    facing (ANIM-212).
 15. **[S]** *Turning cost and stride.* While the facing differs from the target, a displacement of 4 px must become
     2.4 px and one of 1 px must become 0.7 px, and a zero displacement must stay zero. Changing the target facing
     mid-walk must not reset the frame index or the timer: the next update must show the ordinary next step with the
@@ -1485,6 +1745,21 @@ assert a rule listed in 4.3 as fact; where one appears below it is marked *(assu
     the index back down while still moving. A command must do nothing at all while a script scroll destination is
     active. The individual ramp values are an *(assumption, ANIM-323)*: assert the zero entry, the first non-zero
     entry, monotonicity and the ceiling, not the whole table.
+17a. **[S]** *The ramp rule.* Generate the ramp from ANIM-323's three steps and assert the sequence 0, 6, 6, 7, 7,
+    8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 26, 28, 31 and 32 thereafter. Assert that using one rounding
+    for both steps - truncation for the store, or round-to-nearest for the parity test - produces a different
+    sequence, so the test pins the distinction.
+17b. **[S]** *Edge scrolling.* The pointer at exactly x = 0 must raise the left command and nothing else; at
+    x = width - 1 the right command; at exactly (0, 0) **both** left and up in the same poll. One pixel inside any
+    edge must raise nothing. Holding the pointer on an edge must raise the command on **every** poll, so the ramp
+    accelerates exactly as it does for a held key. A pointer inside an exclusion rectangle must raise nothing
+    *(assumption, ANIM-324)*.
+17c. **[S]** *The follow.* Lock onto an actor **inside** the view: the camera must not move, and the offset the
+    actor then has must be preserved for the whole lock. Lock onto an actor **outside** the view: the camera must
+    centre on it, rounded, bounded and even-aligned at zoom 0.5. Then assert the four traces: a steadily walking
+    actor produces bursts of 15 updates at the actor's own animation speed with no recompute in between; a stopped
+    actor produces no camera motion; a reversing actor has that axis frozen while the other continues; and an
+    actor beyond a map bound leaves the camera at the bound with the scroll stage still reachable.
 18. **[S]** *Script scroll.* Choose an **axis-aligned**, integral destination an exact multiple of the step away,
     reachable without clipping, with **no actor lock enabled, no zoom request pending**, no camera element
     contention and a leftover scroll speed of 0. With native 42 speed 10 and a separation of 100 px the camera must
@@ -1493,13 +1768,19 @@ assert a rule listed in 4.3 as fact; where one appears below it is marked *(assu
     must complete at the bound instead of hanging. A non-axis-aligned or non-integral destination must not be used
     to assert an exact update count, because the per-component truncation can prevent the equality. **Contested
     cases** must be asserted separately: with an actor lock enabled and producing movement the scroll must make
-    **no** progress; with that same lock's step **clipped to a zero delta** at a map bound the scroll must
-    progress again on that update; and with a zoom request outstanding that completes first, the scroll must keep
+    **no** progress; with that same lock's step **clipped to a zero delta** at a map bound the scroll stage must
+    **run** on that update - and to assert that the camera actually **moves** then, the fixture must also give the
+    scroll a non-zero effective displacement that is itself unclipped, since the fall-through establishes only
+    that the stage runs; and with a zoom request outstanding that completes first, the scroll must keep
     **moving** and must terminate at its destination, but its element must already have been completed by the zoom,
     so the arrival must complete nothing.
 19. **[S]** *Natives 18, 19 and 20.* Each trace below requires an isolated camera: **no actor lock enabled, no zoom
     request pending, no clipping on the steps asserted, and the destination not already reached**, so that the
     scroll stage is actually reached (ANIM-334).
+    Every asserted step size additionally requires a destination that is **axis-aligned** and **far enough away
+    that the remaining distance never limits the step**, because the mover shortens the last step to the remaining
+    distance and truncates each component to whole pixels (ANIM-330): a 2, 7 or 10 px step is only observable while
+    the remaining distance exceeds it on the asserted axis.
     After native 18 the camera must not move in that call, the zoom must be unchanged unless the conversion's
     fallback applied, and a scroll must begin with a first step of **2 px only when the leftover scroll speed is
     0**; with a leftover speed of 10 the first step must be 10 px. Nothing new waits for the scroll - but if a
@@ -1530,6 +1811,18 @@ assert a rule listed in 4.3 as fact; where one appears below it is marked *(assu
     character and a building whose sort line passes between them must be ordered by the side of that line; a
     building **without** a polyline must be ordered against the character by their **screen** rows. A movable that
     fails one piece's test must not prevent later movables from being emitted before that piece.
+22a. **[S]** *The sort line's cases.* A scenery piece with a three-vertex polyline rising left to right, and a
+    character stepped across it. Assert each case separately: **left of** the first vertex the character is judged
+    against a flat extension at the first vertex's row; **right of** the last vertex, against a flat extension at
+    the last vertex's row; **between** them, against the interpolated row of the spanning segment; **exactly on**
+    the line the character is drawn **in front of** the piece. A piece with **no** polyline must judge by its own
+    screen row. Clearing the piece's visible mark must stop it occluding altogether.
+22b. **[S]** *Roles and the scenery order.* A scenery-family element **without** a polyline must be ordered by its
+    depth key like a character, not by a sort line. Two scenery pieces must be drawn in ascending order of the
+    topmost row of their polylines, decided once at level start and not re-decided per frame; two pieces sharing a
+    topmost row may be drawn in either order, and the test must accept both (the original's sort is unstable, and
+    the engine's choice is a recorded divergence). With no scenery at all, every movable must be emitted in pure
+    sort order.
 23. **[S]** *Ground marks.* A mark must age by one on each drawn, visible update whose level frame counter is even,
     and must be destroyed on the **sixth** such event - that invariant, not a fixed number of draws, is what the
     test asserts. Assert also: a mark held off-screen does not age; a counter that stays even ages it on every
@@ -1540,7 +1833,8 @@ assert a rule listed in 4.3 as fact; where one appears below it is marked *(assu
     mid-cart (a program position inside a block, a non-zero acceleration and non-zero rattle accumulators) and
     mid-scroll (a destination, a step length of 6 and a ramp index of 4); restore and assert that the next update
     produces exactly the value it would have produced without the save, and that a restore which drops the region's
-    validity mark changes the update on which the walk is refused. Then assert the cross-phase order of one tick: the cart pass observes the
+    validity mark changes the update on which the walk is refused. Then assert the cross-phase order of one tick: the
+    cart pass observes the
     previous tick's positions, the element pass observes the cart pass's results, the queue drain observes the
     element pass's launches, and the script timer list is visited in insertion order.
 25. **[S]** *Slow motion.* If slow motion is implemented at all (`ADR-0010` does not implement it), every
@@ -1640,43 +1934,42 @@ per-frame tables stay in the analyst workspace.
 
 Each names what to read next and corresponds to a row of 4.3.
 
-1. **The proximity reaction and the collision resolution** (ANIM-240, ANIM-241): the per-class reaction invoked
-   from the scan inside 00561040, and the second half of that routine after the straight-line test fails (00563e90,
-   00564020 to 00564390, 00560840). Whether a failed update rolls the position back. The same gap is
-   `spec-navigation.md`'s.
-2. **The arrival test's unread branches** (ANIM-242): the branches of 00560460 that consult the direction and the
-   live straight-line test, and 004a4a10.
+1. **The corridor rule** (ANIM-244, ANIM-247, ANIM-242 case 3): 004f6c20, the passability test the deflection, the
+   arrival test and the walk pipeline all call. It is now the largest routine still unread in this subsystem, and
+   it is where any door-specific rule would live. The deflection itself, the absence of rollback, the unstick and
+   the four arrival cases are settled (ANIM-244 to ANIM-247).
+2. **The stopping tolerance** (ANIM-242): what writes the element's tolerance. It is not written by the mover, the
+   arrival test or the play call; try the walk order construction (00582640) and 0055fc20.
+2a. **The proximity reaction** (ANIM-240): the per-class behaviour a qualifying partner's callback performs -
+   pushing, waiting, stepping aside - and whether it can move either element within the update.
 3. **The speech duration** (ANIM-140): the speech case of 00464b20, the sound length source around 005a87f0, and
    the fallback with sound disabled.
 4. **The marker and loop fields** (ANIM-012, ANIM-013): the mapping from the in-memory record read by 005bdcd0 and
    005bddb0 to the file fields, through the sequence reader reached from 005b5ea0.
 5. **The animation override list** (ANIM-014b): what an entry carries and who populates it (005c8e40 and the
    element's script-side list).
-6. **Which class passes movement mode 3** (ANIM-202): the other callers of 005b86b0 (00475bd0, 00481150) and the
-   player-character executor 00470390.
 7. **The per-kind admission tests** (ANIM-122): 0046abd0's classification feeds tests reached through 0046b210.
 8. **The cart** (ANIM-301, ANIM-303): the two conditions that select the sub-sprite cases in 004ab7e0, the two
    unread instructions (004af0f0, 004af060), the consumer of the per-sub-sprite reciprocal, and the program's
    container in the mission file (004ae470 reads it).
 9. **The cart hit's severity selector** (ANIM-305): the comparison in 004d9420 and the helper it calls.
-10. **Edge scrolling** (ANIM-324): which routine turns a mouse position near a border into the four scroll commands
-    and what the border width is; start at the HUD construction 0050b640, the input pump around 005105d0 and the
-    command dispatch table at 004dcdac.
+10. **The edge-scroll exclusion rectangles** (ANIM-324): who fills the list of rectangles that suppress an
+    individual edge command; start at the owner of the input poll reached from 0050f710.
 11. **The zoom transition** (ANIM-326, ANIM-333): at which step of 004cf610 / 004cfce0 the current zoom changes.
-12. **The camera follow** (ANIM-340): the folded part of 004cdfc0 between the lock test and the burst application,
-    and 004c8120, which is what lets setting a lock move the camera.
-13. **The scenery order and the masks** (ANIM-363, ANIM-366): the sort line's endpoint and equality results in
-    004aa980, whether every sortable family uses the actor comparison, how the scenery list is ordered at load
-    (004c0510, 004c2720) and how mask data becomes drawable pieces (00523df0).
-14. **The scroll ramp's entries** (ANIM-323): the rounding applied to the fractional working value in 004be6d0.
-15. **The footstep selector** (ANIM-207): confirm the stored value's identity at 005b86b0 against the placement
-    reader.
+12. **The configured screen size** (ANIM-340, ANIM-380): the display-configuration fields the visibility
+    rectangle and the centring read were identified by use; find their writer (0051ba00).
+13. **The family word and the masked effect class** (ANIM-363, ANIM-366, ANIM-368): the encoding of the element
+    family bits beyond the three-way drawing split; whether the drawable effect class whose serialised form carries
+    one extra value consumes a mask's byte blob when it draws (004aaf80, then the effect draw path); and whether
+    the second, family-priority comparison at 00549ae0 is reachable at all (0054b1f0 has no traced caller). The
+    sort line, the load-time scenery order and the mask records' role are settled (ANIM-363, ANIM-366).
 16. **The level-owned timed list** of ANIM-101.6: what it holds and what "finished" means for its entries.
-17. **The initial values of 4.3's two initialisation rows**: the three animation flags of ANIM-020, the turn
-    counters and the footstep phase (005b5ed0, 0055fe10); and every cart field of ANIM-023, whose construction and
-    activation were not read (004ad5f0, 004ae470, the cart natives 67 / 72).
+17. **The remaining initial values**: the meaning and the construction-time value of the three animation flag
+    bytes of ANIM-020 (005b5890 does not write them); and every cart field of ANIM-023, whose construction and
+    activation were not read (004ad5f0, 004ae470, the cart natives 67 / 72). Everything else in ANIM-020 to
+    ANIM-023 is now established at 005b5890 and 0055eee0.
 18. **The two wide resolutions** (ANIM-380): 005e3f70 and the mode enumeration near 005e3b10.
-19. **Recordings needed**: a camera key-scroll trace (to pin the ramp entries), a zoom element trace, a follow trace
+19. **Recordings needed**: a zoom element trace, a follow trace
     for a visible and an off-screen actor, a cart run (to pin the rattle draws' effect on later rolls), and a
     ground-mark trace across a scroll that takes a mark off-screen.
 
@@ -1684,15 +1977,14 @@ Each names what to read next and corresponds to a row of 4.3.
 
 Against `crates/opensherwood-core/src/anim.rs`, `world.rs`, `crates/opensherwood-render/src/lib.rs`,
 `crates/opensherwood-app/src/engine.rs`, `docs/formats/sprite-animations.md` and
-`docs/original/stealth-and-combat.md` 8. A different internal organisation is not itself a difference; each item is
-a different observable result.
+`docs/original/stealth-and-combat.md` 8, as they stand **after rebuild batch 1** (`ef45066`, ruleset 19). A
+different internal organisation is not itself a difference; each item is a different observable result.
 
-1. **There is no 64 Hz animation clock.** `anim.rs` runs a 60 Hz world tick with 16 units per tick and 45 per table
-   tick to approximate one. The original has one clock - the play call, ordinarily one per actor update - and a
-   frame lasts `hold + 1` steps of it (ANIM-003, ANIM-031). `AnimState` keeps its remainder, so it does not lose
-   fractional durations; what it cannot express is "one frame per update", and its rounding to the 60 Hz
-   presentation moves individual frame changes by up to one tick against the original's exact counting. `ADR-0010`
-   removes the three-clock model.
+1. **The clock is no longer a difference** (historical). Before batch 1, `anim.rs` ran a 60 Hz world tick with 16
+   units per tick and 45 per table tick to approximate a 64 Hz animation clock, and kept a fractional remainder.
+   `ADR-0010` and batch 1 replaced that with the single 46.875 ms logic frame this document describes, so the
+   three-clock model and its conversions are gone. What remains for the movement batch is to count **timer steps
+   per play call and play calls per update** as ANIM-003 and ANIM-212 state them, rather than one step per frame.
 2. **Movement is not a constant average speed.** `AnimSet::cycle_speed` moves the entity at the cycle's average;
    the original displaces the current frame's own advance on the steps where the timer is zero afterwards and
    nothing on the others (ANIM-032). The two agree for the uniform walk and run cycles and disagree for the sneak,
@@ -1783,6 +2075,10 @@ re-pin a revision that already contains it.
   claim ids are ANIM-200/201/203/204, ANIM-208, ANIM-240 to ANIM-243 and ANIM-311.
 - NAV-150 may also cite ANIM-241's **two** resets and the progress region's validity mark, and ANIM-242 for the
   mover's unread arrival branches.
+
+**`spec-navigation.md`, additionally**: NAV-210 may now record that the level's **mask records are the perception
+geometry and never reach the drawing** (ANIM-366), and NAV-111 that the same unstick routine is also the move's
+last resort, with the backoff and inflation ANIM-246 states.
 
 **All three**: this document's camera claim ids are unchanged since revision 3 except that the interaction
 precedence is the new **ANIM-334**; the location conversion remains **ANIM-329**, and citations of ANIM-320, 322,
