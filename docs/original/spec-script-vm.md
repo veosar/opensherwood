@@ -1,14 +1,14 @@
 # Script VM, natives and callback scheduler (behaviour specification)
 
-Status: `draft`, revision 8 (answers Codex reviews 14, 17, 21, 25, 28, 31 and 35; awaiting re-review). Partial
-clearance in force (reviews 21, 25, 28, 31, 35): **the interpreter, including the sentinel departure** (VM-040 -
+Status: `draft`, revision 9 (answers Codex reviews 14, 17, 21, 25, 28, 31, 35 and 36; awaiting re-review). Partial
+clearance in force (reviews 21, 25, 28, 31, 35, 36): **the interpreter, including the sentinel departure** (VM-040 -
 VM-095, 8.1); the scheduler-independent, individually settled native effects; the message contracts; the default
 zero for an unwritten result slot (VM-071); VM-088 with both buffers and case 17; native 223's classification;
 the ordinary termination rules of 8.1; the take-overlap outcome; the distinction between ordinary arrival and
 approach completion; the recorder guard inventory and compound-overflow coverage (VM-201); native 47's two
 destinations; the 18 / 235 accounting; native 51's conditional hold; the per-instance snapshot contents, the
 fault-log / suppression preservation and cases 20 / 21. Not cleared: the complete snapshot / fault contract as a
-bundle (waiting on the provenance rules of 8.3 introduced in this revision), the full recording / scheduler
+bundle (review 36: waiting only on a reachable fixture for case 26, replaced in this revision), the full recording / scheduler
 integration, the camera conversion and interference, deferred execution, and every sibling-gated effect (1.1,
 4.2, 4.3). 235 is an accounting total, not a blanket implementation clearance. Build: GOG English edition,
 `Robin Hood.exe` SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`, image base
@@ -16,7 +16,7 @@ integration, the camera conversion and interference, deferred execution, and eve
 
 Identity and handoff record:
 - Analyst: 2026-09-13 and 2026-09-18, session `a45d5359e8dec5140` (Claude agent, analyst role under ADR-0009),
-  revisions 1..8 (revisions 5 to 8 on 2026-09-18).
+  revisions 1..9 (revisions 5 to 9 on 2026-09-18).
 - Reviews (reviewer Codex gpt-6-astra, spec-reviewer role with access to `re/`; each review is committed under
   `docs/decisions/reviews/` and is the unique reference for its reviewer session):
   - review 14, `2026-09-13-codex-review-14-spec-script-vm.md`: **revision 1**, blob
@@ -37,7 +37,11 @@ Identity and handoff record:
     `c2c578a7…`, which carries the same blob), 4 findings, fix-then-clear with a fourth partial clearance;
   - review 35, `2026-09-18-codex-review-35-spec-script-vm.md`: **revision 7**, blob
     `2ec3f7743145b63acd2c3fdd99d4243dff61f2e8` (commit `5187321b7bcb683f9914c72d657c90c33db10bdc`), 3 findings,
-    fix-then-clear with the partial clearance stated above. This revision 8 answers all seven.
+    fix-then-clear with a fifth partial clearance;
+  - review 36, `2026-09-18-codex-review-36-spec-script-vm.md`: **revision 8**, blob
+    `a745790b539c6656a2719f08cbe754f53e9db847` (commit `7328461`; the review text names the intermediate commit
+    `f35eebb1…`, which carries the same blob), 1 finding, fix-then-clear with the partial clearance stated above.
+    This revision 9 answers all eight.
 - Reviewer-session identities: the Codex session behind each review is recorded in the **maintainer-held review
   log** (the lead's mapping from review number to Codex session; not supplied to the analyst and not reproduced
   here). Each committed review file names its review number, the reviewed blob and commit; that pair plus the
@@ -58,7 +62,8 @@ Identity and handoff record:
   - reviewer session of review 31: the decompilation of the interpreter, the natives, the scroll and take
     routines and the camera update (its own statement: "inspected decompilation");
   - reviewer session of review 35: the interpreter's return and callback-entry paths, the tick, the dispatch /
-    drain / state-transition routines and the scroll take routines (the addresses its findings cite).
+    drain / state-transition routines and the scroll take routines (the addresses its findings cite);
+  - reviewer session of review 36: the recording open / close / append routines (the addresses its finding cites).
   **None of these reviewer contexts may implement those subsystems.** No implementer session has read any of it.
 - Publication approval: pending (maintainer); recorded separately from the factual review.
 - Analyst authorisation: on behalf of the maintainer, on the maintainer's lawfully acquired copy.
@@ -693,7 +698,7 @@ enabled and the mission-variable array is empty at start (VM-020).
 23. **Sentinel jump in a same-instance nested callback (VM-070, VM-095).** Script trace on the level instance — `Hourglass`: `0x03; 0x05 h; 0x0B t(null); 0x0B t(6); 0x0C 109; 0x13 y, 1; 0x06` where `h` = `0x03; 0x13 r, 9; 0x07 r` (a helper that returns 9: its 0x07 at depth 2 writes 9 to the callback return register and to the Hourglass frame's result slot, then returns to the Hourglass, which goes on to the native call); `ProcessMessage`: `0x03; 0x0E 0xFFFF, 0xFFFF` (the sentinel jump at the nested callback's own depth). Expected: the register holds 9 when the nested `ProcessMessage(6, 0, 0)` starts on the same instance (depth 2 above the Hourglass frame); its sentinel pops the engine callback frame (saved return −1) → only the nested invocation ends, the register still holds 9 (the nested invocation never wrote it); `n109` returns, `0x13 y, 1` executes, the Hourglass ends with 0x06 and the engine reads **9**. Variant: `ProcessMessage` = `0x03; 0x05 g; 0x13 z, 2; 0x06` with `g` = `0x03; 0x0E 0xFFFF, 0xFFFF` → the sentinel inside `g` pops a script-call frame (case 22's rule), `ProcessMessage` continues with `0x13 z, 2` and ends with its own 0x06; the engine still reads 9 afterwards. Alternative seeding: the register may instead be left at 9 by a *previous completed* callback of the instance (e.g. `CheckVictoryCondition` returning 9 on an earlier tick — the engine treats 9 as "continue"), since the register is never reset (VM-010).
 24. **Scroll overlap (VM-094, VM-106, 8.1).** Scroll A's class `Hourglass` returned 5 from an earlier run and scroll B's class instance holds 7 in its return register; while A's `Hourglass` is running (current scroll = A), the harness injects a take-scroll element for B (harness hook: the engine's pickup order) and dispatches its level. Expected: B's status becomes 3 and the sound plays; `IsTaken` of B is **not** run; B's register still holds 7 and is not consulted; B's status stays 3 and B stays visible; the take element is *done* at once; `n192()` inside the rest of A's `Hourglass` is still A, and null after it ends; `Fault::ScrollOverlap(B)` recorded once; a later ordinary take of B (outside any scroll callback) runs `IsTaken` normally.
 25. **Timer before a deferred fault (8.1, VM-215, VM-217, VM-221).** Level 1 = timer 2; level 2 = `n57(h, actor, 1, 0)` recorded with `h` a handle that is not an actor-family element (a door handle from native 4); level 3 = message 9 to the level; launched from `Hourglass(1)` at T = 25 (step 4). Expected: the timer is visited in the passes of T = 25 (2 → 1) and T = 26 (1 → done); level 2 is dispatched inside the pass of tick 26 (step 10) and the seek is appended to the FIFO; it is handed over in the drain of **tick 27** (step 9), where it is set *refused*, `Fault::DeferredTarget(57, h)` is recorded at T = 27 with the sequence's provenance (the level class, `Hourglass`, T = 25), message 9's element is set *refused* in chain (never delivered), and the sequence is deleted by the next housekeeping. A snapshot at the end of tick 26 (seek pending in the FIFO) restored and run through tick 27 reproduces the same fault entry and attribution (case 26).
-26. **Provenance restore (8.3).** Run case 25 to the end of tick 26 (the seek pending in the FIFO, the sequence's provenance triple set at T = 25) and, on the same run, leave a recording open by `PostInitialize` (T = 0) that a zone callback at T = 10 extended with a timer and that is still open; snapshot; run tick 27; restore; run tick 27 again → the same `Fault::DeferredTarget(57, h)` entry with the same provenance (level class, `Hourglass`, T = 25); closing the open recording afterwards with `n31()` from any callback launches a sequence whose provenance is (level class, `PostInitialize`, T = 0) in both runs. Also: a `Fault::ScrollOverlap(B)` recorded before the snapshot is not recorded again after the restore when the overlap recurs (the suppression set was restored), and is recorded again exactly once after restoring a snapshot taken before it.
+26. **Provenance and suppression restore (8.3)** — three separate runs, because there is only one global recording (VM-200) and a second `n30()` while it is open is refused. **(a) Open recording spanning callbacks.** `PostInitialize` (T = 0) executes `n30()` and records nothing; no other callback records anything until a zone `EnterZone` at T = 10 appends `n56(3)`; a level `Hourglass` at T = 25 executes `n30()` → refused (0, provenance unchanged); snapshot at the end of tick 12 (recording still open, one timer at level 1); run to T = 30, where a zone `ExitZone` closes it with `n31()` → the launched sequence's provenance is (level class, `PostInitialize`, T = 0), its timer completes at T = 32; restore the tick-12 snapshot and run to T = 32 again → identical provenance, identical timer completion tick. **(b) Fault entry and attribution.** Run case 25 alone to the end of tick 26 (the seek pending in the FIFO, the sequence's provenance triple (level class, `Hourglass`, T = 25)); snapshot; run tick 27; restore; run tick 27 again → the same single `Fault::DeferredTarget(57, h)` entry at T = 27 with the same provenance in both runs. **(c) Scroll-overlap suppression.** Inject case 24's overlap for scroll B at T = 20 (`Fault::ScrollOverlap(B)` recorded once); snapshot at the end of tick 22; inject the same overlap at T = 23 → nothing new is recorded; restore the tick-22 snapshot and inject at T = 23 again → still nothing new (the suppression set was restored); restore a snapshot taken at the end of tick 18 and inject at T = 20 → the entry is recorded again exactly once.
 
 ## 8. Implementation choices
 
