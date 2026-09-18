@@ -26,11 +26,12 @@ public class DecompileList extends GhidraScript {
         String[] args = getScriptArgs();
         if (args.length < 1) { println("usage: DecompileList <list file> [out dir]"); return; }
         File outDir = analysisOut(args, 1);
-        File dir = new File(outDir, "decomp");
+        File dir = new File(outDir, args.length > 2 ? "decomp_" + args[2] : "decomp");
         dir.mkdirs();
         DecompInterface di = new DecompInterface();
         di.toggleCCode(true);
-        di.setSimplificationStyle("decompile");
+        // Optional third argument: the simplification style ("decompile", "normalize", "firstpass", "register", "paramid").
+        di.setSimplificationStyle(args.length > 2 ? args[2] : "decompile");
         if (!di.openProgram(currentProgram)) throw new IOException("decompiler failed to open the program: " + di.getLastMessage());
         int failed = 0;
         try {
