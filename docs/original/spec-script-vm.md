@@ -1,7 +1,7 @@
 # Script VM, natives and callback scheduler (behaviour specification)
 
-Status: `implemented (partial: interpreter core, messages, settled natives) ruleset 19`, revision 9
-(Codex review 39, 2026-09-18: **cleared for implementation** — the interpreter core
+Status: `implemented (partial: interpreter core, messages, settled natives) ruleset 19`, revision 10
+(revision 9 was cleared by Codex review 39, 2026-09-18: **cleared for implementation** — the interpreter core
 including the sentinel departure, the scheduler-independent individually settled native effects, the message
 contracts and the snapshot / fault contract, all **for scheduler-independent use**). Waiting (excluded from that
 clearance): the scheduler integration (3.5, 3.7 as a whole), deferred execution (the 8.1 deferred-fault policy
@@ -11,11 +11,13 @@ accounting total, not a blanket clearance. Publication approval is separate (ide
 Implementer batch 1 (2026-09-18, ruleset 19) built the cleared parts in
 `crates/opensherwood-core/src/vm.rs`, `crates/opensherwood-core/src/natives.rs` and
 `crates/opensherwood-script`; what is still the engine's own reading, and the questions the build raised, are
-in section 11.
+in section 11. **Revision 10** answers those seven questions and amends the claims they touch — VM-010, VM-011,
+VM-066, VM-087, row 118, the 8.1 row on storage class `00`, and two rows of 4.1 — which are **awaiting
+re-review** (each marked "rev. 10"); the cleared scope above is otherwise unchanged.
 
 Identity and handoff record:
 - Analyst: 2026-09-13 and 2026-09-18, session `a45d5359e8dec5140` (Claude agent, analyst role under ADR-0009),
-  revisions 1..9 (revisions 5 to 9 on 2026-09-18).
+  revisions 1..10 (revisions 5 to 10 on 2026-09-18; revision 10 = the implementer answers of section 11).
 - Reviews (reviewer Codex gpt-6-astra, spec-reviewer role with access to `re/`; each review is committed under
   `docs/decisions/reviews/` and is the unique reference for its reviewer session):
   - review 14, `2026-09-13-codex-review-14-spec-script-vm.md`: **revision 1**, blob
@@ -43,7 +45,9 @@ Identity and handoff record:
   - review 39, `2026-09-18-codex-review-39-spec-script-vm.md`: **revision 9**, blob
     `9eb4284ca91c3315a7c94f8805e1b070a0d8975f` (commit `5349b4f`; the review text names the intermediate commit
     `a014e38c…`, which carries the same blob), no findings, **cleared for implementation** with the scope stated in
-    the status line. Revision 9 answered all eight reviews; this metadata update changes nothing else.
+    the status line. Revision 9 answered all eight reviews.
+  - revision 10 (no review yet): answers to the implementer questions of section 11, written after batch 1 landed
+    (commit `ef45066`, ruleset 19); the amended claims are listed in the status line.
 - Reviewer-session identities: the Codex session behind each review is recorded in the **maintainer-held review
   log** (the lead's mapping from review number to Codex session; not supplied to the analyst and not reproduced
   here). Each committed review file names its review number, the reviewed blob and commit; that pair plus the
@@ -159,8 +163,8 @@ later revision of a sibling re-opens the rows that cite it. Pins:
 
 | Id | Claim | Status | Address | Conf. |
 |---|---|---|---|---|
-| VM-010 | Instance state: program counter; a stack of frames; the class-variable block; a shared global block (storage class `00`, one per program, never addressed by the retail scripts); the *current parameter buffer* (growable); a native argument buffer of 12 cells (48 bytes) with a fill count; a **native result register**; a **callback return register** (0 at construction, **never reset**). | observed | 006390b0, 00639960, 00634c30 | high |
-| VM-011 | Symbol operands are `u16`: bits 15..14 select the storage class (`00` global, `01` class, `10` frame locals, `11` frame temporaries), bits 13..0 a byte offset. No bounds checks. | observed | 00634c30 (bytes) | high |
+| VM-010 | Instance state: program counter; a stack of frames; the class-variable block; a reference to the program-wide **global block descriptor** (storage class `00`) — a static (pointer, size) pair that is **never allocated by the program**: it stays (null, 0) for the process's life, its only writer being the release at shutdown, so there is no global block at all and a class-`00` reference is an unchecked access through a null base (VM-011; rev. 10); the *current parameter buffer* (growable); a native argument buffer of 12 cells (48 bytes) with a fill count; a **native result register**; a **callback return register** (0 at construction, **never reset**). | observed | 006390b0, 00639960, 00639a00, 00634c30, 0063a1e0 (bytes) | high |
+| VM-011 | Symbol operands are `u16`: bits 15..14 select the storage class (`00` global, `01` class, `10` frame locals, `11` frame temporaries), bits 13..0 a byte offset. Resolution is `base of the selected block + offset` with **no bounds check** against the block's size for any class; for class `00` the base is null (VM-010), so every class-`00` reference is class U (a read returns whatever lies at that low address in the original; OpenSherwood: 8.1, rev. 10). The retail files contain no class-`00` symbol. | observed | 00634c30 (bytes), 0063a1e0 (bytes) | high |
 | VM-012 | A frame holds: the return program counter; a 4-byte *result slot* (uninitialised at creation); the caller's parameter buffer; a locals block and a temporaries block (allocated zero-filled by 0x03; re-executing 0x03 frees and re-allocates them). | observed | 0063a250, 00634d30 | high |
 | VM-013 | Creating a frame (0x05 and callback entry) saves the current parameter buffer into the new frame and installs a fresh empty one; popping (0x06 / 0x07) frees the saved buffer and the frame's blocks; the current buffer stays the callee's. | observed | 0063a250, 0063a320, 0063a3b0 | high |
 | VM-014 | **Snapshot set** of an instance at a callback boundary (callbacks never yield, so frames and `pc` are empty there): the class-variable block; the callback return register; the native result register; the **native argument buffer** (contents and fill count); the **current script-parameter buffer** (contents and logical length — it survives a callback return with unconsumed contents, VM-013, and the next callback's parameters are *appended* to it before the frame captures it, VM-090); the global block. None of the retail files leaves either buffer non-empty at a callback end, but the state is not disposable in general. Restoring this set at a boundary reproduces the following callbacks exactly (acceptance case 17). | inferred | 006390b0, 00634c30, 006392e0, 0063a250, 0063a320, 00635210, 00635240 | high |
@@ -218,7 +222,7 @@ operand is *unordered* and yields the exceptional outcomes of VM-068. Unless sta
 | 0x19 / 0x1A / 0x1B | int `S(b) + S(c16)`, `-`, `*` (wrapping). | VM-063 | 00635fd0, 00636210, 00636450 | high |
 | 0x1C | int `S(b) / S(c16)` (signed, truncating); by zero and `INT_MIN / -1` are machine traps. Never emitted. | VM-064 | 00636680 | high |
 | 0x1D / 0x1E / 0x1F | bitwise `\|`, `&`, `^`. | VM-065 | 006368c0, 00636b00, 00636d40 | high |
-| 0x20 / 0x21 / 0x22 / 0x23 | float `+`, `-`, `*`, `/` (extended intermediate, stored as single). | VM-066 | 00636f80, 006371b0, 006373e0, 00637610 | high |
+| 0x20 / 0x21 / 0x22 / 0x23 | float `+`, `-`, `*`, `/`: computed on the x87 with the process's precision control (the runtime's default 53-bit, or 64-bit; the program never narrows it below 53 — no control-word import and no such store in the game code) and stored as single. **The stored single equals the correctly rounded single of the exact result** for every normal result: for these four operations on single operands an intermediate of at least 2 × 24 + 2 = 50 bits makes the second rounding innocuous, and both 53 and 64 qualify (a product of two 24-bit significands is even exact in the intermediate). The one theoretical exception is a result in the single **subnormal** range, which no retail operand pair can produce (their float operands are small integers converted by 0x18 and literal constants). An implementation computing directly in `f32` is therefore bit-identical (rev. 10). | VM-066 | 00636f80, 006371b0, 006373e0, 00637610; 00642b7c (the only control-word change in the game code: the truncating conversion, restored on exit) | high |
 | 0x24 … 0x29 | int compare → `1` / `0`: `<=`, `<`, `>=`, `>`, `!=`, `==` (signed). | VM-067 | 00637840, 00637a40, 00637c40, 00637e40, 00638040, 00638240 | high |
 | 0x2A … 0x2F | float compare → **float** `1.0f` / `0.0f`: `<=`, `<`, `>=`, `>`, `!=`, `==`. **Unordered** (a NaN): `<=`, `<`, `==` yield `1.0f`; `>=`, `>`, `!=` yield `0.0f`. | VM-068 | 00638440, 00638650, 00638860, 00638a70, 00638c80, 00638e90 | high |
 | ≥ 0x30 | Error (reported); `pc` unchanged: the original loops forever. | VM-069 | 00639370 | high |
@@ -243,7 +247,7 @@ operand is *unordered* and yields the exceptional outcomes of VM-068. Unless sta
 |---|---|---|---|---|
 | VM-085 | The native table has 265 entries, ids 0..264, all populated, built once when the first instance is created. | observed | 004075c0 (bytes) | high |
 | VM-086 | Each entry is a wrapper that (1) takes the top `arity` cells (the last pushed is the last argument), decrements the fill count by `arity`, (2) calls the native with the arguments in push order, (3) yields one of three conventions (per id in section 6): **void** — 0; **bool** — the low 8 bits of the native's result (rows say what that byte is when the native's body produces no value of its own); **int / handle** — the full 32-bit value. Bool-converted arguments (non-zero → 1): 22, 26 (second), 36, 37 (third), 38 (second), 102 (third), 107, 115 (third), 130 (third), 131 (third), 134 (second), 138 (second), 139, 143 (second), 157 (second), 177 (second), 180 (second), 186 - 189 (second), 190 (third), 191 (**first**), 226, 244 (second), 254 (second), 257 (second), 264 (third). | observed | wrappers 00404a80 - 004075bf (bytes) | high |
-| VM-087 | Arity-0 natives (23, 29, 30, 31, 32, 40, 54, 55, 74, 75, 106, 111, 119, 120, 121, 122, 147, 148, 159, 163, 167, 170, 171, 172, 173, 174, 211, 216, 234, 236, 238, 239, 245, 249, 251, 261) take no cell; pushed cells for them stay in the buffer; a persistent imbalance overflows the 12-cell buffer (unchecked write). The retail files are balanced for every id. | observed | wrappers | high |
+| VM-087 | Arity-0 natives — 37 ids: 23, 29, 30, 31, 32, 40, 54, 55, 74, 75, 106, 111, 119, 120, 121, 122, 147, 148, 159, 163, 167, 170, 171, 172, 173, 174, **192**, 211, 216, 234, 236, 238, 239, 245, 249, 251, 261 (192 was missing from the list before rev. 10; its wrapper is a plain tail-jump to the native and pops nothing) — take no cell; pushed cells for them stay in the buffer; a persistent imbalance overflows the 12-cell buffer (unchecked write). The retail files are balanced for every id. | observed | wrappers | high |
 | VM-088 | Two buffers persist across callbacks and are never cleared by the engine: the **native argument buffer** (cells and fill count; a wrapper removes exactly its arity, so the buffer stays balanced only when the program is) and the **current script-parameter buffer** (VM-013: a frame creation captures the current buffer into the frame and installs a fresh one; a pop *discards* the captured buffer — nothing is restored — and the callee's buffer remains current). Consequently a residue left by a callback is still the current buffer when the engine starts the next callback on that instance, and the engine's parameters are appended after it (VM-090): the residue becomes parameter 0 and the engine's parameters are shifted. A script call made from inside that callback captures the callee's buffer and starts fresh, so it is not shifted. A nested engine callback (VM-095) behaves the same way on its own instance. The retail files leave both buffers empty at every callback end; a program that does not must have them snapshotted (VM-014), and their residue consumed as here (case 17). | observed | 006390b0, 00634c30, 006392e0, 00635210, 0063a250, 0063a320, 0063a400, 00634eb0 | high |
 | VM-089 | **Failure classes** of native calls (each row of section 6 names its class): **(E)** reported to the log, the row's failure value returned, the script continues; **(E+)** reported but the operation *still proceeds* wholly or partly (rows say which part); **(U)** unchecked memory access; **(T)** an arithmetic trap (161 with `n = 0`; opcode 0x1C); **(X)** a C++ exception thrown by a bounds-checked container (native 168: its index is compared as *unsigned* with the list size, so negative indices also take this path; the exception unwinds the native — not the engine's fatal-error routine); **(F)** the engine's fatal-error routine (two scroll callbacks overlapping, VM-094); **(C)** a null dereference crash (a callback name that the class lacks, VM-090); **(N)** non-termination (opcodes ≥ 0x30). Opcode 0x00's continuation is an unchecked fetch (VM-040), not necessarily a hang. Implementation choice 8.1 gives each of U / T / X / F / C / N a deterministic, recorded outcome and says per class whether the callback continues or terminates. | observed | 00571590, 00571760, 00570e20, 00578680, 00579350, 0057c710, 005f8030, 00639300, 00639370, 00634bf0 | high |
 
@@ -336,6 +340,8 @@ row names its address and failure class. Status values are only `observed`, `inf
 | VM-070 (intent of the `-1` jump) | inferred | `UnresolvedJump` |
 | VM-071 (result slot undefined when unwritten) | inferred | `UnwrittenResultSlot` (OpenSherwood reads 0; never exercised by the retail files) |
 | VM-100 (b) measured reference cadence | inferred (host-dependent) | none: the OpenSherwood frame is the decision of ADR-0010, not an assumption (8.1) |
+| VM-103 step 4 / VM-105 / VM-107 — the engine's interim scheduling while 3.5 is uncleared (`Hourglass` on every class every frame with the frame counter, instead of the level's every 25 ticks with `T / 25` and the scrolls' own counter) | observed here; departed from by batch 1 | `SchedulerCadence` (rev. 10): one named assumption covering every scheduling rule of 3.5 the engine has not yet implemented; removed by the batch that implements 3.5 |
+| natives 4 / 5 / 8 / 9 / 11 / 12 / 15 / 16 — handles of doors, patches, buildings and patrol paths represented as their positions in the map's flat lists, the inverse natives as the identity | inferred (observationally equivalent iff the lists are the file-order flat lists of `docs/formats/rhp.md` / navigation section 5 and every other source of such handles — 64's door search, 152 / 156 / 182 - 191 — draws from the same lists) | `Policy(id)` until the navigation redo pins the list definitions (NAV section 5, NAV-172); then a dependency, not an assumption (rev. 10) |
 | VM-107 (objects' `ActionChange` dispatcher) | inferred | `ObjectActionChange` |
 | VM-108 (b): meaning of events 100..106 and the stored element of 104..106 | unknown | `AiEventCode(100..106)` |
 | VM-109 (patrol-node variant) | inferred | `ReachPointSource` |
@@ -351,7 +357,9 @@ Called by the retail scripts: 13 (25 calls), 91 (1), 92 (1), 173 (14, result rea
 `UnknownNative(id)` and the implementation must make the placeholder an **explicit choice** recorded as an
 assumption: 13 → the inverse of native 6 (the scripts' evident intent); 91 → 0; 173 → 0; 224 → 0 (the repulsive
 point *is* created, 224's effect is observed, its result is not); 238 → 0; 261 → 0; 92, 157, 190, 225, 227, 241
-→ no-op. A strict mode may instead raise a deterministic "unresolved operation" fault on any of them.
+→ no-op. A strict mode may instead raise a deterministic "unresolved operation" fault on any of them — as an
+**opt-in for tests and analysis only**: the retail scripts call 224 at every forest mission's start and 173 in
+fourteen missions, so the shipped campaign is playable only with the placeholders (rev. 10; question 7).
 
 ### 4.3 Natives whose effect is settled only up to an unresolved code, flag or consumer (18)
 
@@ -530,7 +538,7 @@ returned. Confidence high unless marked. Categories as in VM-031; "actor" = acto
 | 115 | `pc, k, b` | bool | Action `k` (0..5) of `pc` available := `b` → 1; non-PC / bad `k` → error 0. | E (0) | 00575760 |
 | 116 | `pc, k` | bool | Action `k` available for `pc`; non-PC → error 0. | E (0) | 00575870 |
 | 117 | `x, prop, v` | bool | Set property → 1: 0 arrows (human; 0 without a quiver), 1 money (NPC), 2 life points (human), 3 concussion (human), 4 purses, 5 stones, 6 apples, 7 ales, 8 legs, 9 plants, 10 nets, 11 wasp nests (PC counters), 12 name preset 0 / 1 / 2 (PC). Wrong kind / property → error 0. | E (0) | 00572300 |
-| 118 | `x, prop` | int | Get property (same numbering; 2 life as signed 16-bit; 4..11 as counters); errors → −1. | E (−1) | 00571fb0 |
+| 118 | `x, prop` | int | Get property (same numbering; 2 life as signed 16-bit; 4..11 as counters); errors → −1. The properties are **live fields of the element, initialised by the loaders, never "unwritten"** (rev. 10): **1 (money)** is loaded from the mission record — a soldier's from its `BORG` record's u32 at offset 0x23 (the field the AI spec's AI-043 reads as a loot threshold: same storage), a civilian's from its `OILE` record's u32 that follows the u16 after the profile index (`rhm.md` documents those six bytes as two i16; the loader reads u16 + u32) — and afterwards changed only by natives 117 / 229, by looting between NPCs and by the NPC's own spending; **0 (arrows)** is the quiver's count (0 without a quiver); **2 (life)** and **3 (concussion)** are the AI spec's health / stun state; **4 - 11** the player character's item counters and **12** its name preset (campaign spec). Evidence: Emb02's element 40 is its single civilian (16 objects precede it) with 4000 in that field, and its victory check tests that value for 0. | E (−1) | 00571fb0, 004a1e90 (bytes), 004705f3 (bytes), 004863f0 |
 | 119 | – | bool | Some civilian in the level is dead. | – | 005761f0 |
 | 120 | – | bool | Some soldier is dead. Unused. | – | 00576260 |
 | 121 / 122 | – | int | Highest alert state (0..2) over living soldiers / over living non-soldier NPCs. Unused. | – | 00576a30, 00576af0 |
@@ -714,6 +722,7 @@ enabled and the mission-variable array is empty at start (VM-020).
 | jump to `0xFFFFFFFF` (VM-070) | unchecked fetch | **not a termination**: the *current frame* is popped exactly as by 0x06, and the outcome is the popped frame's saved return address: a **script-call frame** → control continues at its caller's return pc (the callback goes on); an **engine callback frame** (saved return −1, at any depth — a nested same-instance callback too) → that interpreter invocation ends with the return register unchanged, and the enclosing native-call instruction, if any, resumes the outer callback; pending 0x02 / 0x0B cells stay in their buffers as after any 0x06; recorded as `Fault::SentinelJump` (once per class and address). Cases 22, 23. | the script's intent; UB |
 | unchecked accesses (U) — native reads (3 with `i < -1`, 6, 9, 8, 98, 144, 164, 182 - 185, 217 out of range, 223 null) | arbitrary memory | the native returns **null / 0** (223: 0), the callback **continues**, the wrapper still pops its arity, and a `Fault::UncheckedAccess(id)` is recorded (a strict mode terminates the callback instead) | UB |
 | unchecked access (U) — instruction 0x08 beyond the frame's parameters | arbitrary memory | `S(a) := 0`, `pc += 1`, no register changed, the callback **continues**; `Fault::UncheckedAccess(0x08)` recorded (strict mode: terminates) | UB |
+| storage class `00` reference (VM-010 / VM-011; rev. 10) | null-based unchecked access (no global block exists) | any instruction naming a class-`00` symbol: a read yields 0 and the callback **continues**; a write **terminates** the callback; both record `Fault::UncheckedAccess(0x00)` — OpenSherwood keeps **no** global block (a 1024-cell block, as batch 1 built, is a harmless but unfounded model and must not be relied on) | UB; never emitted |
 | **deferred execution fault** — a seek element of 57 / 70 / 71 whose `actor` is not an actor-family element (no check at recording time, rows 57 / 70) | unchecked access by the actor side, long after the native returned | **no native-return outcome exists**: the recording native returned 1 and its callback may have ended. The fault is observable at the moment the element is **handed over** — the first queue drain (VM-215, step 9) that removes it from the FIFO: the drain of the tick in which its level was dispatched if the dispatch happened before that tick's step 9 (a launch from a callback of steps 4 or 8, a level completion during the drain itself), otherwise the **next** tick's drain (a level dispatched by a timer completion in step 10, or by a camera-update completion after the tick, is drained one tick later; case 25). At hand-over the element is set **refused** with the next-level propagation of VM-217 — the same state propagates: its level never completes and the first element of every later level is **refused** in chain (not cancelled); the attached message of 70 / 71 is **not** delivered; `Fault::DeferredTarget(id, handle)` is recorded at the hand-over tick, attributed to the element's sequence provenance (8.3: the recording's provenance triple, or the engine origin). Nothing already returned is changed and no callback is unwound. A seek whose `actor` is valid but whose `target` is not is **not settled** here: what the seek runner does with it is behind the actor gate (VM-216 / 4.3); OpenSherwood applies the same refusal as policy until that gate opens. | UB; the outcome had to be chosen |
 | unchecked accesses (U) — writes (0 with `k < 0`, 67 / 68 / 72 / 73 / 254 out of range, 179 / 186 - 189 null, 47 outside a recording, 0x0B overflow) | arbitrary memory | the callback **terminates** with `Fault::UncheckedAccess(id)`; no partial write | UB |
 | arithmetic traps (T: 161 with 0, 0x1C) | process exception | the callback **terminates** with `Fault::Trap`; the return register is unchanged | crash |
@@ -873,29 +882,80 @@ section and must never guess silently). Every item names what the implementation
    does not name it, while it names the other 36 arity-0 ids. Is the list simply missing 192, or does its
    wrapper pop a cell? The implementation follows the row (arity 0) and pins the list, 192 included, in
    `the_call_table_follows_the_specification`.
+   **Answer (revision 10):** the list was missing 192. Its wrapper (the 193rd entry of the table) is a plain
+   tail-jump to the native, pops nothing and returns the handle in full width; the arity-0 set has **37** ids
+   and VM-087 now names 192. The implementation is right; the pin stands.
 2. **The size of the global block** (storage class `00`, VM-010 / VM-011). The specification says a shared
    global block exists and that the retail files never address it, but not how large it is. The engine
    allocates 1024 cells (`GLOBAL_CELLS`) and treats anything beyond as an unchecked access.
+   **Answer (revision 10):** there is **no global block**. The instance factory hands every instance the same
+   static descriptor (a pointer / size pair in uninitialised data), and nothing in the program ever allocates
+   it — its only writer is the shutdown release. Symbol resolution is `base + offset` with no size check for
+   any class, so a class-`00` symbol dereferences a null base (VM-010 / VM-011, 8.1). The 1024 cells are a
+   model with no counterpart: keep them only if they cost nothing, and treat any class-`00` reference as
+   `Fault::UncheckedAccess(0x00)` (read → 0 and continue, write → terminate) rather than as a valid cell. No
+   retail file emits one.
 3. **Float rounding of `0x20` - `0x23`.** VM-066 says "extended intermediate, stored as single". The engine
    computes each operation directly in `f32`, which is correctly rounded once; the x87 rounds twice (80-bit
    then single) and can differ in the last bit for a pathological pair. Is a double-rounded result ever
    observable in the shipped data (the corpus has 9 float multiplies and 1 float comparison), or is the
    single-rounding reading safe to keep?
+   **Answer (revision 10):** safe, and provably so — not merely for the corpus. The x87 runs at the runtime's
+   default 53-bit precision (or 64-bit; the game code never lowers it: the only control-word change is the
+   truncating float-to-int helper, which restores it), and for `+ − × ÷` on single operands an intermediate of
+   ≥ 50 bits makes the second rounding innocuous, so the stored single is the correctly rounded result — the
+   same value `f32` arithmetic gives (VM-066). The only theoretical exception, a subnormal single result, is
+   unreachable from the retail operands. The 9 multiplies and 1 comparison of the corpus are therefore
+   bit-identical under either reading.
 4. **The `Hourglass` cadence while the scheduler is uncleared.** VM-103 step 4 runs the level's `Hourglass`
    every 25 frames with `T / 25`; the engine still runs `Hourglass` on **every** class every frame with the
    frame counter, because 3.5 is not cleared. No `Assumption` variant of 4.1 covers that departure - should
    the scheduler's departures get one (say `SchedulerCadence`) until 3.5 is cleared, or is the batch that
    implements 3.5 close enough that the gap can stay unnamed?
+   **Answer (revision 10):** name it. ADR-0008 wants every departure from an observed rule mapped, and the
+   cadence *is* observed (VM-103 step 4, VM-105: the level's `Hourglass` every 25 ticks with `T / 25`, the
+   scrolls' with 0 on their own counter, the actor classes never). Section 4.1 now carries one row,
+   `SchedulerCadence`, covering every rule of 3.5 the engine has not implemented; the batch that implements
+   3.5 deletes it. Until then the level scripts that count `Hourglass` arguments (the ones comparing `T / 25`
+   against thresholds) run off-schedule, which the assumption makes visible.
 5. **Natives 4 / 5 / 8 / 11 / 12 / 15 over lists this engine does not keep.** The rows describe indices into
    the map's door, patch and building lists; the engine has no such lists, so the handle *is* the index and
    the inverse natives are the identity. Every one of them records `Policy(id)`. Is that the reading the
    navigation specification will settle (NAV section 5), or will the handles become opaque?
+   **Answer (revision 10):** handle = position is observationally equivalent, and can stay, under three
+   conditions that the navigation spec (under redo, review 20) has to pin rather than this one: the lists are
+   the **file-order flat lists** of the map (doors, patches, buildings; patrol paths for 9 / 16) that NAV
+   section 5 / NAV-172 describe; every other native that yields or consumes such a handle (64's nearest-door
+   search, 152, 156, 182 - 191, 144 - 146) uses the same lists; and scripts do nothing with the handles but pass
+   them back, test them for null and compare them (86) — which is all the corpus does. The original's handles
+   are objects and its inverse natives search the list for the object, returning −1 (16: 65535) when absent,
+   which the identity reproduces only for in-range inputs — so the out-of-range rows (4 / 5 null with an error,
+   8 / 9 unchecked, 16 modulo 65536) still have to be honoured on top of the identity. Section 4.1 now records
+   this as one row that turns from `Policy(id)` into a navigation dependency when the redo lands.
 6. **Native 118's unmodelled properties.** Row 118 lists twelve properties; the engine keeps them in one
    hashed table and answers 0 for a property nothing has written. `Emb02_FoC_MK` wins on its first tick
    because its `CheckVictoryCondition` tests property 1 (an NPC's money) and reads 0; with `0x07` returning
    at once (8.4 item 1) that reaches the `return_value 1`. Should an unwritten property answer something
    other than 0, or does the money have to come from the mission record before that mission behaves?
+   **Answer (revision 10):** the money comes from the mission record; there is no "unwritten" property. The
+   twelve properties are live fields of the element (row 118). Property 1 is loaded by two loaders: a soldier's
+   from its `BORG` record's u32 at offset 0x23 (the thirteenth field the loader reads; `rhm.md` calls it
+   `unknown_0x23`, the AI spec reads the same storage as a loot threshold), a civilian's from its `OILE` record's
+   u32 that follows the u16 after the profile index (`rhm.md` shows those six bytes as two i16 — a correction for
+   the format doc, not for this file). Emb02's element 40 is its single civilian (the map's 24 elements and 16
+   objects precede it), whose record carries **4000**; its victory check asks whether that value has reached 0,
+   which only looting (native 229 or the NPC-to-NPC transfer) can bring about. No script writes property 1;
+   six missions read it. With the record value loaded the first check fails as it must. The other properties:
+   0 = the quiver's arrow count (0 without a quiver), 2 / 3 = health and stun (AI spec), 4 - 11 = the player
+   character's item counters and 12 its name preset (campaign spec) — model them from those owners' state, not
+   from a table of script writes.
 7. **The strict mode of 4.2.** The specification allows a strict mode that faults on an excluded id instead
    of answering the placeholder. The engine always answers the placeholder (the retail scripts call 224 at
    load, so a strict fault would stop every forest mission); `MissionSpec::lenient_natives` now only decides
    whether the call is also logged with its arguments. Is that the intended default?
+   **Answer (revision 10):** yes. The placeholder is the default and the strict fault is an opt-in for tests
+   and analysis; 4.2 now says so. Two consequences to keep visible: 224's *effect* (the repulsive point) is
+   navigation-gated, so its placeholder currently drops an effect the original has — record that under
+   `UnknownNative(224)` as a known gap until navigation lands; and 173's result (read in fourteen missions)
+   answers 0, which selects the branch those scripts take when the setting is off — a difference a player can
+   notice only once the setting is identified (9.2). Logging the arguments is the right lenient behaviour.
