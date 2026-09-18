@@ -29,8 +29,8 @@ public class DecompileAll extends GhidraScript {
         di.setSimplificationStyle("decompile");
         if (!di.openProgram(currentProgram)) throw new IOException("decompiler failed to open the program: " + di.getLastMessage());
         int failed = 0;
-        try {
         int n = 0;
+        try {
         FunctionIterator it = currentProgram.getFunctionManager().getFunctions(true);
         while (it.hasNext() && !monitor.isCancelled()) {
             Function f = it.next();
