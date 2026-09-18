@@ -1,18 +1,12 @@
 # Script VM, natives and callback scheduler (behaviour specification)
 
-Status: `draft`, revision 9 (answers Codex reviews 14, 17, 21, 25, 28, 31, 35 and 36; awaiting re-review). Partial
-clearance in force (reviews 21, 25, 28, 31, 35, 36): **the interpreter, including the sentinel departure** (VM-040 -
-VM-095, 8.1); the scheduler-independent, individually settled native effects; the message contracts; the default
-zero for an unwritten result slot (VM-071); VM-088 with both buffers and case 17; native 223's classification;
-the ordinary termination rules of 8.1; the take-overlap outcome; the distinction between ordinary arrival and
-approach completion; the recorder guard inventory and compound-overflow coverage (VM-201); native 47's two
-destinations; the 18 / 235 accounting; native 51's conditional hold; the per-instance snapshot contents, the
-fault-log / suppression preservation and cases 20 / 21. Not cleared: the complete snapshot / fault contract as a
-bundle (review 36: waiting only on a reachable fixture for case 26, replaced in this revision), the full recording / scheduler
-integration, the camera conversion and interference, deferred execution, and every sibling-gated effect (1.1,
-4.2, 4.3). 235 is an accounting total, not a blanket implementation clearance. Build: GOG English edition,
-`Robin Hood.exe` SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`, image base
-0x00400000; every address below is a virtual address in that image.
+Status: `reviewed`, revision 9 (Codex review 39, 2026-09-18: **cleared for implementation** — the interpreter core
+including the sentinel departure, the scheduler-independent individually settled native effects, the message
+contracts and the snapshot / fault contract, all **for scheduler-independent use**). Waiting (excluded from that
+clearance): the scheduler integration (3.5, 3.7 as a whole), deferred execution (the 8.1 deferred-fault policy
+beyond its stated boundary), the camera integration (VM-219's conversion and interference), and every
+sibling-gated effect (1.1), the 12 exclusions of 4.2 and the 18 unresolved effects of 4.3. 235 remains an
+accounting total, not a blanket clearance. Publication approval is separate (identity block).
 
 Identity and handoff record:
 - Analyst: 2026-09-13 and 2026-09-18, session `a45d5359e8dec5140` (Claude agent, analyst role under ADR-0009),
@@ -40,8 +34,11 @@ Identity and handoff record:
     fix-then-clear with a fifth partial clearance;
   - review 36, `2026-09-18-codex-review-36-spec-script-vm.md`: **revision 8**, blob
     `a745790b539c6656a2719f08cbe754f53e9db847` (commit `7328461`; the review text names the intermediate commit
-    `f35eebb1…`, which carries the same blob), 1 finding, fix-then-clear with the partial clearance stated above.
-    This revision 9 answers all eight.
+    `f35eebb1…`, which carries the same blob), 1 finding, fix-then-clear with a sixth partial clearance;
+  - review 39, `2026-09-18-codex-review-39-spec-script-vm.md`: **revision 9**, blob
+    `9eb4284ca91c3315a7c94f8805e1b070a0d8975f` (commit `5349b4f`; the review text names the intermediate commit
+    `a014e38c…`, which carries the same blob), no findings, **cleared for implementation** with the scope stated in
+    the status line. Revision 9 answered all eight reviews; this metadata update changes nothing else.
 - Reviewer-session identities: the Codex session behind each review is recorded in the **maintainer-held review
   log** (the lead's mapping from review number to Codex session; not supplied to the analyst and not reproduced
   here). Each committed review file names its review number, the reviewed blob and commit; that pair plus the
@@ -63,7 +60,9 @@ Identity and handoff record:
     routines and the camera update (its own statement: "inspected decompilation");
   - reviewer session of review 35: the interpreter's return and callback-entry paths, the tick, the dispatch /
     drain / state-transition routines and the scroll take routines (the addresses its findings cite);
-  - reviewer session of review 36: the recording open / close / append routines (the addresses its finding cites).
+  - reviewer session of review 36: the recording open / close / append routines (the addresses its finding cites);
+  - reviewer session of review 39: the recording routines and the decompilation relevant to case 26 (its own
+    statement: "the relevant decompilation").
   **None of these reviewer contexts may implement those subsystems.** No implementer session has read any of it.
 - Publication approval: pending (maintainer); recorded separately from the factual review.
 - Analyst authorisation: on behalf of the maintainer, on the maintainer's lawfully acquired copy.
