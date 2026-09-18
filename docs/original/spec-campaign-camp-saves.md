@@ -1,6 +1,8 @@
 # Campaign, Sherwood camp and saved games (behaviour specification)
 
-Status: `draft`, **revision 4** (awaiting re-review). Revision 2 answered the 29 findings of Codex spec review
+Status: `draft`, **revision 5** (awaiting re-review). Revision 5 answers the 16 findings of Codex re-review 29
+of revision 4 (commit `c2c578a`, verdict *fix-then-clear*) and adds the camp's production arithmetic (3.11),
+derived from instruction listings that carry the floating-point operations the decompiler drops. Revision 2 answered the 29 findings of Codex spec review
 19 on revision 1; revision 3 added the three interface tables of section 2.7 on the maintainer's clarification to
 ADR-0009 section 5; revision 4 answers the 19 findings of Codex re-review 23 of revision 3 (verdict
 *fix-then-clear*), which cleared as facts the character-record framing, the four node references' order, the town
@@ -183,8 +185,8 @@ range check is applied to the shifted index (CAMP-012). Counter 1 is natives 236
 | `offered` | slot references | the missions the campaign map offers |
 | `deferred` | slot references | **tactical** candidates held back while a blazon node is active (CAMP-260) |
 | `workshops` | production records | exactly 13, one per workshop kind 0..12 |
-| `spare_refs` | positions in `people` | empty in the retail fixtures; purpose unknown (section 10) |
-| `labels` | wide strings | empty in the retail fixtures; purpose unknown (section 10) |
+| `camp_extras` | 32-bit values | the queue workshop kind 12 draws from, one value per work spot (3.11). Empty in the retail fixtures; nothing in the scope read fills it (section 10). Revision 4 called it `spare_refs` and recorded it as "purpose unknown" |
+| `labels` | wide strings | the history of names already generated for recruits; a new name is accepted only when it is absent from this list and is then appended (3.8, CAMP-295). Empty in the retail fixtures |
 | `recent` | slot references | the last at most three missions played, oldest first |
 
 ### 2.2 One node: the level-table record of `profile.cpf`
@@ -211,6 +213,7 @@ Field roles (names ours):
 | `min_gang`, `max_gang` | u16, u16 | the band-size window, compared unsigned |
 | `max_age` | u16 | the node's lifetime in campaign days |
 | `obligatory` | u8 | non-zero = while this node is accessible it is the only offer (CAMP-063) |
+| `production_yield` | u16 | the multiplier every camp workshop applies to a day's output after this node is played (3.11). `docs/formats/profile.md` calls it `unknown_f`; revisions 1 to 4 of this document omitted it from the field table altogether (CAMP-334) |
 | `prob` | u16 | a percentage used by the two random filters (3.3.2) |
 | `priority` | u16 | lower wins when two candidates share a location (CAMP-065) |
 | `required_pcs` | u32 count + u32 each | indices into the character-profile table of the same file: characters that must be in the team |
@@ -228,8 +231,9 @@ level table is loaded (CAMP-047, 0056b8d0): the mission file is opened, its `SCO
 
 - `team_limit` := the number of `SCOT` records, i.e. the mission's player-character slot count. The field is
   **zero when the record is created**, and three failure paths are distinct (CAMP-047):
-  - the mission file cannot be opened: nothing is read, the field **stays 0**, nothing is reported;
-  - the file opens but the chunk walk finds no `SCOT` chunk: the field **stays 0**, nothing is reported;
+  - the mission file cannot be opened: nothing is read, the field **stays 0**, and the failure **is** reported,
+    non-fatally;
+  - the file opens but the chunk walk finds no `SCOT` chunk: the field **stays 0** and nothing is reported;
   - a chunk the walk does find fails its validation (the outer container chunk, or the `SCOT` chunk itself): a
     non-fatal condition is reported and the field is set to **5**.
 
@@ -354,7 +358,7 @@ Field order; `V` = the archive version:
 10. `recovering`: the same.
 11. `team`: the same.
 12. `workshops`: `u32 count`, then `count` production records (2.4).
-13. `spare_refs`: `u32 count`, then `count` × i32.
+13. `camp_extras`: `u32 count`, then `count` × 32-bit values (raw, not references).
 14. `labels`: `u32 count`, then `count` wide strings.
 15. `previous`, `current`, `selected`, `blazon_node` — four u16 slot indices, 0xFFFF = none, **in that order**
     (CAMP-023). The retail fixture reads (0xFFFF, 21, 0xFFFF, 0xFFFF): no previous mission, current mission
@@ -576,12 +580,12 @@ attempts:
 | Step | Precondition | Effect |
 |---|---|---|
 | a | more than one candidate | **deadline / expiry.** Walk the list. If a candidate's node is a story node and `s.age == n.max_age - 1`, stop: that candidate becomes the whole list and every other candidate is removed with `age := 0`. Otherwise, if `s.age == n.max_age`, remove the candidate with `age := 0`, and if its node is a defend or assault node whose `outcome` is still 0, record it as **lost** (3.5) (CAMP-064) |
-| b | more than one candidate | **obligatory.** Sort so that candidates with a non-zero `obligatory` come first. If the first candidate is obligatory and the second is not, the list becomes just the first and the rest are removed with `age := 0`. Two obligatory candidates at once is diagnosed and then ignored, leaving both (CAMP-063) |
+| b | more than one candidate | **obligatory.** Sort so that candidates with a non-zero `obligatory` come first. If the first candidate is obligatory and the second is not, the list becomes just the first and the rest are removed with `age := 0`. Two obligatory candidates at once **terminates the original** (CAMP-005, CAMP-063); OpenSherwood instead records a diagnostic and leaves both, which is a deviation (8.1) |
 | c | `offered` only, more than one candidate | the **assault / defend** random filter (3.3.2) |
-| d | `offered` only | **blazon node and tactical deferral** (3.6). Its first act is to clear `deferred`, which also sets every slot that was in it back to `age := 0` (CAMP-264) |
+| d | `offered` only | **blazon node and tactical deferral** (3.6). In the **multi-candidate** case its first act is to clear `deferred`, which also sets every slot that was in it back to `age := 0`; with zero or one candidate `deferred` and its members' ages are left untouched (CAMP-264) |
 | e | more than one candidate | **recency.** Visit `recent` from newest to oldest. For each history entry, remove every candidate that is that mission, with `age := 0`; **stop as soon as fewer than two candidates remain.** A recent mission can therefore survive as the sole offer (CAMP-211) |
 | f | more than one candidate | the **non-assault / defend** random filter (3.3.2) |
-| g | more than one candidate | **one per location.** Sort by (map name, `priority`) ascending, then walk the sorted list keeping, per run of equal `location`, the candidate with the lowest `priority` and removing the rest with `age := 0`. Two candidates with the same location and the same priority are diagnosed and both retained. Because the sort key is the map name while the elimination compares the location identifier, this step does not guarantee one candidate per location for inputs where map and location disagree (CAMP-065) |
+| g | more than one candidate | **one per location.** Sort by (map name, `priority`) ascending, then walk the sorted list keeping, per run of equal `location`, the candidate with the lowest `priority` and removing the rest with `age := 0`. Two candidates with the same location and the same priority **terminate the original** (CAMP-005, CAMP-065); OpenSherwood records a diagnostic and retains both, a deviation (8.1). Because the sort key is the map name while the elimination compares the location identifier, this step does not guarantee one candidate per location for inputs where map and location disagree |
 
 If the working list is non-empty the reduction is done and becomes the new source list. If it is empty, another
 attempt starts from the (possibly mutated) source list. After ten attempts the program reports — non-fatally —
@@ -663,10 +667,11 @@ VM-103), in this order (CAMP-250):
    carries one particular flag it additionally contributes 70 score points. **These are enemies, not the
    player's men** (CAMP-013).
 3. Walk the level's **player-character** list in element order. For each character whose `revive_flag` (2.3) is
-   non-zero: clear the flag, set his health to **50**, and apply two further state operations on the actor whose
-   meaning was not established — one taking the arguments (0, 0, 1) and one taking (19, 0, 255) — followed by a
-   further state call. This is a revive pass over the player's own men, not a loot pass; revision 3 misidentified
-   both the objects it visits and what it does (CAMP-253). Steps 1 to 3 run whatever the outcome.
+   non-zero: clear the flag and set his health to **50**. Three further operations follow on the same actor, and
+   the last of them schedules further actor activity; what any of the three does was not established, so the
+   **complete effect of the revive pass is excluded from clearance** (section 11, `RevivePassEffects`) and an
+   implementation that performs only the flag and health part is incomplete by an unknown amount (CAMP-253).
+   This is a revive pass over the player's own men, not a loot pass. Steps 1 to 3 run whatever the outcome.
 4. If the mission was won: `spared += the spared count`; `killed += the killed count`;
    `score += the 70-point sum`; if `current`'s kind is not 3 (ambush), `score += 1000`; `recruit_flag := 0`;
    then add *k* men to the band (3.8) and record *k* on the level for the debriefing; if `blazon_node` is set,
@@ -684,15 +689,16 @@ debriefing shows can differ from the counters.
 
 `blazons` belongs to one node at a time. Step d of the reduction (00455f00) (CAMP-260):
 
-- **More than one candidate.** Clear `deferred`. `blazon_node` := the first candidate whose node kind is 1 or 5,
+- **More than one candidate.** Clear `deferred`, which also resets the age of every slot that was in it. Then
+  `blazon_node` := the first candidate whose node kind is 1 or 5,
   or null. Then walk the candidates:
   - a candidate whose node kind is 1 or 5 and which is not `blazon_node` is removed with `age := 0`;
   - a candidate whose node kind is 6 (tactical) is, when `blazon_node` is null, removed with `age := 0`, and
     otherwise removed and appended to `deferred`;
   - every other candidate, and `blazon_node` itself, stays.
 - **Exactly one candidate.** `blazon_node` := that candidate if its node kind is 1 or 5, else null. Nothing is
-  removed.
-- **No candidate.** `blazon_node` := null.
+  removed, and `deferred` is **not** cleared.
+- **No candidate.** `blazon_node` := null, and `deferred` is **not** cleared.
 
 So `deferred` holds the tactical missions held back while an assault or defend node owns the blazon counter —
 not, as revision 1 said, the other assault/defend candidates.
@@ -712,8 +718,8 @@ The requirement the interface reports is `blazons_needed - blazons_held` of `bla
 `men_per_blazon` converts men into blazons (00455a70). Every field it reads comes from the **selected** node
 (`selected`, not `current` and not `blazon_node`), and the head count is the length of **`team`** (CAMP-263):
 
-- if the selected node's `men_per_blazon` is zero the routine reports the condition — **fatally**, see below —
-  and returns without dividing;
+- if the selected node's `men_per_blazon` is zero the original **terminates** (CAMP-005) before dividing;
+  OpenSherwood records a diagnostic, answers 0 and performs no division, which is a deviation (8.1);
 - otherwise `groups := team_size / men_per_blazon` (unsigned) and
   `outstanding := (u16)(blazons_needed - blazons_held) - blazons`, both of the selected node;
 - the answer is `men_per_blazon * min(groups, outstanding)`, where the `min` compares its two operands as
@@ -805,12 +811,20 @@ Entering the camp is entering node 0 as an ordinary mission on the `sherwood` ma
    workshop pass (3.11).
 4. Enter the frame loop.
 
-Message 1001 is engine-originated and is submitted once, at camp start (CAMP-301) — this closes
-`sherwood-hub.md`'s open question about where it comes from. **Its execution order relative to the workshop pass
-and to the first tick is not established** (CAMP-303): the helper that submits it builds a script invocation and
-hands it to the sequence scheduler, and the export dropped the call's arguments, so whether the handler completes
-before the workshop pass, or is queued and drained during the first tick, is unknown. No normative statement in
-this document depends on that order, and an implementer must treat it as unsettled (section 11).
+Message 1001 is engine-originated and goes to the **hub level only**. The pinned `spec-script-vm.md` settles
+its occurrence conditions in VM-113 and this document adopts them rather than restating a narrower rule: it is
+submitted (a) right before the play loop starts, unless the loop is being entered from the mission-selection
+state, and (b) when the loop returns from mission selection **and** the selection was accepted **and** the
+selected mission is the current node. There are therefore **two** submission sites, not the single camp-start
+one revision 4 described (CAMP-301). This closes `sherwood-hub.md`'s open question about where the message comes
+from.
+
+Submission is not completion. **The order of the handler's execution relative to the workshop pass and to the
+first tick is not established** (CAMP-303): the helper builds a script invocation and hands it to the sequence
+scheduler, and the export dropped the call's arguments. This matters because the handler is what appends the
+work-spot registrations native 200 makes, so an implementation that runs the workshop pass before the handler
+sees a different spot list. No normative statement here depends on that order, and an implementer must treat it
+as unsettled (section 11).
 
 The origin of **message 1000** ("send the team out") was not found (CAMP-302): the game loop does not submit it,
 and native 239 (which opens the debriefing screen) does not establish it either. It is unknown, and no normative
@@ -873,9 +887,13 @@ slot's file name and its label differ.
 Writing a save (00511340): open the data file for writing; write the header; add the elapsed interval to
 counter 6 and clear the start marker; when `V > 38` write the backup block by streaming `Campaign.bck` minus its
 version dword; write the live campaign block; write the level state; set the start marker again; write the
-thumbnail file; mirror into the continue slot; show a message from a text resource. Loading is the same routine
-with the direction reversed: the backup block (when present) is deserialized, then the live block, then the level
-state (CAMP-134). "Restart" and "Continue" are therefore not separate mechanisms but ordinary saves under fixed
+thumbnail file; mirror into the continue slot; show a message from a text resource.
+
+Loading consumes the same archive order — header, backup block when the version has one, live block, level
+state — and applies it in that order, so the live block's values are the ones that survive. Two steps are
+write-only (producing the thumbnail file, and mirroring into the continue slot) and one is load-only (the
+diagnostic when the magic does not match). Nothing here prescribes how an implementation organises the two
+directions (CAMP-134). "Restart" and "Continue" are therefore not separate mechanisms but ordinary saves under fixed
 names.
 
 ### 3.11 The workshop pass
@@ -897,7 +915,7 @@ requiring `previous` to be non-null with `outcome == 1` and do nothing otherwise
 | 0..8 | *gated by victory:* compute the day's output, `stock += output`, `last_output := output`. *Ungated:* walk the work spots and place items of the workshop's item kind (interface table T2, 2.7) in the camp, up to 5 per spot, drawing down a **temporary** quantity initialised from `stock`; `stock` itself is not reduced by placement. Then recompute `full := 5 * (number of work spots) <= stock` (CAMP-322) |
 | 9, 10 | *gated by victory:* compute the day's output and add it to **each assigned character's** experience — slot 0 for kind 10, slot 1 for kind 9, and kind 9 additionally requires that character's profile to carry **capability id 1** in its three-entry capability array, the same id space as T1 (CAMP-323) |
 | 11 | *gated by victory:* compute the day's output and **restore health** by that amount to every assigned character, capped at 100. Kind 11 is the rest workshop, not a training workshop (CAMP-324) |
-| 12 | a separate routine, ungated, not read (CAMP-329) |
+| 12 | a separate routine, ungated, with no output at all; see "Kind 12" below (CAMP-338) |
 
 Then, for every workshop, each assigned character is placed at his recorded spot in the camp level (CAMP-328).
 
@@ -905,9 +923,13 @@ The experience accumulator (CAMP-072, 0051d4e0): `points[slot] += amount`; then,
 `points[slot] >= 100`, `level[slot] += points[slot] / 100`, `points[slot] %= 100`, and `level[slot]` is clamped
 to 100.
 
-Placement itself (00580b70) walks the workshop's work spots in registration order. An assignment whose character
-has no actor in the level is **skipped** (CAMP-328); for the others, after placing the character the routine
-records the workshop's kind on his actor, which is how the camp knows who works where (CAMP-328).
+Two placements run, over two different lists, and revision 4 conflated them (CAMP-328):
+
+- **Item placement** (kinds 0..8) walks the workshop's **work spots in registration order**, placing up to five
+  items per spot.
+- **Character placement** walks the workshop's **assignments in assignment order**. An assignment whose
+  character has no actor in the level is **skipped**; for the others, after placing the character the routine
+  records the workshop's kind on his actor, which is how the camp knows who works where.
 
 A **separate campaign pass** (00456a70) captures the camp back into the campaign, per workshop, in kind order:
 
@@ -925,14 +947,78 @@ A **separate campaign pass** (00456a70) captures the camp back into the campaign
   accepts any player character. Each captured member contributes his character record, his position and his
   sector index (0xFFFF when he has none), in the order the zone lists him (CAMP-331a).
 
-This pass has no direct caller in the export, so **when it runs is not established** (section 10); the
-assignments it produces are what the next camp day's output and placement use.
+- **Teardown**, every kind, immediately after the capture: the workshop's **zone association is cleared** and
+  its **work-spot list is emptied** (CAMP-332). The zone and the spots are therefore live only between the camp
+  script's answer to message 1001 and this pass; a workshop that is captured twice without an intervening
+  message 1001 has no zone the second time, so its assignments stand unchanged.
 
-**The day's output itself is not specified.** Each of the four output routines truncates a floating-point value
-to an integer, and the expression that produces it is absent from the export. Which character supervises which
-workshop *is* specified (interface table T3, 2.7) and the routine that finds him answers with that character or
-with nothing; what his presence contributes to the value is unknown. Section 11 excludes the output arithmetic
-from clearance.
+Capture **replaces** the assignment list whenever the workshop has a zone — including a zone with no members,
+which leaves the list empty — and leaves the previous list alone only when there is no zone at all.
+
+This pass has no direct caller in the export, so **when it runs is not established**. Because it also performs
+the teardown above, its scheduling is not a detail an implementation can choose freely, and it is excluded from
+clearance (section 11, `CaptureScheduling`); the assignments it produces are what the next camp day's output and
+placement use.
+
+#### A day's output
+
+Read from the program's own instruction listings for 00581020, 005810c0, 00581180 and 00580e80, which carry the
+floating-point operations the decompiler drops. Three inputs and one factor:
+
+- **`yield`** — the `production_yield` (2.2) of the node the campaign has in `previous`, that is of the mission
+  just played. It is loaded as a signed 32-bit integer from the record's unsigned 16-bit field, so it is always
+  positive (CAMP-334).
+- **`capacity`** — the workshop's own capacity, native 199's third argument, likewise widened from unsigned 16
+  bits.
+- **`assignments`** — the number of entries in the workshop's assignment list (2.4). Used by kinds 0..8 only.
+- **`sup`** — the supervisor factor: the lookup of interface table T3 answers the first assigned character whose
+  profile matches the workshop's kind, or nothing; `sup` is the larger value when it answers a character and
+  **1.0** when it answers nothing.
+
+The shape is the same for every kind that computes an output (CAMP-335):
+
+```
+scale  = f32( capacity x S )                 // computed in double, then narrowed to 32-bit float
+output = trunc_toward_zero( P x sup x scale )
+```
+
+where `P` is `yield x assignments` for kinds 0..8 and plain `yield` for kinds 9, 10 and 11, and:
+
+| Kinds | `S` | `sup` with a supervisor | `sup` without |
+|---|---|---|---|
+| 0..8 | 0.001 | 1.5 | 1.0 |
+| 9, 10 | 0.01 | 2.0 | 1.0 |
+| 11 | 0.01 | 1.5 | 1.0 |
+
+Evaluation order and precision are observable and part of the rule (CAMP-339):
+
+1. `capacity x S` is formed from the integer capacity and the constant in **double** precision and is then
+   stored to a **32-bit float**. That narrowing is not incidental: the last multiplication reads the narrowed
+   value, so an implementation that keeps double precision here produces different integers at the boundaries.
+2. `P` is formed by an integer multiply inside the floating-point unit (`yield`, then `x assignments` for kinds
+   0..8), so it is exact at these magnitudes.
+3. The factors are then multiplied in the order `P`, `sup`, `scale`, in the unit's extended registers.
+4. The product is converted to a signed 32-bit integer by the C run-time conversion, **truncating toward zero**.
+5. Kinds 0..8 keep the **low 16 bits** of that integer: `stock += (u16) output` and `last_output := (u16)
+   output`. Kinds 9 and 10 mask the amount to 16 bits before spending it. Kind 11 passes the whole 32-bit value
+   on, and the health update compares the sum as a 16-bit signed value.
+
+Worked example (B66): a workshop of kind 0 with capacity 5 and three assignments, after a mission whose
+`production_yield` is 700, produces `trunc(700 x 3 x 1.0 x f32(0.005))` = 10 without its supervisor and
+`trunc(700 x 3 x 1.5 x f32(0.005))` = 15 with him.
+
+Where the output goes is 3.11's table above: stock for kinds 0..8, an experience slot for kinds 9 and 10, health
+for kind 11.
+
+#### Kind 12
+
+Kind 12 computes nothing. It has **no victory gate, no supervisor and no arithmetic** (CAMP-338): it walks the
+workshop's **work spots** in registration order and pairs spot *i* with entry *i* of the campaign's
+`camp_extras` list (2.1), creating one element from each value and placing it at that spot with the same
+position, orientation and sector calls the other placement paths use. When the index reaches or passes the end
+of `camp_extras` the program reports a bounds condition and then reads past the end anyway. The list is empty in
+the retail fixtures, so a stock campaign's kind-12 workshop places nothing; what fills the list, and which
+element class each value becomes, were not established (open question 14; section 11, `CampExtrasSource`).
 
 ### 3.12 The campaign-map screen
 
@@ -960,10 +1046,11 @@ the camp). The pending town notification is read here and cleared (CAMP-241).
   facts does not clear it (CAMP-350).
 - **Native 24** sets the style code. Accepted codes: 0, 1, 100, 101, 102, 111, 200, 201, 202, 222, 300, 301, 302,
   333, 500 and 666; anything else is an error that changes nothing. Codes 111, 222 and 333 additionally require
-  the element to belong to the human family and report an error otherwise. Of the accepted codes, 100/101/102 and
-  111 set light green, 200/201/202 and 222 red, 300/301/302 and 333 cyan; **0, 1, 500 and 666 change the style
-  code only and leave the colour entries as they are, so they do not restore a colour a previous call
-  overrode** (CAMP-351).
+  the element to belong to the human family and report an error otherwise. Twelve of the accepted codes fall
+  into three groups that each install one colour over the element's entries; the remaining four — 0, 1, 500 and
+  666 — **change the style code only and leave the colour entries as they are**, so they do not restore a colour
+  an earlier call overrode. Which colour each group installs is part of the excluded palette (section 11,
+  `MinimapPalette`) (CAMP-351).
 - State-dependent rendering — which of an element's colour entries is used, and whether an un-blipped element is
   drawn at all — is unspecified and excluded with the palette (CAMP-352). Revision 3's "no grey value appears in
   the image" is withdrawn: the evidence was the call sites of one colour-conversion helper, which cannot
@@ -1002,7 +1089,7 @@ Rows whose id carries **(R19-n)** answer finding *n* of spec review 19.
 | CAMP-044 | The node kind is 0 story, 1 assault, 3 ambush, 4 camp, 5 defend, 6 tactical | observed | 005795c0, 00514730, 0054cbf0, 0054cc20, 00456db0 | high | |
 | CAMP-045 | A node whose `needs_camp` byte is 0 may start without the camp | observed | 004539f0 | high | |
 | CAMP-046 | Location 8 is the camp and several routines gate on it | observed | 00579300, 0050b640, 004552f0 | high | |
-| CAMP-047 | `team_limit` is zero-initialised and set to the `SCOT` record count of the node's mission file; a file that cannot be opened and a file with no `SCOT` chunk both leave it at 0 with nothing reported, while a chunk that fails validation reports non-fatally and sets 5 | observed | 0056b8d0 | high | **(R23-5)**; revision 3 conflated the three paths |
+| CAMP-047 | `team_limit` is zero-initialised and set to the `SCOT` record count of the node's mission file. A file that cannot be opened leaves it at 0 **and is reported** non-fatally; a file that opens but has no `SCOT` chunk leaves it at 0 and is not reported; a chunk that fails validation is reported non-fatally and sets 5 | observed | 0056b8d0 | high | **(R23-5, R29-10)** |
 | CAMP-048 | `capability_reqs` is built from ten flag bytes at offset 22 of each `SCOT` record; each set flag appends one capability requirement, duplicates included; the flag-to-capability correspondence is interface table T1 (2.7) | observed | 0056b8d0 | high | **(R19-6)**; 12 of 39 mission files carry them, covering 16 slots (Codex's read-only inspection) |
 | CAMP-050 | 200000 in the maximum-money field means "no maximum"; the money and gang comparisons are unsigned | observed | 0054c800, 0054c8a0 | high | **(R19-10)** |
 | CAMP-060 | The availability test is the eight conditions of 3.2, in that order | observed | 0054c800, 0054c8a0 | high | |
@@ -1018,6 +1105,7 @@ Rows whose id carries **(R19-n)** answer finding *n* of spec review 19.
 | CAMP-091 | Work spots are not saved; the camp script re-registers them each load | observed | 00580220, 00580970 | high | |
 | CAMP-093 | An assignment's trailing u16 is stored from archive version 47; at version 46 a u16 is read and discarded and the field becomes 0xFFFF; below 46 there is none | observed | 00580ab0 | high | **(R19-17)** |
 | CAMP-100 | The profile's serialized summary is six numbers plus the difficulty | observed | 0055d370, 0055d1a0, retail archive | high | |
+| CAMP-102 | The routine that copies the campaign counters into the profile summary is called from three places in the game loop; what makes each call happen was not traced, so **when** score, money, progress and cumulative profile play time update is not established. An ordinary save is not one of those places | observed for the call sites, unknown for the triggers | 0050f710, 0055d370 | high / unknown | **(R29-14)**; revision 4 inferred wrongly from an empty caller inventory |
 | CAMP-101 | The campaign-map spared percentage is an unsigned integer division of counter 4 by the sum, guarded to 0 when both are 0; the profile updater applies the same guard and then a floating-point conversion whose expression is absent | observed | 00528810, 0055d370 | high for the map, medium for the profile | **(R19-21)** |
 | CAMP-110 | The profile archive begins with `FORP` and a u32 version that must be 6 | observed | 0055dea0, retail file | high | |
 | CAMP-111 | The profile's seven u32 are unknown, score, money, spared, play time, progress, difficulty | observed | 0055d1a0, exact re-parse | high | |
@@ -1033,13 +1121,13 @@ Rows whose id carries **(R19-n)** answer finding *n* of spec review 19.
 | CAMP-131 | The restart slot is written at the start of every non-camp level | observed | 0050f2d0, 0050f710 | high | |
 | CAMP-132 | The Sherwood slot is written at the start of the camp level | observed | 0050f3d0 | high | |
 | CAMP-133 | Every successful save is mirrored into the continue slot unless two unread tests say it already is one of the two auto-slots | observed | 0050f1a0, 00511340 | medium | |
-| CAMP-134 | Writing and loading a save are the same sequence of steps in opposite directions; on load the backup block (when present) is applied first, then the live block | observed | 00511340 | high | **(R23-18)** |
+| CAMP-134 | Both directions consume one archive order — header, backup block when the version has one, live block, level state — and loading applies it in that order, so the live block's values survive. Producing the thumbnail and mirroring into the continue slot are write-only effects; the magic diagnostic is load-only | observed | 00511340 | high | **(R23-18, R29-6)**; no claim about how the two directions are organised |
 | CAMP-200 | A new campaign's band is one man from character-profile index 1; a command-line string can replace it | observed | 00450ec0, 0048f280 | high | |
 | CAMP-201 | Level-table record 0 is the camp; the scan starts at record 1 | observed | 00451a90, 004539f0 | high | |
 | CAMP-202 | Rebuilding is not once per day: resolving a defend node from the camp rebuilds within the camp. A candidate newly appended has its outcome reset to 0 | observed | 00451a90, 00514730 | high | **(R19-11)** |
 | CAMP-203 | The reduction runs on a copy re-taken from the source at every attempt, up to ten attempts, steps a..g; slot mutations of a failed attempt persist | observed | 00451b70 | high | **(R19-7)** |
 | CAMP-204 | After ten attempts the campaign reports non-fatally, restores the working list, and then — **on the primary list only** — re-runs step d and, when it draws one entry from two or more, resets the age of every other source slot; a working list of fewer than two entries is used as it stands and may be empty | observed | 00451b70, 00456e60, 00457a30 | high | **(R19-7, R23-6)**; it cannot guarantee a mission |
-| CAMP-264 | Clearing the deferred list also sets every slot that was in it back to age 0 | observed | 004564e0, 00455f00 | high | **(R23-6)** |
+| CAMP-264 | Clearing the deferred list also sets every slot that was in it back to age 0 — but the clear happens **only** in step d's multi-candidate case; with zero or one candidate the deferred list and its members' ages are untouched | observed | 004564e0, 00455f00 | high | **(R23-6, R29-9)** |
 | CAMP-211 | Recency visits history newest to oldest, removing every candidate equal to the history entry, and stops once **fewer than two** candidates remain. Removing one recent mission from three candidates therefore leaves two and the walk continues; a recent mission survives only when it is the last candidate left. The history list is stored oldest-first and visited newest-first | observed | 00452c90 | high | **(R19-8, R23-7)**; revision 3's test B13 asserted the wrong outcome |
 | CAMP-212 | Each random filter removes matching candidates over a copy and restores the copy when the list becomes empty; the draw is taken only for candidates that pass the kind and age tests, once each, in list order; a removed candidate also gets age 0 | observed | 00452040, 00452090, 00452810, 00452a50 | high | **(R19-7)** |
 | CAMP-220 | The next mission is the selected one, else the single offer whose node does not need the camp, else the camp | observed | 004539f0 | high | |
@@ -1051,7 +1139,7 @@ Rows whose id carries **(R19-n)** answer finding *n* of spec review 19.
 | CAMP-240 | A win sets outcome 1 and the win byte; a loss sets outcome 2, the loss byte, and zeroes the blazon counter when the slot is the blazon node | observed | 00456540 | high | |
 | CAMP-241 | A resolved defend blazon node arms a one-shot notification (code plus result) that the campaign-map screen reads and clears | observed | 00456540, 005280d0, 004577a0, 004577b0 | high | |
 | CAMP-250 | Mission-end bookkeeping records the outcome and runs the hostile-actor pass and the revive pass whatever the outcome; only the counter and recruit work is gated on victory. A loss therefore can still clear the blazon counter | observed | 004e3260, 00456540 | high | **(R19-20, R23-9)** |
-| CAMP-253 | The second end-of-mission pass visits the level's **player characters**, not an item list: for each whose `revive_flag` is non-zero it clears the flag, sets health to 50, and applies two further unidentified actor operations. Revision 3's "loot pass" is withdrawn | observed for the objects, the flag and the health; unknown for the two operations | 004e3260, 0049f510, 004a05a0 | high for the framing, medium for the effects | **(R23-9)** |
+| CAMP-253 | The second end-of-mission pass visits the level's **player characters**, not an item list: for each whose `revive_flag` is non-zero it clears the flag and sets health to 50, then performs three further operations on the same actor, the last of which schedules further actor activity. The three are not identified, so the pass's complete effect is excluded | observed for the objects, the flag and the health; unknown for the three operations | 004e3260, 0049f510, 004a05a0, 00464630 | high for the framing, unknown for the effects | **(R23-9, R29-4)** |
 | CAMP-251 | Score gains 1000 for a won non-ambush mission, 70 per qualifying surviving hostile, 100 when a player character's experience level increases as a whole value, and 50 when a hostile dies from damage | observed | 004e3260, 0049fc80, 00485200, 004a5a00, 0047e9a0 | medium-high | **(R19-19)** |
 | CAMP-252 | Only delta updates of money and score propagate into the level's statistics block; direct sets do not | observed | 00450b60, 004520e0, 004e3cc0 | high | **(R19-19)** |
 | CAMP-260 | Step d: the blazon node is the first candidate of kind 1 or 5; other kind-1/5 candidates are removed; **tactical** candidates move to the deferred list when a blazon node exists and are removed otherwise; with exactly one candidate nothing is removed | observed | 00455f00, 0054cbf0, 0054cc20 | high | **(R19-9)**; revision 1 misidentified the deferred list |
@@ -1063,12 +1151,12 @@ Rows whose id carries **(R19-n)** answer finding *n* of spec review 19.
 | CAMP-271 | Play time accrues at save and transition checkpoints from an active interval, truncating the interval to whole seconds, discarding the remainder and clearing the start marker | observed | 0050e7b0, 0050e800, 00511340, 00512310 | high | **(R19-21, R23-14)** |
 | CAMP-272 | One diagnostic display path adds unscaled milliseconds to the seconds value | observed | 0050e7d0 | high | |
 | CAMP-280 | Difficulty is the profile's last serialized summary value, 0 easy / 1 medium / 2 hard, per `spec-ai-combat.md` AI-045; no campaign routine in the scope read branches on it | observed (deferred) | AI-045; 0055d1a0 | high | **(R19-20)**; table B is the ranged-weapon table (AI-020) |
-| CAMP-290 | An empty recovery list skips the **coin flip** only; the new-character branch takes a draw of its own, so one added man costs one draw on an empty list and two otherwise | observed | 004524b0 | high | **(R19-23, R23-10)**; revision 3's "no draw at all" is withdrawn |
+| CAMP-290 | An empty recovery list skips the **coin flip** only; the new-character branch takes a draw of its own. The coin's polarity is: **even selects the new-character branch, odd selects recovery**. One added man therefore costs one draw from the recruit stream on an empty recovery list and two otherwise — name generation draws from a different stream and is not counted here | observed | 004524b0 | high | **(R19-23, R23-10, R29-11)** |
 | CAMP-291 | The number of men added after a victory comes from the level and is truncated to an integer; the expression is absent from the export | observed for the truncation, unknown for the expression | 004e3260 | low | **(R19-20)** |
 | CAMP-292 | Recovery adjusts experience, clears carried-item fields, sets the camp slot to 0xFFFF, writes health from an absent expression clamped to 100, moves the man to the band and sets the recruit flag | observed except the health and experience expressions | 00455bf0, 0055c390 | medium | **(R19-23)**; the absent expressions keep the recruit mechanism out of clearance |
 | CAMP-295 | The `labels` list is the campaign's history of generated names: a name is accepted when it is not already in it and is then appended; ten collisions end in a non-fatal report and a fixed fallback name that is not appended. Each attempt costs two draws | observed | 0055bf00, 0055bdf0, 004565c0, 00456670 | high | **(R23-10)**; revision 3 recorded the list as "purpose unknown" |
 | CAMP-300 | At every level start in campaign mode: write the backup file, make the restart auto-save when the level is not the camp, and in the camp submit message 1001 and run the workshop pass | observed | 0050f710 | medium-high | the campaign-mode test itself is folded (section 10) |
-| CAMP-301 | Message 1001 is engine-originated and submitted once at camp start | observed | 0050f710, 00578d80 | high | closes `sherwood-hub.md`'s question |
+| CAMP-301 | Message 1001 is engine-originated, goes to the hub level only, and has **two** submission sites, whose conditions this document adopts from `spec-script-vm.md` VM-113 rather than restating: before the play loop starts unless it is entered from mission selection, and on returning from an accepted selection of the current node | observed | 0050f710, 00578d80; `spec-script-vm.md` VM-113 | high | **(R29-13)**; revision 4's "once, at camp start" is withdrawn |
 | CAMP-302 | The origin of message 1000 is unknown | unknown | 0050f710 does not submit it; the camp handler exists | — | **(R19-13)** |
 | CAMP-303 | The execution order of message 1001 relative to the workshop pass and the first tick is unknown: the submitting helper builds a script invocation and hands it to the sequence scheduler, and its arguments are absent | unknown | 00578d80, 0058a940 | — | **(R19-13)** |
 | CAMP-310 | Native 165 appends the record without duplication and refreshes the HUD, then writes three unidentified actor fields, one of them to 2; it does not write the saved deployed flag, and the actor effects are excluded from clearance | observed for the list and HUD, unknown for the actor fields | 00579210, 00579280, 00455400, 004555f0 | high / unknown | **(R19-12, R23-15)** |
@@ -1087,8 +1175,13 @@ Rows whose id carries **(R19-n)** answer finding *n* of spec review 19.
 | CAMP-327 | Each workshop kind 0..11 has one supervising character, per interface table T3; only kind 12 has none | observed | 005806c0 | high | **(R23-3)**; revision 3 wrongly listed kind 11 as having none |
 | CAMP-326 | The capture pass recounts `stock` for kinds 0..8 by replacing it with the sum over active pick-up elements (nibble 3) whose item kind matches, plus, for the workshop whose item kind is 1, one per active element of nibble 7 whose sub-kind field is 5 | observed | 00456a70, 005804e0, 00580430 | high for the predicate, unknown for the element class it names | **(R19-15, R23-11)** |
 | CAMP-331a | Assignment capture walks the **member list of the workshop's zone**, not the camp's player characters at large, and is skipped entirely when the workshop has no zone. A member is captured when its element-kind nibble is 0xC and it passes the per-kind test: kind 12 accepts nobody, kind 9 accepts only a character carrying capability id 1, every other kind accepts any player character | observed | 00580520, 00580940 | high | **(R23-11)** |
-| CAMP-328 | Placement walks the work spots in registration order, **skips** an assignment whose character has no actor in the level, and records the workshop's kind on each placed character's actor | observed | 00580dc0, 00580b70 | high | **(R23-11)** |
-| CAMP-329 | Kind 12's routine was not read | unknown | 00580e80 | — | **(R19-17)** |
+| CAMP-328 | Two placements run over two different lists: item placement walks the **work spots in registration order**, character placement walks the **assignments in assignment order**, skipping an assignment whose character has no actor and recording the workshop's kind on each placed character's actor | observed | 00580b70 (items), 00580dc0 (characters) | high | **(R23-11, R29-12)**; revision 4 gave both the work-spot order |
+| CAMP-336 | Immediately after capturing a workshop the campaign pass **clears that workshop's zone association and empties its work-spot list**; capture replaces the assignment list whenever a zone exists, including a zone with no members, and leaves it alone only when there is no zone | observed | 00456a70, 005803c0, 00580520 | high | **(R29-12)**; an authoritative state transition revision 4 omitted |
+| CAMP-334 | The level record's u16 that `profile.md` calls `unknown_f` is the mission's production yield: every camp workshop multiplies a day's output by the yield of the node in `previous` | observed | 00581020, 005810c0, 00581180 (instruction listings) | high | the field was missing from this document's own field table until now |
+| CAMP-335 | A day's output is `trunc_toward_zero(P × sup × f32(capacity × S))`, with `P` = yield × assignments for kinds 0..8 and yield alone for kinds 9, 10 and 11; `S` is 0.001 for kinds 0..8 and 0.01 for kinds 9, 10 and 11; `sup` is 1.5 (kinds 0..8 and 11), 2.0 (kinds 9 and 10) with a supervisor and 1.0 without | observed | 00581020, 005810c0, 00581180 (instruction listings); the four constants read out of the image at 00679cc8, 00677578, 006774d8, 00677670, 00677d90 | high | settles open question 1 for kinds 0..11 |
+| CAMP-339 | The scale factor is computed in double precision and **narrowed to a 32-bit float** before the final multiply; the remaining factors are multiplied in the order P, sup, scale in extended precision; the product is truncated toward zero to a signed 32-bit integer; kinds 0..8 and 9/10 then keep only its low 16 bits while kind 11 passes it whole | observed | 00581020, 005810c0, 00581180 (instruction listings), 00642b7c | high | the narrowing changes results at the boundaries and is part of the rule |
+| CAMP-338 | Kind 12 has no victory gate, no supervisor and no arithmetic: it pairs each of the workshop's work spots, in registration order, with the next entry of the campaign's `camp_extras` list, creates one element per value and places it at that spot; an index at or past the end of the list reports a bounds condition and reads past the end anyway | observed | 00580e80 (instruction listing), 005cb6f0, 00581220, 004a71d0 | high | replaces "kind 12's routine was not read" |
+| CAMP-337 | The list the campaign serializes after `team` and the workshop records holds raw 32-bit values, not references into `people`; it is what kind 12 consumes | observed | 00452f20, 00456aa0, 00580e80 | high | revision 4 called it `spare_refs` and read its elements as references |
 | CAMP-330 | The campaign map lays out ten location slots, skipping 0 and 8, with one widget fewer for locations 1..3 | observed | 00527d20 | medium | |
 | CAMP-331 | An empty offered list on the campaign map yields a text and a reported warning | observed | 00527d20 | high | |
 | CAMP-332 | The status line carries money, score and the spared percentage from text resources 0xF3, 0xF4 and 0x40 | observed | 00528810 | high | |
@@ -1132,6 +1225,11 @@ Rows whose id carries **(R19-n)** answer finding *n* of spec review 19.
 | interface tables | T1 slot flag -> capability id, T2 workshop kind -> item kind, T3 workshop kind -> supervising identity | see 2.7 | 0056b8d0, 00580350, 005806c0 | high |
 | workshops | 13 | records | 00456a40, retail file | high |
 | items placed per work spot | 5 | items | 00580b70 | high |
+| output scale factor, workshop kinds 0..8 | 0.001 | — | 00581020, the double at 00679cc8 | high |
+| output scale factor, workshop kinds 9, 10, 11 | 0.01 | — | 005810c0, 00581180, the double at 00677578 | high |
+| supervisor factor, workshop kinds 0..8 and 11 | 1.5 | — | 00581020, 00581180, the double at 006774d8 | high |
+| supervisor factor, workshop kinds 9 and 10 | 2.0 | — | 005810c0, the double at 00677670 | high |
+| supervisor factor when no supervisor is assigned | 1.0 | — | the double at 00677d90 | high |
 | capacity-flag rule | `5 × spots <= stock` | — | 00580b70 | high |
 | experience carry | 100 points per level, level clamped at 100 | — | 0051d4e0 | high |
 | health cap | 100 | points | 00484360, 00455bf0 | high |
@@ -1241,7 +1339,8 @@ archive versions with their defaults (B62).
 | B13 | three candidates, two of them in `recent` (stored oldest-first, visited newest-first) | removing the newest recent leaves **two**, which is not fewer than two, so the walk continues and removes the other recent one; one candidate remains. The stop condition is "fewer than two", checked after each history entry |
 | B13a | two candidates, both in `recent` | the newest recent is removed, leaving one; the walk stops and the second recent candidate **survives** as the sole offer |
 | B14 | one candidate that is in `recent` | it survives (step e needs more than one candidate) |
-| B14a | `recent` holding three entries and a candidate list equal to them plus two others | history is visited newest first and the walk stops the moment one candidate is left; the surviving candidate is determined by that order, not by set membership |
+| B14a | `recent` holding three entries and a candidate list equal to them plus two others (five candidates) | the walk removes all three recent candidates, because the count never falls below two, and **two** candidates survive; the stop condition never fires. Revision 4's expectation of a single survivor was arithmetically impossible |
+| B14b | four candidates of which three are recent | the first two removals leave two; the third removal is not reached because the check runs after each history entry and the count is already two — the walk stops with two candidates |
 | B15 | a random filter that would remove every candidate | the list is restored unchanged, and exactly one draw was taken per candidate that passed the kind and age tests |
 | B16 | a random filter with three eligible candidates and one ineligible | three draws, in list order; the ineligible candidate takes none |
 | B17 | an empty source list | the reduction reports failure after ten attempts and yields an empty list; no mission is forced |
@@ -1282,9 +1381,12 @@ archive versions with their defaults (B62).
 | B50 | a save whose backup block differs from its live block | after loading, the campaign equals the live block |
 | B51 | a save with a bad magic and a bad version | the original accepts it; OpenSherwood refuses it (a recorded departure) |
 | B52 | a save at archive version 46 | each workshop assignment's trailing u16 is read and the field becomes 0xFFFF |
-| B53 | recruiting with an empty recovery list | no draw is taken from the recruit stream |
-| B54 | recruiting with a non-empty recovery list | exactly one draw is taken, and on the recovery branch exactly one more for the choice of man |
-| B55 | native 24 with code 100 then code 0 | the style code becomes 0 and the colours stay light green |
+| B53 | recruiting with an empty recovery list | the coin flip is skipped and **one** draw is taken from the recruit stream, for the new-character choice |
+| B54 | recruiting with a non-empty recovery list and an even coin | two draws from the recruit stream: the coin, then the new-character choice; a man is generated, not recovered |
+| B54a | the same with an odd coin | two draws from the recruit stream: the coin, then the choice of which man to recover; that man is recovered |
+| B54b | a generated name whose first attempt collides with an entry of `labels` | two draws from the name stream per attempt; the second attempt's name is used and appended to `labels`; the recruit stream is untouched by name generation |
+| B54c | ten consecutive collisions | twenty draws from the name stream, a non-fatal report, the fixed fallback name is used and `labels` is **not** appended to |
+| B55 | an element whose colour entries have been set to synthetic values of the test's own choosing, then native 24 with a colour-installing code, then code 0 | the colour-installing code overwrites the entries; code 0 then changes the style code and leaves the overwritten entries in place. The test never names an original colour |
 | B56 | native 24 with code 111 on a non-human element | an error and no change |
 | B57 | native 24 with code 999 | an error and no change |
 | B58 | for each of T1's ten flag positions in turn, a mission file with only that flag set on one slot | the node's requirement list holds exactly the capability id T1 gives for that position, once |
@@ -1292,12 +1394,34 @@ archive versions with their defaults (B62).
 | B59 | for each of T2's nine workshop kinds, a camp holding one active pick-up of that kind's item with quantity 3 | the recount sets that workshop's stock to 3 and every other workshop's to 0 |
 | B59a | for each of T3's twelve rows, an assignment list holding one character of the named identity | the supervisor lookup answers that character for the matching kind and nothing for kind 12 |
 | B59b | workshop kinds 0, 1 and 9 with an assigned character built from the hero's **first** profile record, then from his **second** | the supervisor lookup answers him in both cases (CAMP-333) |
-| B60 | snapshot, save, load, snapshot, inside the camp and again on an imported original save | the two snapshots are equal field by field, including each workshop's zone and its ordered work spots; for the imported save the comparison is taken after the camp entry that reconstructs them (8.3) |
-| B61 | ten saves in a row, each a quarter of a second of logic frames apart | counter 6 grows by exactly 2 seconds over the ten, the residue carries across the saves, and two runs of the same input agree |
-| B62 | a campaign block at each supported archive version from 28 upward | every version loads; the recent list, the town result, the town code, the backup block, the recruit flag and the workshop assignment word take the defaults of 8.6; version 27 is refused with a diagnostic |
-| B63 | a reduction attempt that empties the list, then a second attempt | the second attempt starts from the source list and sees the age resets and outcome changes the first attempt made; failed-attempt state persists |
-| B64 | step d run with `deferred` already holding two slots | `deferred` is emptied and both former members' ages are 0 before the new deferral is computed |
+| B60 | **canonical continuation.** Run to a checkpoint boundary, snapshot, then either continue uninterrupted or restore the snapshot into a fresh engine; feed both the same canonical inputs for N frames | the two runs agree frame by frame on the canonical hash, on every RNG stream position, and on the observable consequences that depend on them — generated names, the offered list, and each workshop's output, stock and assignments. Serialized equality of the two snapshots is asserted as well, but it is not the test |
+| B60a | the same with the snapshot taken away from a checkpoint boundary | refused: 8.4 makes a snapshot valid only at a checkpoint boundary, and the engine performs the accrual step before writing one |
+| B61 | ten checkpoints in a row, each exactly **6 logic frames** after the previous one | each checkpoint adds 18 sixty-fourths to the residue; counter 6 grows by exactly **2** over the ten and the residue ends at exactly **52** sixty-fourths. No intermediate checkpoint loses a fraction, and two runs of the same input agree exactly |
+| B61a | one checkpoint after 22 frames | the residue gains 66 sixty-fourths, counter 6 grows by 1 and the residue is left at exactly 2 sixty-fourths |
+| B61b | a restore between two checkpoints | the restored run's counter 6, residue and interval start equal the uninterrupted run's at every later checkpoint |
+| B62 | a campaign block at every documented archive version, 28 to 48, and at each boundary version 27, 28, 29, 30, 38, 39, 40, 41, 45, 46, 47, 48, 49 | 28 to 48 load with the defaults of 8.6 at each boundary; 27 and 49 are refused with a diagnostic, the latter because an undocumented future version is not decoded on speculation |
+| B62a | a save whose outer and inner version words disagree | the inner archive version controls decoding; the mismatch is reported, and OpenSherwood refuses the file rather than decoding to a version it was not told |
+| B62b | loading an older-version campaign block over an already populated campaign | every field the older version omits takes its 8.6 default rather than the value already in memory |
+| B63 | two candidates, both of kind 0 with `prob` 0 and age 0, and an offer stream seeded so that both draws exceed `prob` | step f removes both, the restore puts them back, and the attempt ends empty; the second attempt starts from the source list and sees the age resets the first attempt made, so the ages are 0 on entry. Failed-attempt state persists |
+| B64 | step d with **two or more** candidates and `deferred` already holding two slots | `deferred` is emptied and both former members' ages are 0 before the new deferral is computed |
+| B64a | step d with exactly **one** candidate and `deferred` holding two slots | `deferred` is unchanged and both members keep their ages; only `blazon_node` is set |
+| B64b | step d with **no** candidates and `deferred` holding two slots | `deferred` is unchanged, the ages are unchanged, and `blazon_node` becomes null |
 | B65 | the forced path on the secondary list with two candidates | one is drawn, step d is **not** re-run, and no source slot's age is reset |
+| B66 | kind 0, capacity 5, three assignments, `previous` won with yield 700 | output 10 without the supervisor and 15 with him; `stock` grows by that and `last_output` equals it |
+| B66a | the same with the scale kept in double precision instead of narrowed to a float | the narrowed form gives 10 and 15; a double-precision implementation gives 10 and 15 here but differs on inputs whose product lands on an integer, so the test pins the narrowing with such an input |
+| B67 | kind 9, capacity 170, yield 300, two assignments of which one lacks capability id 1 | the amount is `trunc(300 × sup × f32(1.7))`, with `sup` 2.0 or 1.0; only the qualifying character's experience slot 1 changes, and the assignment count does **not** scale the amount |
+| B68 | kind 10, capacity 340, yield 200 | the amount is `trunc(200 × sup × f32(3.4))` and every assigned character's experience slot 0 grows by it |
+| B69 | kind 11, capacity 20, yield 600, an assigned character at health 95 | the amount is `trunc(600 × sup × f32(0.2))` and his health becomes 100 |
+| B70 | any kind 0..11 with `previous` lost | no output is computed and nothing the output feeds changes |
+| B71 | kind 12 with three work spots and a `camp_extras` list of two values | two elements are created and placed at the first two spots; the third spot reports a bounds condition |
+| B72 | kind 12 with an empty `camp_extras` list | nothing is placed, and a bounds condition is reported once per work spot |
+| B73 | an output whose truncated value exceeds 65535, for a kind 0..8 workshop | `stock` and `last_output` take the low 16 bits |
+| B74 | a block tag that does not match | the original terminates; OpenSherwood accepts the file, records a diagnostic and the departure is asserted |
+| B75 | two candidates both with a non-zero `obligatory` | the original terminates; OpenSherwood records a diagnostic, retains both, and the departure is asserted |
+| B76 | three nodes: one whose mission file is absent, one whose file has no `SCOT` chunk, one whose chunk fails validation | team limits 0, 0 and 5; the first and third are reported, the second is not |
+| B77 | a campaign in which both `HI` and `DD` are won | progress is 100, not 95 |
+| B78 | a camp holding, for the workshop whose item kind is 1, one active element matching the exceptional predicate and one inactive one | the recount adds exactly 1 |
+| B79 | capture of a workshop with a zone that has no members, and of a workshop with no zone at all | the first workshop's assignment list becomes empty, the second's is unchanged; after each capture both workshops have no zone and no work spots |
 
 **Oracle procedures.** Against a recording from `C:\Users\przem\source\gamedata\robinhood_oracle`:
 
@@ -1347,33 +1471,49 @@ Everything in sections 2, 3, 5 and 6 is the original's behaviour unless it appea
 
 Writing a file the original can load needs the exact sixteen tag bytes per record type (2.6), and those bytes
 are content of the executable, so they are never committed, logged or printed. OpenSherwood obtains them from
-the player's own installation:
+the player's own installation, under rules tight enough that a wrong tag is never mistaken for a right one:
 
-- On first need the engine scans the player's `Campaign.bck`, `Savegame/Profiles` and any existing save for the
-  tag positions this document fixes, and keeps the sixteen bytes it finds there keyed by record type, in memory
-  and in a file under the user's own data directory. A stock installation carries every tag this subsystem needs
-  between those files.
-- If a donor for a record type is unavailable, the engine cannot produce a file the original will load. It then
-  writes its own file with its own marker — its own reader accepts it — and tells the user that the file is not
-  readable by the original, naming the missing donor.
-- The mechanism is a design, not a fact about the original, so producing original-readable files is excluded
-  from clearance until it is reviewed (section 11, `OriginalReadableWrites`).
+- **Donor eligibility.** A donor is a file that parses **completely** under the grammar of 2.6 — every field
+  consumed, nothing left over — and that carries no OpenSherwood marker. A file OpenSherwood wrote is never a
+  donor, whatever it parses as. A file that parses only because our reader is permissive (2.6) is not thereby a
+  valid source: permissive parsing tells us nothing about a tag's correctness.
+- **Grammar-based extraction.** Tags are taken only from the byte positions the grammar fixes for each record
+  type, never by scanning for sixteen-byte patterns.
+- **Build association.** Each extracted tag is stored against the SHA-256 of the executable the donor belongs
+  to, and is offered only when writing for that same build. Tags from one build are never used for another.
+- **Conflict handling.** If two eligible donors give different bytes for one record type, neither is used and no
+  original-compatible export is offered for that record type; the conflict is reported.
+- **When a donor is missing or untrusted** the engine does not claim original compatibility at all. It writes
+  its own file with its own marker, which its own reader accepts, and tells the user which record type had no
+  donor.
+- **What such an export may claim.** At most the campaign prefix and the profile archive — never a complete
+  saved game, whose level payload this document does not specify (8.6). The claim is only made after a
+  donor-backed export has actually been loaded by the original and the result checked.
+- It is a design of ours rather than a fact about the original, so producing original-readable files stays
+  excluded from clearance until the mechanism is reviewed (section 11, `OriginalReadableWrites`). Revision 4's
+  "a stock installation carries every tag this subsystem needs" is withdrawn: it rested on mutable local
+  fixtures and is not established.
 
 ### 8.3 Ownership and reconstruction of the camp's zone and spot state
 
 The workshop **zone** and the ordered **work spots** (2.4) decide later behaviour but are not in the original's
 file. They are owned by the engine and are authoritative:
 
-- In a campaign the engine runs, they are produced by the camp script's answer to message 1001 on every camp
-  entry and are snapshotted with everything else. A snapshot taken inside the camp restores them directly, with
-  no script re-run.
-- An **imported original save** carries neither. Such a save is therefore restored as a *campaign prefix* only:
-  the campaign state of section 2.1 is restored, and the camp's zone and spot state is reconstructed by entering
-  the camp normally, which is the same path the original itself takes (its own camp save is written at camp
-  start). An imported save whose level code is the camp resumes at a camp entry, never mid-camp-frame. There is
-  no "run the script's load path in isolation" step; re-running a script out of its normal order is not a
-  defined, side-effect-safe operation and is not part of this contract.
-- Restore equivalence is testable without the script: B60 in section 7.
+- In a campaign the engine runs, they are produced by the camp script's answer to message 1001 (3.9) and are
+  cleared again by the capture pass (3.11, CAMP-336); both transitions are inside the snapshot, so a snapshot
+  taken anywhere restores them directly, with no script re-run.
+- An **imported original save** carries neither, and revision 4's answer — re-enter the camp, "which is the same
+  path the original itself takes" — was **wrong**. The original does not re-enter: it restores the level payload
+  and distinguishes loading from entering. Re-entering with a won `previous` would run the workshop pass a
+  second time over a campaign block that already has the day's production, training and healing in it, applying
+  them twice.
+- Therefore **playable restoration of an imported original save is excluded from clearance** (section 11,
+  `OriginalSaveResume`). What this document supports for such a file is **extraction**: reading the campaign
+  state of 2.1 out of it, for inspection, conversion or a new campaign started from it. Resuming one is a
+  separate problem that needs the level payload, the camp ordering of CAMP-303 and the spawn contract of
+  CAMP-316, none of which is settled.
+- Restore equivalence *within* our own engine is a different matter and is tested by B60; the lossy import is
+  tested separately and is not expected to round-trip.
 
 ### 8.4 Time
 
@@ -1381,16 +1521,27 @@ Counter 6 is hashed state, so it must not depend on a wall clock. The original r
 counter at checkpoints and truncates each interval to whole seconds, discarding the remainder (CAMP-271).
 OpenSherwood keeps the same shape with a deterministic source:
 
-- the authoritative time source is the **logic frame** of ADR-0010 (46.875 ms, 64 frames in exactly 3 s);
-- the campaign keeps, in the snapshot, `playtime_seconds` (counter 6), `playtime_residue_frames` and
-  `interval_start_frame`;
-- at every checkpoint the original takes, the engine adds `frames := current_frame - interval_start_frame` to
-  the residue, moves `floor(residue * 3 / 64)` whole seconds into counter 6, leaves the remainder in the
-  residue, and sets `interval_start_frame := current_frame`;
-- restoring a snapshot restores all three and starts the next interval at the restoring frame.
+- the authoritative time source is the **logic frame** of ADR-0010: 64 frames are exactly 3 seconds, so one
+  frame is exactly **3 sixty-fourths of a second**;
+- the residue is therefore counted in **sixty-fourths of a second**, an integer, which represents every
+  reachable remainder exactly — 22 frames are 66 sixty-fourths, one whole second plus a residue of exactly 2;
+- the campaign keeps three fields in the snapshot: `playtime_seconds` (counter 6), `playtime_residue_64ths` (an
+  integer in 0..63) and `interval_start_frame` (a frame number), together with `interval_active`;
+- **initialisation.** A new campaign has `playtime_seconds := 0`, `playtime_residue_64ths := 0`,
+  `interval_active := false`. An interval opens when a level begins or resumes: `interval_start_frame :=
+  current_frame`, `interval_active := true`. Opening an interval that is already open does nothing;
+- **the accrual step**, run at every checkpoint the original takes, and only when an interval is open:
+  `r := playtime_residue_64ths + 3 * (current_frame - interval_start_frame)`;
+  `playtime_seconds += r / 64`; `playtime_residue_64ths := r mod 64`;
+  `interval_start_frame := current_frame`. The interval stays open;
+- **snapshots and saves are taken at a checkpoint boundary.** The engine performs the accrual step immediately
+  before writing either, so no elapsed time is ever pending when one is written, and restoring therefore cannot
+  lose any. Restoring reinstates all four fields and, when `interval_active` is true, sets
+  `interval_start_frame := current_frame` — which is correct precisely because the accrual before the write left
+  nothing outstanding. A snapshot taken away from a checkpoint boundary is refused (B60a).
 
-Keeping the residue is a deviation from the original, which discards it; it is what makes repeated sub-second
-saves neither lose time nor desynchronise two runs (B61).
+Keeping the residue is a deviation from the original, which truncates each interval and discards the remainder;
+it is what makes repeated short checkpoints neither lose time nor desynchronise two runs (B61, B61a, B61b).
 
 ### 8.5 Snapshot contract (review 23, finding 13)
 
@@ -1400,8 +1551,8 @@ Authoritative, and therefore in `snapshot()` and under the canonical hash:
 - `siege_state`, `recruit_flag`, the four slot references;
 - every slot's node, age, blazon price and outcome;
 - `people` in order with every field of 2.3;
-- `band`, `recovering`, `team`, `offered`, `deferred`, `recent` and `spare_refs` as ordered lists —
-  `spare_refs` because the file preserves it and an offered round trip must too;
+- `band`, `recovering`, `team`, `offered`, `deferred`, `recent` and `camp_extras` as ordered lists —
+  `camp_extras` because the file preserves it and workshop kind 12 consumes it in order;
 - `labels` in order, because it decides which generated names are still available (CAMP-295);
 - the 13 workshop records with kind, capacity, stock, last output, the capacity flag `full` and `assignments` in
   order, **and** each workshop's zone and its ordered work spots (8.3);
@@ -1415,6 +1566,10 @@ the values that are recomputed on demand rather than stored — progress, the sp
 blazon requirement. Revision 3 listed the capacity flag both as authoritative and, under the name `full`, as
 derived; it is one stored field and it is authoritative.
 
+Because the zone and work-spot state has two transitions inside the engine — installed by message 1001's
+handler, cleared by the capture pass (CAMP-336) — the snapshot must carry whichever side of those transitions
+the campaign is on, not merely a rebuilt copy.
+
 ### 8.6 Departure contract
 
 A ruleset bump is required by a change to: the availability test (3.2); the reduction order, its retry and
@@ -1424,11 +1579,17 @@ time rule (8.4); the recruit and name rules (3.8); the deployment requirement te
 workshop pass (3.11). A change to the file grammars of 2.6 is a format-version bump and must keep reading every
 archive version listed in section 5.
 
-Supported archive versions and their defaults are part of the contract: the reader accepts versions 28 and
-above; below 30 there is no recent list (it restores empty), below 41 no town result (0), below 48 no town code
-(none), below 39 no backup block, at 46 the workshop assignment's trailing word is read and discarded and the
-field becomes 0xFFFF, below 46 there is no such word and the field becomes 0xFFFF, and below 28 the recruit flag
-is absent and restores as 0. Versions below 28 are refused with a diagnostic rather than guessed.
+Supported archive versions and their defaults are part of the contract. The reader accepts versions **28 to 48
+inclusive** — the range this document documents — and refuses anything outside it with a diagnostic, including
+versions above 48: an undocumented future format is not decoded on speculation (revision 4's "28 and above" is
+withdrawn). Within the range: below 30 there is no recent list (it restores empty), below 41 no town result (0),
+below 48 no town code (none), below 39 no backup block, at 46 the workshop assignment's trailing word is read and
+discarded and the field becomes 0xFFFF, below 46 there is no such word and the field becomes 0xFFFF, and at 28
+and 29 the recruit flag is present (it appears above version 27).
+
+A saved game carries the archive version **twice** (2.6.3). The original decodes by the **inner** word, the one
+that follows the level code; the outer word is only compared. When the two disagree OpenSherwood reports the
+mismatch and refuses the file rather than decoding to a version it was not told (B62a).
 
 **Campaign prefix versus full save interoperability.** This document specifies the header and the campaign
 block or blocks of a save, and nothing after them: the level and actor payload is another subsystem's. An
@@ -1469,9 +1630,10 @@ claim that this revision closes them: section 11 names what it does not.
    `STUB_POLICY_VALUES` pins to 0 while also pinning 174 to 5 unconditionally.
 8. **Message 1001 is engine-originated at camp start**, so the engine's camp never configures its 13 production
    zones. (Its delivery order, and the origin of 1000, are open — section 11.)
-9. **The workshop pass is absent,** including everything that does not depend on the unspecified output
-   arithmetic: item placement of the workshop's own item kind (T2), character placement, the capacity flag, the
-   stock recount, and the experience and health effects of kinds 9 to 11.
+9. **The workshop pass is absent,** all of it: the per-day output of every kind, item placement of the
+   workshop's own item kind (T2), character placement, the capacity flag, the stock recount, the experience and
+   health effects of kinds 9 to 11, and kind 12's placement queue. The output arithmetic is now specified
+   (3.11), so there is nothing left to guess.
 10. **Score, progress and the spared percentage are unlike anything in the engine.** Progress excludes ambush and
     tactical nodes, includes placeholders, and two level codes short-circuit to 95 and 100. The spared percentage
     is the share of **enemies left alive**, from two cumulative counters over hostile actors — not a count of the
@@ -1487,12 +1649,9 @@ the continue slot.
 
 ## 10. Open questions
 
-1. **The one-day output of a workshop, and kind 12.** Four routines truncate a floating-point value whose
-   expression the present export does not contain; which character supervises each workshop is settled
-   (interface table T3, 2.7) but what his presence contributes is not. Settling this needs a **Ghidra session
-   whose decompiler output includes the floating-point expressions**, over 00581020, 005810c0, 00581180,
-   005806c0's tail and 00580e80 (kind 12); the lead schedules it. Hand-disassembly is not an acceptable
-   substitute for a rule that feeds a determinism contract.
+1. **Settled.** The one-day output and kind 12 were closed from the instruction listings of 00581020, 005810c0,
+   00581180, 005806c0 and 00580e80, which carry the floating-point operations the decompiler drops (3.11,
+   CAMP-334, CAMP-335, CAMP-338, CAMP-339). What remains of the area is question 14 below.
 2. **The delivery order of message 1001** relative to the workshop pass and the first tick (CAMP-303): recover
    the arguments of 00578d80's call in 0050f710 and the scheduler's admission rules (0058a940, and
    `spec-script-vm.md` VM-210 / VM-215).
@@ -1501,7 +1660,8 @@ the continue slot.
 4. **The recruit arithmetic** (CAMP-290, CAMP-291, CAMP-292): the expression that turns the new-character draw
    into a choice, the expression that produces the number of men a victory adds, and the health and experience
    values a recovered man is given. All three are absent from the export.
-5. **When the camp-capture pass runs** (CAMP-326, CAMP-331a): 00456a70 has no direct caller in the export.
+5. **When the camp-capture pass runs** (CAMP-326, CAMP-331a, CAMP-336): 00456a70 has no direct caller in the
+   export, and the pass both rebuilds assignments and tears down the zone and work spots.
 6. **How the clover counter becomes non-zero** (CAMP-016). Follow 004a78c0's callers and the folded
    campaign-counter call in 0050b640.
 7. **The three actor fields native 165 writes** (CAMP-310), one of them set to 2, and **native 173's
@@ -1510,15 +1670,17 @@ the continue slot.
    randomisation, fallback matching and camp-team clear that 00453e60 also performs.
 9. **The mini-map's state-dependent rendering** (CAMP-352): which colour entry an actor state uses and whether
    an un-blipped element is drawn.
-10. **The two unidentified operations of the revive pass** (CAMP-253), taking the arguments (0, 0, 1) and
-    (19, 0, 255).
+10. **The revive pass's three further operations on the actor** (CAMP-253), the last of which schedules further
+    activity. Excluded as `RevivePassEffects`.
 11. **What makes a surviving hostile "qualifying"** for the 70-point bonus and for counters 4 and 5
     (CAMP-013, CAMP-251): two virtual tests were not followed (004e3260's side/family test and 004a5a00's two).
-12. **The profile summary** (CAMP-100, CAMP-101): the floating-point expression behind the stored spared
-    percentage, and **what makes the profile-summary updater run at all** — an ordinary save does not.
+12. **The stored spared percentage** (CAMP-101): the floating-point expression behind it.
 13. **Persistent-character initialisation**: what a newly created character record's fields start at
     (0055bc90, 0051d480), which decides every later experience and health computation.
-14. **Smaller items:** the two unused level-record u16 (`m0`, `m1`); the purpose of `spare_refs`; the two tests
+14. **What fills `camp_extras`, and which element class each of its values becomes** (CAMP-338): the consumer is
+    settled, the producer is not, and the element constructor kind 12 calls was not read.
+15. **When the profile summary updates** (CAMP-102): three call sites in the game loop, triggers not traced.
+16. **Smaller items:** the two unused level-record u16 (`m0`, `m1`); the two tests
     that exclude the auto-slots from continue-mirroring (CAMP-133); the campaign-mode test at the head of the
     game loop, which the export renders as a test on the siege byte and which is more plausibly "a campaign
     exists" (CAMP-300); and what the original does when a save file cannot be created.
@@ -1534,7 +1696,11 @@ wrongly swept in.
 
 | Area | Why | Assumption |
 |---|---|---|
-| **Camp production output** — the victory-gated output computation for kinds 0..11, and kind 12 entirely | The arithmetic, its rounding and its overflow behaviour are not recoverable from the present export, and the supervisor's contribution is unknown (open question 1). The rest of 3.11 — item placement, character placement, the capacity flag, the stock recount, assignment capture, and the experience and health destinations — is specified and may be implemented. "The camp's item production is implementable" (revision 3) is **withdrawn**: without the output nothing is produced | `CampProductionOutput` |
+| **What fills `camp_extras`** and which element class workshop kind 12 creates from each of its values | Open question 14. Kind 12's *behaviour* is specified (3.11) and may be implemented against an empty list, which is what a stock campaign has; only the producer and the element class are missing | `CampExtrasSource` |
+| **The revive pass's complete effect** | CAMP-253: the flag and the health are settled, the three further operations on the actor are not, and the last of them schedules further activity. An implementation performing only the settled part is incomplete by an unknown amount | `RevivePassEffects` |
+| **When the camp-capture pass runs** | CAMP-326, CAMP-331a, CAMP-336: the pass rebuilds assignments *and* tears down the zone and work spots, so its scheduling changes later behaviour and is not a free choice | `CaptureScheduling` |
+| **When the profile summary updates** | CAMP-102: the updater is called from three places in the game loop and what makes each call happen was not traced, so when score, money, progress and cumulative profile play time move is unknown | `ProfileUpdateScheduling` |
+| **Resuming an imported original save** | 8.3: the original restores a level payload instead of re-entering, and re-entering would apply a camp day twice. Extraction of the campaign state from such a file is in scope; playing on from it is not | `OriginalSaveResume` |
 | **Message ordering in the camp** | CAMP-303. No implementation may assume 1001's handler completes before the workshop pass or before the first tick | `CampMessageOrder` |
 | **The origin of message 1000** | CAMP-302 | `CampSendAction` |
 | **The recruit mechanism's arithmetic** | Open question 4: the new-character choice, the number of men a victory adds, and a recovered man's health and experience. The branch structure and the draw counts (CAMP-290) *are* specified | `RecruitArithmetic` |
@@ -1548,7 +1714,9 @@ wrongly swept in.
 | **Writing files the original can load** | The tag donor (8.2) is a design of ours, not a fact about the original, and needs its own review | `OriginalReadableWrites` |
 
 Everything in sections 2 to 8 that is not named above, and the three interface tables of 2.7, are offered for
-clearance.
+clearance. The `CampProductionOutput` exclusion of revision 4 is **lifted**: the per-day output of every workshop
+kind, its precision and its rounding are settled in 3.11 from the program's own instruction listings, and the
+whole workshop pass — output included — is now in scope.
 
 ---
 
@@ -1563,16 +1731,19 @@ A handoff is complete only when all of the following hold.
    whole reduction including its retries, restores, the deferred clearing and the per-branch forced path; choice
    and aging; outcome, mission-end and revive bookkeeping; the blazon rules; the score, progress, spared and
    time rules of 3.7 with the time contract of 8.4; the recruit and name *structure* of 3.8; deployment
-   membership of 3.9 including the capability half of native 170; everything in the workshop pass except the
-   output computation; the save slots and auto-saves as far as writing our own files goes; and the HUD counters.
-   **Out of scope:** every row of section 11.
-3. Camp zone and work-spot state is owned and snapshotted as 8.3 specifies; an imported original save is
-   restored as a campaign prefix and resumes a camp save by re-entering the camp. No script is re-run out of
-   order to rebuild state.
+   membership of 3.9 including the capability half of native 170; the workshop pass's arithmetic and effects,
+   including the per-day output of every kind and kind 12's placement queue, **but not its scheduling**; the
+   save slots and auto-saves as far as writing our own files goes; and the HUD counters.
+   **Out of scope:** every row of section 11 — in particular the revive pass's further effects, the capture
+   pass's scheduling, the profile-summary update scheduling and resuming an imported original save. Revision 4
+   listed "revive bookkeeping" as in scope; only its settled flag-and-health part is.
+3. Camp zone and work-spot state is owned and snapshotted as 8.3 specifies, on whichever side of the
+   install/teardown transitions the campaign is. An imported original save is **extracted**, not resumed; no
+   script is re-run out of order to rebuild state, and no camp entry is synthesised to stand in for a load.
 4. The four named RNG streams of 8.1 exist with the stated consumption order, including the new-character draw,
    and their positions are in the snapshot.
 5. The snapshot and departure contracts of 8.5 and 8.6 are implemented and the canonical hash covers exactly the
-   authoritative set — including `labels`, `spare_refs`, the capacity flag, each workshop's zone and work spots,
+   authoritative set — including `labels`, `camp_extras`, the capacity flag, each workshop's zone and work spots,
    the play-time residue and interval start, and the selected profile's difficulty.
 6. No wall clock reaches hashed state (8.4).
 7. The acceptance tests of section 7 exist, with A2 to A6 marked as fixture regressions rather than universal
@@ -1587,14 +1758,21 @@ A handoff is complete only when all of the following hold.
 
 ## 13. Identity and exposure
 
-- **Analyst:** session `a00ebf7dd67504358` (Opus; revisions 1 to 3 on 2026-09-13, revision 4 on 2026-09-18),
+- **Analyst:** session `a00ebf7dd67504358` (Opus; revisions 1 to 3 on 2026-09-13, revisions 4 and 5 on
+  2026-09-18),
   working in the git-ignored `re/` workspace. Exposure: full decompilation of the functions listed in section 0,
   plus the function inventory, the string cross-reference and the module map.
 - **Reviewer:** Codex `gpt-6-astra`, two reviews of this document, both archived in the repository:
   - spec review 19 on revision 1, verdict *redo*, 29 findings —
     `docs/decisions/reviews/2026-09-13-codex-review-19-spec-campaign-camp-saves.md`;
   - spec re-review 23 on revision 3 (commit `2cb9c2a`), verdict *fix-then-clear*, 19 findings —
-    `docs/decisions/reviews/2026-09-13-codex-review-23-spec-campaign-camp-saves.md`.
+    `docs/decisions/reviews/2026-09-13-codex-review-23-spec-campaign-camp-saves.md`;
+  - spec re-review 29 on revision 4 (commit `c2c578a`), verdict *fix-then-clear*, 16 findings —
+    `docs/decisions/reviews/2026-09-18-codex-review-29-spec-campaign-camp-saves.md`.
+
+  Review 29 cleared, within the limits its findings name, the campaign graph and offers, the campaign-prefix and
+  profile grammar for reading, camp deployment's membership and capability checks with T1, T2 and the corrected
+  T3, and the statistics identities and arithmetic.
 
   Review 23 cleared as facts the character-record framing, the four node references' order, the town-code
   representation, the conditional-backup and unconditional-live block framing, the version 46/47 assignment
@@ -1621,6 +1799,20 @@ from assertion strings. Byte-level checks used `scripts/ghidra/peek.py` and four
 `re/notes/campaign/` (a campaign-block reader, a level-table reader, a profile-archive reader and a
 character-profile string reader); those parsers are one-off derivations of the numbers in section 7 and are not
 needed to check the claims — the acceptance tests re-derive them from the player's files.
+
+The production arithmetic of 3.11 was read from **instruction listings** exported to `re/out/listing/` for
+00581020, 005810c0, 00581180, 005806c0, 00580e80, 00580970, 00580ab0 and 005818c0, with a fresh decompilation in
+`re/out/decomp_decompile/`. Those listings are the program's own instructions rather than a reconstruction, which
+is why the floating-point operations the earlier export dropped are visible in them; the five double constants
+they name were read out of the image with `scripts/ghidra/peek.py`. Neither listings nor constants leave `re/`:
+what this document carries is the resulting rule.
+
+Revision 5 re-read, for the disputed findings of review 29: the diagnostic's exit path once more (005f8030,
+00643f50); the mission-file open failure (0056b8d0); the workshop teardown (005803c0) and the two placement
+loops (00580b70, 00580dc0); the recruit branch polarity (004524b0); the deferred clearing's precondition
+(00455f00, 004564e0); the two submission sites of the camp message and the three profile-updater call sites
+(0050f710), reconciled against `spec-script-vm.md` VM-113; and the element serializer of the list this revision
+renames `camp_extras` (00456aa0).
 
 Revision 4 re-read, for the disputed findings of review 23: the diagnostic helper and its exit path (005f8030,
 00643f50) and the block-tag check (005e1b70); the two fatal filter diagnostics (00452e70, 00452d20); the
