@@ -35,6 +35,9 @@ any reasonable time, and every review said so.
      transcription, completeness, the expression filter); its output is corrections to the specification only,
      never code, patches or translated algorithms. An *implementation reviewer* checks code against the cleared
      specification and never reads `re/`. One session does not hold both roles for the same subsystem.
+     The spec review by the other agent (skill `cross-agent-review`) is a required step of this process, kept
+     even where an agent setup otherwise avoids cross-agent review loops; the project does not pin the
+     reviewer's model or reasoning effort.
    - *Handoffs.* Implementer sessions are started fresh (no inherited analyst context, tool output, notes or
      memory carrying decompilation), receive only cleared specifications, and route every question back through
      a specification amendment. Exposure is tracked per subsystem in the spec's identity block; `.gitignore` is

@@ -1,4 +1,4 @@
-# Runs a maximum-effort, read-only Codex review of the whole repository and writes the result under
+# Runs a read-only Codex review (model and effort from the local Codex configuration) of the whole repository and writes the result under
 # docs/decisions/reviews/. Detached from the session that launched it (see AGENTS.md, cross-agent-review skill).
 #   powershell -ExecutionPolicy Bypass -File scripts/codex_full_review.ps1
 $ErrorActionPreference = "Continue"
@@ -22,6 +22,6 @@ severity and file:line, verification of every format spec status, legal/clean-ro
 architecture and roadmap assessment with the recommended order of work, and a prioritised fix list. Be exhaustive
 and concrete; the maintainer will act on this document without you. Do not modify files.
 "@
-codex exec -s read-only --skip-git-repo-check -c model_reasoning_effort="xhigh" -o "$out" $prompt *> $log
+codex exec -s read-only --skip-git-repo-check -o "$out" $prompt *> $log
 # The report is left in the working tree: a human (or the lead agent) reads it and commits it deliberately.
 if (Test-Path $out) { Write-Host "review written to $out" }
