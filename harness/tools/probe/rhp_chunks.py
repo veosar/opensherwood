@@ -8,7 +8,7 @@ import os
 import struct
 import sys
 
-GAME = os.environ.get("OPENSHERWOOD_GAME_DIR", r"C:\Users\przem\source\gamedata\robinhood")
+GAME = os.environ.get("OPENSHERWOOD_GAME_DIR") or sys.exit("set OPENSHERWOOD_GAME_DIR to the game directory")
 LEVELS = os.path.join(GAME, "DATA", "Levels")
 MAPS = ["Croisement01", "Croisement02", "Croisement03", "derby", "leicester", "lincoln",
         "nottingham", "sherwood", "york"]

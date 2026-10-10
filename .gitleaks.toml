@@ -1,0 +1,12 @@
+# Secret scanning rules for this public repository (gitleaks). The default rules stay on; the extra
+# rule keeps absolute local user paths out of commits: use an environment variable or a repo-relative path.
+title = "OpenSherwood"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "local-user-path"
+description = "Absolute path under a Windows user profile"
+regex = '''(?i)\b[a-z]:[\\/]+users[\\/]+[^\\/\s"'`]+'''
+keywords = ["users"]

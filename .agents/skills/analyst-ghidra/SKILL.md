@@ -14,12 +14,12 @@ subsystem must not be yours and must not inherit your context.
 
 - `re/` is git-ignored: `re/ghidra/` holds the project (`robinhood`), `re/out/` the exports, `re/notes/` your
   working notes. Nothing under `re/` is ever committed (`scripts/check_no_assets.py` refuses it).
-- Headless Ghidra: `C:\Users\przem\source\tools\ghidra_12.1.3_PUBLIC\support\analyzeHeadless.bat`, JDK 21 at
+- Headless Ghidra 12.1.3: `%GHIDRA_INSTALL_DIR%\support\analyzeHeadless.bat`, JDK 21 at
   `C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot`. The project already exists (imported and
   auto-analysed); do not re-import. Run scripts with `-process "Robin Hood.exe" -noanalysis -postScript <script>`.
 - Export scripts live in `scripts/ghidra/` (generic, asset-free, committed): function inventory with sizes and
   call counts, string references, call graph neighbourhoods, decompilation of a list of addresses into `re/out/`.
-- The original may be run only from `C:\Users\przem\source\gamedata\robinhood_oracle` (never the GOG install)
+- The original may be run only from the oracle copy in `OPENSHERWOOD_ORACLE_DIR` (never the GOG install)
   with the tools in `harness/tools/original/` when a timing or presentation fact needs confirmation.
 
 ## Procedure
