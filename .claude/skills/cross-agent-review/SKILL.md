@@ -13,11 +13,13 @@ description: Request an adversarial review from the other agent (Claude asks Cod
 ## From Claude Code (requesting Codex)
 
 ```
-codex exec -s read-only -C <repo> -c model_reasoning_effort="xhigh" -o /tmp/review.md \
+codex exec -s read-only -C <repo> -o /tmp/review.md \
   "Review <scope> in this repository adversarially. Read AGENTS.md first. Focus on: correctness, determinism,
    clean-room/provenance compliance, missing tests, API mistakes. Output: numbered findings with severity,
    file:line references, and concrete fixes. End with a verdict: merge / fix-then-merge / redesign."
 ```
+
+Model and reasoning effort come from the reviewer's own configuration; the project does not pin them.
 
 For a diff-scoped review: `codex exec review` (see `codex exec review --help`) from the repo root.
 
