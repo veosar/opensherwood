@@ -21,6 +21,7 @@ jobs:
           python-version: "3.12"
       - run: python scripts/check_no_assets.py
       - run: python scripts/sync_skills.py --check
+      - run: python -m unittest discover -s scripts/tests
 
   build-test:
     name: Build and test (${{ matrix.os }})
@@ -46,6 +47,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r harness/requirements.txt
+      - run: python -m unittest discover -s scripts/tests
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked

@@ -31,6 +31,12 @@ Thumbs.db
 # --- Local-only state
 /.env
 /.local/
+# Agent handoffs, worktrees and machine settings stay local.
+/.claude/handoffs/
+/.claude/worktrees/
+/.claude/settings.local.json
+/CLAUDE.local.md
+/.codex/config.toml
 # private reverse-engineering workspace (Ghidra projects, decompiler output) - NEVER committed
 /re/
 # locally generated reference screenshots (contain game imagery) - NEVER committed

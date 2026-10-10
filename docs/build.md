@@ -54,10 +54,12 @@ cargo nextest run --workspace          # or: cargo test --workspace
 python -m pytest harness/tests/synthetic
 OPENSHERWOOD_GAME_DIR=... python -m pytest harness/tests/data     # local only
 python scripts/sync_skills.py --check
+python -m unittest discover -s scripts/tests
 python scripts/check_no_assets.py
 ```
 
-`scripts/ci_local.sh` (or `.ps1`) runs the same sequence CI runs.
+The commands above are the local verification sequence. Agent hooks provide a quick compile guard;
+see [agent-workflow.md](agent-workflow.md) for the hook and Claude/Codex skill synchronization.
 
 ## Window flags
 

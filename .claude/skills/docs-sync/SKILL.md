@@ -15,6 +15,7 @@ description: Checklist of which documents must change with which kind of code ch
 | a milestone item verified | `docs/roadmap.md` checkbox |
 | an architectural decision | new `docs/decisions/ADR-NNNN-*.md` + index |
 | a skill | `.agents/skills/<name>/SKILL.md`, then `python scripts/sync_skills.py --write` |
+| agent hooks or context handling | `docs/agent-workflow.md`, `AGENTS.md` |
 | a dependency with a new license | `docs/licenses.md` (third-party table) |
 
 Before committing: `git diff --stat` and ask "would a reader of the docs be misled by this change?" If yes, fix it
