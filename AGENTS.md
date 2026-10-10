@@ -49,6 +49,7 @@ cargo nextest run --workspace            # or cargo test --workspace
 python -m pytest harness/tests/synthetic
 python -m pytest harness/tests/data      # only with OPENSHERWOOD_GAME_DIR set; local
 python scripts/sync_skills.py --check    # --write after editing .agents/skills
+python -m unittest discover -s scripts/tests
 python scripts/check_no_assets.py
 ```
 
@@ -70,6 +71,20 @@ says why. "Implemented but not verified" is not done; say so explicitly in the c
 - When a decision is architectural, write an ADR in `docs/decisions/` and ask the other agent for review
   (skill `cross-agent-review`).
 - Roadmap checkboxes in `docs/roadmap.md` are updated when a milestone item is verified, not when code lands.
+
+## Context and handoffs (both agents)
+
+- No issue tracker: current progress, verification evidence and the next step live in a local handoff
+  (`.claude/handoffs/<task>.md`, outside git); milestones in `docs/roadmap.md`, durable findings in `docs/`,
+  procedures in canonical `.agents/skills/`.
+- Compaction preserves the task, clean-room role and subsystem exposure, branch, changed files, commits,
+  build/test commands and results, exact errors and the next step. A handoff is a checkpoint: the current
+  request and newer evidence take precedence.
+- Shared handoffs contain no private analysis from `re/`, even for analysts. Keep the two-tier wall across
+  agent changes and compaction.
+- The Claude Code project hook (`.claude/settings.json`, `scripts/agent_hooks.py`) compile-checks changed
+  Rust inputs on Stop and checks the skill mirror. It supplements the full `dev-loop`, never replaces it.
+  Details: `docs/agent-workflow.md`.
 
 ## Forbidden
 

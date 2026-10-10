@@ -65,6 +65,10 @@ This project is developed largely by AI coding agents (Claude Code and OpenAI Co
 with a rule that nothing is merged unless the automated harness verifies it: build, run headless, play,
 screenshot, compare with local captures of the original where one exists. Humans are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md).
 
+Claude and Codex share instructions and skills. Hooks and local state:
+[agent workflow](docs/agent-workflow.md). Check the tooling with
+`python scripts/sync_skills.py --check` and `python -m unittest discover -s scripts/tests`.
+
 ## License
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).

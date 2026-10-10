@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(.claude/skills/**)",
+      "Write(.claude/skills/**)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import runpy,subprocess,sys; p=subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True).strip()+'/scripts'; sys.path.insert(0,p); runpy.run_path(p+'/agent_hooks.py',run_name='__main__')\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import runpy,subprocess,sys; p=subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True).strip()+'/scripts'; sys.path.insert(0,p); runpy.run_path(p+'/agent_hooks.py',run_name='__main__')\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 ---
 name: dev-loop
-description: The mandatory build -> run -> verify -> document loop for any code change in OpenSherwood. Use before claiming any task is done, after every non-trivial edit, and when setting up a fresh machine.
+description: The mandatory build, run, verify and document loop for any code change in OpenSherwood. Use before claiming any task is done, after every non-trivial edit, and when setting up a fresh machine.
 ---
 
 # Development loop
@@ -23,6 +23,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace          # cargo test --workspace if nextest is missing
 python -m pytest harness/tests/synthetic -q
 python scripts/sync_skills.py --check
+python -m unittest discover -s scripts/tests
 python scripts/check_no_assets.py
 ```
 
@@ -34,6 +35,11 @@ python -m pytest harness/tests/data -q -k <area>
 
 For rendering changes also run `capture` on the affected scene and look at the PNG yourself (Read the image),
 then compare with the golden (`harness/tools/compare.py`).
+
+For agent-tooling changes, also exercise the configured hook commands with JSON on stdin. SessionStart
+only records the Rust baseline; Stop must report a failing compile check without looping.
+Its quick `cargo check` does not replace the checks above. With unrelated dirty Rust files, use the
+non-mutating `cargo fmt --all -- --check` and report existing failures without formatting another task's work.
 
 ## 4. Report
 
