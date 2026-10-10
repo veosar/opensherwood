@@ -1203,19 +1203,73 @@ fn print_rhp(m: &rhp::Rhp) {
         m.version, m.spok.unknown_0x00, m.spok.unknown_0x04, m.spok.unknown_0x08
     );
     let s = &m.stat;
+    let sectors: usize = s.layers.iter().map(|l| l.sectors.len()).sum();
+    let obstacles: usize = s
+        .layers
+        .iter()
+        .flat_map(|l| l.sectors.iter())
+        .map(|x| x.obstacles.len())
+        .sum();
+    let barriers: usize = s
+        .layers
+        .iter()
+        .flat_map(|l| l.sectors.iter())
+        .map(|x| x.segments.len())
+        .sum();
+    let lift_sectors = s
+        .layers
+        .iter()
+        .flat_map(|l| l.sectors.iter())
+        .filter(|x| x.kind == 1)
+        .count();
     println!(
-        "STAT: unknown ({}, {}), boundary {} points, {} segments, {} obstacles (flags {:?}), {} bytes undecoded",
-        s.unknown_0x00,
-        s.unknown_0x02,
-        s.boundary.len(),
-        s.segments.len(),
-        s.obstacles.len(),
-        s.obstacles
+        "STAT: {} layers, {sectors} sectors ({lift_sectors} lift), {obstacles} obstacles, {barriers} barrier segments, {} polygon numbers",
+        s.layers.len(),
+        s.polygon_count()
+    );
+    for (li, l) in s.layers.iter().enumerate() {
+        let per: Vec<String> = l
+            .sectors
             .iter()
-            .map(|o| o.flags)
-            .filter(|&f| f != 0)
-            .collect::<std::collections::BTreeSet<_>>(),
-        s.rest.len()
+            .enumerate()
+            .map(|(si, x)| {
+                format!(
+                    "#{}{} {}pt/{}ob",
+                    s.sector_number(li, si).unwrap_or_default(),
+                    if x.kind == 1 { "L" } else { "" },
+                    x.outline.points.len(),
+                    x.obstacles.len()
+                )
+            })
+            .collect();
+        println!("  layer {li}: {}", per.join(" "));
+    }
+    let g = &s.graph;
+    let nodes: usize = g
+        .regions
+        .iter()
+        .flatten()
+        .flatten()
+        .map(std::vec::Vec::len)
+        .sum();
+    let masked_nodes = g
+        .regions
+        .iter()
+        .flatten()
+        .flatten()
+        .flatten()
+        .filter(|n| n.node_mask != 0)
+        .count();
+    let masked_edges = g.edges.iter().filter(|e| e.edge_mask != 0).count();
+    let impassable = g.records.iter().filter(|r| !r.passable()).count();
+    println!(
+        "  graph: size classes {:?}, {nodes} nodes ({masked_nodes} masked), {} edges ({masked_edges} masked), {} records ({impassable} impassable)",
+        g.size_classes
+            .iter()
+            .map(|&(w, h)| (f32::from_bits(w), f32::from_bits(h)))
+            .collect::<Vec<_>>(),
+        g.edges.len(),
+        g.records.len()
     );
     let kinds: BTreeMap<u8, usize> = m.text.iter().fold(BTreeMap::new(), |mut acc, z| {
         *acc.entry(z.kind).or_default() += 1;
@@ -1258,13 +1312,44 @@ fn print_rhp(m: &rhp::Rhp) {
             f.line.points.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>()
         );
     }
+    let farm_doors: usize = m.farm.iter().map(|r| r.doors.len()).sum();
+    let buildings = m.farm.iter().filter(|r| r.kind != 0).count();
+    let lift_doors: usize = m.az.iter().map(|l| l.doors.len()).sum();
+    let door_types: BTreeMap<u8, usize> = m
+        .farm
+        .iter()
+        .flat_map(|r| r.doors.iter())
+        .chain(m.az.iter().flat_map(|l| l.doors.iter()))
+        .fold(BTreeMap::new(), |mut acc, d| {
+            *acc.entry(d.door_type).or_default() += 1;
+            acc
+        });
     println!(
-        "DARK: {} zones; PPPP: {} zones, {} jump lines; raw: FARM {} bytes, AZ {} bytes, TUPO {} bytes, LOUD {} bytes",
+        "FARM: {} records ({buildings} buildings), {farm_doors} doors; AZ: {} lifts, {lift_doors} doors; flat door list {} entries; types {door_types:?}",
+        m.farm.len(),
+        m.az.len(),
+        farm_doors + lift_doors
+    );
+    for (i, l) in m.az.iter().enumerate() {
+        println!(
+            "  lift {i}: sector #{} layer {} type {} ({}), {} doors, trailer {}",
+            l.sector,
+            l.layer,
+            l.lift_type,
+            match l.lift_type {
+                2 => "ladder",
+                3 => "climb",
+                _ => "stairs",
+            },
+            l.doors.len(),
+            l.unknown_trailer
+        );
+    }
+    println!(
+        "DARK: {} zones; PPPP: {} zones, {} jump lines; raw: TUPO {} bytes, LOUD {} bytes",
         m.dark.len(),
         m.pppp.zones.len(),
         m.pppp.jump_lines.len(),
-        m.farm.len(),
-        m.az.len(),
         m.tupo.len(),
         m.loud.len()
     );
@@ -1357,18 +1442,54 @@ fn draw_rhp(cv: &mut RhpCanvas, m: &rhp::Rhp) {
             [0, 255, 255, 255],
         );
     }
-    // STAT: boundary (red), segments (orange), obstacles (yellow).
-    let boundary = pts(&m.stat.boundary);
-    cv.polygon(&boundary, true, [255, 0, 0, 255]);
-    for s in &m.stat.segments {
-        cv.line(
-            (i64::from(s.a.x), i64::from(s.a.y)),
-            (i64::from(s.b.x), i64::from(s.b.y)),
-            [255, 128, 0, 255],
-        );
+    // STAT: sector outlines (red), barrier segments (orange), obstacles (yellow), graph nodes
+    // (white dots) and edges (dim white).
+    for layer in &m.stat.layers {
+        for s in &layer.sectors {
+            cv.polygon(&pts(&s.outline.points), true, [255, 0, 0, 255]);
+            for g in &s.segments {
+                cv.line(
+                    (i64::from(g.a.x), i64::from(g.a.y)),
+                    (i64::from(g.b.x), i64::from(g.b.y)),
+                    [255, 128, 0, 255],
+                );
+            }
+            for o in &s.obstacles {
+                cv.polygon(&pts(&o.polygon.points), true, [255, 255, 0, 255]);
+            }
+        }
     }
-    for o in &m.stat.obstacles {
-        cv.polygon(&pts(&o.polygon.points), true, [255, 255, 0, 255]);
+    let node_at = |n: &rhp::NodeRef| -> Option<(i64, i64)> {
+        let g = m
+            .stat
+            .graph
+            .regions
+            .get(usize::from(n.layer))?
+            .get(usize::from(n.sector))?
+            .get(usize::from(n.region))?
+            .get(usize::from(n.node))?;
+        Some((i64::from(g.x), i64::from(g.y)))
+    };
+    for e in &m.stat.graph.edges {
+        if let (Some(a), Some(b)) = (node_at(&e.a), node_at(&e.b)) {
+            cv.line(a, b, [255, 255, 255, 60]);
+        }
+    }
+    for n in m.stat.graph.regions.iter().flatten().flatten().flatten() {
+        let (x, y) = (i64::from(n.x), i64::from(n.y));
+        cv.line((x - 1, y), (x + 1, y), [255, 255, 255, 255]);
+    }
+    // Doors: the leaf outline in magenta, the A -> threshold -> B run in cyan.
+    for d in m
+        .farm
+        .iter()
+        .flat_map(|r| r.doors.iter())
+        .chain(m.az.iter().flat_map(|l| l.doors.iter()))
+    {
+        cv.polygon(&pts(&d.leaf.points), true, [255, 0, 255, 255]);
+        let p = |q: rhp::Point| (i64::from(q.x), i64::from(q.y));
+        cv.line(p(d.a), p(d.threshold), [0, 255, 255, 255]);
+        cv.line(p(d.threshold), p(d.b), [0, 255, 255, 255]);
     }
     // TEXT zones (blue), DARK zones (black), PPPP zones (magenta), jump lines (orange to white).
     for z in &m.text {

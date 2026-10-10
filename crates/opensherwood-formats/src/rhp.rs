@@ -1,7 +1,8 @@
 //! `MEUH` map files (`.rhp`): the static geometry of a location. Spec: `docs/formats/rhp.md`.
 //!
 //! Coordinates are pixels of the prerendered background (`Levels/<Variant>/<map>.map`), origin top-left.
-//! Chunks whose layout is not established (`FARM`, ` AZ `, `TUPO`, `LOUD`) are kept as raw bytes.
+//! `STAT`, `FARM` and ` AZ ` have typed navigation records, specified in
+//! `docs/original/spec-navigation.md` section 2. `TUPO` and `LOUD` remain raw.
 
 use crate::chunk;
 use crate::reader::{FormatError, Reader, tag_string};
@@ -15,13 +16,14 @@ pub const NO_AREA: u16 = 0xffff;
 /// `FACE` kind bit: the record carries a list of `u16` references in its trailer.
 pub const FACE_HAS_REFS: u8 = 0x10;
 
-/// A point in map pixels.
+/// A point in map pixels. Signed: the files store `i16` and polygons may extend past the map
+/// edge (`docs/original/spec-navigation.md` section 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Point {
     /// Column.
-    pub x: u16,
+    pub x: i16,
     /// Row.
-    pub y: u16,
+    pub y: i16,
 }
 
 /// A point in map pixels with a height.
@@ -68,42 +70,173 @@ pub struct Segment {
     pub b: Point,
 }
 
-/// An obstacle polygon of `STAT`.
+/// An obstacle polygon of a `STAT` sector: a hole in the sector's floor
+/// (`spec-navigation.md` NAV-012).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Obstacle {
+    /// Availability mask (NAV-056); 0 for most obstacles.
+    pub mask: u32,
     /// Outline (`id` / `id2` are the framing bytes).
     pub polygon: Polyline,
-    /// Bit mask; 0 for most obstacles.
-    pub flags: u32,
 }
 
-/// `STAT`: motion-area boundary, segments, obstacles and an undecoded remainder.
+/// One sector of a `STAT` layer: the walkable floor, its search barriers and its holes
+/// (`spec-navigation.md` 2.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Stat {
-    /// 2 for the forest crossroads, 7..14 for towns.
-    pub unknown_0x00: u16,
-    /// 1..10.
-    pub unknown_0x02: u16,
-    /// Always 0.
-    pub unknown_0x04: u8,
-    /// Always 0.
-    pub unknown_0x05: u32,
-    /// Id byte of the boundary (0x5a in every map).
-    pub boundary_id: u8,
-    /// Outline of the walkable ground.
-    pub boundary: Vec<Point>,
-    /// Id byte of the segment list (0x82 in every map).
-    pub segments_id: u8,
-    /// Line segments (0 in the forest maps, up to 27 in York).
+pub struct Sector {
+    /// 0 = plain sector, 1 = lift sector (` AZ ` attaches its ends).
+    pub kind: u8,
+    /// Stored; no routine read consumes it (NAV-012 note); 0 on every retail sector.
+    pub sector_mask: u32,
+    /// The walkable floor outline, in screen coordinates.
+    pub outline: Polyline,
+    /// Search barrier segments (NAV-141); empty on the forest maps.
     pub segments: Vec<Segment>,
-    /// Always 0.
-    pub unknown_after_segments: u32,
-    /// Always 0.
-    pub unknown_before_obstacles: u32,
-    /// Obstacle outlines.
+    /// 0 on every retail sector; consulted when a player character passes a door (NAV-171).
+    pub unknown_flag: u32,
+    /// Holes in the floor.
     pub obstacles: Vec<Obstacle>,
-    /// Bytes after the obstacle list (further polygons and the path graph; layout not established).
-    pub rest: Vec<u8>,
+}
+
+/// One layer of `STAT`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StatLayer {
+    /// The layer's sectors, in file order.
+    pub sectors: Vec<Sector>,
+}
+
+/// Where a graph edge's endpoint sits in the graph hierarchy (`spec-navigation.md` 2.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NodeRef {
+    /// Layer index.
+    pub layer: u16,
+    /// Sector *position within the layer* (not the polygon number).
+    pub sector: u16,
+    /// Region within the sector.
+    pub region: u16,
+    /// Node within the region.
+    pub node: u16,
+}
+
+/// A corner of the path graph (`spec-navigation.md` 2.3, NAV-021).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphNode {
+    /// One byte per size class: which of the four candidate waypoints are usable (NAV-021).
+    pub offset_bits: Vec<u8>,
+    /// Corner, column.
+    pub x: i16,
+    /// Corner, row.
+    pub y: i16,
+    /// Stored geometric input, not consumed by any routine read (NAV-025).
+    pub v1x: i16,
+    /// Idem.
+    pub v1y: i16,
+    /// Idem.
+    pub v2x: i16,
+    /// Idem.
+    pub v2y: i16,
+    /// Availability mask (NAV-056).
+    pub node_mask: u32,
+    /// Indices of the edges that **enter** this node (NAV-022).
+    pub entering_edges: Vec<u16>,
+}
+
+/// An edge of the path graph (`spec-navigation.md` 2.3, NAV-024).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphEdge {
+    /// Node A.
+    pub a: NodeRef,
+    /// Node B.
+    pub b: NodeRef,
+    /// The edge's length as the search uses it, as raw `f32` bits (the struct stays `Eq`).
+    pub cost_bits: u32,
+    /// Availability mask (NAV-056); nonzero on five maps.
+    pub edge_mask: u32,
+    /// One record index per size class.
+    pub records: Vec<u16>,
+}
+
+impl GraphEdge {
+    /// The edge cost (NAV-024).
+    #[must_use]
+    pub fn cost(&self) -> f32 {
+        f32::from_bits(self.cost_bits)
+    }
+}
+
+/// A per-size-class record of an edge: the candidate pairs joined by a straight walkable
+/// segment (`spec-navigation.md` NAV-023).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GraphRecord {
+    /// -1 = impassable for this size class (no further fields); else the OR of `bits_b`.
+    pub kind: i8,
+    /// The OR of `bits_a`.
+    pub mask: u8,
+    /// Candidate bit at node B of pair `i`.
+    pub bits_b: Vec<u8>,
+    /// Candidate bit at node A of pair `i`.
+    pub bits_a: Vec<u8>,
+}
+
+impl GraphRecord {
+    /// Whether the edge is passable for this size class.
+    #[must_use]
+    pub fn passable(&self) -> bool {
+        self.kind >= 0
+    }
+}
+
+/// The path graph stored in `STAT` after the sectors (`spec-navigation.md` 2.3).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Graph {
+    /// `(half_width, half_height)` per size class, as raw `f32` bits; one class `(6, 4)` on
+    /// every retail map.
+    pub size_classes: Vec<(u32, u32)>,
+    /// `regions[layer][sector][region]` -> the region's nodes, in file order.
+    pub regions: Vec<Vec<Vec<Vec<GraphNode>>>>,
+    /// The edge table.
+    pub edges: Vec<GraphEdge>,
+    /// The record table (one entry per edge on every retail map).
+    pub records: Vec<GraphRecord>,
+}
+
+/// `STAT` (version 2): the layers with their sectors, and the path graph
+/// (`docs/original/spec-navigation.md` 2.2 and 2.3, which supersede the earlier reading).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Stat {
+    /// Layers in file order.
+    pub layers: Vec<StatLayer>,
+    /// The path graph.
+    pub graph: Graph,
+}
+
+impl Stat {
+    /// The polygon number of sector `s` of layer `l` (NAV-011: sectors and their obstacles are
+    /// numbered together in reading order). `None` when the indices name no sector.
+    #[must_use]
+    pub fn sector_number(&self, layer: usize, sector: usize) -> Option<u32> {
+        let mut n = 0u32;
+        for (li, la) in self.layers.iter().enumerate() {
+            for (si, se) in la.sectors.iter().enumerate() {
+                if li == layer && si == sector {
+                    return Some(n);
+                }
+                n += 1 + se.obstacles.len() as u32;
+            }
+        }
+        None
+    }
+
+    /// Total number of polygon numbers the map uses (sectors plus obstacles); the level's
+    /// default sector follows this number (NAV-011).
+    #[must_use]
+    pub fn polygon_count(&self) -> u32 {
+        self.layers
+            .iter()
+            .flat_map(|l| l.sectors.iter())
+            .map(|s| 1 + s.obstacles.len() as u32)
+            .sum()
+    }
 }
 
 /// A `TEXT` zone: a polygon with a small kind number.
@@ -293,6 +426,64 @@ pub struct Pppp {
     pub jump_lines: Vec<JumpLine>,
 }
 
+/// A door record of `FARM` or ` AZ ` (`spec-navigation.md` 2.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Door {
+    /// 0 default, 3 gate, 7 gate variant, 1 / 2 building door, 4 upper end of stairs,
+    /// 5 lower end, 6 upper end of a climb (NAV-040, NAV-170).
+    pub door_type: u8,
+    /// Initial open state (1 = open).
+    pub open: u8,
+    /// The active lock set, in file order: player, lock-pick, civilian, soldier.
+    pub lock: [u8; 4],
+    /// The alternate lock set a patch swaps in (NAV-172).
+    pub alt: [u8; 4],
+    /// The door leaf outline on the background; an empty polygon means "no leaf".
+    pub leaf: Polyline,
+    /// Side-A point, inside sector A.
+    pub a: Point,
+    /// Polygon number of sector A.
+    pub sector_a: u16,
+    /// Layer of sector A.
+    pub layer_a: u16,
+    /// The threshold, between the sides.
+    pub threshold: Point,
+    /// Side-B point, inside sector B.
+    pub b: Point,
+    /// Polygon number of sector B (ignored for building and lift doors).
+    pub sector_b: u16,
+    /// Layer of sector B (ignored for building and lift doors).
+    pub layer_b: u16,
+}
+
+/// A `FARM` record: a passage (kind 0) or a building (any other kind), which is only its doors
+/// (`spec-navigation.md` NAV-043).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FarmRecord {
+    /// 0 = passage record, else a building.
+    pub kind: u8,
+    /// The record's doors.
+    pub doors: Vec<Door>,
+}
+
+/// An ` AZ ` record: a lift (stairs, ladder or climb) attached to a kind-1 sector
+/// (`spec-navigation.md` NAV-042).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lift {
+    /// Polygon number of the lift's sector.
+    pub sector: u16,
+    /// Layer (equals the sector's layer on retail data).
+    pub layer: u16,
+    /// 1 = stairs, 2 = ladder, 3 = climb; 0 is corrected to 1.
+    pub lift_type: u8,
+    /// Shape polygon (0 points on retail data).
+    pub shape: Polyline,
+    /// The lift's end doors.
+    pub doors: Vec<Door>,
+    /// Trailer word; meaning unread (`spec-navigation.md` section 9 item 8).
+    pub unknown_trailer: u16,
+}
+
 /// A parsed map.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rhp {
@@ -312,10 +503,10 @@ pub struct Rhp {
     pub faces: Vec<Face>,
     /// `FLIM`.
     pub flims: Vec<Flim>,
-    /// `FARM` body after the version word (layout not established).
-    pub farm: Vec<u8>,
-    /// ` AZ ` body after the version word (layout not established).
-    pub az: Vec<u8>,
+    /// `FARM`: passage records and buildings, in file order.
+    pub farm: Vec<FarmRecord>,
+    /// ` AZ `: lifts, in file order.
+    pub az: Vec<Lift>,
     /// `DARK`.
     pub dark: Vec<DarkZone>,
     /// `TUPO` body after the version word (layout not established beyond the leading count).
@@ -359,8 +550,8 @@ fn room(r: &Reader<'_>, n: usize, size: usize, what: &'static str) -> Result<(),
 
 fn read_point(r: &mut Reader<'_>, what: &'static str) -> Result<Point, FormatError> {
     Ok(Point {
-        x: r.u16(what)?,
-        y: r.u16(what)?,
+        x: r.i16(what)?,
+        y: r.i16(what)?,
     })
 }
 
@@ -401,50 +592,279 @@ pub fn parse_spok(body: &[u8]) -> Result<Spok, FormatError> {
     Ok(s)
 }
 
-/// Parse the `STAT` body (after the version word).
+/// Parse the `STAT` body (after the version word): the layers with their sectors
+/// (`spec-navigation.md` 2.2) followed by the path graph (2.3). The body is consumed exactly.
 pub fn parse_stat(body: &[u8]) -> Result<Stat, FormatError> {
     let mut r = Reader::new(body);
-    let unknown_0x00 = r.u16("STAT unknown_0x00")?;
-    let unknown_0x02 = r.u16("STAT unknown_0x02")?;
-    let unknown_0x04 = r.u8("STAT unknown_0x04")?;
-    let unknown_0x05 = r.u32("STAT unknown_0x05")?;
-    let boundary_id = r.u8("STAT boundary id")?;
-    let boundary = read_point_list(&mut r, "STAT boundary")?;
-    let segments_id = r.u8("STAT segments id")?;
-    let nseg = usize::from(r.u16("STAT segment count")?);
-    room(&r, nseg, 8, "STAT segment count")?;
-    let mut segments = Vec::with_capacity(nseg);
-    for _ in 0..nseg {
-        segments.push(Segment {
-            a: read_point(&mut r, "STAT segment")?,
-            b: read_point(&mut r, "STAT segment")?,
+    let nlayers = usize::from(r.u16("STAT layer count")?);
+    room(&r, nlayers, 2, "STAT layer count")?;
+    let mut layers = Vec::with_capacity(nlayers);
+    for _ in 0..nlayers {
+        let nsectors = usize::from(r.u16("STAT sector count")?);
+        room(&r, nsectors, 14, "STAT sector count")?;
+        let mut sectors = Vec::with_capacity(nsectors);
+        for _ in 0..nsectors {
+            let kind = r.u8("STAT sector kind")?;
+            let sector_mask = r.u32("STAT sector mask")?;
+            let outline = read_polyline(&mut r, "STAT sector outline")?;
+            let nseg = usize::from(r.u16("STAT barrier count")?);
+            room(&r, nseg, 8, "STAT barrier count")?;
+            let mut segments = Vec::with_capacity(nseg);
+            for _ in 0..nseg {
+                segments.push(Segment {
+                    a: read_point(&mut r, "STAT barrier")?,
+                    b: read_point(&mut r, "STAT barrier")?,
+                });
+            }
+            let unknown_flag = r.u32("STAT sector unknown_flag")?;
+            let nobst = usize::from(r.u16("STAT obstacle count")?);
+            room(&r, nobst, 8, "STAT obstacle count")?;
+            let mut obstacles = Vec::with_capacity(nobst);
+            for _ in 0..nobst {
+                let mask = r.u32("STAT obstacle mask")?;
+                let polygon = read_polyline(&mut r, "STAT obstacle")?;
+                obstacles.push(Obstacle { mask, polygon });
+            }
+            sectors.push(Sector {
+                kind,
+                sector_mask,
+                outline,
+                segments,
+                unknown_flag,
+                obstacles,
+            });
+        }
+        layers.push(StatLayer { sectors });
+    }
+    let graph = parse_graph(&mut r, &layers)?;
+    r.expect_end("STAT")?;
+    Ok(Stat { layers, graph })
+}
+
+/// The path graph that follows the sectors inside `STAT` (`spec-navigation.md` 2.3). The
+/// hierarchy is encoded independently of the polygon lists and kept as read (NAV-020); the
+/// layer and sector counts must agree with the sector lists.
+fn parse_graph(r: &mut Reader<'_>, layers: &[StatLayer]) -> Result<Graph, FormatError> {
+    let nclasses = usize::from(r.u16("STAT size class count")?);
+    room(r, nclasses, 8, "STAT size class count")?;
+    let mut size_classes = Vec::with_capacity(nclasses);
+    for _ in 0..nclasses {
+        size_classes.push((
+            r.f32("STAT size class")?.to_bits(),
+            r.f32("STAT size class")?.to_bits(),
+        ));
+    }
+    let nlayers = usize::from(r.u16("STAT graph layer count")?);
+    if nlayers != layers.len() {
+        return Err(FormatError::Invalid {
+            offset: r.pos() - 2,
+            what: "STAT graph layer count",
+            value: format!("{nlayers} (sectors gave {})", layers.len()),
         });
     }
-    let unknown_after_segments = r.u32("STAT unknown after segments")?;
-    let nobst = usize::from(r.u16("STAT obstacle count")?);
-    let unknown_before_obstacles = r.u32("STAT unknown before obstacles")?;
-    room(&r, nobst, 8, "STAT obstacle count")?;
-    let mut obstacles = Vec::with_capacity(nobst);
-    for _ in 0..nobst {
-        let polygon = read_polyline(&mut r, "STAT obstacle")?;
-        let flags = r.u32("STAT obstacle flags")?;
-        obstacles.push(Obstacle { polygon, flags });
+    let mut regions = Vec::with_capacity(nlayers);
+    for layer in layers {
+        let nsectors = usize::from(r.u16("STAT graph sector count")?);
+        if nsectors != layer.sectors.len() {
+            return Err(FormatError::Invalid {
+                offset: r.pos() - 2,
+                what: "STAT graph sector count",
+                value: format!("{nsectors} (sectors gave {})", layer.sectors.len()),
+            });
+        }
+        let mut per_sector = Vec::with_capacity(nsectors);
+        for _ in 0..nsectors {
+            let nregions = usize::from(r.u16("STAT region count")?);
+            room(r, nregions, 2, "STAT region count")?;
+            let mut per_region = Vec::with_capacity(nregions);
+            for _ in 0..nregions {
+                let nnodes = usize::from(r.u16("STAT node count")?);
+                room(r, nnodes, 20, "STAT node count")?;
+                let mut nodes = Vec::with_capacity(nnodes);
+                for _ in 0..nnodes {
+                    let nbits = usize::from(r.u16("STAT node class count")?);
+                    room(r, nbits, 1, "STAT node class count")?;
+                    let offset_bits = r.bytes(nbits, "STAT node offset bits")?.to_vec();
+                    let x = r.i16("STAT node x")?;
+                    let y = r.i16("STAT node y")?;
+                    let v1x = r.i16("STAT node v1")?;
+                    let v1y = r.i16("STAT node v1")?;
+                    let v2x = r.i16("STAT node v2")?;
+                    let v2y = r.i16("STAT node v2")?;
+                    let node_mask = r.u32("STAT node mask")?;
+                    let nedges = usize::from(r.u16("STAT node edge count")?);
+                    room(r, nedges, 2, "STAT node edge count")?;
+                    let mut entering_edges = Vec::with_capacity(nedges);
+                    for _ in 0..nedges {
+                        entering_edges.push(r.u16("STAT node edge")?);
+                    }
+                    nodes.push(GraphNode {
+                        offset_bits,
+                        x,
+                        y,
+                        v1x,
+                        v1y,
+                        v2x,
+                        v2y,
+                        node_mask,
+                        entering_edges,
+                    });
+                }
+                per_region.push(nodes);
+            }
+            per_sector.push(per_region);
+        }
+        regions.push(per_sector);
     }
-    let rest = r.bytes(r.remaining(), "STAT rest")?.to_vec();
-    Ok(Stat {
-        unknown_0x00,
-        unknown_0x02,
-        unknown_0x04,
-        unknown_0x05,
-        boundary_id,
-        boundary,
-        segments_id,
-        segments,
-        unknown_after_segments,
-        unknown_before_obstacles,
-        obstacles,
-        rest,
+    let nedges = usize::from(r.u16("STAT edge count")?);
+    room(r, nedges, 26, "STAT edge count")?;
+    let node_ref = |r: &mut Reader<'_>| -> Result<NodeRef, FormatError> {
+        Ok(NodeRef {
+            layer: r.u16("STAT edge endpoint")?,
+            sector: r.u16("STAT edge endpoint")?,
+            region: r.u16("STAT edge endpoint")?,
+            node: r.u16("STAT edge endpoint")?,
+        })
+    };
+    let mut edges = Vec::with_capacity(nedges);
+    for _ in 0..nedges {
+        let a = node_ref(r)?;
+        let b = node_ref(r)?;
+        let cost_bits = r.f32("STAT edge cost")?.to_bits();
+        let edge_mask = r.u32("STAT edge mask")?;
+        let nrec = usize::from(r.u16("STAT edge record count")?);
+        room(r, nrec, 2, "STAT edge record count")?;
+        let mut records = Vec::with_capacity(nrec);
+        for _ in 0..nrec {
+            records.push(r.u16("STAT edge record")?);
+        }
+        edges.push(GraphEdge {
+            a,
+            b,
+            cost_bits,
+            edge_mask,
+            records,
+        });
+    }
+    let nrecords = usize::from(r.u16("STAT record count")?);
+    room(r, nrecords, 1, "STAT record count")?;
+    let mut records = Vec::with_capacity(nrecords);
+    for _ in 0..nrecords {
+        let kind = r.i8("STAT record kind")?;
+        if kind < 0 {
+            records.push(GraphRecord {
+                kind,
+                ..GraphRecord::default()
+            });
+            continue;
+        }
+        let mask = r.u8("STAT record mask")?;
+        let nb = usize::from(r.u16("STAT record pair count")?);
+        room(r, nb, 1, "STAT record pair count")?;
+        let bits_b = r.bytes(nb, "STAT record bits_b")?.to_vec();
+        let na = usize::from(r.u16("STAT record pair count")?);
+        if na != nb {
+            return Err(FormatError::Invalid {
+                offset: r.pos() - 2,
+                what: "STAT record pair count",
+                value: format!("{na} (first list had {nb})"),
+            });
+        }
+        let bits_a = r.bytes(na, "STAT record bits_a")?.to_vec();
+        records.push(GraphRecord {
+            kind,
+            mask,
+            bits_b,
+            bits_a,
+        });
+    }
+    Ok(Graph {
+        size_classes,
+        regions,
+        edges,
+        records,
     })
+}
+
+fn read_door(r: &mut Reader<'_>) -> Result<Door, FormatError> {
+    let door_type = r.u8("door type")?;
+    let open = r.u8("door open")?;
+    let lock = r.array::<4>("door lock set")?;
+    let alt = r.array::<4>("door alternate lock set")?;
+    let leaf = read_polyline(r, "door leaf")?;
+    let a = read_point(r, "door side A")?;
+    let sector_a = r.u16("door sector A")?;
+    let layer_a = r.u16("door layer A")?;
+    let threshold = read_point(r, "door threshold")?;
+    let b = read_point(r, "door side B")?;
+    let sector_b = r.u16("door sector B")?;
+    let layer_b = r.u16("door layer B")?;
+    Ok(Door {
+        door_type,
+        open,
+        lock,
+        alt,
+        leaf,
+        a,
+        sector_a,
+        layer_a,
+        threshold,
+        b,
+        sector_b,
+        layer_b,
+    })
+}
+
+/// Parse the `FARM` body (after the version word): passage records and buildings
+/// (`spec-navigation.md` 2.6).
+pub fn parse_farm(body: &[u8]) -> Result<Vec<FarmRecord>, FormatError> {
+    let mut r = Reader::new(body);
+    let n = usize::from(r.u16("FARM count")?);
+    room(&r, n, 3, "FARM count")?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let kind = r.u8("FARM record kind")?;
+        let nd = usize::from(r.u16("FARM door count")?);
+        room(&r, nd, 30, "FARM door count")?;
+        let mut doors = Vec::with_capacity(nd);
+        for _ in 0..nd {
+            doors.push(read_door(&mut r)?);
+        }
+        out.push(FarmRecord { kind, doors });
+    }
+    r.expect_end("FARM")?;
+    Ok(out)
+}
+
+/// Parse the ` AZ ` body (after the version word): the lifts (`spec-navigation.md` NAV-042).
+pub fn parse_az(body: &[u8]) -> Result<Vec<Lift>, FormatError> {
+    let mut r = Reader::new(body);
+    let n = usize::from(r.u16("AZ count")?);
+    room(&r, n, 10, "AZ count")?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let sector = r.u16("AZ sector")?;
+        let layer = r.u16("AZ layer")?;
+        let lift_type = r.u8("AZ lift type")?;
+        let shape = read_polyline(&mut r, "AZ shape")?;
+        let nd = usize::from(r.u16("AZ door count")?);
+        room(&r, nd, 30, "AZ door count")?;
+        let mut doors = Vec::with_capacity(nd);
+        for _ in 0..nd {
+            doors.push(read_door(&mut r)?);
+        }
+        let unknown_trailer = r.u16("AZ trailer")?;
+        out.push(Lift {
+            sector,
+            layer,
+            lift_type,
+            shape,
+            doors,
+            unknown_trailer,
+        });
+    }
+    r.expect_end("AZ")?;
+    Ok(out)
 }
 
 /// Parse the `TEXT` body (after the version word).
@@ -789,8 +1209,8 @@ pub fn parse(data: &[u8]) -> Result<Rhp, FormatError> {
         bonds: parse_bonds(child(&c, *b"007 ", 2)?)?,
         faces: parse_faces(child(&c, *b"FACE", 2)?)?,
         flims: parse_flims(child(&c, *b"FLIM", 2)?)?,
-        farm: child(&c, *b"FARM", 4)?.to_vec(),
-        az: child(&c, *b" AZ ", 2)?.to_vec(),
+        farm: parse_farm(child(&c, *b"FARM", 4)?)?,
+        az: parse_az(child(&c, *b" AZ ", 2)?)?,
         dark: parse_dark(child(&c, *b"DARK", 2)?)?,
         tupo: child(&c, *b"TUPO", 3)?.to_vec(),
         loud: child(&c, *b"LOUD", 2)?.to_vec(),
@@ -891,6 +1311,8 @@ mod tests {
             let data: Vec<u8> = (0..n).map(|i| (i * 131 % 251) as u8).collect();
             let _ = parse(&data);
             let _ = parse_stat(&data);
+            let _ = parse_farm(&data);
+            let _ = parse_az(&data);
             let _ = parse_woaw(&data);
             let _ = parse_faces(&data);
             let _ = parse_flims(&data);

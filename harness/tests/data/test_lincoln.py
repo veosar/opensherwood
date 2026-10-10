@@ -14,13 +14,27 @@ def test_robin_can_walk_from_the_first_mission_start(binary, game_dir):
         cam = obs["camera"]
         sx, sy = robin["x"] // 256 - cam[0], robin["y"] // 256 - cam[1]
         nav = e.call("debug.nav", {"x": robin["x"] // 256, "y": robin["y"] // 256})
-        assert nav["geometry_walkable"] and nav["cell_walkable"], nav
-        assert nav["areas"] > 100, "Lincoln's projection areas must be loaded"
+        assert nav["backend"] == "layered", nav
+        assert nav["navigation"]["point"]["valid"], nav
+        assert nav["navigation"]["nodes"] > 0 and nav["navigation"]["layers"] > 1
         e.step(2, pointer_click(sx, sy, "left"))
         assert e.observe(entities=False)["selected"] is not None
+        # The old flat-grid target is outside the sector; rejecting it is part of this test.
+        invalid = e.call("debug.nav", {"x": robin["x"] // 256 - 150, "y": robin["y"] // 256 + 30})
+        assert not invalid["navigation"]["point"]["valid"]
         e.step(2, pointer_click(sx - 150, sy + 30, "left"))
         p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
-        assert p["target"] is not None and len(p["path"]) >= 1
-        e.step(300)
+        assert p["walk"] is None and (p["x"], p["y"]) == (robin["x"], robin["y"])
+        e.step(2, pointer_click(sx + 80, sy, "left"))
+        for _ in range(60):
+            e.step(1)
+            p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
+            if p["x"] != robin["x"]:
+                break
+        assert p["walk"] is not None and p["x"] != robin["x"], "snapshot must be taken during real movement"
+        snap = e.snapshot()
+        straight = e.step(100, hash_every_tick=True)["per_tick"]
         p2 = next(x for x in e.observe()["entities"] if x["kind"] == "player")
         assert abs(p2["x"] - robin["x"]) > 50 * 256, "Robin did not move"
+        e.restore(snapshot=snap["snapshot"])
+        assert e.step(100, hash_every_tick=True)["per_tick"] == straight

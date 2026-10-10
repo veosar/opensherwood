@@ -33,6 +33,19 @@ harness/       Python: RPC client, pytest suites (synthetic in CI, data-backed l
 - `snapshot()` captures every authoritative field; caches are rebuilt on `restore()`.
 - `hash()` produces subsystem hashes and a total (see ADR-0004).
 
+Navigation integration is in progress (ruleset 20, snapshot 23, hash schema 22). Map-backed
+missions attach an immutable `Arc<NavMap>`; snapshots store its dynamic availability sequences,
+door/building state, requests and actor walk/crossing state in the `navigation` hash part.
+Restore reattaches the current map before validation, including for JSON snapshots, and commits
+the restored world only after validation succeeds. Mapless scenarios reject nonempty navigation
+state. The synthetic `navigation` scenario exercises this same pipeline with generated content.
+
+The navigation phase reserves at most 2^22 units per tick, including a capped search and a
+resumable entity scan. Geometry queries charge visited cells and wall candidates; loading caps
+index registrations and graph sizes. Full budget accounting, numeric policy, retail transitions
+and script target qualifiers are still review blockers, as listed in the
+[navigation disposition](decisions/reviews/2026-10-02-navigation-disposition.md).
+
 ## Script VM (`opensherwood-core::vm`, ADR-0008)
 
 A mission's compiled script is translated by `opensherwood-script` into a `Program` (classes with variables,

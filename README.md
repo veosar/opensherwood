@@ -20,6 +20,11 @@ climbing, action icons, movies, the
 Sherwood camp between missions. The first mission can be won through play (a walk to one scroll: `docs/original/h01-win-path.md`), with the outcome marked as resting on hypotheses. See
 [docs/roadmap.md](docs/roadmap.md) and the [status reports](docs/status/).
 
+Navigation rebuild in progress (2026-10-02): the asset-free `navigation` harness scenario exercises
+canonical clicks, a layered passage, queued paths, snapshot continuation and replay. Retail stairs,
+building entry/exit and campaign completion remain unverified; see the
+[review disposition](docs/decisions/reviews/2026-10-02-navigation-disposition.md).
+
 ## Goals
 
 1. Play the complete original campaign (30+ missions) with the original data, bit-for-bit faithful where it matters

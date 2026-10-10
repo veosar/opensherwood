@@ -18,6 +18,8 @@ use crate::fixed::Fixed;
 use crate::geom::Geometry;
 use crate::hash::{Encoder, HASH_SCHEMA_VERSION, Hashes, total};
 use crate::input::{Button, InputEvent, Key, button_tag, encode_key};
+use crate::nav::map::{DoorSide, NavContent, NavMap};
+use crate::nav::state::{NavState, NavWalk};
 use crate::nav::{DEFAULT_SEARCH_WORK, NavError, NavGrid};
 use crate::rng::Rng;
 use crate::vm::{
@@ -265,6 +267,32 @@ pub struct Entity {
     /// a living enemy soldier.
     #[serde(default)]
     pub pending_stimulus: Option<PendingStimulus>,
+    /// The layer the character is on (`spec-navigation.md` NAV-003, NAV-010). Only a door or a
+    /// lift end changes it (NAV-171, ANIM-311); `layer_count` means "inside a building".
+    #[serde(default)]
+    pub layer: u32,
+    /// The polygon number of the sector the character stands on (NAV-011); the map's default
+    /// sector when it stands on none, a building's own number when it is inside one.
+    #[serde(default)]
+    pub sector: u32,
+    /// The projection area the character stands on (NAV-003), or [`NO_AREA`]: a bond crossing
+    /// swaps it (NAV-160) and it decides the height and the ground kind.
+    #[serde(default = "default_no_area")]
+    pub area: u32,
+    /// The door this character is crossing and the side it came from, while the crossing runs
+    /// (NAV-171 / NAV-200; part of the snapshot set of 8.2).
+    #[serde(default)]
+    pub crossing: Option<(u32, DoorSide, bool)>,
+    /// The walk sequence of NAV-130 the current order turned into, while it runs.
+    #[serde(default)]
+    pub walk: Option<NavWalk>,
+}
+
+/// The area index meaning "on no projection area" (`spec-navigation.md` NAV-002).
+pub const NO_AREA: u32 = 0xffff;
+
+fn default_no_area() -> u32 {
+    NO_AREA
 }
 
 impl Entity {
@@ -514,6 +542,20 @@ pub struct ActorSpec {
     /// Knock-out resistance (`profile.md`, SD `p4`; 0 for actors without a profile value).
     #[serde(default)]
     pub knockout_resistance: i32,
+    /// The placement qualifier's projection area (`docs/formats/rhm.md`, Placement `0x0c`:
+    /// `-1` = none, `spec-navigation.md` NAV-003).
+    #[serde(default = "default_no_area_i32")]
+    pub area: i32,
+    /// The placement qualifier's sector: a polygon number (NAV-011).
+    #[serde(default)]
+    pub sector: u32,
+    /// The placement qualifier's layer (NAV-010).
+    #[serde(default)]
+    pub layer: u32,
+}
+
+fn default_no_area_i32() -> i32 {
+    -1
 }
 
 /// A mission ready to be simulated: map size, walkable geometry and actors. Built by the app from
@@ -522,8 +564,13 @@ pub struct ActorSpec {
 pub struct MissionSpec {
     /// Map size in pixels.
     pub map: MapInfo,
-    /// Walkable ground and obstacles.
+    /// Walkable ground and obstacles: the flat fallback the synthetic movement uses.
     pub geometry: Geometry,
+    /// The map's navigation content (`spec-navigation.md` 2.2, 2.3, 2.6): the layers with their
+    /// sectors, the corner graph, the doors, the buildings and their tenants, the lifts, the
+    /// bonds and the jump zones. `None` keeps the synthetic cell grid.
+    #[serde(skip)]
+    pub nav: Option<NavContent>,
     /// Actors in file order (order is authoritative).
     pub actors: Vec<ActorSpec>,
     /// The mission script translated to the core IR (`None` = no script: the mission runs
@@ -942,6 +989,17 @@ pub struct World {
     /// Static animation data attached by the app (not part of the snapshot; re-attached on load).
     #[serde(skip)]
     pub catalog: Catalog,
+    /// The map's navigation content (`spec-navigation.md` 2.2, 2.3, 2.6): layers, sectors, the
+    /// corner graph, doors, buildings and lifts. Content, not state: attached by the app like
+    /// the catalog and re-attached after a restore, never serialised. Its presence is what
+    /// selects the corner-graph pipeline over the synthetic grid.
+    #[serde(skip)]
+    pub navmap: Option<std::sync::Arc<NavMap>>,
+    /// The dynamic navigation state (`spec-navigation.md` 8.2): the per-sector availability
+    /// words, the door and building state and the path-request queue. Authoritative: part of
+    /// the snapshot and of the `world` hash.
+    #[serde(default)]
+    pub nav_state: NavState,
 }
 
 /// The entity index each simulation phase resumes from when its grant of the tick's budget
@@ -1281,7 +1339,7 @@ impl ObstacleIndex {
 /// `fault` by `call_stack_overflow`; obstacle half extents, entity sizes and the obstacle
 /// index's cell occupancy are bounded; 20: the measured pick-ups and view cone (ruleset 17):
 /// entity `pickup_ticks`, `pickup` may name a scroll, the VM's `scroll_presence` is gone).
-pub const SNAPSHOT_VERSION: u32 = 22;
+pub const SNAPSHOT_VERSION: u32 = 23;
 
 impl World {
     /// Create a world for a scenario that needs no external data.
@@ -1289,6 +1347,15 @@ impl World {
         match scenario {
             Scenario::Synthetic(ref name) if name == "corridor" => {
                 Self::build(scenario, seed, None)
+            }
+            Scenario::Synthetic(ref name) if name == "navigation" => {
+                let mut world = Self::build(scenario, seed, None)?;
+                world.entities.truncate(1);
+                world.entities[0].x = Fixed::from_int(100);
+                world.entities[0].y = Fixed::from_int(100);
+                world.goal = (Fixed::from_int(560), Fixed::from_int(100));
+                world.attach_navmap(&crate::nav::fixtures::scenario())?;
+                Ok(world)
             }
             Scenario::Synthetic(name) => Err(format!("unknown synthetic scenario '{name}'")),
             Scenario::MapView { .. } => {
@@ -1324,6 +1391,7 @@ impl World {
         let mut world = Self::build(scenario, seed, Some(spec.map))?;
         world.set_geometry(spec.geometry.clone())?;
         world.entities.clear();
+        let nav = spec.nav.clone();
         world.goal = (Fixed::from_int(-1000), Fixed::from_int(-1000));
         let f = Fixed::from_int;
         for (i, a) in spec.actors.iter().enumerate() {
@@ -1401,7 +1469,17 @@ impl World {
                 purses: 0,
                 pickup: None,
                 pickup_ticks: 0,
+                layer: a.layer,
+                sector: a.sector,
+                area: if a.area < 0 { NO_AREA } else { a.area as u32 },
+                crossing: None,
+                walk: None,
             });
+        }
+        // The map's navigation content, before the script runs: the door natives and the
+        // building natives address it (`spec-navigation.md` section 6).
+        if let Some(nav) = nav.as_ref() {
+            world.attach_navmap(nav)?;
         }
         // The original opens a mission with the camera on the hero.
         if let Some(hero) = world.entities.iter().find(|e| e.kind == EntityKind::Player) {
@@ -1501,6 +1579,22 @@ impl World {
         target: (Fixed, Fixed),
         budget: &mut u64,
     ) -> Result<(), NavError> {
+        // A world built from a map walks through the corner-graph pipeline of
+        // `spec-navigation.md` (NAV-100, NAV-130, NAV-140): the route across sectors, the walk
+        // sequence and a path request whose result arrives two ticks later (8.1). The cell grid
+        // below is the synthetic engine's, for worlds that have no map at all.
+        if self.navmap.is_some() {
+            // Reserve a bounded route query before changing the old order. AI callers can
+            // retry an underfunded order without losing its current navigation sequence.
+            if !charge_budget(budget, crate::walk::ORDER_NAV_WORK) {
+                return Err(NavError::WorkExhausted);
+            }
+            if !self.vm_touch_navigation() {
+                return Err(NavError::WorkExhausted);
+            }
+            self.nav_plan(index, target);
+            return Ok(());
+        }
         let Some(nav) = self.nav.as_ref() else {
             self.entities[index].target = None;
             self.entities[index].path.clear();
@@ -1648,6 +1742,11 @@ impl World {
             purses: 0,
             pickup: None,
             pickup_ticks: 0,
+            layer: 0,
+            sector: 0,
+            area: NO_AREA,
+            crossing: None,
+            walk: None,
         });
         entities.push(Entity {
             id: id(1),
@@ -1695,6 +1794,11 @@ impl World {
             purses: 0,
             pickup: None,
             pickup_ticks: 0,
+            layer: 0,
+            sector: 0,
+            area: NO_AREA,
+            crossing: None,
+            walk: None,
         });
         let obstacles: &[(i32, i32, i32, i32)] = if map.is_some() {
             &[]
@@ -1748,6 +1852,11 @@ impl World {
                 purses: 0,
                 pickup: None,
                 pickup_ticks: 0,
+                layer: 0,
+                sector: 0,
+                area: NO_AREA,
+                crossing: None,
+                walk: None,
             });
         }
         let geometry = Geometry::default();
@@ -1781,6 +1890,8 @@ impl World {
             nav: Some(nav),
             obstacles: None,
             catalog: Catalog::default(),
+            navmap: None,
+            nav_state: NavState::default(),
         })
     }
 
@@ -1823,6 +1934,7 @@ impl World {
     /// range and `elapsed` below the frame duration; nothing falls back silently. Without a
     /// catalog (synthetic worlds, no sprite bank) only the size bounds apply.
     pub fn validate_with(&self, catalog: &Catalog) -> Result<(), String> {
+        self.check_navigation()?;
         if self.viewport.0 == 0
             || self.viewport.1 == 0
             || self.viewport.0 > MAX_VIEWPORT
@@ -2668,8 +2780,12 @@ impl World {
             // The run replaces the walk the first click ordered; a third click starts over.
             self.last_ground_click = None;
             let e = &mut self.entities[i];
-            if e.target.is_some() {
+            if e.target.is_some() || e.walk.is_some() {
                 e.gait = Gait::Run;
+                if let Some(w) = e.walk.as_mut() {
+                    w.gait = Gait::Run.tag();
+                    w.run = true;
+                }
             }
         } else {
             self.last_ground_click = Some(GroundClick {
@@ -2690,6 +2806,7 @@ impl World {
                 if self.entities[i].ai_state == AiState::Fighting {
                     self.leave_fight(i);
                 }
+                self.nav_cancel_walk(i);
                 let e = &mut self.entities[i];
                 e.target = None;
                 e.path.clear();
@@ -2805,12 +2922,28 @@ impl World {
     /// could not be built), the animation advance, the action-change scan and the delivery of
     /// the changes to the script, and the synthetic objective.
     pub(crate) fn sim_run(&mut self, left: &mut u64) {
+        // P1 and P2 of the navigation schedule (`spec-navigation.md` 8.1): a completed result
+        // is consumed, then the queue head is dispatched. Both run before the element updates,
+        // so a request submitted during this tick's P3 is dispatched at P2 of the next.
         let Some(index) = self.sim_index(left) else {
             return;
         };
+        // Map navigation has its own bounded phase. Grid-only scenarios retain their grants.
+        let nav_grant = if self.navmap.is_some() {
+            (*left).min(1 << 22)
+        } else {
+            0
+        };
+        *left -= nav_grant;
+        if nav_grant >= crate::walk::NAV_TICK_WORK {
+            self.nav_tick();
+        }
         let indexed = self.refresh_obstacle_index(&index.obstacles);
         let mut sim = SimBudget::new(*left);
         self.stealth_tick(&index, &mut sim);
+        // P3: the walk sequences of NAV-130 advance (they may submit requests, which join the
+        // queue for the next tick's P2).
+        self.nav_drive(nav_grant.saturating_sub(crate::walk::NAV_TICK_WORK));
         let mut grant = sim.grant(SIM_QUOTA_PROGRAMS);
         self.program_walks(&index.idle_guards, &mut grant);
         sim.settle(grant);
@@ -2899,6 +3032,23 @@ impl World {
             };
             let walkable = if obstructed {
                 Some(false)
+            } else if let Some(map) = self.navmap.as_ref() {
+                if e.crossing.is_some() {
+                    // Crossing actions deliberately pass the sector boundary; admission was
+                    // checked when this action started, and the marker changes the layer.
+                    Some(true)
+                } else {
+                    let free = crate::nav::search::corridor_free(
+                        map,
+                        &self.nav_state.avail,
+                        e.layer,
+                        (e.x.to_f32(), e.y.to_f32()),
+                        (nx.to_f32(), ny.to_f32()),
+                        map.half_size(0),
+                        budget,
+                    );
+                    if *budget == 0 { None } else { Some(free) }
+                }
             } else {
                 self.geometry
                     .is_walkable_within(nx.round(), ny.round(), budget)
@@ -2908,12 +3058,15 @@ impl World {
                 break;
             };
             let blocked = obstructed || !walkable;
-            let rng = &mut self.rng;
             let e = &mut self.entities[i];
             if dx.0 != 0 || dy.0 != 0 {
                 e.facing256 = facing_of(dx, dy);
             }
             if blocked {
+                if e.walk.is_some() {
+                    self.nav_fail_walk(i);
+                    continue;
+                }
                 e.target = None;
                 e.path.clear();
                 e.gait = Gait::Walk;
@@ -2926,8 +3079,17 @@ impl World {
                 }
                 continue;
             }
+            let from = (e.x, e.y);
             e.x = nx.clamp(Fixed::ZERO, w);
             e.y = ny.clamp(Fixed::ZERO, h);
+            let to = (e.x, e.y);
+            if from != to {
+                // The bonds the step crossed swap the character's projection area
+                // (`spec-navigation.md` NAV-160, ANIM-243).
+                self.nav_cross_bonds(i, from, to);
+            }
+            let rng = &mut self.rng;
+            let e = &mut self.entities[i];
             if (e.x, e.y) == (tx, ty) {
                 if !e.path.is_empty() {
                     e.path.remove(0);
@@ -2935,7 +3097,7 @@ impl World {
                 if e.path.is_empty() && (e.x, e.y) == (fx, fy) {
                     e.target = None;
                     e.gait = Gait::Walk;
-                    if e.kind == EntityKind::Guard {
+                    if e.kind == EntityKind::Guard && e.walk.is_none() {
                         if e.program.is_some() {
                             // Arrived: the `GoTo` is complete.
                             e.pc = e.pc.saturating_add(1);
@@ -3070,6 +3232,7 @@ impl World {
                 && e.active
                 && e.kind == EntityKind::Guard
                 && e.target.is_none()
+                && e.walk.is_none()
                 && e.ai_state == AiState::Patrol)
             {
                 continue;
@@ -3102,9 +3265,13 @@ impl World {
                 break;
             }
             let e = &mut self.entities[i];
-            if e.target.is_some() {
+            if e.target.is_some() || e.walk.is_some() {
                 // Program walks use the gait the script set (native 140).
                 e.gait = e.npc_gait;
+                if let Some(walk) = e.walk.as_mut() {
+                    walk.gait = e.gait.tag();
+                    walk.run = e.gait == Gait::Run;
+                }
             } else {
                 // Unreachable point (or unreachable under the budget): skip it.
                 if e.program.is_some() {
@@ -3153,7 +3320,16 @@ impl World {
     /// is the caller's check: the core cannot fingerprint content.
     pub fn restore(&mut self, snap: &Snapshot) -> Result<(), String> {
         snap.check_versions()?;
-        snap.world.validate_with(&self.catalog)?;
+        let mut candidate = snap.world.clone();
+        // JSON deliberately omits static content. Reattach it before validation, never
+        // trust an in-memory snapshot's content pointer or skip navigation validation.
+        candidate.navmap.clone_from(&self.navmap);
+        if candidate.navmap.is_some()
+            && (candidate.scenario != self.scenario || candidate.map_size != self.map_size)
+        {
+            return Err("navigation content does not match the snapshot scenario".into());
+        }
+        candidate.validate_with(&self.catalog)?;
         let same_geometry = self.nav.is_some()
             && self.geometry == snap.world.geometry
             && self.map_size == snap.world.map_size;
@@ -3171,7 +3347,7 @@ impl World {
         };
         let catalog = std::mem::take(&mut self.catalog);
         let nav = built.or_else(|| self.nav.take());
-        *self = snap.world.clone();
+        *self = candidate;
         self.catalog = catalog;
         self.nav = nav;
         // The VM's copy of the tick counter is a mirror, not state: it is not serialised.
@@ -3439,6 +3615,33 @@ impl World {
         parts.insert("scripts".into(), s.finish());
         parts.insert("scheduler".into(), q.finish());
 
+        // Navigation (`spec-navigation.md` 8.2): the availability of every sector with both
+        // ordered sequences of every collection, the door and building state, the per-character
+        // layer, sector, area and crossing, and the request queue with its completed and
+        // failed-pending entries.
+        let mut n = Encoder::new("navigation");
+        self.nav_state.encode(&mut n);
+        n.u32(self.entities.len() as u32);
+        for e in &self.entities {
+            n.u32(e.layer).u32(e.sector).u32(e.area);
+            match e.crossing {
+                Some((d, side, exiting)) => n.u8(1).u32(d).u8(side.tag()).u8(u8::from(exiting)),
+                None => n.u8(0),
+            };
+            match &e.walk {
+                Some(w) => {
+                    n.u8(1).u32(w.cursor).u8(w.gait).u8(u8::from(w.run));
+                    n.u8(u8::from(w.submitted)).u32(w.steps.len() as u32);
+                    for step in &w.steps {
+                        step.encode(&mut n);
+                    }
+                    &mut n
+                }
+                None => n.u8(0),
+            };
+        }
+        parts.insert("navigation".into(), n.finish());
+
         // The campaign subsystem does not exist yet: it hashes to a versioned constant so the
         // set of parts is stable across milestones and its appearance is a visible ruleset change.
         let mut e = Encoder::new("campaign");
@@ -3616,7 +3819,7 @@ mod tests {
     }
 
     const GOLDEN_CORRIDOR_TOTAL: &str =
-        "0f5accd8622cc9b432e27bdc51cdbed8762201dd0617e0761c249c06ae92c93f";
+        "78c2ee1ee46f607f2d91c76975c1b35fcf109d3851e1ec0464fa98db7ee815b9";
 
     #[test]
     fn every_authoritative_field_changes_some_hash() {
@@ -4502,6 +4705,7 @@ mod tests {
     #[test]
     fn mission_spec_builds_actors_in_order() {
         let spec = MissionSpec {
+            nav: None,
             map: MapInfo {
                 width: 1000,
                 height: 800,
@@ -4523,6 +4727,9 @@ mod tests {
                     active: true,
                     hit_points: 100,
                     knockout_resistance: 0,
+                    area: -1,
+                    sector: 0,
+                    layer: 0,
                 },
                 ActorSpec {
                     profile: "Soldier A00".into(),
@@ -4535,6 +4742,9 @@ mod tests {
                     active: true,
                     hit_points: 80,
                     knockout_resistance: 0,
+                    area: -1,
+                    sector: 0,
+                    layer: 0,
                 },
             ],
             script: None,
@@ -4584,6 +4794,9 @@ mod tests {
             active: true,
             hit_points: 100,
             knockout_resistance: 0,
+            area: -1,
+            sector: 0,
+            layer: 0,
         }];
         for (i, p) in programs.iter().enumerate() {
             actors.push(ActorSpec {
@@ -4597,9 +4810,13 @@ mod tests {
                 active: true,
                 hit_points: 80,
                 knockout_resistance: 0,
+                area: -1,
+                sector: 0,
+                layer: 0,
             });
         }
         let spec = MissionSpec {
+            nav: None,
             map: MapInfo {
                 width: 1000,
                 height: 800,

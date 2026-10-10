@@ -54,6 +54,26 @@ impl Fixed {
         self.0 >> Self::SHIFT
     }
 
+    /// The value as `f32`. Exact for every raw value below 2^24 in magnitude, which every map
+    /// coordinate is (the largest retail map is under 2^12 px, so 2^20 in raw units): the
+    /// navigation search works in `f32` (`spec-navigation.md` 8.5) and its inputs must survive
+    /// the conversion unchanged.
+    #[must_use]
+    pub fn to_f32(self) -> f32 {
+        self.0 as f32 / 256.0
+    }
+
+    /// From an `f32`, rounding to the nearest 1/256 and saturating at the extremes. The
+    /// navigation waypoints are integers or the request's own start and goal, so the round trip
+    /// through [`Fixed::to_f32`] is exact for them.
+    #[must_use]
+    pub fn from_f32(v: f32) -> Self {
+        if !v.is_finite() {
+            return Fixed::ZERO;
+        }
+        Fixed(sat((f64::from(v) * 256.0).round() as i64))
+    }
+
     /// Nearest integer (saturating at the extremes).
     #[must_use]
     pub fn round(self) -> i32 {

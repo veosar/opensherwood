@@ -985,6 +985,7 @@ impl World {
                 && e.active
                 && e.kind == EntityKind::Guard
                 && e.target.is_none()
+                && e.walk.is_none()
                 && e.ai_state == AiState::Patrol
             {
                 index.idle_guards.push(i);
@@ -1117,8 +1118,12 @@ impl World {
             return Walk::Exhausted;
         }
         let e = &mut self.entities[i];
-        if e.target.is_some() {
+        if e.target.is_some() || e.walk.is_some() {
             e.gait = gait;
+            if let Some(w) = e.walk.as_mut() {
+                w.gait = gait.tag();
+                w.run = gait == Gait::Run;
+            }
             Walk::Planned
         } else {
             Walk::Unreachable
@@ -1292,7 +1297,9 @@ impl World {
                 }
                 Some((p, Channel::Noise { .. })) => self.charge(i, p, budget),
                 None => match state {
-                    AiState::Returning if self.entities[i].target.is_none() => {
+                    AiState::Returning
+                        if self.entities[i].target.is_none() && self.entities[i].walk.is_none() =>
+                    {
                         self.resume_patrol(i);
                         true
                     }
@@ -1438,7 +1445,7 @@ impl World {
                 self.entities[i].figure.is_none() && behind && can_punch(self, &self.entities[i]);
             let reach = if punching { PUNCH_REACH } else { FIGHT_RANGE };
             if Fixed::length(dx, dy) > Fixed::from_int(reach) {
-                if self.entities[i].target.is_none() {
+                if self.entities[i].target.is_none() && self.entities[i].walk.is_none() {
                     match self.walk_to(i, (vx, vy), Gait::Walk, budget) {
                         Walk::Planned => {}
                         // Unreachable: the order is dropped.
@@ -3127,6 +3134,9 @@ mod tests {
             active: true,
             hit_points: 100,
             knockout_resistance: 0,
+            area: -1,
+            sector: 0,
+            layer: 0,
         };
         let actors = vec![
             hero(100),
@@ -3142,9 +3152,13 @@ mod tests {
                 active: true,
                 hit_points: 80,
                 knockout_resistance: 0,
+                area: -1,
+                sector: 0,
+                layer: 0,
             },
         ];
         let spec = MissionSpec {
+            nav: None,
             map: MapInfo {
                 width: 1000,
                 height: 800,
@@ -3631,6 +3645,9 @@ mod tests {
                 active: true,
                 hit_points: 100,
                 knockout_resistance: 0,
+                area: -1,
+                sector: 0,
+                layer: 0,
             });
         }
         for i in 0..guards {
@@ -3645,9 +3662,13 @@ mod tests {
                 active: true,
                 hit_points: 80,
                 knockout_resistance: 0,
+                area: -1,
+                sector: 0,
+                layer: 0,
             });
         }
         let spec = MissionSpec {
+            nav: None,
             map: MapInfo {
                 width: 1000,
                 height: 800,
@@ -3855,9 +3876,13 @@ mod tests {
                 active: true,
                 hit_points: 80,
                 knockout_resistance: 0,
+                area: -1,
+                sector: 0,
+                layer: 0,
             })
             .collect();
         let spec = MissionSpec {
+            nav: None,
             map: MapInfo {
                 width: 1000,
                 height: 800,

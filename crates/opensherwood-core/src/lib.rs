@@ -19,6 +19,7 @@ pub mod natives;
 pub mod nav;
 pub mod rng;
 pub mod vm;
+pub mod walk;
 pub mod world;
 
 pub use ai::{AiState, FightPose, Figure};
@@ -35,7 +36,7 @@ pub use world::{
 };
 
 /// Ruleset version: bump when simulation semantics change so old replays/hashes are not compared.
-pub const RULESET_VERSION: u32 = 19;
+pub const RULESET_VERSION: u32 = 20;
 
 /// The simulation's tick rate as a rational in Hz: one **logic frame** of 46.875 ms (ADR-0010,
 /// `docs/original/spec-script-vm.md` VM-100). 64 frames span exactly 3 s. Everything the

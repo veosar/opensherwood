@@ -1422,6 +1422,51 @@ pub enum Assumption {
     /// an arrow pile adding its stack (`unknown_b`) to the arrows are measured and record
     /// nothing; native 235 reading the taken flag records `Policy(235)` itself.
     ItemPickup,
+    /// The goal check's decision tail of `spec-navigation.md` NAV-141 step 0 is unread: the
+    /// goal is inadmissible iff any enabled wall segment meets the goal box (8.7
+    /// `NavGoalCheckTail`).
+    NavGoalCheckTail,
+    /// The node reset before a search is unread (8.7 `NavNodeReset`): every node's search state
+    /// is cleared before each search.
+    NavNodeReset,
+    /// The `TUPO` patch record is unread (8.7 `NavPatches`): the patches occupy their element
+    /// slots and their active flag works, but a patch has no geometry and no effect - no
+    /// click target, no availability toggle, no lock-set swap, no bond or leaf switch.
+    NavPatches,
+    /// `PPPP` is unread (8.7 `NavJumpZones`): a jump-zone hit walks to the clicked point on the
+    /// candidate sector and jump-line entries of the door list refuse every admission query.
+    NavJumpZones,
+    /// The player's door interaction is unread (8.7 `NavDoorInteraction`): a click on a leaf
+    /// routes to the door with rule 3 waived and opens it on arrival; nothing closes a door.
+    NavDoorInteraction,
+    /// The ladder and climb crossings are unread (8.7 `NavLadderClimb`): they are executed as
+    /// stairs, with the admission of NAV-192 unchanged.
+    NavLadderClimb,
+    /// Whether a failed-pending request is searched again inside its window is unread (8.7
+    /// `NavFailedRerun`): it is not.
+    NavFailedRerun,
+    /// The request's reference box is unread (8.7 `NavReferenceBox`): non-player requests keep
+    /// priority 1, with no promotion or demotion.
+    NavReferenceBox,
+    /// Which level flag selects the alternate click resolution is unread (8.7
+    /// `NavAltResolution`): it is never selected.
+    NavAltResolution,
+    /// The pair of actions a player gets in a sector whose `unknown_flag` is set is unread
+    /// (8.7 `NavUnknownFlagActions`): the plain pair is played.
+    NavUnknownFlagActions,
+    /// Where a character's abilities come from is not settled by any reviewed specification,
+    /// yet NAV-170 and NAV-192 test ability 0x1c (lock-picking) and 0x15 (climbing). This
+    /// engine gives every player character the climbing ability and no other, so that the
+    /// climb lifts of NAV-192 kind 3 are passable and the lock-pick branch of NAV-130 never
+    /// arises.
+    NavAbilities,
+    /// The availability order of NAV-058 is not reproduced: OpenSherwood keeps every
+    /// collection in file order filtered by availability (8.3, a deviation pending approval).
+    NavAvailabilityOrder,
+    /// The original's off-thread path worker is replaced by the deterministic schedule of 8.1
+    /// (one dispatch per tick, delivery on the next, a work budget), a deviation pending
+    /// approval.
+    NavSchedulingPolicy,
 }
 
 /// The sequence-element category whose completion rule [`Assumption::ElementDuration`] names
@@ -1532,6 +1577,19 @@ impl Assumption {
             Assumption::ElementAdmission => e.u8(27),
             Assumption::ElementDuration(c) => e.u8(28).u8(c.tag()),
             Assumption::UnresolvedEffect(id) => e.u8(29).u32(id),
+            Assumption::NavGoalCheckTail => e.u8(30),
+            Assumption::NavNodeReset => e.u8(31),
+            Assumption::NavPatches => e.u8(32),
+            Assumption::NavJumpZones => e.u8(33),
+            Assumption::NavDoorInteraction => e.u8(34),
+            Assumption::NavLadderClimb => e.u8(35),
+            Assumption::NavFailedRerun => e.u8(36),
+            Assumption::NavReferenceBox => e.u8(37),
+            Assumption::NavAltResolution => e.u8(38),
+            Assumption::NavUnknownFlagActions => e.u8(39),
+            Assumption::NavAbilities => e.u8(40),
+            Assumption::NavAvailabilityOrder => e.u8(41),
+            Assumption::NavSchedulingPolicy => e.u8(42),
         };
     }
 
@@ -1757,6 +1815,8 @@ pub struct Counters {
 /// quiescent, no transaction is open between callbacks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
+    navigation: Option<crate::nav::state::NavState>,
+    gameplay_rng: Option<Rng>,
     instances: Vec<Instance>,
     globals: Vec<i32>,
     mission_vars: Vec<i32>,
@@ -2086,6 +2146,8 @@ impl VmState {
             return None;
         }
         Some(Transaction {
+            navigation: None,
+            gameplay_rng: None,
             instances: self.instances.clone(),
             globals: self.globals.clone(),
             mission_vars: self.mission_vars.clone(),
@@ -3155,6 +3217,34 @@ impl World {
         }
         self.selected = t.selected;
         self.camera = t.camera;
+        if let Some(nav) = t.navigation {
+            self.nav_state = nav;
+        }
+        if let Some(rng) = t.gameplay_rng {
+            self.rng = rng;
+        }
+    }
+
+    /// Capture navigation lazily before a script mutates a queue, door or building. A retried
+    /// callback must roll those effects and its building-entry random draws back with actors.
+    pub(crate) fn vm_touch_navigation(&mut self) -> bool {
+        let needs = self
+            .vm
+            .as_ref()
+            .and_then(|vm| vm.transaction.as_ref())
+            .is_some_and(|t| t.navigation.is_none());
+        if !needs {
+            return true;
+        }
+        let cost = self.nav_state.capture_cost();
+        let vm = self.vm.as_mut().expect("transaction belongs to VM");
+        if !charge(vm, cost) {
+            return false;
+        }
+        let t = vm.transaction.as_mut().expect("checked transaction");
+        t.navigation = Some(self.nav_state.clone());
+        t.gameplay_rng = Some(self.rng.clone());
+        true
     }
 
     /// A native is about to mutate entity `i`: when a transaction is open, keep a copy of the
@@ -3431,7 +3521,10 @@ impl World {
                 let Some(e) = self.entities.get(entity as usize) else {
                     return true;
                 };
-                !e.alive || !e.active || e.target != Some((Fixed::from_int(x), Fixed::from_int(y)))
+                !e.alive
+                    || !e.active
+                    || (e.walk.is_none()
+                        && e.target != Some((Fixed::from_int(x), Fixed::from_int(y))))
             }
             SeqToken::Animation { .. } => true,
         }
@@ -4173,6 +4266,9 @@ pub(crate) mod tests {
             active: true,
             hit_points: 100,
             knockout_resistance: 0,
+            area: -1,
+            sector: 0,
+            layer: 0,
         }];
         for i in 0..guards {
             actors.push(ActorSpec {
@@ -4186,9 +4282,13 @@ pub(crate) mod tests {
                 active: true,
                 hit_points: 80,
                 knockout_resistance: 0,
+                area: -1,
+                sector: 0,
+                layer: 0,
             });
         }
         let spec = MissionSpec {
+            nav: None,
             map: MapInfo {
                 width: 1000,
                 height: 800,
@@ -7359,8 +7459,12 @@ pub(crate) mod tests {
             active: true,
             hit_points: 100,
             knockout_resistance: 0,
+            area: -1,
+            sector: 0,
+            layer: 0,
         };
         MissionSpec {
+            nav: None,
             map: MapInfo {
                 width: 1000,
                 height: 800,

@@ -91,6 +91,12 @@ pub enum NavError {
     },
     /// A search or smoothing ran out of its work budget.
     WorkExhausted,
+    /// The map's navigation content is inconsistent: the graph does not match the sector lists,
+    /// an index names nothing, or the level rectangle is empty (`nav::map::NavMap::build`).
+    MapContent {
+        /// What was wrong.
+        what: &'static str,
+    },
 }
 
 impl fmt::Display for NavError {
@@ -110,6 +116,7 @@ impl fmt::Display for NavError {
                 write!(f, "cannot allocate a navigation structure of {cells} cells")
             }
             Self::WorkExhausted => write!(f, "navigation work budget exhausted"),
+            Self::MapContent { what } => write!(f, "map navigation content: {what}"),
         }
     }
 }

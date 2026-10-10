@@ -214,7 +214,7 @@ fn every_retail_mission_binds_with_the_player_slots_at_the_tail() {
             assert!(matches!(
                 binding.elements[106].1,
                 Element::Item {
-                    kind: ItemKind::Unknown(8),
+                    kind: ItemKind::Pouch,
                     stack: 1,
                     ..
                 }

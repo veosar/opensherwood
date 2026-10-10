@@ -1,8 +1,9 @@
 # AI and combat (behaviour specification)
 
-Status: `draft`, revision 7 (answers Codex review 42 of revision 6 at commit `0347564`, blob
-`0cd519412b987b8e726a9f2c028a7ecf14da5ce2`, and closes the section 9.2 exclusions it named as far as the code
-was read; revisions 2..6 answered reviews 16, 22, 27, 33 and 40; awaiting clearance). Build: GOG English edition, `Robin Hood.exe` SHA-256
+Status: `draft`, revision 8 (answers Codex review 47 of revision 7 at commit `9d34ab6`, blob
+`959c434e349b9ed92f205887eb4c1cbcd7d09dc2`, under the rule "accuracy over count": each of its fifteen findings
+is corrected from the code or withdrawn into its exclusion with an Assumption; revisions 2..7 answered reviews
+16, 22, 27, 33, 40 and 42; awaiting clearance). Build: GOG English edition, `Robin Hood.exe` SHA-256
 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`, image base `0x00400000`; every address
 below is a virtual address in that image. Analyst: 2026-09-13 and 2026-09-18, session `a2931a3a5b130742c`
 (analyst role, ADR-0009). Reviewer: Codex `gpt-6-astra`, reviewer session
@@ -14,8 +15,10 @@ revision 2 at commit `e966b05` (blob `e10208494c95caf92c2b356357329a61cf014c13`)
 `e7b2cd4` (blob `c9040a2a406e8525fbd6aae32241b81fe0c72a6c`), review 33 revision 4 at `392e4a3` (blob
 `58639d3662664b1654895783afed961d130b480b`), review 40 revision 5 at `5349b4f` (blob
 `b78704dd5afebdd6122888e689d24eb9ca22a0b4`), review 42 revision 6 at `0347564`
-(`0347564160cfbf585eb934a6074c1f6502ec39cb`, blob `0cd519412b987b8e726a9f2c028a7ecf14da5ce2`). Publication
-approval: pending (separate from factual approval). Revision 7 adds two delegated readers (identity block).
+(`0347564160cfbf585eb934a6074c1f6502ec39cb`, blob `0cd519412b987b8e726a9f2c028a7ecf14da5ce2`), review 47
+(committed as `...2026-09-18-codex-review-47-spec-ai-combat.md`) revision 7 at `9d34ab6` (blob
+`959c434e349b9ed92f205887eb4c1cbcd7d09dc2`). Publication approval: pending (separate from factual approval).
+Revision 7 added two delegated readers (identity block); revision 8 re-read the cited addresses itself.
 
 Sibling specifications this file depends on, pinned: `spec-script-vm.md` revision 3 (commit `25b6dbe`),
 `spec-navigation.md` revision 2 (commit `e5a2e0c`), `spec-movement-animation-camera.md` revision 2 (commit
@@ -296,7 +299,8 @@ AI-040 (observed, 00471b00, 00471c00, 0047c600, 0047dc00):
 |---|---|---|---|
 | hit points | u16 | the maximum (2.4, 2.11) | never rises except by 2.11's easy rule and the flagged recovery (3.10); 0 = dead |
 | fatigue | u16 | 0 | energy shown = 100 - fatigue; a figure adds its energy cost (no cap is enforced at the addition); recovers per 3.10 |
-| stun level | u16, clamped 0..300 | 0 | >= 70 unconscious, < 30 awake; decays per 3.11; floored at 30 while tied or carried; a player's coma sets it to 300; an "out" NPC's floor is conditional (AI-174, withheld) |
+| stun level | u16, clamped 0..300 | 0 | >= 70 unconscious, < 30 awake; decays per 3.11; floored at 30 while tied (order state 18) or while the actor's held flag is set; a player's coma sets it to 300; an "out" NPC's floor is conditional (AI-174) |
+| pending action plans | up to three plan slots per player character, each a target, an action kind and a marker | empty | AI-189: a prepared action awaiting its execution command; a snapshot carries them |
 | stun decay counter | u16 | 0 | loaded with the profile's period when the actor becomes unconscious **and the counter is 0** (a residual value is kept); during decay a counter at 0 triggers the decrement and the reload (3.11) |
 | unconscious, tied, immune | flags | false | immune = principal enemy: its hit points are never lowered, stun is ignored |
 | adversaries | ordered list | empty | several attackers per actor; the first entry is "the" adversary |
@@ -652,8 +656,9 @@ display on (9.2).
   passes only lose-consciousness and fit-again; (d) a timer event is dropped when the sub-state it was launched
   in differs from the current sub-state (a stale timer); (e) an actor out of action (dead, neutralised) drops
   everything; (f) an **unconscious** actor drops every event except fit-again and lose-consciousness, and drops
-  fit-again too **while its order state is 7** - the **tied** state (AI-187; an order state, the same domain
-  as the carried state 18 and the hidden states 21..23, not a sprite action id): a tied actor never wakes;
+  fit-again too **while its order state is 7** - the **carried** state (AI-187; an order state, the same
+  domain as the tied state 18 and the hidden states 21..23, not a sprite action id): an actor never wakes
+  while he is being carried (revision 7 had the two states reversed; corrected by review 47 and re-read);
   (g) three events are converted here regardless of state:
   **lose consciousness** clears the order and the head marker, removes the NPC from any brawl, enters sleeping /
   unconscious, puts the stars on the actor and silences him; **wasp** clears the order, sets the storm cloud and
@@ -786,22 +791,36 @@ with n frames; " x m" is the reaction delay of AI-100; "reset" is return to duty
   initialisers' tails and the en-route handler - could not be located in the export: 9.2 item 14). **Return
   to duty** (the return-to-duty event, the unlock native, the end of a search, the finish of a brawl): the AI
   leaves its current state for the default state and the actor goes to his post, to the nearest point of his
-  route or resumes the patrol (AI-096). **Observed around it** (00444bb0, 0043a220, 00435c80, 0040de30): the
-  reset body does not clear the target list or the remembered position - the callers clear what they clear
-  (a search clears the watched element, the colleague-found handler its search bit); an implementer must
-  therefore not clear the remembered position and its priority on a reset. What the reset itself changes
-  beyond the state is a hand-off boundary (`Assumption::ResetBody`).
-- **AI-102b** (observed, 00435c80, 0040de30, 00414550, 00435bd0; high). **Placement** (the two class
-  initialisers, hostile and friendly, run once at placement): the perception range is copied from the level
-  (AI-060), every player character and enemy soldier enters category 0 (AI-070), a hostile's hit points are
-  difficulty-scaled (2.11), then the initial state follows the actor's stored initial action (AI-102: 48 ->
-  unconscious with stun 300; 45 / 47 -> dead; 159 -> on post and post-bound; 162 -> napping with wide
-  perception and the Z marker; 270 -> on post with the hidden flag; 0 / 1 / 3 -> on post with the look-around
-  interval; **any other action -> on post with a logged error**; an actor placed in a house sector -> the
-  inside-house sub-state); the patrol rail is assigned (index 0, forward) and the "return to route" flag is
-  raised when a rail exists; the friendly initialiser additionally arms T = 20 + rand%40 (one roll) for the
-  on-post look. An on-post actor whose timer fires and who is not in a company sequence glances with the
-  kind rand & 3 (one roll).
+  route or resumes the patrol (AI-096). **Verified entry / exit effects at the call sites** (00424d50,
+  00444bb0, 0043a220, 00435c80, 0040de30): the return-to-duty event invokes the reset with no other change;
+  a search that ends invokes it after clearing the watched element; the colleague-found handler after
+  clearing its search bit; the initialisers at their tail. **What the reset body itself clears or keeps
+  (the target list, the remembered position and its priority, the known elements) is unknown** - inspecting
+  the callers cannot establish it, and revision 7's "must not clear" requirement is withdrawn. The
+  implementer records `Assumption::ResetBody` for whatever it chooses to clear; the memory-preservation
+  behaviour is **not cleared** (section 11).
+- **AI-102b** (observed, 00435c80, 0040de30, 00419e10, 00414550, 00435bd0; high; corrected by review 47).
+  **Placement**: there are two initialisers by **actor class** - one for soldiers (hostile or friendly) and
+  one for civilians (either attitude) - not by side. Both copy the perception range from the level (AI-060)
+  and, for a hostile-side actor, put the hit points through the difficulty scale (2.11; principal enemies
+  excluded). **Category-0 registration**: the **soldier** initialiser registers every non-civilian actor of
+  the **opposing side** (for a garrison soldier the players and the merry men; for a friendly soldier the
+  garrison); the **civilian** initialiser has its own side-dependent rule (a friendly civilian registers the
+  garrison's soldiers, a hostile one the player's side - inferred from AI-128's reactions, medium). Then the
+  initial state follows the actor's stored initial action (AI-102: 48 -> unconscious with stun 300; 45 / 47
+  -> dead; 159 -> on post and post-bound; 162 -> napping with wide perception and the Z marker; 270 -> on
+  post with the hidden flag; 0 / 1 / 3 -> on post with the look-around interval; any other action -> on post
+  with a logged error; an actor placed in a house sector -> the inside-house sub-state); the patrol rail is
+  assigned (index 0, forward) and the "return to route" flag raised when a usable rail exists. The
+  **civilian** initialiser additionally arms T = 20 + rand%40 (one roll) for the on-post look **only when the
+  initial state is one of the on-post states (actions 0 / 1 / 3 / 159 / 270) and no usable rail exists**;
+  with a rail, or for the excluded initial states (48, 45 / 47, 162, a house), no roll is consumed. An on-post
+  actor whose timer fires, who is not in a company sequence and whose placed state allows it (the on-post
+  states above; not the hidden or post-bound variants when they forbid glances - the exact guard is 9.2 item
+  1) glances with the kind rand & 3 (one roll). Fixtures: a friendly soldier placed idle registers the
+  garrison's soldiers, not the players; a hostile civilian registers the player's side; a civilian placed
+  on post without a rail consumes one roll at placement, one placed with a rail none, one placed
+  unconscious none.
 - **AI-102** (observed, 00435c80, 00414550). **Creation / placement**: at the AI's initialisation a hostile
   soldier's current hit points are put through the difficulty scale (principal enemies excluded) and the
   initial state follows the placed action: action 48 -> unconscious with the **stun level set to 300**; 45 or 47
@@ -1022,10 +1041,14 @@ with n frames; " x m" is the reaction delay of AI-100; "reset" is return to duty
   (2.4): a friendly civilian is on the player's side, a hostile one on the garrison's. *Sight* (in default or
   wondering): the seen element is fighting (has adversaries) -> panic, flee away from it; the seen element is
   on **my side** -> "admiring" (T = 60, walk toward him; the admiring remark only when the seen is the hero);
-  the seen element is on the **other side**: inside a no-sight zone -> the frightened remark and hide in
-  place; else target := the seen, position remembered with priority 5, "civilian enemy reaction", T = 30 ->
-  then AI-127's run to the nearest idle soldier *of my side* (a merry man for a friendly civilian, a garrison
-  soldier for a hostile one; none reachable -> flee). So a hostile-attitude civilian reports the hero to the
+  the seen element is on the **other side**: **the observing civilian standing inside a no-sight sector** ->
+  the frightened remark and hide in place; else target := the seen (the current target position is his
+  position), the **remembered position is replaced with priority 5 only when the existing priority is below
+  6** (a priority-6 memory is kept), an **initial approach toward him is issued at once**, then "civilian
+  enemy reaction", T = 30 -> then AI-127's run to the nearest idle soldier *of my side* (a merry man for a
+  friendly civilian, a garrison soldier for a hostile one; none reachable -> flee). Fixture: a civilian whose
+  remembered position carries priority 6 sees an enemy -> the target is set and the approach issued, but the
+  remembered position and its priority 6 are unchanged. So a hostile-attitude civilian reports the hero to the
   garrison and admires soldiers; a friendly one admires the hero and reports enemy soldiers to friendly
   soldiers. *Hearing*: a running noise (kind 7) -> remember the spot; a hostile civilian runs to the nearest
   idle garrison soldier, a friendly one flees. A whistle (kind 10) is answered only by a **child**: question
@@ -1039,14 +1062,20 @@ with n frames; " x m" is the reaction delay of AI-100; "reset" is return to duty
   bit "look for him" is cleared; if the colleague is already being sent or lectured -> return to duty; else
   "send the colleague to the officer": register him, the report remark, walk to him (arrival 0). Rank 1 (an
   officer) not lecturing and the colleague not sent: register him; a rank-0 colleague gets the go-to-officer
-  call, the officer walks to him and "waits for the colleague", T = 10. Any other case (a knight, a civilian,
-  a colleague already sent): the remark only, then the synchronisation branch: the watched element is
-  cleared; if a check-for-sync is pending on this colleague and I am in a program and he is in the default
-  state: his cursor index (the current one, or the previous when he is en route) equal to my stored index ->
-  back "in program" and the program continues; else register as his waiter (no duplicate) -> "synchronising",
-  T = 20. Otherwise walk to him (arrival 0) and: in the default state -> "colleague detected", T = 50; in
-  another state -> remember my state and sub-state as the resume point, register him, the seeking "colleague
-  detected", T = 50. No rolls.
+  call, the officer walks to him and "waits for the colleague", T = 10. **An officer already lecturing, or
+  an officer meeting a colleague already sent, returns at once** - no remark, no synchronisation work, no
+  waiter, no approach order. Any other case (a knight, a civilian, a rank-0 colleague for a soldier without
+  a known officer): the remark, then the synchronisation branch: the watched element is cleared; **if a
+  check-for-sync is pending on this colleague and I am in a program**: the partner **in the default state**
+  with his cursor index (the current one, or the previous when he is en route) equal to my stored index ->
+  back "in program" and the program continues; the partner in the default state at another index ->
+  register as his waiter (no duplicate) -> "synchronising", T = 20; **the partner outside the default state
+  -> the program continues immediately, no waiter is registered** (corrected by review 47). Without a
+  pending synchronisation: walk to him (arrival 0) and, in the default state -> "colleague detected",
+  T = 50; in another state -> remember my state and sub-state as the resume point, register him, the seeking
+  "colleague detected", T = 50. No rolls. Fixtures: a lecturing officer sees a colleague -> nothing changes
+  (no waiter, no walk); a soldier with a pending sync whose partner is currently attacking -> the program
+  continues on the same frame, no waiter registered, no approach order issued.
 - **AI-131** (observed, 0042c9a0; high). **The beggar's "betrayal" is not a roll**: the predicate is "the
   questioning soldier carries a ranged weapon" (ranged kind != 0). An archer or crossbowman questioning a
   beggar gets the pointed player as target and enters the shooting sub-state; a melee soldier asks the second
@@ -1157,45 +1186,64 @@ with n frames; " x m" is the reaction delay of AI-100; "reset" is return to duty
 - **AI-154** (observed, 00424d50, 0042e450, 00447030, 0049f510; high). **Menacing** (top state 5, one
   sub-state). Entry: a hostile in "approaching a sleeping enemy" receives *done* with an unconscious target.
   If the target is a player character whose status carries the **coma** flag (AI-172) and nobody already
-  holds him, the guard enters menacing, registers himself as the player's **holder** (one holder per player;
-  the holder is the "engaged" mark the shadow test of AI-069 reads, so other soldiers stop accumulating
-  shadows on that player), plays the menace remark and a stance animation unless he is a principal enemy, and
-  arms T = 20. Otherwise (a non-player, or a player not in a coma): farther than 40 px (the AI's metric) ->
-  walk closer (arrival 20), else "killing the sleeper" with the execution animation (AI-173). Timer loop:
+  holds him: an **ordinary guard** enters menacing, registers himself as the player's **holder** (one holder
+  per player; the holder is the "engaged" mark the shadow test of AI-069 reads, so other soldiers stop
+  accumulating shadows on that player), plays the menace remark and a stance animation, and arms T = 20; a
+  **principal enemy** takes a different path **without the holder registration** (he enters menacing with
+  T = 20 but neither holds the player nor plays the remark and stance, so other soldiers keep accumulating
+  shadows on that player); a player **already held** by someone else is treated as "not in a coma" below.
+  Otherwise (a non-player, a player not in a coma, or an already-held player): farther than 40 px (the AI's
+  metric) -> walk closer (arrival 20), else "killing the sleeper" with the execution animation (AI-173).
+  Fixture (holder registration): two ordinary guards reach the coma hero in turn -> the first becomes the
+  holder and the second, finding him held, approaches and enters "killing the sleeper" instead; a principal
+  enemy reaching him first -> menacing without a holder, and a following ordinary guard then becomes the
+  holder. Timer loop:
   every 20 frames, while the held player is within 100 px, still unconscious and still in a coma, T = 20
   again; the moment any of those fails (revived, carried away, woken) the guard returns to duty. Sightings
   while menacing: any element other than the held player runs the ordinary sighting reaction (a second player
   approaching is attacked); seeing the held player again does nothing. Got hit: the hitter becomes the
-  target. No rolls. Fixture: the hero in a coma at 30 px, a guard menacing since frame f -> he stays menacing
-  through frames f + 20k; the hero revived on frame f + 45 -> the timer of frame f + 60 finds him conscious ->
-  return to duty on f + 60; a second player seen on frame f + 30 -> the sighting reaction on f + 30.
-- **AI-155** (observed, 0043c1a0; high). **The tower-guard alert** (the decision outcome of a tower guard,
-  AI-140; the tower-guard flag is set by the mission data - its setter was not found, 9.2). The actor turns
-  to face the remembered alert position, then sends the **combat-alert call** to every soldier of his side,
-  alive and able, within 500 px (both the plain and the elliptical metric) that has him within perception
-  range with line of sight; each accepted call counts. At least one accepted -> a turn-and-alarm sequence
-  (the arm raise then the alert idle), the exclamation marker for 20 frames, the "officer giving orders"
-  sub-state with T = 20 -> decide again; none accepted -> the outcome reports "nothing done" and the decision
-  falls through to fight / observe. "Tower-guard observe" is the too-proud overview (AI-145). A "tower guard"
-  is not a level element.
+  target. No rolls. Fixture (an ordinary guard): the hero in a coma at 30 px, the guard menacing and holding
+  him since frame f -> he stays menacing through frames f + 20k; the hero revived on frame f + 45 -> the
+  timer of frame f + 60 finds him conscious -> return to duty on f + 60; a second player seen on frame f + 30
+  -> the sighting reaction on f + 30.
+- **AI-155** (observed, 0043c1a0; high; corrected by review 47). **The tower-guard alert** (the decision
+  outcome of a tower guard, AI-140; the tower-guard flag is set by the mission data - its setter was not
+  found, 9.2). **Candidate selection**: every **rank-0** soldier that is alive and able, **strictly closer
+  than 500 px** by the plain (unit-scaled, non-elliptical) metric, and that has the caller within perception
+  range with line of sight - there is **no same-side filter at this stage**; **receiver acceptance** is the
+  combat-alert call's own rule (AI-123: a rank-0 receiver in default / wondering / seeking accepts, an
+  attacking one accepts silently, others refuse), so a candidate of the other side refuses. The calls are
+  sent **first**; then, with at least one acceptance, the turn to the remembered alert position and the
+  alarm sequence are queued (the arm raise is played only when the actor's profile has it; otherwise the
+  alert idle alone), the exclamation marker for 20 frames, the "officer giving orders" sub-state with T = 20
+  -> decide again; none accepted -> "nothing done" and the decision falls through to fight / observe.
+  "Tower-guard observe" is the too-proud overview (AI-145). A "tower guard" is not a level element. Fixtures:
+  a rank-1 officer at 100 px is never a candidate; a rank-0 soldier at exactly 500 px is excluded, at 499 px
+  included; an included candidate in the seeking state accepts, one already attacking accepts silently, a
+  civilian-class or fleeing one refuses.
 - **AI-156** (observed, 0043b1b0, 00443fa0; high; 0044dc80 - the "acceptable soldier" test - not read).
   **The officer's rally** (called by the missing-colleague alarm, an officer's body alarm, the
   tower-guard-calls-me handler and the fleeing "run to alert soldiers"; revision 6 mis-named it the
   tower-guard routine). With a position and flags: the "group" flag -> the "officer calls the group"
   sub-state, exclamation marker, T = 30, "done". Otherwise: wide perception, the search flags := "group
   search", and every **rank-0** soldier of the side that is alive, able, either not post-bound or already the
-  officer's subordinate, acceptable (0044dc80), within 500 px by both metrics - at most **20** of them - is
-  sent the **alert call**; each acceptor is recorded as called by this officer, his search flag set, and he
-  is inserted into a distance-sorted list. Then a search direction is chosen: starting from the officer's
-  facing, up to 16 sectors are tried until one has a reachable seek route; each called soldier is assigned the
-  nearest seek point of the route's candidates (each point assigned once; the point, its sector and a flag
-  stored on the soldier). At least one soldier called and the officer not in a house -> an instruction
-  sequence (the turn, the arm animation, the group remark, the marker for 20), the "wait for the group"
-  sub-state, T = 20, "done"; inside a house with a route found -> "wait inside the house", T = 50; **no
-  soldier accepted -> "nothing done"**, and the caller then searches alone or (when fleeing) runs to the door.
-  Fixture: an officer with three rank-0 idle soldiers at 100 / 400 / 600 px -> two calls accepted, two seek
-  points assigned in cost order, "wait for the group" on the same frame with T = 20; the 600 px soldier is
-  never called.
+  officer's subordinate, acceptable (0044dc80), and **strictly closer than 500 px by the plain unit-scaled
+  metric** is sent the **alert call** until **twenty have accepted** (the limit counts acceptances, not
+  attempts); each acceptor is recorded as called by this officer, his search flag set, and he is inserted
+  into a list **ordered by decreasing distance** from the officer. Then, outdoors, the search direction is
+  derived from the **aggregate of the directions from the officer toward the recruited soldiers** (not from
+  the officer's facing), and up to 16 sectors from it are tried until one has a reachable seek route; the
+  recruits then **compete for the route's points in the list order (the farthest first)**: each takes the
+  nearest unassigned point (the point, its sector and a flag stored on the soldier). At least one recruit and
+  the officer not in a house -> an instruction sequence (the turn, the arm animation, the group remark, the
+  marker for 20), the "wait for the group" sub-state, T = 20, "done"; inside a house with a route found ->
+  "wait inside the house", T = 50; **inside a house with no route: the outcome was not read** (9.2 item 1);
+  **no soldier accepted -> "nothing done"**, and the caller then searches alone or (when fleeing) runs to the
+  door. Fixtures: an officer with rank-0 idle soldiers at 100, 400 and 600 px -> the 100 and 400 px soldiers
+  are called and accept, the 600 px one is never called; **two recruits at 100 and 400 px whose nearest
+  route point is the same** -> the 400 px recruit (first in the decreasing-distance order) takes it and the
+  100 px recruit takes the next nearest; a candidate that refuses the call (busy in a fight) does not count
+  toward the twenty and gets no point; twenty-one eligible candidates -> the twenty-first is not called.
 
 ### 3.8 The NPC in a sword fight
 
@@ -1264,19 +1312,29 @@ with n frames; " x m" is the reaction delay of AI-100; "reset" is return to duty
   state and the facing within one sixteenth, every 20 frames a step runs; the step strikes iff (a) both
   hesitation rolls fail to skip (probability (1 - (h + 1) / 100)^2 with h the hesitation value: 0.9801 for a
   hostile soldier), (b) no manoeuvre is chosen (probability 1 in a one-to-one duel or for a post-bound
-  fighter, else 2 / 3), (c) the attack gate passes (probability max(skill, 50) / 100) and (d) an admissible
-  figure has a scored target within its reach band and its score exceeds 0 (the jab always, when the target
-  is within the row's reach). For a post-bound blue halberdier (skill 5) against one hero at 52 px: the
-  per-step probability is 0.9801 x 1 x 0.5 ~ 0.49, so the expected wait between the end of one strike and
-  the start of the next is about 2.04 steps ~ 41 frames; the interval between strikes is that wait plus the
-  strike animation's length (from the sprite table, `ANIM`) plus any parade the hero's swings provoke
-  (AI-152, T = the incoming displacement + 10). The oracle's ~5.3 s (~ 113 realised frames) between halberd
-  raises is **consistent with this rule only if the animation and the parades account for about 70 frames**,
-  which was not traced; the cadence stays **withheld** as an exact number (section 11). Fixture (rule-level,
-  deterministic): a hostile soldier with hesitation 0 and skill 5, post-bound, one adversary at 52 px in the
-  fighting state, entering the sword fight on frame f with the timer at 20; rolls fixed so that both
-  hesitation rolls return >= 1 and the attack roll returns 49: the jab is issued at the step of frame f + 20;
-  with the attack roll returning 50 the step issues nothing and the next step is at f + 40.
+  fighter, else 2 / 3), (c) the attack gate passes (probability max(skill, 50) / 100) and (d) the figure
+  choice yields a figure - which requires an admissible figure whose target is within its reach band, whose
+  timing gate passes (the target idle, or the figure's displacement + 2 below the target's remaining
+  displacement), and whose score, net of three times its usage penalty, exceeds 0 (a jab is **not**
+  guaranteed by reach alone: an incoming animation on the target or an accumulated penalty can leave no
+  figure selected). For a post-bound blue halberdier (skill 5) against one hero at 52 px, **conditional on
+  (d) yielding a figure**, the per-step probability of a strike is 0.9801 x 1 x 0.5 ~ 0.49, so the expected
+  wait between the end of one strike and the start of the next is about 2.04 steps ~ 41 frames; the
+  interval between strikes is that wait plus the strike animation's length (from the sprite table, `ANIM`)
+  plus any parade the hero's swings provoke (AI-152, T = the incoming displacement + 10) plus the steps on
+  which (d) fails. The oracle's ~5.3 s (~ 113 realised frames) between halberd raises is **consistent with
+  this rule only if the animation, the parades and the failed selections account for about 70 frames**,
+  which was not traced; the cadence stays **withheld** as an exact number (section 11). Fixtures
+  (rule-level, deterministic): a hostile soldier with hesitation 0, skill 5, post-bound, facing his single
+  adversary within one sixteenth, the adversary at 52 px in the fighting idle (no incoming animation:
+  remaining displacement "none"), the soldier's class the blue halberdier's (jab reach 0..60), all nine usage
+  penalties 0, entering the sword fight on frame f with the timer at 20; rolls fixed so that both hesitation
+  rolls return >= 1 and the attack roll returns 49: the jab is issued at the step of frame f + 20; with the
+  attack roll returning 50 the step issues nothing and the next step is at f + 40; **with the rolls passing
+  but the adversary mid-swing with a remaining displacement of 5 frames** (the jab's displacement + 2 is not
+  below it) -> no figure is selected on that step, the timer re-arms and the next step is at f + 40; with
+  the rolls passing but the jab's penalty at 40 (three times 40 = 120 above its 48 score) -> no figure
+  selected either.
 
 ### 3.9 Melee resolution (both sides)
 
@@ -1506,11 +1564,14 @@ transitions and the hero's bar at 20 Hz for 60 s.
 
 #### 3.12.4 The training target (revision 7)
 
-- **AI-192** (observed, 004bb3a0; medium). The straw target is an **activate-by-approach object**: a click
-  on it orders a walk to 6 px (16 px crouched), a turn and an activation step; it is not a bow target through
-  the click. Whether its own hit test accepts the bow's intent (the shootability of objects) was not read (its
-  virtual table was not recoverable from the export), so the 186 px refusal of h01-measurements-2.md 4 stays
-  unexplained (9.2 item 6).
+- **AI-192** (withdrawn in revision 8; 004bb240, 004baf00, 004baf50, 004bb3a0 are a generic object handler).
+  The generic object click handler chooses the activation according to the **object's capabilities**: an
+  approach-and-activate order (a walk to 6 px, 16 px crouched, a turn, an activation step) for objects with
+  that capability, and its hit test **has a bow-intent path** for objects that can be shot. Which
+  capabilities the placed straw target carries was not identified, so revision 7's "activate-by-approach
+  object, not a bow target" is **withdrawn**; the 186 px refusal of h01-measurements-2.md 4 stays unexplained
+  evidence (9.2 item 6). Observable contract for the implementer: a straw target is an object the level data
+  marks either as shootable, activatable, or both (`Assumption::TargetCapabilities`).
 
 ### 3.13 Purses and wasp nests
 
@@ -1549,60 +1610,108 @@ transitions and the hero's bar at 20 Hz for 60 s.
   kind each, executed as the character's own action sequence (**their executors were not read: hand-off**,
   9.2 item 5). **Context actions on a human** (a plain click, intent "context"), tried in this priority and
   each gated by the clicker's abilities: (1) **search** - the NPC's purse (the `BORG` field `unknown_0x23`,
-  2.10, is his purse and must be non-zero), not tied; approach to 51 px along the body's facing plus a class
-  angle, action 122 (282 when the searcher is crouched); (2) **execute** - the NPC unconscious and down
-  (order state 3), a hostile soldier, not immune; approach 40 px, the finishing action; (3) **tie up** -
-  unconscious and down, not carried, not "out", not immune, not already tied; approach 32 px at the profile's
-  tie angle; (4) **revive** - unconscious and on the clicker's side; approach 40 px; (5) **carry** - dead or
-  unconscious, not immune, the clicker with either carry ability; approach 39 px; (6) none -> the attack
-  intent: a standing enemy -> the attack order (AI-160). A click on a body **being carried** issues a
+  2.10, is his purse and must be non-zero) and the NPC **not being carried** (order state 7) and not tied;
+  approach to 51 px along the body's facing plus a class angle, action 122 (282 when the searcher is
+  crouched); (2) **execute** - the NPC unconscious and down (order state 3), a hostile soldier, not immune;
+  approach 40 px, the finishing action; (3) **tie up** - unconscious and down, not being carried (order state
+  7) and not tied (order state 18), not "out", not immune; approach 32 px at the profile's tie angle; (4)
+  **revive** - unconscious and on the clicker's side; approach 40 px; (5) **carry** - dead or unconscious,
+  not immune, the clicker with either carry ability; approach 39 px; (6) none -> the attack intent: a
+  standing enemy -> the attack order (AI-160). A click on a body **being carried** (order state 7) issues a
   hand-over chain (both turn to face, put down / take over) at 30..50 px.
-- **AI-187** (observed, 0048d510, 0049bb20; high for search and tie; the carry / revive / execute / strangle
-  executors were not traced, 9.2 item 5). **Effects**: **search** - when action 122's animation ends the
-  searcher's purse count += the victim's purse and the victim's purse := 0 (the whole amount at once); **tie
-  up** - the body is snapped beside the tier facing him, its order state becomes **7 (tied)** and the tied
-  flag is set; **order state 7 is the state the pre-filter tests (AI-082 f)**, so a tied actor never receives
-  fit-again: the manual's "permanent"; **carried** = order state 18 (native 89 therefore answers "is carried",
-  which fits its script uses); the carry, revive, execute and strangle executions and where the finishing
-  kill happens are open (the finishing strike reaches the resolver as a finishing-off figure on a lying
-  victim, whose outcome is "lying" / "nothing" with no damage: AI-166).
-- **AI-188** (observed, 004de840, 004cd400, 004e1fc0, 004dce20; high). **The right click**: (a) if any
-  selected character is in a fight -> every fighting selected character gets the **block order** (action 76,
-  then the held stance 127; AI-167) - a right click never leaves a fight; (b) otherwise in mode 0 -> per
-  selected character by order state: crouched idle or crouched walk -> a stand-up step; an aiming archer -> a
-  put-away step; the turn / start / stop steps are ignored; anything else -> **stop** (all pending steps
-  discarded, stop reason "cancel"); (c) in an icon mode -> the mode is cancelled and the pointer reset (the
-  punch, hard punch, strangle, help-to-climb, heal and pay modes also stop the character); (d) with the
-  special-mode flag -> stop with the "cancelled special mode" reason, a put-away step and a mode reset. A
-  left click on the ground during a fight is a walk order that stops the fight's steps; the disengagement
-  then follows AI-162.
-- **AI-189** (observed, 005460c0, 004ccad0, 004df070, 004ddfb0, 004de1e0, 004d0400, 004cdcc0; medium for
-  the key's identity). **Act on arrival** (the manual's Ctrl-click): the pointer's act-on-arrival byte is set
-  by a key-press message and cleared on release (the key is bound through the key set); with it, bow mode
-  queues a **move step then the shot** ("move first, shoot on arrival"), and mode 0 on an NPC queues the
-  context action deferred to arrival with a marker on the target. There is **no other queueing**: a new order
-  replaces (AI-185). The three input flags are left press, right press and "dragged beyond the threshold"; a
-  left drag in mode 0 is the rubber-band selection (every player in the rectangle selected), a right drag its
-  counterpart.
+- **AI-187** (observed, 0049a694 disassembled, 0049bb20, 0048af40, 00497cd1 disassembled, 00450b60,
+  0048d510; high; the carry, revive, execute and strangle executors were not traced, 9.2 items 4 / 5).
+  **Body states**: **carried = order state 7**, **tied = order state 18** (revision 7 had them reversed). The
+  tying action's completion sets the body's order state to 18 and plays a remark; a tied actor never receives
+  fit-again by the ordinary path? No: the pre-filter's state-7 test concerns carrying (AI-082 f); a **tied**
+  actor is kept out by the stun floor (AI-174 b) - its level never falls below 30 - which is the manual's
+  "permanent". Putting a carried body **down** restores the state the body had before it was picked up (the
+  saved state is part of the carrier's state, 2.8) and repositions the body beside the carrier. **Search
+  effects**: two different effects exist. A **player** searching (standing or crouched, actions 122 / 282)
+  credits the **shared player money account** with the victim's whole purse, shows the amount over the
+  victim, and sets the victim's purse to 0; **an NPC** searching (the AI's looting, AI-114) adds the purse to
+  its own purse count and empties the victim. Fixtures: a player searches an unconscious soldier with purse
+  40 -> the shared money rises by 40 on the frame the search animation ends, the purse reads 0, and a second
+  click on the same body is no longer a search (the purse is 0: AI-186's rule 1 fails) - the same for a
+  crouched search; **native 89** on a tied actor -> 1, on a carried actor -> 0, on a body put down after
+  carrying -> 0 (its state restored); the **stun floor**: a tied actor at level 60 decays to 30 and stops; a
+  carried actor decays unless his held flag is set (9.2 item 4); a put-down body resumes its ordinary decay.
+  Where the finishing kill happens is open (the finishing strike reaches the resolver as a finishing-off
+  figure on a lying victim, whose outcome is "lying" / "nothing" with no damage: AI-166; 9.2 item 22).
+- **AI-188** (observed, 004de840, 004cd400, 004e1fc0, 00485e00; high for the priority, medium for the
+  per-state cases). **The right click**, in this priority: (a) **if action planning is active** (AI-189) ->
+  the planning mode is cancelled (the pointer's planning flag cleared, the pointer reset) and nothing else
+  happens - even when a selected character is fighting; (b) else if any selected character has an adversary
+  -> every such character gets the **block order** (action 76, then the held stance 127; AI-167); (c) else by
+  the active icon mode: **mode 0** -> the ordinary cancellation (below), or, when both buttons are down with
+  a drag, the right-drag rubber band; **bow mode** -> the character's adversary-like list is cleared and,
+  when it was empty, the mode is reset (an archer with such entries keeps the mode); the **punch, hard punch,
+  strangle, help-to-climb, heal and pay modes** -> the ordinary cancellation then the mode reset; **the shield
+  modes** -> the shield-bearer's executing order is stopped when its current action is the shield one, then
+  the mode reset; any other mode -> the mode reset only. **The ordinary cancellation** (per selected
+  character) distinguishes the character's order state and, within one state, its posture: in the states it
+  singles out it issues a transition step (a stand-up-type step for two postures of the idle state; a
+  put-away-type step in two other states when the character can act and is not inside a no-sight zone) and
+  leaves three transitional postures alone; in every other case it **stops** the executing order (all
+  pending steps discarded, stop reason "cancel"). Which named states and postures those are is **not
+  settled** (`Assumption::CancelTransitions`: the implementer may treat every case as a stop). A left click on
+  the ground during a fight is a walk order that stops the fight's steps; the disengagement then follows
+  AI-162. Fixtures: a fighting hero with a plan pending -> the right click cancels the plan and issues no
+  block; the same hero without a plan -> the block order; a carrying hero (order state 7 on the body) with a
+  right click in mode 0 -> the carrier's executing order is stopped (the body is not put down by the click:
+  put-down is a context action); a shield-bearer in the shield mode -> its shield order stopped and the mode
+  reset; an archer in bow mode -> the mode reset when nothing is listed for him.
+- **AI-189** (observed, 004ccad0, 004df070, 00490da0, 00490cd0, 004904c0; medium; the physical key is
+  unresolved, 9.2 item 16). **Planned actions** (the manual's Ctrl-click; revision 7's "act on arrival" was
+  wrong). While the **planning mode** is active (a pointer flag; how the key sets it was not traced), a click
+  does not issue an order: it **prepares a plan** in one of the character's plan slots - in bow mode a
+  planned shot at the clicked target, in mode 0 on an NPC the planned context action (the same eligibility
+  as AI-186's rule) with a marker drawn on the target; preparing a plan for a slot **replaces** that slot's
+  earlier plan (the earlier steps are discarded). A separate **execution command** executes a slot: every
+  stored step's target is **revalidated** - a step whose actor is no longer valid (a target that cannot be
+  attacked or is gone, or the character himself now in combat) cancels the whole plan; otherwise the steps
+  are appended as one action sequence, the slot is cleared and the marker removed. Cancellation: the right
+  click's first branch (AI-188 a) cancels the planning mode; a slot's plan is also discarded when replaced.
+  The pending plans are **snapshot state** (2.7). There is no other queueing: an ordinary order replaces
+  (AI-185). The three input flags are left press, right press and "dragged beyond the threshold"; a left
+  drag in mode 0 is the rubber-band selection (every player in the rectangle selected), a right drag its
+  counterpart. Fixtures: a planned shot on a soldier, then the soldier dies before the execution command ->
+  the plan is cancelled, no arrow flies, the slot is empty; a planned search on a body, then a second
+  planned action on another body in the same slot -> only the second executes; a plan prepared while the
+  hero fights, then executed -> cancelled by the revalidation (the hero is in combat).
 - **AI-191** (observed, 004e1a40, 004e1890, 00547600, 00547f00, 00548050, 00548120, 00548280, 004e19c0;
   high; the side convention of the sign not fixed). **The stroke recogniser**: only while a selected
   character has an adversary is the held-button pointer path classified, per selected character, relative to
-  that character's **facing**: fewer than 2 points -> a **click**; 2 points with a bounding box under 10 px in
-  both axes -> a click, else nothing; 3 or more points: if the polyline **crosses itself** and the four extreme
-  points (the extremes of x + y and of y - x) are in a monotone rotational order -> the **figure-eight = the
-  finishing blow**; else, in order: **full circle** - the chord's angle to the facing within +/-90 deg and the four
-  extremes in one cyclic order -> circle left or right by the order's sense; **half circle** - the largest
-  deviation from the chord on one side divided by the chord length exceeds 0.3 while the other side's does
-  not -> half circle left or right by the side; **straight** - the chord within +/-45 deg of the facing -> the
-  **slow blow** ("forward"), beyond +/-135 deg (backwards) -> the **jab**; **lateral** - the chord between 45 deg and
-  135 deg to a side -> attack left or right; otherwise the two-point rule. The jab targets the element under the
-  pointer with the attack intent; **every drawn figure targets the character's first adversary**, not the
-  pointer (the "lock" of combat-measurements.md 1.4). Which of the two lateral / circular orders is "left" is
-  the sign of the cross product with the facing and was not fixed (9.2 item 16). Fixtures: a stroke of 80 px
-  to the right and 20 px up while the character faces east (the oracle's) -> within 45 deg of the facing ->
-  the slow blow (the 50-damage town-outfit row, AI-032); the same stroke while facing north -> lateral -> an
-  attack to the side; a closed loop without a crossing -> a circle; a loop crossing once with monotone
-  extremes -> the finishing blow.
+  that character's **facing** where the rule says so: fewer than 2 points -> a **click**; 2 points with a
+  bounding box under 10 px in both axes -> a click, else nothing; 3 or more points, in this order: (1) if the
+  polyline **crosses itself**: the four extreme points (the extremes of x + y and of y - x) in a monotone
+  rotational order -> the **figure-eight = the finishing blow**; otherwise the **circle test** (2) is tried
+  and, if it fails too, the stroke is **nothing** - a self-crossing stroke never reaches the half-circle,
+  straight or lateral tests; (2) **full circle** (facing-independent): the directions from the stroke's
+  bounding-box centre to its start point and to its end point must differ by less than a fixed angle (the
+  stroke ends near where it began), and the four extremes must lie in one cyclic order -> circle left or
+  right by the order's sense; (3) **half circle**: with d1 and d2 the largest deviations from the chord on
+  its two sides divided by the chord length, one of them **strictly above** the stored single 0.3 and the
+  other **not above** it -> half circle left or right by the side; both above or neither -> continue; (4)
+  **straight**: the chord within +/-45 deg of the facing -> the **slow blow** ("forward"); beyond +/-135 deg
+  (backwards) -> the **jab**; (5) **lateral**: the chord between 45 deg and 135 deg to a side -> attack left or
+  right; (6) otherwise the two-point rule (a small box -> click, else nothing). **Targets**: a click (the
+  click path) targets the element under the pointer with the attack intent; **every drawn figure, the drawn
+  backward jab included, targets the character's first adversary**, not the pointer (the "lock" of
+  combat-measurements.md 1.4). Which of the two lateral / circular orders is "left" is the sign of the cross
+  product with the facing and was not fixed (9.2 item 16); the angle constant of the circle test was not read
+  (9.2 item 16). Fixtures: a stroke of 80 px to the right and 20 px up while the character faces east (the
+  oracle's) -> within 45 deg -> the slow blow (the 50-damage town-outfit row, AI-032); the same stroke while
+  facing north -> lateral; a closed loop without a crossing, drawn while facing north or east alike -> a
+  circle (facing-independent); a loop crossing once with monotone extremes -> the finishing blow; a stroke
+  crossing itself whose extremes are not monotone and whose ends are far apart -> **nothing** (no fallback);
+  a half-circle stroke with d1 = 0.31, d2 = 0.05 -> half circle; d1 = 0.30000001192 (the stored 0.3 itself),
+  d2 = 0 -> not a half circle (the comparison is strict), continue to the straight test; d1 = 0.35, d2 = 0.35
+  -> not a half circle; a chord at exactly 45 deg from the facing -> the boundary belongs to the straight
+  test's strict comparison as read (a chord strictly inside 45 deg is the slow blow; at 135 deg likewise for
+  the jab; the exact inclusive / exclusive edge is 9.2 item 16); a drawn backward jab while the pointer rests
+  on a second enemy -> the jab goes to the first adversary; a plain click on that second enemy -> the click
+  path targets him.
 
 ## 4. Claims
 
@@ -1840,7 +1949,7 @@ soldier-type test): it is outside the common contract.
 | 85 | (x) -> bool | 1 iff x is null (no element) | observed, rails reader |
 | 87 | (actor) -> bool | 1 iff dead | observed (virtual predicate) |
 | 88 | (actor) -> bool | 1 iff unconscious (AI-174's flag) | observed |
-| 89 | (human) -> bool | accepts any human (player characters included - a broader type test than 134 / 135); 1 iff the actor's **order state** is 18, the **carried** state (AI-187; the tied state is 7); a non-human or invalid handle -> error, 0 | observed, 00579b10, 0049bb20 |
+| 89 | (human) -> bool | accepts any human (player characters included - a broader type test than 134 / 135); 1 iff the actor's **order state** is 18, the **tied** state (AI-187; the carried state is 7) - so it reads "is tied", as scb.md's script uses suggested; a non-human or invalid handle -> error, 0 | observed, 00579b10, 0049a694 |
 | 90 | (actor) -> bool | dead or unconscious or (order state 18) | observed |
 | 99 | (actor) | reveal the silhouette (AI-074); returns nothing | observed, 00570e70 |
 | 102 | (actor, amount, flag) -> bool | the actor must be found in the **level's registered element table** and be of the actor family (a handle not in the table, or of another family -> error and 0); queues a **direct damage / stun step** of `amount` (a second parameter 100 when flag != 0 else 0; its meaning 9.2) that is applied when the sequence machinery processes it (VM-215) **without the defence, stun or experience rolls of AI-166**; returns 1 | observed, 00577500, 00570850 |
@@ -2092,7 +2201,25 @@ decisions, not facts about the original:
 
 - Revision 2 disputed two findings of review 16: the stimulus order (purse, apple, beer, whistle) and
   native 126's values (menacing 4, fleeing 5, sleeping 0). **Review 22 upheld both**; the text keeps them.
-- Revision 7 disputes **no finding of review 42**. Its two findings are answered: (1) the posture-10 outcome
+- Revision 8 disputes **no finding of review 47**; each of its fifteen findings is corrected from the code
+  re-read at the cited addresses or withdrawn: (1) carried = order state 7, tied = 18, repaired in AI-082 f,
+  AI-174 b, AI-186, AI-187, native 89, 2.7 and 9.2, tying specified from its completion, tied / carried /
+  put-down fixtures; (2) the player's search credits the shared money account and empties the victim, the
+  NPC's search is the AI's own, with fixtures; (3) planned actions: preparation into a slot, replacement,
+  the execution command with revalidation, cancellation, snapshot ownership, the key unresolved (AI-189);
+  (4) the right click: planning cancelled first, then the block, then the mode cases; the unsupported
+  state labels withdrawn into `Assumption::CancelTransitions`, four fixtures (AI-188); (5) the circle test
+  from the bounding-box centre, no fallback after a failed crossing, drawn jabs target the first adversary,
+  boundary fixtures (AI-191); (6) rank-0 candidates, no same-side filter at selection, the strict unscaled
+  500 px, calls before the conditional animation (AI-155); (7) acceptances limited to twenty, decreasing
+  distance order, the aggregate direction, the competing-recruits fixture, the indoor failure left open
+  (AI-156); (8) holder registration on the ordinary branch only (AI-154); (9) the immediate continuation and
+  the silent officer returns (AI-129); (10) the observer's sector, the priority-6 rule, the initial approach
+  (AI-128); (11) class versus side, the conditional draw (AI-102b); (12) the reset preservation requirement
+  withdrawn (AI-101); (13) the cadence estimate qualified, the fixture completed, a no-selection case
+  (AI-153); (14) AI-192 withdrawn into `Assumption::TargetCapabilities`; (15) the repertoire ordering
+  withdrawn, the assumption labelled an OpenSherwood choice (9.3).
+- Revision 7 disputed **no finding of review 42**. Its two findings are answered: (1) the posture-10 outcome
   reversed in AI-166 and here, with the four lying-victim fixtures in test 9; (2) section 8 opens with the
   script-phase / element-pass / queue-processing account and native 102 is no longer a strike-roll example.
   Beyond them, revision 7 read the excluded branches: AI-128 / 129 / 131 (civilians, colleague found, the
@@ -2193,7 +2320,7 @@ is first needed and does not infer it from this file. Items 15..17 were added by
     (no address in the export); what it changes beyond the state - the callers' behaviour shows it clears
     neither the target list nor the remembered position (AI-101). The stun counter's phase when the level is
     set by a script rather than a blow.
-15. (closed in revision 7: order state 18 is carried, 7 is tied - AI-187) -
+15. (closed in revision 8: order state 7 is carried, 18 is tied - AI-187, corrected by review 47) -
 18. Float paths whose rounding boundaries were not fixed by a fixture (AI-008): the graded-value formula's
     own stages (00489d00), the light-limited reach (0048db80), the morale formula's integer divisions
     (00432d30), the bow's interpolation (004500c0): cleared as formulas, withheld as bit-exact behaviour.
@@ -2211,22 +2338,25 @@ is first needed and does not infer it from this file. Items 15..17 were added by
 22. The player's kill-on-the-ground ability and the AI's execution of a sleeper as effects (00463da0 and the
     execute action's executor): what they do to the victim beyond AI-173's stun-3 message - the observable
     contract is "the victim dies" (`Assumption::ExecuteEffect`).
-16. (closed in revision 7: AI-186..191) The left / right sign convention of the lateral and circular figure
-    orders in the stroke recogniser (00548120, 00548050, the vector helper 005fca90) and the identity of the
-    act-on-arrival key in the key set.
+16. (AI-186..191 read; revision 8 corrected them) The left / right sign convention of the lateral and
+    circular figure orders (00548120, 00548050, the vector helper 005fca90), the circle test's angle constant
+    and the inclusive / exclusive edges of the 45 / 135 degree comparisons (00548280, 00548120), the physical
+    key that sets the planning mode, and the named order states and postures the ordinary cancellation
+    singles out (004cd400: `Assumption::CancelTransitions`).
 17. What an area search registers as "known" after clearing the watched element (AI-070), and the second
     x1.4 range condition (AI-061).
 
 ### 9.3 Material excluded from this file (expression filter), and the observable contract in its place
 
 **Combat admissibility (AI-151).** The per-figure experience minima and hesitation maxima are a tuned-value
-table the program carries as content: excluded, one line. The observable contract the implementer needs: an
-NPC's repertoire grows with its melee experience in the order jab -> laterals -> slow blow -> half circles ->
-circles -> finishing blow, the circles being available to a non-zero-hesitation AI regardless of experience;
-what a player sees is that low-tier soldiers only jab and cut sideways, mid-tier ones add the slow blow, and
-only the best add the sweeps and the finishing blow. The implementer records `Assumption::FigureAdmissibility`
-with a monotone threshold set of its own and the oracle procedure of test 14(c) measures the repertoire of
-each tier as outcomes; no threshold value from the executable is used.
+table the program carries as content: excluded, one line. What is **observed**: the admissibility rule's
+shape (AI-151: a per-figure experience minimum and hesitation maximum; the circles admitted regardless of
+experience for a non-zero-hesitation AI) - not any ordering of the figures and not any tier's repertoire; no
+recording of repertoires exists. **OpenSherwood assumption** (`Assumption::FigureAdmissibility`, an
+OpenSherwood choice, not an original fact): the implementer chooses its own monotone threshold set, independent
+of the executable's; the oracle procedure of test 14(c) can later record each tier's actual repertoire under
+stated conditions (difficulty, tier, hesitation) as observations. No ordering derived from the excluded table
+is asserted here.
 
 Under ADR-0009 section 5 as clarified on 2026-09-13, a mapping of data-file fields or ids to their meaning is
 an allowed interface fact, while a table of tuned thresholds the program carries as content is not, unless the
@@ -2307,14 +2437,14 @@ analyst's account of what the file now offers):
 | Area | Offered as individual contracts | Withheld, and why |
 |---|---|---|
 | Perception | lifetimes, caching and staggering, the rounding boundaries and fixtures, the noise and hearing rules | the unidentified x1.4 gate and the posture-code names (9.2 item 9: not read); the graded value's other float paths (item 18: no fixture); the oracle discrepancies (item 10: no recording) |
-| State machine | the reviewed transitions, delays, ordering, callbacks and native guards; **this revision**: menacing (AI-154), the tower-guard alert (AI-155), the officer's rally (AI-156), the colleague found (AI-129), the beggar rule (AI-131), the civilian branches (AI-128), placement (AI-102b) | the reset body (item 14: not locatable in the export; the observable boundary is stated in AI-101), the tower-guard flag's setter and the rally's acceptance test (item 1) |
+| State machine | the reviewed transitions, delays, ordering, callbacks and native guards; menacing (AI-154), the tower-guard alert (AI-155), the officer's rally (AI-156), the colleague found (AI-129), the beggar rule (AI-131), the civilian branches (AI-128), placement (AI-102b), all corrected per review 47 | the reset body and what it clears (item 14: **not cleared**, `Assumption::ResetBody`); the tower-guard flag's setter, the rally's acceptance test and its indoor no-route outcome, the on-post glance's placed-state guard (item 1) |
 | Rails | cursor, opcodes, cached rolls, waiter order, native 140 styles 0 / 1 | the invalid-style deviation (a maintainer ratification, section 8 item 7) |
-| Orders | AI-185's movement order; **this revision**: the click dispatch by icon mode and intent, the context actions' priority and approaches, search and tie effects, the right click, act on arrival, the stroke recogniser (AI-186..191) | the icon modes' executors and the carry / revive / execute / strangle effects (9.2 items 4 / 5: not read); the lateral sign and the key identity (item 16) |
-| Combat rolls | contributions, friendly scoring, indications, decision counts, queued delivery, sweep ownership, the lying outcomes | the admissibility thresholds (9.3: content); the exact cadence (AI-153: needs the animation lengths and a trace) |
+| Orders | AI-185's movement order; the click dispatch by icon mode and intent, the context actions' priority, eligibility and approaches, the player's and the NPC's search effects, tying's completion, the right click's priority and mode cases, planned actions, the stroke recogniser (AI-186..191, corrected per review 47) | the icon modes' executors and the carry / revive / execute / strangle effects (9.2 items 4 / 5); the cancellation's named states (`Assumption::CancelTransitions`), the lateral sign, the circle angle constant, the 45 / 135 edges and the planning key (item 16) |
+| Combat rolls | contributions, friendly scoring, indications, decision counts, queued delivery, sweep ownership, the lying outcomes; the gesture rule (AI-191) | the admissibility thresholds (9.3: content; the repertoire is an OpenSherwood assumption); the exact cadence (AI-153: conditional on the figure choice yielding a figure; needs the animation lengths and a trace) |
 | Energy | costs, recovery amount, cadence and guard | the oracle's in-fight recovery (item 10) |
-| Knock-out | punch scaling, thresholds, decay phase, coma 300, the conditional NPC floor with its callers (AI-174 c, this revision); search and tie (AI-187) | carry / revive / execute / strangle effects (item 4: not read) |
-| Bow | aim boundaries and fixtures, penetration, immunity; the target as an activate-by-approach object (AI-192) | the interpolation's boundary rounding and the per-player record selection (item 11), the target's bow hit test (item 6) |
+| Knock-out | punch scaling, thresholds, decay phase, coma 300, the conditional NPC floor with its callers (AI-174 c); the body states (carried 7, tied 18) and the search / tie effects (AI-187) | carry / revive / execute / strangle effects and the held flag's setters (item 4: not read) |
+| Bow | aim boundaries and fixtures, penetration, immunity | the interpolation's boundary rounding and the per-player record selection (item 11); the straw target's capabilities (AI-192 withdrawn, item 6) |
 | Natives | the contracts of 6.1 | 85, 87, 88, 90, 99, 128, 130, 228, 235, 240: bodies not read |
-| Snapshot / replay | the inventory of 2.7..2.9 and the restore fixtures of test 16 | integrated snapshot / replay / hash clearance: needs the implementer's fixtures for the pending event queue, the sweep and the collapsing cone (item 19) and the RNG policy's ratification |
+| Snapshot / replay | the inventory of 2.7..2.9 (now including the pending action plans) and the restore fixtures of test 16 | integrated snapshot / replay / hash clearance: needs the implementer's fixtures for the pending event queue, the sweep, the collapsing cone, a consumed roll and a pending plan (item 19) and the RNG policy's ratification |
 | RNG policy | the recommended policy of section 8 item 2 | ratification (a maintainer decision) |
 | Mission readiness | - | integration with navigation and the scripts and a canonical-input completion trace, outside this file |

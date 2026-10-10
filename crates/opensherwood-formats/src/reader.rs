@@ -146,6 +146,11 @@ impl<'a> Reader<'a> {
         Ok(self.array::<1>(what)?[0])
     }
 
+    /// Read a signed byte.
+    pub fn i8(&mut self, what: &'static str) -> Result<i8, FormatError> {
+        Ok(self.array::<1>(what)?[0] as i8)
+    }
+
     /// Read a little-endian `u16`.
     pub fn u16(&mut self, what: &'static str) -> Result<u16, FormatError> {
         Ok(u16::from_le_bytes(self.array(what)?))

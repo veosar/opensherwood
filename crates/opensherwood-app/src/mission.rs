@@ -31,11 +31,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use opensherwood_assets::{GameDir, SpriteBank};
 use opensherwood_core::ai::DEFAULT_HIT_POINTS;
 use opensherwood_core::natives::{Kind, native_kind};
+use opensherwood_core::nav::map::{
+    BondSpec, DoorSpec, EdgeSpec, FarmSpec, JumpZoneSpec, LiftSpec, NavContent, NodeSpec,
+    RecordSpec, SectorSpec,
+};
 use opensherwood_core::vm::Assumption;
 use opensherwood_core::world::DEFAULT_STARTING_MONEY;
 use opensherwood_core::{ActorSpec, Geometry, Instruction, MapInfo, MissionSpec, Team};
 use opensherwood_formats::cpf::{self, ProfileTable, SoldierProfile};
 use opensherwood_formats::rhm::{self, ActorGroup, Command, CommandTable, Mission, RailPoint};
+use opensherwood_formats::rhp;
 use opensherwood_formats::scb;
 use opensherwood_script::{MissionBinding, translate_with_report};
 
@@ -432,10 +437,12 @@ pub fn build_spec_checked(
     loaded: &LoadedMission,
     map: MapInfo,
     geometry: Geometry,
+    nav: Option<NavContent>,
     map_elements: Option<u32>,
     lenient: bool,
 ) -> Result<(MissionSpec, Vec<String>), String> {
-    let (mut spec, profiles, stats) = build_spec_with_stats(loaded, map, geometry, map_elements);
+    let (mut spec, profiles, stats) =
+        build_spec_with_stats(loaded, map, geometry, nav, map_elements);
     eprintln!(
         "opensherwood: mission {} on {}: {}",
         loaded.mission.header.mission_id,
@@ -470,6 +477,180 @@ pub fn build_spec_checked(
     Ok((spec, profiles))
 }
 
+/// The navigation content of a map as `opensherwood-core` takes it
+/// (`docs/original/spec-navigation.md` 2.2, 2.3, 2.6, 2.5 and the `PPPP` jump zones): the
+/// layers with their sectors, the corner graph, the flat door list with its buildings and
+/// lifts, the bonds and the jump zones. The mission's tenants are added by
+/// [`build_spec_with_stats`] from its `CAVE` chunk (NAV-193).
+#[must_use]
+pub fn nav_content(m: &rhp::Rhp, map: MapInfo) -> NavContent {
+    let poly = |p: &rhp::Polyline| -> Vec<(i32, i32)> {
+        p.points
+            .iter()
+            .map(|q| (i32::from(q.x), i32::from(q.y)))
+            .collect()
+    };
+    let door = |d: &rhp::Door| DoorSpec {
+        door_type: d.door_type,
+        open: d.open != 0,
+        lock: d.lock,
+        alt: d.alt,
+        leaf: poly(&d.leaf),
+        a: (i32::from(d.a.x), i32::from(d.a.y)),
+        sector_a: u32::from(d.sector_a),
+        layer_a: u32::from(d.layer_a),
+        threshold: (i32::from(d.threshold.x), i32::from(d.threshold.y)),
+        b: (i32::from(d.b.x), i32::from(d.b.y)),
+        sector_b: u32::from(d.sector_b),
+        layer_b: u32::from(d.layer_b),
+    };
+    NavContent {
+        map_size: (map.width as i32, map.height as i32),
+        layers: m
+            .stat
+            .layers
+            .iter()
+            .map(|l| {
+                l.sectors
+                    .iter()
+                    .map(|s| SectorSpec {
+                        kind: s.kind,
+                        outline: poly(&s.outline),
+                        barriers: s
+                            .segments
+                            .iter()
+                            .map(|g| {
+                                (
+                                    (i32::from(g.a.x), i32::from(g.a.y)),
+                                    (i32::from(g.b.x), i32::from(g.b.y)),
+                                )
+                            })
+                            .collect(),
+                        unknown_flag: s.unknown_flag,
+                        obstacles: s
+                            .obstacles
+                            .iter()
+                            .map(|o| (o.mask, poly(&o.polygon)))
+                            .collect(),
+                    })
+                    .collect()
+            })
+            .collect(),
+        size_classes: m
+            .stat
+            .graph
+            .size_classes
+            .iter()
+            .map(|&(w, h)| (f32::from_bits(w), f32::from_bits(h)))
+            .collect(),
+        regions: m
+            .stat
+            .graph
+            .regions
+            .iter()
+            .map(|layer| {
+                layer
+                    .iter()
+                    .map(|sector| {
+                        sector
+                            .iter()
+                            .map(|region| {
+                                region
+                                    .iter()
+                                    .map(|n| NodeSpec {
+                                        offset_bits: n.offset_bits.clone(),
+                                        corner: (i32::from(n.x), i32::from(n.y)),
+                                        mask: n.node_mask,
+                                        entering_edges: n
+                                            .entering_edges
+                                            .iter()
+                                            .map(|&e| u32::from(e))
+                                            .collect(),
+                                    })
+                                    .collect()
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect(),
+        edges: m
+            .stat
+            .graph
+            .edges
+            .iter()
+            .map(|e| EdgeSpec {
+                a: (
+                    u32::from(e.a.layer),
+                    u32::from(e.a.sector),
+                    u32::from(e.a.region),
+                    u32::from(e.a.node),
+                ),
+                b: (
+                    u32::from(e.b.layer),
+                    u32::from(e.b.sector),
+                    u32::from(e.b.region),
+                    u32::from(e.b.node),
+                ),
+                cost: e.cost(),
+                mask: e.edge_mask,
+                records: e.records.iter().map(|&r| u32::from(r)).collect(),
+            })
+            .collect(),
+        records: m
+            .stat
+            .graph
+            .records
+            .iter()
+            .map(|r| RecordSpec {
+                passable: r.passable(),
+                bits_b: r.bits_b.clone(),
+                bits_a: r.bits_a.clone(),
+            })
+            .collect(),
+        farm: m
+            .farm
+            .iter()
+            .map(|r| FarmSpec {
+                kind: r.kind,
+                doors: r.doors.iter().map(door).collect(),
+            })
+            .collect(),
+        lifts: m
+            .az
+            .iter()
+            .map(|l| LiftSpec {
+                sector: u32::from(l.sector),
+                layer: u32::from(l.layer),
+                lift_type: l.lift_type,
+                shape: poly(&l.shape),
+                doors: l.doors.iter().map(door).collect(),
+            })
+            .collect(),
+        jump_zones: m
+            .pppp
+            .zones
+            .iter()
+            .map(|z| JumpZoneSpec {
+                layer: u32::from(z.unknown_layer),
+                polygon: poly(&z.polygon),
+            })
+            .collect(),
+        bonds: m
+            .bonds
+            .iter()
+            .map(|b| BondSpec {
+                a: (i32::from(b.x1), i32::from(b.y1)),
+                b: (i32::from(b.x2), i32::from(b.y2)),
+                area_a: u32::from(b.area_a),
+                area_b: u32::from(b.area_b),
+                layer: u32::from(b.unknown_0x0c),
+            })
+            .collect(),
+        tenants: Vec::new(),
+    }
+}
+
 /// [`build_spec_checked`] without the checks, returning the translation counts instead of
 /// logging them (`map_elements` as there).
 #[must_use]
@@ -477,9 +658,37 @@ pub fn build_spec_with_stats(
     loaded: &LoadedMission,
     map: MapInfo,
     geometry: Geometry,
+    nav: Option<NavContent>,
     map_elements: Option<u32>,
 ) -> (MissionSpec, Vec<String>, ProgramStats) {
     let mission = &loaded.mission;
+    // NAV-193 references the mission element table, not the world's actor slots.
+    let nav = nav.map(|mut nav| {
+        let binding = map_elements.map(|count| MissionBinding::from_mission(mission, count));
+        nav.tenants = mission
+            .cave
+            .iter()
+            .map(|c| {
+                (
+                    c.ids
+                        .iter()
+                        .map(|&i| {
+                            match binding
+                                .as_ref()
+                                .and_then(|b| b.elements.get(usize::from(i)))
+                            {
+                                Some((_, opensherwood_core::vm::Element::Actor(slot))) => *slot,
+                                // Kept invalid so strict world validation refuses the mission.
+                                _ => u32::MAX,
+                            }
+                        })
+                        .collect::<Vec<u32>>(),
+                    c.unknown_flag,
+                )
+            })
+            .collect();
+        nav
+    });
     let table = loaded.profiles.as_ref();
     let mut actors = Vec::new();
     let mut profiles: Vec<String> = Vec::new();
@@ -515,6 +724,9 @@ pub fn build_spec_with_stats(
                         active: pc.placement.unknown_0x08 != HIDDEN_PC_FLAG,
                         hit_points: DEFAULT_HIT_POINTS,
                         knockout_resistance: 0,
+                        area: i32::from(pc.placement.unknown_0x0c),
+                        sector: u32::from(pc.placement.unknown_0x0e),
+                        layer: u32::from(pc.placement.unknown_0x10),
                     });
                 }
             }
@@ -540,6 +752,9 @@ pub fn build_spec_with_stats(
                         active: true,
                         hit_points,
                         knockout_resistance,
+                        area: i32::from(npc.placement.unknown_0x0c),
+                        sector: u32::from(npc.placement.unknown_0x0e),
+                        layer: u32::from(npc.placement.unknown_0x10),
                     });
                 }
             }
@@ -560,6 +775,9 @@ pub fn build_spec_with_stats(
                         active: true,
                         hit_points: DEFAULT_HIT_POINTS,
                         knockout_resistance: 0,
+                        area: i32::from(c.placement.unknown_0x0c),
+                        sector: u32::from(c.placement.unknown_0x0e),
+                        layer: u32::from(c.placement.unknown_0x10),
                     });
                 }
             }
@@ -580,6 +798,9 @@ pub fn build_spec_with_stats(
                         active: true,
                         hit_points: DEFAULT_HIT_POINTS,
                         knockout_resistance: 0,
+                        area: i32::from(v.placement.unknown_0x0c),
+                        sector: u32::from(v.placement.unknown_0x0e),
+                        layer: u32::from(v.placement.unknown_0x10),
                     });
                 }
             }
@@ -593,6 +814,7 @@ pub fn build_spec_with_stats(
         MissionSpec {
             map,
             geometry,
+            nav,
             actors,
             script,
             rails,
@@ -850,6 +1072,56 @@ fn compile_block(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retail_cave_matches_buildings_and_references_actors() {
+        let Ok(root) = std::env::var("OPENSHERWOOD_GAME_DIR") else {
+            return;
+        };
+        let levels = std::path::Path::new(&root).join("DATA/Levels");
+        let mut missions = 0;
+        let mut occupied = 0;
+        for entry in std::fs::read_dir(&levels).unwrap() {
+            let file = entry.unwrap().path();
+            if !file
+                .extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("rhm"))
+            {
+                continue;
+            }
+            let mission = super::rhm::parse(&std::fs::read(&file).unwrap()).unwrap();
+            let map_path = levels.join(format!("{}.rhp", mission.header.map));
+            let map = super::rhp::parse(&std::fs::read(map_path).unwrap()).unwrap();
+            assert_eq!(
+                mission.cave.len(),
+                map.farm.iter().filter(|b| b.kind != 0).count()
+            );
+            let binding = super::MissionBinding::from_mission(
+                &mission,
+                opensherwood_script::map_element_count(&map),
+            );
+            let mut occupants = std::collections::BTreeSet::new();
+            for building in &mission.cave {
+                if !building.ids.is_empty() {
+                    occupied += 1;
+                }
+                for &id in &building.ids {
+                    let (_, element) = &binding.elements[usize::from(id)];
+                    let opensherwood_core::vm::Element::Actor(slot) = element else {
+                        panic!("building occupant is not an actor: {}", file.display());
+                    };
+                    assert!(
+                        occupants.insert(*slot),
+                        "an actor occupies several buildings"
+                    );
+                    assert!((*slot as usize) < binding.actor_count());
+                }
+            }
+            missions += 1;
+        }
+        assert_eq!(missions, 39);
+        assert!(occupied > 0, "the data must exercise occupant references");
+    }
+
     use super::*;
     use opensherwood_formats::rhm::{CommandBlock, Point};
 
@@ -1171,6 +1443,7 @@ mod tests {
             },
             Geometry::default(),
             None,
+            None,
         );
         let stats: Vec<(i32, i32)> = spec
             .actors
@@ -1230,6 +1503,7 @@ mod tests {
             },
             Geometry::default(),
             None,
+            None,
         );
         let active: Vec<bool> = spec.actors.iter().map(|a| a.active).collect();
         assert_eq!(active, [true, false, true, true, true, true, true, true]);
@@ -1243,6 +1517,7 @@ mod tests {
                 height: 100,
             },
             Geometry::default(),
+            None,
             None,
         );
         let actors: Vec<String> = spec.actors.iter().map(|a| a.profile.clone()).collect();
@@ -1343,9 +1618,11 @@ mod tests {
             width: 100,
             height: 100,
         };
-        let err = build_spec_checked(&loaded, map, Geometry::default(), None, false).unwrap_err();
+        let err =
+            build_spec_checked(&loaded, map, Geometry::default(), None, None, false).unwrap_err();
         assert!(err.contains("1 on a default sprite"), "{err}");
-        let (spec, _) = build_spec_checked(&loaded, map, Geometry::default(), None, true).unwrap();
+        let (spec, _) =
+            build_spec_checked(&loaded, map, Geometry::default(), None, None, true).unwrap();
         assert!(spec.assumptions.contains(&Assumption::LenientAssets));
         assert_eq!(spec.actors[2].profile, NPC_PROFILE);
         assert_eq!(spec.starting_money, DEFAULT_STARTING_MONEY);
@@ -1361,14 +1638,16 @@ mod tests {
             available_sprites: referenced_sprites(&clean, &table),
             script: None,
         };
-        let (spec, _) = build_spec_checked(&loaded, map, Geometry::default(), None, false).unwrap();
+        let (spec, _) =
+            build_spec_checked(&loaded, map, Geometry::default(), None, None, false).unwrap();
         assert!(spec.assumptions.is_empty());
         assert_eq!(spec.actors.len(), 4);
         // A sprite the bank could not load is the same fallback (strict `load` fails earlier).
         let mut partial = loaded;
         partial.available_sprites.remove("Guard A01");
-        assert!(build_spec_checked(&partial, map, Geometry::default(), None, false).is_err());
-        let (spec, _) = build_spec_checked(&partial, map, Geometry::default(), None, true).unwrap();
+        assert!(build_spec_checked(&partial, map, Geometry::default(), None, None, false).is_err());
+        let (spec, _) =
+            build_spec_checked(&partial, map, Geometry::default(), None, None, true).unwrap();
         assert!(spec.assumptions.contains(&Assumption::LenientAssets));
     }
 }

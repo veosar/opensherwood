@@ -646,6 +646,7 @@ mod tests {
 
     fn world(program: Program) -> World {
         let spec = MissionSpec {
+            nav: None,
             map: MapInfo {
                 width: 1000,
                 height: 800,
@@ -663,6 +664,9 @@ mod tests {
                     active: true,
                     hit_points: 100,
                     knockout_resistance: 0,
+                    area: -1,
+                    sector: 0,
+                    layer: 0,
                 },
                 ActorSpec {
                     profile: "Soldier A00".into(),
@@ -675,6 +679,9 @@ mod tests {
                     active: true,
                     hit_points: 100,
                     knockout_resistance: 0,
+                    area: -1,
+                    sector: 0,
+                    layer: 0,
                 },
             ],
             script: Some(program),

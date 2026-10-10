@@ -33,7 +33,7 @@ warning (executable strings), so the reader keeps unknown tags in `unknown_chunk
 | `SKRO` | 4 | scrolls (parchments) | Scroll |
 | `TING` | 3 | mobile elements (carts) | Mobile |
 | `GULP` | 2 | script sectors (polygons named in scripts) plus a point list | Script |
-| `CAVE` | 3 | per-map table of id lists | Jump? / Building? |
+| `CAVE` | 3 | building occupants as element-index lists | NAV-193; data references checked |
 
 Common conventions: all integers little-endian; `pstring16` = `u16 length` + Latin-1 bytes; an *optional name* is
 `u8 has_name` (0/1) followed by a `pstring16` when 1. Names of scriptable elements end in `_8XXXXXXX` (a hex id,
@@ -347,11 +347,17 @@ requires script sectors to have at least 3 points; retail polygons have 4..=17.
 
 ## `CAVE` (version 3)
 
-`u16 count`; entries: `u16 n`, `n x u16 id`, `u8 flag`. The count is constant per map (Lincoln 19, Nottingham 45,
-Derby 14, Leicester 16, York 74, Sherwood 5, Croisement02 1, others 0) so it indexes a per-map table of the
-`.rhp` (which one is not established: it is not the `WOAW`, `AZ `, `FARM`, `LOUD`, `DARK` or `TUPO` count for every
-map). Ids up to 0x90; 24 of 596 entries are non-empty; flag 1 in 7 entries. Buildings with their initial occupants
-("Tenant"), lifts, or jump zones are the candidates.
+`u16 count`; entries: `u16 n`, `n x u16 element_index`, `u8 unknown_flag`.
+The count equals the number of **building** records in `FARM` (nonzero kind), not the total
+`FARM` count. Occupants refer to the mission's flat element table, not actor slot numbers.
+The app resolves them through `MissionBinding` before passing actor slots to the core.
+
+Provenance: the tenant behaviour is specified by NAV-193 in
+[`spec-navigation.md`](../original/spec-navigation.md). Local data observation on 2026-10-02,
+`mission::tests::retail_cave_matches_buildings_and_references_actors`, cross-checks all 39 missions:
+every count matches, every occupant resolves to an actor, and no actor occurs in multiple buildings.
+The trailing flag remains unknown. This check does not validate placement, display or entry/exit
+behaviour, which remain navigation integration work.
 
 ## Cross-references established
 
@@ -411,7 +417,7 @@ text-like resource.
 ## Open questions
 
 - The placement qualifier triple against `.rhp` geometry; the waypoint command names; `POUF` entry body;
-  `CAVE` target table; the `ZORG` kinds other than 0 / 9 and whether `unknown_b` counts the pieces; the content of the `OILE` beggar lists; `SCOT` flag bytes and
+  the `ZORG` kinds other than 0 / 9 and whether `unknown_b` counts the pieces; the content of the `OILE` beggar lists; `SCOT` flag bytes and
   trailer; which hero occupies which `SCOT` slot; `BOOM` unknown words; the `NLIP` point values; the stat
   fields of `profile.cpf`.
 

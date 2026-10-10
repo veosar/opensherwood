@@ -19,6 +19,7 @@ use crate::ui::{
 };
 use crate::ui_assets;
 use opensherwood_core::Geometry;
+use opensherwood_core::nav::map::NavContent;
 use opensherwood_protocol::{
     CaptureParams, CaptureResult, HelloResult, ObserveParams, ObserveResult, PROTOCOL_VERSION,
     REPLAY_TIME_SESSION, Replay, ReplayCheckpoint, ReplayEvent, ReplayHeader, ReplayPlayParams,
@@ -1847,7 +1848,7 @@ impl Session {
         map: &str,
         ambiance: &str,
         lenient: bool,
-    ) -> Result<(Background, Geometry, Option<u32>), String> {
+    ) -> Result<(Background, Geometry, Option<NavContent>, Option<u32>), String> {
         let logical = format!("Data/Levels/{ambiance}/{map}.map");
         let data = game.read(&logical).map_err(|e| e.to_string())?;
         let img = opensherwood_formats::image_blob::parse_file(&data)
@@ -1879,7 +1880,15 @@ impl Session {
             Err(e) => return Err(format!("{rhp_path}: {e}")),
         };
         let map_elements = rhp.as_ref().map(opensherwood_script::map_element_count);
+        let mut nav = None;
         if let Some(rhp) = rhp {
+            nav = Some(crate::mission::nav_content(
+                &rhp,
+                opensherwood_core::MapInfo {
+                    width: background.width,
+                    height: background.height,
+                },
+            ));
             background.occluders = rhp
                 .faces
                 .iter()
@@ -1899,27 +1908,30 @@ impl Session {
                     }),
                 })
                 .collect();
-            geometry.boundary = rhp
-                .stat
-                .boundary
-                .iter()
-                .map(|p| (i32::from(p.x), i32::from(p.y)))
-                .collect();
+            // Walkable ground is the sector outlines of `STAT` minus their obstacles
+            // (`spec-navigation.md` NAV-012), never the `WOAW` areas, which are sight and
+            // projection volumes. `Geometry` is the flat fallback the synthetic movement uses;
+            // the per-layer model is `NavMap` below.
+            geometry.boundary = Vec::new();
             geometry.areas = rhp
-                .woaw
-                .areas
+                .stat
+                .layers
                 .iter()
-                .map(|a| {
-                    a.points
+                .flat_map(|l| l.sectors.iter())
+                .map(|s| {
+                    s.outline
+                        .points
                         .iter()
-                        .map(|p| (p.x.round() as i32, p.y.round() as i32))
+                        .map(|p| (i32::from(p.x), i32::from(p.y)))
                         .collect()
                 })
                 .collect();
             geometry.obstacles = rhp
                 .stat
-                .obstacles
+                .layers
                 .iter()
+                .flat_map(|l| l.sectors.iter())
+                .flat_map(|s| s.obstacles.iter())
                 .map(|o| {
                     o.polygon
                         .points
@@ -1929,7 +1941,7 @@ impl Session {
                 })
                 .collect();
         }
-        Ok((background, geometry, map_elements))
+        Ok((background, geometry, nav, map_elements))
     }
 
     /// Open the sprite bank once and build a catalog for the given profiles. A sprite bank that
@@ -2008,7 +2020,7 @@ impl Session {
                     .game
                     .as_ref()
                     .ok_or("map scenarios need a game directory")?;
-                let (bg, geometry, _) = Self::load_map(game, map, ambiance, lenient_assets())?;
+                let (bg, geometry, _, _) = Self::load_map(game, map, ambiance, lenient_assets())?;
                 let info = MapInfo {
                     width: bg.width,
                     height: bg.height,
@@ -2040,7 +2052,7 @@ impl Session {
                     );
                     "Day"
                 };
-                let (bg, geometry, map_elements) =
+                let (bg, geometry, nav, map_elements) =
                     Self::load_map(game, &map, ambiance, lenient_assets())?;
                 let info = MapInfo {
                     width: bg.width,
@@ -2050,6 +2062,7 @@ impl Session {
                     &mission_file,
                     info,
                     geometry,
+                    nav,
                     map_elements,
                     lenient_assets(),
                 )?;
@@ -2641,6 +2654,33 @@ impl Session {
                 }
                 let p: P = params_required(p)?;
                 let world = self.world()?;
+                let reference = world
+                    .selected
+                    .and_then(|id| world.entities.iter().position(|e| e.id == id))
+                    .or_else(|| {
+                        world
+                            .entities
+                            .iter()
+                            .position(|e| e.kind == opensherwood_core::EntityKind::Player)
+                    });
+                let resolve = |x, y| {
+                    let click = world.nav_resolve(
+                        (
+                            opensherwood_core::Fixed::from_int(x),
+                            opensherwood_core::Fixed::from_int(y),
+                        ),
+                        reference,
+                    );
+                    json!({"layer": click.layer, "sector": click.sector, "door": click.door, "valid": click.valid})
+                };
+                let navigation = world.navmap.as_ref().map(|map| json!({
+                    "layers": map.layer_count, "sectors": map.sectors.len(),
+                    "nodes": map.nodes.len(), "edges": map.edges.len(), "doors": map.doors.len(),
+                    "buildings": map.buildings.len(), "point": resolve(p.x, p.y),
+                    "destination": p.to.map(|(x, y)| resolve(x, y)),
+                    "queue": world.nav_state.queue, "completed": world.nav_state.completed,
+                    "failed": world.nav_state.failed, "max_search_work": world.nav_state.max_search_work,
+                }));
                 world
                     .try_ensure_nav()
                     .map_err(|e| engine_err(format!("navigation grid: {e}")))?;
@@ -2651,6 +2691,8 @@ impl Session {
                     nav.find_path(cell, goal).map(|cells| cells.len())
                 });
                 ok(json!({
+                    "backend": if world.has_navmap() { "layered" } else { "grid" },
+                    "navigation": navigation,
                     "geometry_walkable": world.geometry.is_walkable(p.x, p.y),
                     "cell": cell,
                     "cell_walkable": nav.walkable(cell),

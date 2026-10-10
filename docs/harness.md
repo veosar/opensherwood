@@ -212,9 +212,29 @@ expires), and `restore` while a replay is being recorded.
 | `reset` scenario | Needs game data | What it is |
 |---|---|---|
 | `{"synthetic": "corridor"}` | no | 640x480 room, a player, a patrolling guard, three obstacles, a goal |
+| `{"synthetic": "navigation"}` | no | 640x480, synthetic corner graph F1, one obstacle and a passage to a second layer; no original assets |
 | `{"map_view": {"map": "sherwood", "ambiance": "Day"}}` | yes | the retail background of that map with the synthetic units on it and a scrollable camera |
 | `{"mission": "<name>"}` | yes | the retail mission's background, walkable geometry, occluders and actors (NPC, civilian and `TOTO` sprites from the profile table `Configuration/profile.cpf`, see `docs/formats/profile.md`; a default sprite with a logged warning when an entry is unavailable; heroes still in file order; hidden player characters start inactive); NPCs follow their rail programs (walk the rail back and forth, face, wait, glance, loop; see `docs/formats/rhm.md` "Rail programs"), NPCs without a rail stand idle; the mission script (`Data/Levels/<name>.scb`) runs in the core VM (objectives, texts, sequences, messages, zones, activation, patrols; see below); enemy soldiers perceive the player characters and can be knocked out (see "Stealth layer"); viewport 1024x768 |
 | `{"menu": "main"}` | yes | the original main menu; `observe` returns a `ui` object (`screen` = `main_menu`, `briefing`, `pause_menu`, `dialog`, `debriefing`, `credits`, `load`, `save`, `options`, `options_graphics`, `options_sounds`, `options_shortcuts`, `select_player`, `new_player`, `rename_player`, `lost` (the lost page's `restart`, `load` and `ok` seals) or `minimap` (the overlay, toggled by the map scroll; the world runs on) (list rows appear as items with `action` = `row:<index>`, all enabled, the current one with `selected` = true; a rename edits the selected row inline, Enter commits and Escape cancels; option bars as `bar:<n>` with `enabled` = selected, sliders as `slider:<n>` with the value in the label, the position left of the first cell selecting 0; of the options only the effects and music volumes act, the others (aspect, effect toggles, sound mode / quality, dialogue and comment volumes, comment frequency, shortcut set) are stored in `settings.json` until their subsystems exist); `items` with actions and rectangles; `hovered`; briefing `page`; `credits` reports the scroll offset in `page[0]`) while a screen is shown; clicking Play! loads the first mission behind its briefing; Escape in a mission opens the pause menu (Continue / Restart / Quit with confirmation); menus never tick the world; left clicks on HUD widgets act on the interface (kneel / standing figures crouch / stand the selection, other widgets consume the click) and never reach the map |
+
+### Navigation diagnostics and regression coverage
+
+`debug.nav {x, y, to?: [x, y]}` is read-only. `backend` identifies `grid` or `layered`.
+For the latter, `navigation` reports map counts, resolved `point` and optional `destination`
+(`layer`, flat `sector`, `door`, `valid`), queued/completed/failed requests and `max_search_work`.
+The other fields (`grid`, `cell_walkable`, `path_cells`, `areas`, etc.) describe the legacy
+flattened geometry diagnostic; they do not establish that a layered route exists.
+
+`observe.entities` includes `layer`, polygon-number `sector`, `area`, `walk` and `crossing`.
+The crossing tuple is `[door, from_side, exiting]`; it records the phase even when two crossing
+points coincide. `walk.submitted` also covers a direct move already started. Movement orders
+still come exclusively from canonical player input; these diagnostics cannot move actors.
+
+`test_navigation.py` uses canonical mouse events to cover queued/completed paths, obstacle
+avoidance, cancellation, both crossing phases, fresh-process replay and inline snapshot
+continuation. It also verifies transactional rejection of corrupted navigation snapshots.
+This covers a synthetic passage, not retail stairs, building entry/exit or a campaign completion.
+Those remain subject to the [navigation review](decisions/reviews/2026-10-02-navigation-disposition.md).
 
 ## Scripts
 

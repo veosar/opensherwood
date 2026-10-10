@@ -2,6 +2,14 @@
 
 Date: 2026-09-02. Status: accepted.
 
+Working navigation change (2026-10-02, **not cleared for merge**): protocol remains 6; ruleset 20,
+snapshot schema 23 and hash schema 22 add the `navigation` part, dynamic requests/availability,
+actor layer/sector/area, walk steps and explicit crossing phase. The search budget and navigation
+scan cursor affect future state and are hashed. The immutable map is reattached before restore
+validation. Synthetic hash fixtures were regenerated deliberately for these schema changes;
+this does not approve the pending numerical or scheduling departures. See the
+[review disposition](reviews/2026-10-02-navigation-disposition.md).
+
 Versions in force (2026-09-18, implementer batch 1): protocol 6, ruleset 19, snapshot schema 22, hash schema
 21 - the rebuilt script VM of `docs/original/spec-script-vm.md` revision 9 (one instruction per bytecode quad,
 the native call protocol of VM-086, synchronous messages, the fault log and suppression sets of 8.1 / 8.3 in

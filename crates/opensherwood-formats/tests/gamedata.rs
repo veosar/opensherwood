@@ -584,26 +584,35 @@ fn every_rhp_decodes_and_its_geometry_lies_inside_the_background() {
         let stem = f.file_stem().unwrap().to_str().unwrap();
         let (w, h) = day_map_size(&dir, stem).unwrap_or_else(|| panic!("no Day map for {stem}"));
         let name = f.display().to_string();
-        let inside = |p: &rhp::Point| p.x <= w && p.y <= h;
+        let (w, h) = (i32::from(w), i32::from(h));
+        let inside = |p: &rhp::Point| {
+            let (x, y) = (i32::from(p.x), i32::from(p.y));
+            (0..=w).contains(&x) && (0..=h).contains(&y)
+        };
 
         assert_eq!(m.version, rhp::VERSION, "{name}");
         assert!(m.spok.unknown_0x04 <= 1, "{name}");
         assert_eq!(m.spok.unknown_0x08, 0, "{name}");
 
-        // STAT: boundary of the walkable ground, segments and obstacle outlines.
-        assert_eq!(m.stat.boundary_id, 0x5a, "{name}");
-        assert_eq!(m.stat.segments_id, 0x82, "{name}");
-        assert!(m.stat.boundary.len() >= 3, "{name}");
-        assert!(m.stat.boundary.iter().all(inside), "{name}: boundary");
-        assert!(!m.stat.obstacles.is_empty(), "{name}");
-        for o in &m.stat.obstacles {
-            assert!(o.polygon.points.len() >= 3, "{name}");
-            assert!(o.polygon.points.iter().all(inside), "{name}: obstacle");
+        // STAT: the layers with their sectors and the path graph
+        // (`spec-navigation.md` 2.2, 2.3; consumed exactly by the parser).
+        assert!(!m.stat.layers.is_empty(), "{name}");
+        for layer in &m.stat.layers {
+            for sec in &layer.sectors {
+                assert!(sec.kind <= 1, "{name}: sector kind {}", sec.kind);
+                assert_eq!(sec.sector_mask, 0, "{name}: sector mask");
+                assert_eq!(sec.unknown_flag, 0, "{name}: sector unknown_flag");
+                assert!(sec.outline.points.len() >= 3, "{name}: sector outline");
+                assert!(sec.outline.points.iter().all(inside), "{name}: sector");
+                for o in &sec.obstacles {
+                    assert!(o.polygon.points.len() >= 3, "{name}");
+                    assert!(o.polygon.points.iter().all(inside), "{name}: obstacle");
+                }
+                for g in &sec.segments {
+                    assert!(inside(&g.a) && inside(&g.b), "{name}: barrier");
+                }
+            }
         }
-        for s in &m.stat.segments {
-            assert!(inside(&s.a) && inside(&s.b), "{name}: segment");
-        }
-        assert!(!m.stat.rest.is_empty(), "{name}");
 
         // TEXT and DARK zones.
         for z in &m.text {
@@ -672,8 +681,8 @@ fn every_rhp_decodes_and_its_geometry_lies_inside_the_background() {
         for fc in &m.faces {
             assert!(fc.width > 0 && fc.height > 0, "{name}");
             assert!(
-                u32::from(fc.x) + u32::from(fc.width) <= u32::from(w)
-                    && u32::from(fc.y) + u32::from(fc.height) <= u32::from(h),
+                i32::from(fc.x) + i32::from(fc.width) <= w
+                    && i32::from(fc.y) + i32::from(fc.height) <= h,
                 "{name}: mask {}x{} at {},{}",
                 fc.width,
                 fc.height,
@@ -709,7 +718,10 @@ fn every_rhp_decodes_and_its_geometry_lies_inside_the_background() {
         }
         for j in &m.pppp.jump_lines {
             for p in j.from.iter().chain(j.to.iter()) {
-                assert!(p.x <= w && p.y <= h, "{name}: jump line {p:?}");
+                assert!(
+                    i32::from(p.x) <= w && i32::from(p.y) <= h,
+                    "{name}: jump line {p:?}"
+                );
             }
         }
 
@@ -726,8 +738,8 @@ fn every_rhp_decodes_and_its_geometry_lies_inside_the_background() {
         if stem.eq_ignore_ascii_case("Croisement01") {
             assert_eq!((w, h), (1408, 960));
             assert_eq!(m.spok.unknown_0x00, 100);
-            assert_eq!(m.stat.boundary.len(), 79);
-            assert_eq!(m.stat.obstacles.len(), 46);
+            assert_eq!(m.stat.layers.len(), 2);
+            assert_eq!(m.stat.polygon_count(), 54);
             assert_eq!(m.text.len(), 4);
             assert_eq!(m.woaw.layers, vec![0, 1, 2, 3]);
             assert_eq!(m.woaw.areas.len(), 85);
@@ -845,4 +857,239 @@ fn profile_table_parses_and_its_sprites_exist() {
     assert!(ha.after.is_empty());
     assert_eq!(ha.until, vec!["HA".to_string()]);
     assert_eq!(t.level("SA").unwrap().after, vec!["HA".to_string()]);
+}
+
+/// `docs/original/spec-navigation.md` 7.1: the navigation chunks of every map are consumed to
+/// their last byte and the counts and invariants the specification records hold on all nine.
+#[test]
+fn navigation_chunks_are_consumed_exactly_on_every_map() {
+    use opensherwood_formats::rhp;
+    let dir = need_data!();
+    // name, FARM doors, lifts, sectors, obstacles, graph nodes (specification 7.1).
+    let expected: [(&str, usize, usize, usize, usize, usize); 9] = [
+        ("Croisement01", 3, 0, 8, 46, 289),
+        ("Croisement02", 1, 0, 5, 42, 314),
+        ("Croisement03", 5, 0, 11, 24, 242),
+        ("Derby", 42, 12, 40, 13, 360),
+        ("Leicester", 59, 10, 51, 54, 644),
+        ("Lincoln", 59, 10, 52, 41, 633),
+        ("Nottingham", 100, 12, 80, 61, 891),
+        ("Sherwood", 5, 4, 11, 28, 268),
+        ("York", 123, 21, 109, 46, 893),
+    ];
+    // The four sectors whose region count is one *fewer* than 1 + obstacle count (7.1).
+    let fewer: [(&str, usize, usize); 4] = [
+        ("Croisement03", 0, 0),
+        ("Nottingham", 0, 0),
+        ("Nottingham", 2, 7),
+        ("York", 0, 0),
+    ];
+    // Edge masks are nonzero on exactly these maps (7.1).
+    let masked = [
+        "Croisement01",
+        "Croisement02",
+        "Croisement03",
+        "Nottingham",
+        "York",
+    ];
+    let mut seen = 0;
+    for f in files_with_ext(&dir, "rhp") {
+        let data = std::fs::read(&f).unwrap();
+        let m = rhp::parse(&data).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
+        let stem = f.file_stem().unwrap().to_str().unwrap().to_string();
+        let row = expected
+            .iter()
+            .find(|r| r.0.eq_ignore_ascii_case(&stem))
+            .unwrap_or_else(|| panic!("unexpected map {stem}"));
+        seen += 1;
+        let (_, doors, lifts, sectors, obstacles, nodes) = *row;
+
+        let all_sectors: Vec<&rhp::Sector> = m
+            .stat
+            .layers
+            .iter()
+            .flat_map(|l| l.sectors.iter())
+            .collect();
+        assert_eq!(all_sectors.len(), sectors, "{stem}: sector count");
+        assert_eq!(
+            all_sectors.iter().map(|s| s.obstacles.len()).sum::<usize>(),
+            obstacles,
+            "{stem}: obstacle count"
+        );
+        assert_eq!(
+            m.stat.polygon_count() as usize,
+            sectors + obstacles,
+            "{stem}: polygon numbers"
+        );
+        assert_eq!(
+            m.farm.iter().map(|r| r.doors.len()).sum::<usize>(),
+            doors,
+            "{stem}: FARM doors"
+        );
+        assert_eq!(m.az.len(), lifts, "{stem}: lifts");
+
+        assert_eq!(
+            m.stat
+                .graph
+                .size_classes
+                .iter()
+                .map(|&(w, h)| (f32::from_bits(w), f32::from_bits(h)))
+                .collect::<Vec<_>>(),
+            vec![(6.0, 4.0)],
+            "{stem}: size classes"
+        );
+        let node_total: usize = m
+            .stat
+            .graph
+            .regions
+            .iter()
+            .flatten()
+            .flatten()
+            .map(std::vec::Vec::len)
+            .sum();
+        assert_eq!(node_total, nodes, "{stem}: node count");
+        // NAV-020: regions equal 1 + obstacle count except for the four sectors named in 7.1.
+        for (li, layer) in m.stat.layers.iter().enumerate() {
+            for (si, sec) in layer.sectors.iter().enumerate() {
+                let want = 1 + sec.obstacles.len();
+                let got = m.stat.graph.regions[li][si].len();
+                let one_fewer = fewer
+                    .iter()
+                    .any(|&(n, l, s)| n.eq_ignore_ascii_case(&stem) && l == li && s == si);
+                assert_eq!(
+                    got,
+                    if one_fewer { want - 1 } else { want },
+                    "{stem}: regions of layer {li} sector {si}"
+                );
+                for node in m.stat.graph.regions[li][si].iter().flatten() {
+                    assert_eq!(node.offset_bits.len(), 1, "{stem}: node classes");
+                }
+            }
+        }
+        // NAV-022 / NAV-024: every edge is listed by its node B, has a reverse, its cost is the
+        // corner distance within 1.5 px, and its record index equals the edge index.
+        let node = |r: &rhp::NodeRef| {
+            &m.stat.graph.regions[usize::from(r.layer)][usize::from(r.sector)]
+                [usize::from(r.region)][usize::from(r.node)]
+        };
+        let mut pairs = std::collections::BTreeSet::new();
+        for (i, e) in m.stat.graph.edges.iter().enumerate() {
+            assert_eq!(
+                (e.a.layer, e.a.sector),
+                (e.b.layer, e.b.sector),
+                "{stem}: edge {i} leaves its sector"
+            );
+            let b = node(&e.b);
+            assert!(
+                b.entering_edges.contains(&(i as u16)),
+                "{stem}: edge {i} is not in node B's list"
+            );
+            assert_eq!(e.records, vec![i as u16], "{stem}: edge {i} records");
+            let a = node(&e.a);
+            let d = (f64::from(a.x) - f64::from(b.x)).hypot(f64::from(a.y) - f64::from(b.y));
+            assert!(
+                (f64::from(e.cost()) - d).abs() <= 1.5,
+                "{stem}: edge {i} cost {} vs distance {d}",
+                e.cost()
+            );
+            pairs.insert((
+                (e.a.layer, e.a.sector, e.a.region, e.a.node),
+                (e.b.layer, e.b.sector, e.b.region, e.b.node),
+            ));
+        }
+        for (a, b) in &pairs {
+            assert!(
+                pairs.contains(&(*b, *a)),
+                "{stem}: edge {a:?} has no reverse"
+            );
+        }
+        assert_eq!(
+            m.stat.graph.records.len(),
+            m.stat.graph.edges.len(),
+            "{stem}: record count"
+        );
+        assert_eq!(
+            m.stat.graph.edges.iter().any(|e| e.edge_mask != 0),
+            masked.iter().any(|n| n.eq_ignore_ascii_case(&stem)),
+            "{stem}: edge masks"
+        );
+
+        // NAV-042: every lift names a kind-1 sector and its skipped word equals that layer.
+        let sector_of = |number: u16| -> Option<(usize, &rhp::Sector)> {
+            let mut n = 0u32;
+            for (li, layer) in m.stat.layers.iter().enumerate() {
+                for sec in &layer.sectors {
+                    if n == u32::from(number) {
+                        return Some((li, sec));
+                    }
+                    n += 1 + sec.obstacles.len() as u32;
+                }
+            }
+            None
+        };
+        for (i, l) in m.az.iter().enumerate() {
+            let (li, sec) =
+                sector_of(l.sector).unwrap_or_else(|| panic!("{stem}: lift {i} names no sector"));
+            assert_eq!(sec.kind, 1, "{stem}: lift {i} sector kind");
+            assert_eq!(usize::from(l.layer), li, "{stem}: lift {i} layer");
+            assert!(l.shape.points.is_empty(), "{stem}: lift {i} shape");
+            assert!((1..=3).contains(&l.lift_type), "{stem}: lift {i} type");
+        }
+        // NAV-040 / 7.1: a passage door's A point lies inside sector A, its B point inside B.
+        for r in m.farm.iter().filter(|r| r.kind == 0) {
+            for d in &r.doors {
+                assert!(
+                    matches!(d.door_type, 0 | 3 | 7),
+                    "{stem}: passage door type {}",
+                    d.door_type
+                );
+                for (number, pt) in [(d.sector_a, d.a), (d.sector_b, d.b)] {
+                    let (_, sec) = sector_of(number)
+                        .unwrap_or_else(|| panic!("{stem}: door names polygon {number}"));
+                    let poly: Vec<(i32, i32)> = sec
+                        .outline
+                        .points
+                        .iter()
+                        .map(|p| (i32::from(p.x), i32::from(p.y)))
+                        .collect();
+                    assert!(
+                        point_in_polygon(i32::from(pt.x), i32::from(pt.y), &poly),
+                        "{stem}: door point {pt:?} outside sector {number}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(seen, 9);
+}
+
+/// Even-odd point-in-polygon over map pixels; points on an edge count as inside.
+fn point_in_polygon(x: i32, y: i32, poly: &[(i32, i32)]) -> bool {
+    let (px, py) = (i64::from(x), i64::from(y));
+    let mut inside = false;
+    let n = poly.len();
+    for i in 0..n {
+        let (x1, y1) = (i64::from(poly[i].0), i64::from(poly[i].1));
+        let (x2, y2) = (
+            i64::from(poly[(i + 1) % n].0),
+            i64::from(poly[(i + 1) % n].1),
+        );
+        let cross = (px - x1) * (y2 - y1) - (py - y1) * (x2 - x1);
+        if cross == 0
+            && px >= x1.min(x2)
+            && px <= x1.max(x2)
+            && py >= y1.min(y2)
+            && py <= y1.max(y2)
+        {
+            return true;
+        }
+        if (y1 > py) != (y2 > py) {
+            let lhs = (px - x1) * (y2 - y1);
+            let rhs = (x2 - x1) * (py - y1);
+            if if y2 > y1 { lhs < rhs } else { lhs > rhs } {
+                inside = !inside;
+            }
+        }
+    }
+    inside
 }

@@ -1,9 +1,11 @@
 # RHP map file (`.rhp`, magic `MEUH`)
 
-Status: **mostly decoded**. Every chunk's record framing is known and consumed exactly on all 9 files. The
-geometry chunks (`STAT` polygons, `WOAW`, `007 `, `FACE`, `PPPP`, `TEXT`, `DARK`, `FLIM`) are decoded and
-verified by overlay; `FARM`, ` AZ `, `TUPO`, `LOUD` and the second half of `STAT` are only partially understood
-and stay raw in the parser (`crates/opensherwood-formats/src/rhp.rs`).
+Status: **typed navigation framing; runtime integration incomplete**. `STAT` layers, sectors,
+corner graph and availability masks, `FARM` doors/buildings and ` AZ ` lifts are parsed into typed
+records and consumed exactly on all nine local maps. Their layout comes from
+[`spec-navigation.md`, section 2](../original/spec-navigation.md), with component reviews 37/48.
+`TUPO` and `LOUD` remain raw. Parsing all maps does not establish faithful gameplay; the
+[integration review](../decisions/reviews/2026-10-02-navigation-disposition.md) lists open gates.
 
 One `.rhp` per location: `sherwood`, `nottingham`, `lincoln`, `york`, `derby`, `leicester`, `Croisement01..03`
 (forest crossroads used by ambush missions). The prerendered background is *not* inside; it is in
@@ -21,14 +23,14 @@ to the child body *after* its version word.
 | Tag | Version | Content | Parser |
 |---|---|---|---|
 | `SPOK` | 3 | 9-byte header | typed |
-| `STAT` | 2 | boundary of the walkable ground, segments, obstacle polygons, then path graph (undecoded) | typed + raw rest |
+| `STAT` | 2 | layers/sectors, obstacle polygons, size classes, corner graph and edge records | typed |
 | `TEXT` | 2 | polygons with a kind byte (0..8) | typed |
 | `WOAW` | 3 | layers and 3D "projection areas" | typed |
 | `007 ` | 2 | bonds between projection areas ("007" = Bond) | typed |
 | `FACE` | 2 | foreground occluder masks (trees, rocks, walls) | typed |
 | `FLIM` | 2 | animated background elements (sprite instances) | typed |
-| `FARM` | 4 | buildings (door position, entry points) | raw |
-| ` AZ ` | 2 | records with points; doors/lifts? | raw |
+| `FARM` | 4 | passages and buildings with counted doors | typed |
+| ` AZ ` | 2 | lift sectors, shapes and end doors | typed |
 | `DARK` | 2 | dark zone polygons | typed |
 | `TUPO` | 3 | named "patch" records (`pixel_vert`, `notpatch`); the leading count, with the `FLIM` count, sizes the map's part of the script element table (`scb.md`, Index spaces) | raw, count typed (`Rhp::tupo_count`) |
 | `LOUD` | 2 | sound sources / zones (`RHSoundGeometry`) | raw |
@@ -36,7 +38,7 @@ to the child body *after* its version word.
 
 ## Common framing
 
-* `Point`: `u16 x, u16 y`. `Point3`: `u16 x, u16 y, u16 z` (z = height above the ground plane).
+* `Point`: `i16 x, i16 y` (signed, including map-edge coordinates). `Point3`: `u16 x, u16 y, u16 z` (z = height above the ground plane).
 * `Polyline` / polygon: `u8 id, u16 count, count x Point, u8 id2`. The two id bytes are the same in every map
   for the same list position (e.g. the first `STAT` polygon is always `0x5a ... 0x82`, the first obstacle
   `0xe6 ... 0x42`, then `0x88 ... 0xcd`, `0xbb ... 0x0f`): they are editor-assigned pseudo-random ids, not
@@ -51,56 +53,24 @@ to the child body *after* its version word.
 | 0x04 | u32 | `unknown_0x04` | 1 (forest maps, sherwood) or 0 (towns) |
 | 0x08 | u8 | `unknown_0x08` | 0 |
 
-## `STAT` (static geometry)
+## `STAT` (layered navigation)
 
-```
-u16 unknown_0x00        2 (Croisement*), 12 derby, 7 leicester, 14 lincoln, 9 nottingham, 9 sherwood, 7 york
-u16 unknown_0x02        1, 1, 2, 4, 10, 8, 10, 1, 10 (same order)
-u8  unknown_0x04        0
-u32 unknown_0x05        0
-u8  boundary_id         0x5a
-u16 n; n x Point        boundary: outline of the walkable ground (79 .. 344 points), hugs map borders
-u8  segments_id         0x82
-u16 n; n x (Point a, Point b)   segments (0 in forest maps, 9 derby/lincoln, 12 nottingham, 27 york)
-u32 unknown             0
-u16 obstacle_count      46, 42, 22, 5, 32, 23, 12, 25, 22
-u32 unknown             0
-obstacle_count x { Polyline polygon; u32 flags }
-... rest (undecoded, see below)
-```
+The typed layout is specified in `spec-navigation.md` 2.2/2.3 (NAV-010 through NAV-025).
+`Stat.layers` preserves sector and obstacle file order, barriers, availability masks and unresolved
+flags. `Stat.graph` preserves size classes, nested layer/sector/region node tables, directed edges,
+class-specific edge records and their index references. Edge cost bits remain available without
+formatting or normalising floating-point values. `boundary`, `segments` and `obstacles` retain the
+first sector's geometry for existing overlay consumers; `rest` is empty after successful parsing.
 
-`flags` is a bit mask: 0 for most obstacles; bits 0..5, 8, 10..13, 15, 16, 17 occur. Overlay evidence
-(`rhp-overlay`, Croisement01): the boundary follows the forest edge, the rock face and the map borders; every
-obstacle polygon outlines a tree trunk, rock, bush or stump. This is the "motion area" with its "obstacle masks"
-of the console command MOTION.
+Counts are checked against the remaining bytes before allocation. A node needs at least 20 bytes
+before its variable candidate bytes and entering-edge indices. Invalid cross-references are
+rejected by graph validation; map construction separately checks geometry and allocation bounds.
+All nine retail maps are covered by `opensherwood-formats/tests/gamedata.rs`.
 
-Rest of the chunk (56 KB of 108 KB in Croisement01): further polygons with the same `u8 id, u16 n, points`
-framing and different inter-record fields, then a table of 28-byte records
-`u16 1, u16 index (incrementing), u32 0, u16 a, u16 0, u32 0, u16 0, u16 b, f32 length, u32 0` and node
-records holding a `Point` plus small `i16` offset pairs and lists of `u16` edge ids. It is almost certainly the
-pathfinder graph (console EULER); its framing is not established and the bytes are exposed as `Stat::rest`.
-
-### Remainder of `STAT` (observation, 2026-09-02, `harness/tools/probe/probe_stat_layers.py`)
-
-After the obstacles the remainder starts with further polygon records framed like the obstacles
-(`u8 id, u16 n, n x Point, u8 id2`), each followed by `u16 nseg` (0 in every record seen), `u32 0`,
-`u16 nobst`, `u16 a`, `u16 b`, then `nobst x { polyline, u32 flags }` and, when `a >= 2`, one more `u16`;
-records are separated by a zero byte in the town maps. The sequential parse with this rule walks 26 records in
-Lincoln (header `unknown_0x00` = 14 = the map's `WOAW` layer count, so these are not one record per layer),
-40+ in Nottingham, and fails on the first record in the forest maps, Derby and Sherwood (three zero bytes
-precede the first polygon there). The first Lincoln record (107 points) outlines the castle yard where the
-first mission starts. Meaning and exact framing remain open; the engine does not use these records.
-
-### Walkable ground and the projection areas (observation, 2026-09-02)
-
-The `STAT` boundary alone does not describe where characters may walk in the town maps: the start position of
-the first mission (Lincoln yard, map point 1937,1384) is outside the boundary and inside no obstacle, but
-inside `WOAW` area 67 (20 vertices, linked to layer 27). Sampled coverage of the `WOAW` areas is 57 % of the
-Lincoln map. The engine therefore treats a point as walkable when it is inside the boundary **or** inside any
-projection area, and outside every obstacle (`opensherwood-core` `Geometry::areas`, `docs/features.md`).
-Layer transitions (stairs, doors, ladders) are still ignored: every area is flat and connected through the
-navigation grid wherever polygons touch or overlap, which is an approximation of the original's layer/sector
-model.
+The earlier union of the first `STAT` boundary and `WOAW` projection polygons was an engine
+approximation. Map-backed mission orders now use the typed navigation map. The flattened geometry
+and legacy grid remain available for diagnostics; their connectivity is not the layer/sector
+movement contract. Building/lift integration is still incomplete.
 
 ## `TEXT`
 
@@ -184,12 +154,19 @@ Zones are polygons of 4..19 points; `unknown_ref` is 0 or an id also found in `W
 holds jump lines: a raised segment (`z` 50..100) and a ground segment (`z` 0) a few pixels apart (console
 JUMP-ZONE / jump-line). Croisement01: 11 zones, 13 jump lines; sherwood 2 / 1.
 
+## `FARM` and ` AZ `
+
+`FARM` is a counted list of records with a kind and counted door records. Nonzero kinds identify
+buildings; passage records do not create buildings. ` AZ ` is a counted list of lifts with sector,
+layer, kind, shape polygon and end doors. Both share the typed door record: side points and sector/
+layer qualifiers, threshold, lock bytes and optional leaf polygon. Exact framing and special
+side-B interpretation are in `spec-navigation.md` 2.5/2.6, NAV-040 through NAV-043.
+
+The parsers reject truncation/trailing bytes and are included in the malformed-byte smoke test.
+Runtime endpoint and layer ambiguities remain listed in the integration review.
+
 ## Raw chunks (layout partially known, not parsed)
 
-* `FARM`: `u16 n`, then records of 37 bytes in Croisement01: `u8 0, u8 1, u16 0, u8 1, u16 0, u8 flag,
-  u8[5] 0, u16 a, u8 0, u8 id, Point door, u16 b, u16 c, Point p1, Point p2, u16 d, u16 e`; the door lies on a
-  bond and `p1`/`p2` are just inside it. Sherwood records are 53 bytes (an extra point list); not resolved.
-* ` AZ `: `u16 n`, records of about 40 bytes with a `u16 0x1a/0x1e/0x23...` word, an id byte and three points.
 * `TUPO`: `u16 n`, then `pstring16 short name, pstring16 long name` and a 100-byte record. `n` is
   `Rhp::tupo_count()`: the script element table of a level starts with the `FLIM` entries and then these `n`
   patches (`scb.md`, Index spaces; `sherwood-hub.md` 4.1). Counts: Croisement01 6, Croisement02 9,
@@ -199,7 +176,10 @@ JUMP-ZONE / jump-line). Croisement01: 11 zones, 13 jump lines; sherwood 2 / 1.
 
 ## Provenance
 
-Observation only (no disassembly). Scripts in `harness/tools/probe/` (`rhp_chunks.py`, `probe_*.py`,
+The older geometry and overlay findings below are observation-based. Typed navigation framing
+was implemented from the public behaviour specification cited above; the implementer did not
+read decompilation. On 2026-10-02, the format data tests consumed all nine maps, including the
+complete `STAT`, `FARM` and ` AZ ` records. Scripts in `harness/tools/probe/` (`rhp_chunks.py`, `probe_*.py`,
 `overlay.py`, `map_png.py`) parse every chunk of all 9 files under the layouts above and check that each
 chunk is consumed exactly and that all point coordinates fall inside the background of that map
 (`probe_stat6.py`, `probe_woaw.py`, `probe_face_model.py`, `probe_pppp_007.py`, `probe_text_dark.py`,

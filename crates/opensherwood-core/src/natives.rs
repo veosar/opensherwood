@@ -1004,6 +1004,13 @@ impl World {
                 .map_or(0, |vm| vm.program.elements.len() as i32)),
             // 4 / 5 (i) -> handle: door / patch i of the map's list; -1 or out of range -> null.
             // The engine has no door or patch lists of its own: the handle is the index.
+            4 if self.navmap.is_some() => {
+                let valid = a0 >= 0 && self.nav_state.doors.get(a0 as usize).is_some();
+                if !valid && a0 != NONE_HANDLE {
+                    self.record_error();
+                }
+                Ok(if valid { a0 } else { NONE_HANDLE })
+            }
             4 | 5 => Ok(if a0 >= 0 { a0 } else { NONE_HANDLE }),
             // 6 (i) -> handle: location i of the level's list, i modulo 65536 and no upper
             // check (an unchecked read); -1 or an empty entry -> null.
@@ -1025,6 +1032,14 @@ impl World {
             // 8 (i) -> handle: building i of the map's list, **no check** (U). This engine
             // keeps no building list, so the handle is the index and there is nothing to read
             // past: the reading itself is the `Policy(8)` this row records.
+            8 if self.navmap.is_some() => {
+                if a0 >= 0 && self.nav_state.buildings.get(a0 as usize).is_some() {
+                    Ok(a0)
+                } else {
+                    self.record_read_fault(8);
+                    Ok(NONE_HANDLE)
+                }
+            }
             8 => Ok(a0),
             // 9 (i) -> handle: patrol path i (modulo 65536, no upper check); -1 -> null.
             9 => {
@@ -1341,7 +1356,49 @@ impl World {
             // 98 (x, building) -> bool: a null building asks "is x in a building interior",
             // any other one "is x's zone that building". This engine has no interiors, so
             // every actor is outdoors and both answers are 0.
-            98 => Ok(0),
+            98 => {
+                let inside = self
+                    .entity_of(a0)
+                    .and_then(|i| self.nav_state.building_of(i as u32));
+                let building = arg(args, 1);
+                Ok(i32::from(inside.is_some_and(|b| {
+                    building == NONE_HANDLE || building == b as i32
+                })))
+            }
+            // NAV-190/191: occupancy is navigation state, shared with walking and restore.
+            152 => {
+                let Some(i) = self.entity_of(a0) else {
+                    self.record_error();
+                    return Ok(0);
+                };
+                self.vm_touch_entity(i);
+                if !self.vm_touch_navigation() {
+                    return Ok(0);
+                }
+                let removed = self.nav_take_out(i);
+                if !removed {
+                    self.record_error();
+                }
+                Ok(i32::from(removed))
+            }
+            156 => {
+                let building = arg(args, 1);
+                let Some(i) = self.entity_of(a0) else {
+                    self.record_error();
+                    return Ok(0);
+                };
+                if building < 0 || self.nav_state.buildings.get(building as usize).is_none() {
+                    self.record_error();
+                    return Ok(0);
+                }
+                self.vm_touch_entity(i);
+                if !self.vm_touch_navigation() {
+                    return Ok(0);
+                }
+                self.nav_cancel_walk(i);
+                self.nav_put_inside(i, building as u32);
+                Ok(0)
+            }
             // 101 (x) -> int: the current action id; an actor without one answers 283.
             101 => Ok(match self.entity_of(a0) {
                 Some(i) => self.entities[i].action as i32,
@@ -1675,15 +1732,36 @@ impl World {
                     self.record_read_fault(id);
                     return Ok(0);
                 }
+                if self.navmap.is_some() {
+                    return match self.nav_state.doors.get(a0 as usize) {
+                        Some(d) => Ok(i32::from(
+                            d.lock[crate::nav::state::NavState::lock_slot(id - 182)],
+                        )),
+                        None => {
+                            self.record_read_fault(id);
+                            Ok(0)
+                        }
+                    };
+                }
                 Ok(self.vm.as_ref().map_or(0, |vm| {
                     crate::vm::VmState::pair_table(&vm.door_bytes, a0, id as i32 - 182, 0)
                 }))
             }
             186..=189 => {
+                if self.navmap.is_some() && self.nav_state.doors.get(a0 as usize).is_none() {
+                    return Ok(0);
+                }
                 if a0 == NONE_HANDLE {
                     return Err(Fault::UncheckedAccess(id));
                 }
                 let b = arg(args, 1);
+                if self.navmap.is_some() {
+                    if self.vm_touch_navigation() {
+                        self.nav_state
+                            .set_lock(a0 as u32, id - 186, u8::from(b != 0));
+                    }
+                    return Ok(0);
+                }
                 if let Some(vm) = self.vm.as_mut() {
                     crate::vm::VmState::set_pair_table(
                         &mut vm.door_bytes,
@@ -1700,6 +1778,16 @@ impl World {
                 let door = arg(args, 1);
                 if door == NONE_HANDLE {
                     self.record_error();
+                    return Ok(0);
+                }
+                if let Some(map) = self.navmap.as_ref() {
+                    let leaf = map
+                        .doors
+                        .get(door as usize)
+                        .is_some_and(|d| !d.leaf.is_empty());
+                    if leaf && self.vm_touch_navigation() {
+                        self.nav_state.doors[door as usize].leaf_enabled = a0 != 0;
+                    }
                     return Ok(0);
                 }
                 if let Some(vm) = self.vm.as_mut() {
