@@ -43,6 +43,13 @@ subsystem must not be yours and must not inherit your context.
 5. **Hand over**: the lead requests a Codex spec review (skill `cross-agent-review`, task B); only a reviewed spec
    is implemented.
 
+## Accuracy over count
+
+A brief to shrink the exclusions or the open questions asks for accuracy, not a smaller number: settle nothing
+without reading the cited addresses, and keep an exclusion until the code that decides it has been read. A brief
+that only said "shrink the exclusion list" produced wrong claims (review 46, eight High findings). The lead writes
+this into every analyst brief.
+
 ## What may be committed
 
 Behaviour in prose and mathematics, state machines, layouts of file formats, constants as facts with addresses,
