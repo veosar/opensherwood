@@ -51,6 +51,20 @@ non-mutating `cargo fmt --all -- --check` and report existing failures without f
 - Imperative subject, body with the why and the verification performed.
 - Push to `main` when green; otherwise a branch.
 
+## Parallel sessions
+
+- Files written from Python on Windows use `newline="\n"` (otherwise git warns about CRLF), as
+  `harness/tools/golden_digest.py --write` does.
+- While other agents edit the core crates the tree may not build. Meanwhile do work that needs no build (docs,
+  tests); integrate, run `cargo fmt`, clippy and the tests after the agent reports.
+- To verify your own change while someone else's edits leave the tree unbuildable: `git worktree add
+  <scratch>/old HEAD`, copy only your files into it and build there with `CARGO_TARGET_DIR` inside the worktree.
+  The harness takes any binary through `OPENSHERWOOD_BIN=<exe>`, so a pre-change binary built the same way gives
+  an old/new comparison over RPC without touching the main `target/`. Remove the worktree with
+  `cmd /c rmdir /s /q <scratch>\old` (`git worktree remove` fails on long `target` paths), then `git worktree prune`.
+- A release binary rebuilt while an agent has uncommitted edits contains those edits: verify the lead's changes
+  in a worktree.
+
 ## Fresh machine checklist
 
 `rustup` (reads `rust-toolchain.toml`), a C compiler, Python 3.12 + `pip install -r harness/requirements.txt`,

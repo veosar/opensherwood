@@ -60,7 +60,9 @@ Game data for local tests: set `OPENSHERWOOD_GAME_DIR` to a *copy* of the instal
 A change is done when: it builds on all targets; fmt / clippy / tests are green; the synthetic harness passes;
 data-backed tests that touch the changed area pass locally; docs describing the changed behaviour (`docs/`,
 `README.md`, `docs/build.md`, `docs/harness.md`, format specs) are updated in the same commit; the commit message
-says why. "Implemented but not verified" is not done; say so explicitly in the commit or PR.
+says why. "Implemented but not verified" is not done; say so explicitly in the commit or PR. For every rebuilt
+subsystem the harness keeps the game playable end to end over RPC (walking, combat, picking up, navigation,
+winning a mission); each implementation batch extends the harness and adds replays.
 
 ## Working style
 
