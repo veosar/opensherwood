@@ -16,7 +16,7 @@ docs/formats/*.md, docs/original/*.md, the previous reviews in docs/decisions/re
 crates/, the Python harness under harness/ (including harness/tools and harness/tests), scripts/, and
 .github/workflows/ci.yml. Use `git log --stat` and `git log -p` where provenance matters, `cargo tree` for
 licences, `cargo test --workspace` and `python -m pytest harness/tests/synthetic` to check what passes
-(OPENSHERWOOD_GAME_DIR is C:\Users\przem\source\gamedata\robinhood for the data-backed tests; you may run them).
+(the data-backed tests need OPENSHERWOOD_GAME_DIR; run them only when it is set).
 Produce the five deliverables listed in the brief as one long, well-structured markdown document: findings with
 severity and file:line, verification of every format spec status, legal/clean-room audit of the committed history,
 architecture and roadmap assessment with the recommended order of work, and a prioritised fix list. Be exhaustive
