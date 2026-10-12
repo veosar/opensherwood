@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Review checklist for pull requests to OpenSherwood (Rust game-engine reimplementation under a clean-room wall). Use on every PR review diff: game assets and decompiler leakage (ADR-0009), determinism contract, snapshot/hash/ruleset bumps, crate dependency direction, unsafe code, parser robustness, spec and docs sync, generated skills mirror, CI policy.
+description: "Review checklist for pull requests to OpenSherwood (Rust game-engine reimplementation under a clean-room wall). Use on every PR review diff: game assets and decompiler leakage (ADR-0009), determinism contract, snapshot/hash/ruleset bumps, crate dependency direction, unsafe code, parser robustness, spec and docs sync, generated skills mirror, CI policy."
 ---
 
 # Reviewing a pull request in OpenSherwood
