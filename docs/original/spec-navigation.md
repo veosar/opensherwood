@@ -1290,7 +1290,7 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
   `0x00574860`, `0x00577cf0`, `0x00577150`, `0x005781f0`, `0x00579810`, `0x00579850`, `0x00579870`,
   `0x00579880`, `0x005798a0`, `0x005787f0` and their adapters; helpers `0x005fc6a0`, `0x005fc680`,
   `0x005fc660`, `0x005fc700`, `0x005fc110`, `0x006091b0`, `0x00608400`, `0x00609050`.
-- Data: `C:\Users\przem\source\gamedata\robinhood\DATA\Levels\*.rhp`, all nine, read only; probes and overlays
+- Data: `OPENSHERWOOD_GAME_DIR\DATA\Levels\*.rhp`, all nine, read only; probes and overlays
   in `re/notes/nav/` (never committed).
 - Documents compared: `docs/formats/rhp.md`, `docs/formats/layers-and-doors.md`, `docs/formats/rhm.md`,
   `docs/formats/scb.md`, `crates/opensherwood-core/src/{nav,geom}.rs`, the pinned sibling specifications,

@@ -6,7 +6,7 @@ Reviewed revision 8, commit `f35eebb15ddaf0ccdf5ecf8e21da128df7055fd5`, blob `a7
 
 1. **Medium — VM-200/202, §8.3, acceptance case 26: the combined restore fixture is unreachable.**
    **Addresses:** `00570f00`, `00571020`, `0057a020`.
-   [Case 26](C:/Users/przem/source/repos/opensherwood/docs/original/spec-script-vm.md:696) keeps the recording opened by `PostInitialize` open through tick 26, while also requiring case 25’s separate recording to open and launch at tick 25. There is only one global recording: native 30 refuses the second opening; subsequent recording natives append to the existing recording; native 31 closes and launches that recording. Its provenance would remain the `PostInitialize` opener, and it would no longer be open at the snapshot.
+   [Case 26](../../original/spec-script-vm.md:696) keeps the recording opened by `PostInitialize` open through tick 26, while also requiring case 25’s separate recording to open and launch at tick 25. There is only one global recording: native 30 refuses the second opening; subsequent recording natives append to the existing recording; native 31 closes and launches that recording. Its provenance would remain the `PostInitialize` opener, and it would no longer be open at the snapshot.
 
    **Correction:** split the open-recording restore check into a separate run, or open the second recording only after case 25’s sequence has launched, extend it in a later callback, and update its expected opener triple. Preserve the pending-sequence attribution and scroll-overlap suppression restore assertions.
 

@@ -2,7 +2,7 @@
 
 Spec reviewer role (ADR-0009), with access to `re/`. Answered in the spec's next revision; the disposition is the spec's changelog.
 
-Reviewed [spec-script-vm.md](C:/Users/przem/source/repos/opensherwood/docs/original/spec-script-vm.md), blob `92aedbf44c6e3e974bc44beb5be1c1d46b7b36c8`, against the matching executable hash. Checked every opcode handler, all 265 native registrations and wrapper arities/result conventions, and all 39 scripts. The reproducible random sample, seed `9009`, was: 16, 18, 20, 39, 60, 79, 84, 88, 103, 114, 127, 138, 148, 152, 158, 160, 170, 180, 184, 186, 187, 194, 200, 210, 215, 228, 235, 238, 246, 248. All arities match; the following findings prevent clearance.
+Reviewed [spec-script-vm.md](../../original/spec-script-vm.md), blob `92aedbf44c6e3e974bc44beb5be1c1d46b7b36c8`, against the matching executable hash. Checked every opcode handler, all 265 native registrations and wrapper arities/result conventions, and all 39 scripts. The reproducible random sample, seed `9009`, was: 16, 18, 20, 39, 60, 79, 84, 88, 103, 114, 127, 138, 148, 152, 158, 160, 170, 180, 184, 186, 187, 194, 200, 210, 215, 228, 235, 238, 246, 248. All arities match; the following findings prevent clearance.
 
 1. **High — VM-030; natives 3, 10, 75: incorrect element-table model.**
    **Addresses:** `005709c0`, `004c2720`, `00570850`, `00571590`, `00579bd0`, `005714d0`, `004d8460`.

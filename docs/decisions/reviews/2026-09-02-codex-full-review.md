@@ -51,13 +51,13 @@ Severity meanings:
 
 ### C-01 — Committed game text violates the repository’s hard legal policy
 
-The policy says the repository must contain no original text at all: [docs/legal.md:8](</C:/Users/przem/source/repos/opensherwood/docs/legal.md:8>) and [docs/legal.md:20](</C:/Users/przem/source/repos/opensherwood/docs/legal.md:20>).
+The policy says the repository must contain no original text at all: [docs/legal.md:8](../../legal.md:8) and [docs/legal.md:20](../../legal.md:20).
 
-Nevertheless, [docs/original/campaign-flow.md:42](</C:/Users/przem/source/repos/opensherwood/docs/original/campaign-flow.md:42>) contains three long briefing pages explicitly identified as “verbatim in the game,” continuing through line 57. Lines 36–41 and 74–77 contain further copied objectives and debriefing prose.
+Nevertheless, [docs/original/campaign-flow.md:42](../../original/campaign-flow.md:42) contains three long briefing pages explicitly identified as “verbatim in the game,” continuing through line 57. Lines 36–41 and 74–77 contain further copied objectives and debriefing prose.
 
-[docs/original/ui-flow.md:56](</C:/Users/przem/source/repos/opensherwood/docs/original/ui-flow.md:56>) through line 66 reproduces complete menu labels, lines 74–87 reproduce dialog wording and controls, and lines 91–120 reproduce profile and options text. Short functional labels may have a different copyright analysis from narrative prose, but the project’s own policy is stricter and forbids them.
+[docs/original/ui-flow.md:56](../../original/ui-flow.md:56) through line 66 reproduces complete menu labels, lines 74–87 reproduce dialog wording and controls, and lines 91–120 reproduce profile and options text. Short functional labels may have a different copyright analysis from narrative prose, but the project’s own policy is stricter and forbids them.
 
-The uncommitted [ui.rs:54](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/ui.rs:54>) also hardcodes observed retail labels. It must not be committed in that form; runtime text should be loaded from the player’s resource files.
+The uncommitted [ui.rs:54](../../../crates/opensherwood-app/src/ui.rs:54) also hardcodes observed retail labels. It must not be committed in that form; runtime text should be loaded from the player’s resource files.
 
 Recommended containment:
 
@@ -73,9 +73,9 @@ Recommended containment:
 
 This applies to the current dirty tree, not committed `HEAD`.
 
-- `Scenario::Menu` was added at [world.rs:90](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:90>), but the app’s exhaustive match at [engine.rs:421](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/engine.rs:421>) has no `Menu` arm.
-- `ObserveResult.ui` is required at [protocol/lib.rs:196](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-protocol/src/lib.rs:196>), but construction at [engine.rs:597](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/engine.rs:597>) omits it.
-- The default CLI scenario is now `menu` at [main.rs:34](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/main.rs:34>), but [engine.rs:305](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/engine.rs:305>) parses it as `Scenario::Synthetic("menu")`, which the core rejects.
+- `Scenario::Menu` was added at [world.rs:90](../../../crates/opensherwood-core/src/world.rs:90), but the app’s exhaustive match at [engine.rs:421](../../../crates/opensherwood-app/src/engine.rs:421) has no `Menu` arm.
+- `ObserveResult.ui` is required at [protocol/lib.rs:196](../../../crates/opensherwood-protocol/src/lib.rs:196), but construction at [engine.rs:597](../../../crates/opensherwood-app/src/engine.rs:597) omits it.
+- The default CLI scenario is now `menu` at [main.rs:34](../../../crates/opensherwood-app/src/main.rs:34), but [engine.rs:305](../../../crates/opensherwood-app/src/engine.rs:305) parses it as `Scenario::Synthetic("menu")`, which the core rejects.
 - Map/mission viewport semantics changed from 640×480 to 1024×768, but `RULESET_VERSION`, `SNAPSHOT_VERSION`, and `PROTOCOL_VERSION` remain unchanged at `2`, `3`, and `2`. Old retail replays would be accepted and then diverge instead of being rejected.
 - `cargo fmt --check` currently fails.
 
@@ -83,7 +83,7 @@ Finish or shelve the menu work before any commit. Add explicit menu/session owne
 
 ### H-02 — The no-assets control cannot prevent another leak
 
-[scripts/check_no_assets.py:15](</C:/Users/przem/source/repos/opensherwood/scripts/check_no_assets.py:15>) omits PNG, JPEG, WebP, TIFF, and other common derived-image formats. It only flags binaries larger than 512 KiB at lines 23 and 52, so a small game-derived screenshot passes.
+[scripts/check_no_assets.py:15](../../../scripts/check_no_assets.py:15) omits PNG, JPEG, WebP, TIFF, and other common derived-image formats. It only flags binaries larger than 512 KiB at lines 23 and 52, so a small game-derived screenshot passes.
 
 It also:
 
@@ -95,8 +95,8 @@ It also:
 
 There is also a path mismatch:
 
-- [docs/harness.md:68](</C:/Users/przem/source/repos/opensherwood/docs/harness.md:68>) says `harness/goldens/` is ignored;
-- [.gitignore:35](</C:/Users/przem/source/repos/opensherwood/.gitignore:35>) ignores only repository-root `/goldens/`.
+- [docs/harness.md:68](../../harness.md:68) says `harness/goldens/` is ignored;
+- [.gitignore:35](../../../.gitignore:35) ignores only repository-root `/goldens/`.
 
 Consequently, the documented golden directory could be committed normally.
 
@@ -104,20 +104,20 @@ The policy check should reject all derived media by path/type, reject `harness/g
 
 ### H-03 — Public sprite decoding and export tools permit multi-gigabyte allocations
 
-[sprite_decode.rs:130](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-formats/src/sprite_decode.rs:130>) accepts a public `FrameRecord` with unrestricted `u16` dimensions. It allocates:
+[sprite_decode.rs:130](../../../crates/opensherwood-formats/src/sprite_decode.rs:130) accepts a public `FrameRecord` with unrestricted `u16` dimensions. It allocates:
 
 - `width * height` `u16` pixels at lines 151 or 182 — up to about 8.6 GiB;
-- an additional `pixels.len() * 4` bytes at [sprite_decode.rs:216](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-formats/src/sprite_decode.rs:216>) — up to about 17.2 GiB.
+- an additional `pixels.len() * 4` bytes at [sprite_decode.rs:216](../../../crates/opensherwood-formats/src/sprite_decode.rs:216) — up to about 17.2 GiB.
 
-`SpriteBank` limits records to 4096 pixels per dimension, but the public format API does not. The tool bypasses `SpriteBank` and allocates `rec.length` directly at [opensherwood-tools/main.rs:285](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-tools/src/main.rs:285>), allowing nearly 4 GiB before decode validation.
+`SpriteBank` limits records to 4096 pixels per dimension, but the public format API does not. The tool bypasses `SpriteBank` and allocates `rec.length` directly at [opensherwood-tools/main.rs:285](../../../crates/opensherwood-tools/src/main.rs:285), allowing nearly 4 GiB before decode validation.
 
-Rust allocation failure normally aborts rather than returning `FormatError`, contradicting [formats/lib.rs:7](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-formats/src/lib.rs:7>).
+Rust allocation failure normally aborts rather than returning `FormatError`, contradicting [formats/lib.rs:7](../../../crates/opensherwood-formats/src/lib.rs:7).
 
 Use one shared validated `DecodeLimits` policy, checked multiplication, `try_reserve`, and a decoded-byte budget in every public route.
 
 ### H-04 — SRES can amplify a small archive into hundreds of GiB
 
-[sres.rs:120](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-formats/src/sres.rs:120>) eagerly decompresses every picture. Individual image blobs allow 128 MiB, while `PICC` and cursor counts allow 4096 images at lines 135–145 and 172–182. There is no archive-wide decoded-byte or image-count budget.
+[sres.rs:120](../../../crates/opensherwood-formats/src/sres.rs:120) eagerly decompresses every picture. Individual image blobs allow 128 MiB, while `PICC` and cursor counts allow 4096 images at lines 135–145 and 172–182. There is no archive-wide decoded-byte or image-count budget.
 
 A hostile archive can therefore request over 512 GiB of decoded storage even though each individual image passes its cap. Top-level entry count is also not bounded.
 
@@ -125,11 +125,11 @@ Make SRES lazy or enforce cumulative compressed, decoded, entry, and nesting bud
 
 ### H-05 — Hostile inline snapshots can overflow geometry arithmetic and panic or diverge by build mode
 
-`World::validate` limits only the number of geometry vertices at [world.rs:558](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:558>); it does not bound coordinates.
+`World::validate` limits only the number of geometry vertices at [world.rs:558](../../../crates/opensherwood-core/src/world.rs:558); it does not bound coordinates.
 
-`point_in_polygon` multiplies differences of arbitrary `i32` coordinates in `i64` at [geom.rs:48](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/geom.rs:48>). The maximum product exceeds `i64`. Navigation scan conversion performs an even larger multiplication by 256 at [nav.rs:310](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/nav.rs:310>).
+`point_in_polygon` multiplies differences of arbitrary `i32` coordinates in `i64` at [geom.rs:48](../../../crates/opensherwood-core/src/geom.rs:48). The maximum product exceeds `i64`. Navigation scan conversion performs an even larger multiplication by 256 at [nav.rs:310](../../../crates/opensherwood-core/src/nav.rs:310).
 
-Restore validates and then immediately rebuilds navigation at [world.rs:830](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:830>), so a JSON snapshot can reach the overflow. Debug builds panic; release builds wrap, creating a determinism violation.
+Restore validates and then immediately rebuilds navigation at [world.rs:830](../../../crates/opensherwood-core/src/world.rs:830), so a JSON snapshot can reach the overflow. Debug builds panic; release builds wrap, creating a determinism violation.
 
 Use `i128` or strict map-relative coordinate limits, and add extreme-coordinate snapshot tests.
 
@@ -137,28 +137,28 @@ Use `i128` or strict map-relative coordinate limits, and add extreme-coordinate 
 
 Several independent paths allow unbounded memory or time:
 
-- Oversized RPC input is initially capped, but the remainder is drained into an unbounded `Vec` at [rpc.rs:97](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/rpc.rs:97>).
-- `replay.play` reads a whole arbitrary file before applying the 64 MiB parser cap at [engine.rs:749](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/engine.rs:749>).
-- Recording appends events and checkpoints without cumulative limits at [engine.rs:267](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/engine.rs:267>). Repeated valid `step` calls bypass the per-request event cap.
+- Oversized RPC input is initially capped, but the remainder is drained into an unbounded `Vec` at [rpc.rs:97](../../../crates/opensherwood-app/src/rpc.rs:97).
+- `replay.play` reads a whole arbitrary file before applying the 64 MiB parser cap at [engine.rs:749](../../../crates/opensherwood-app/src/engine.rs:749).
+- Recording appends events and checkpoints without cumulative limits at [engine.rs:267](../../../crates/opensherwood-app/src/engine.rs:267). Repeated valid `step` calls bypass the per-request event cap.
 - `replay.stop` then constructs the full JSONL string and returns it in a JSON response, causing further large copies.
-- `MAX_TICK = 2^24` at [protocol/lib.rs:12](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-protocol/src/lib.rs:12>) permits roughly 6.5 days of 30 Hz simulation inside one RPC.
+- `MAX_TICK = 2^24` at [protocol/lib.rs:12](../../../crates/opensherwood-protocol/src/lib.rs:12) permits roughly 6.5 days of 30 Hz simulation inside one RPC.
 - Checkpoint interval 1 can make the recorder produce a replay its own parser later rejects.
 
 Use bounded discard buffers, pre-read file-size checks or streaming parsing, cumulative recorder quotas, bounded serialization, and a practical synchronous playback budget.
 
 ### H-07 — The content fingerprint does not meet the determinism guarantee stated in the architecture
 
-[assets/lib.rs:242](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-assets/src/lib.rs:242>) claims that any edited file changes the fingerprint. Files over 1 MiB hash only the first and last 64 KiB. A same-size middle edit is invisible.
+[assets/lib.rs:242](../../../crates/opensherwood-assets/src/lib.rs:242) claims that any edited file changes the fingerprint. Files over 1 MiB hash only the first and last 64 KiB. A same-size middle edit is invisible.
 
 Read/open/seek failures are silently represented by an empty or partial per-file hash at lines 259–279 instead of failing the fingerprint operation.
 
-This contradicts [docs/architecture.md:39](</C:/Users/przem/source/repos/opensherwood/docs/architecture.md:39>), which says a replay is never compared across different datasets.
+This contradicts [docs/architecture.md:39](../../architecture.md:39), which says a replay is never compared across different datasets.
 
 Use a full streaming digest with a metadata cache and return an error if any indexed file cannot be hashed.
 
 ### H-08 — The renderer cannot reproduce correct depth ordering
 
-Entities are drawn in slot order at [render/lib.rs:435](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-render/src/lib.rs:435>), without map-y, layer, sector, or original depth ordering.
+Entities are drawn in slot order at [render/lib.rs:435](../../../crates/opensherwood-render/src/lib.rs:435), without map-y, layer, sector, or original depth ordering.
 
 Occluders are applied after every sprite has been drawn. Restoring background pixels over a “behind” sprite can erase pixels from a different foreground sprite whose rectangle overlaps it. The method works only when relevant sprite rectangles do not overlap.
 
@@ -168,14 +168,14 @@ Before claiming map fidelity, define and test a stable depth key using map layer
 
 ### H-09 — The project advertises an oracle and visual comparison system that does not exist
 
-[README.md:45](</C:/Users/przem/source/repos/opensherwood/README.md:45>) says the harness compares against the original, and lines 55–56 say nothing is merged without screenshot comparison. [docs/harness.md:14](</C:/Users/przem/source/repos/opensherwood/docs/harness.md:14>) describes `harness/oracle`; lines 68–70 describe a golden generator.
+[README.md:45](../../../README.md:45) says the harness compares against the original, and lines 55–56 say nothing is merged without screenshot comparison. [docs/harness.md:14](../../harness.md:14) describes `harness/oracle`; lines 68–70 describe a golden generator.
 
 None of these exists:
 
 - no `harness/oracle`;
 - no `harness/tools/make_goldens.py`;
 - no `harness/goldens`;
-- no `oracle/schema/trace-v1.md`, despite [docs/oracle.md:18](</C:/Users/przem/source/repos/opensherwood/docs/oracle.md:18>);
+- no `oracle/schema/trace-v1.md`, despite [docs/oracle.md:18](../../oracle.md:18);
 - no exact, masked, perceptual, or oracle image comparison in the tests.
 
 Current data tests check parse/load invariants and determinism against OpenSherwood itself. They do not establish original-game fidelity.
@@ -184,9 +184,9 @@ This is the largest technical-program risk after the legal issue. Complete the f
 
 ### H-10 — Authoritative script-state ownership is unresolved
 
-The architecture says the core owns all authoritative state, including AI, campaign, snapshot, and hashing at [docs/architecture.md:11](</C:/Users/przem/source/repos/opensherwood/docs/architecture.md:11>), while `opensherwood-script` is a higher crate with a VM/native boundary at line 13.
+The architecture says the core owns all authoritative state, including AI, campaign, snapshot, and hashing at [docs/architecture.md:11](../../architecture.md:11), while `opensherwood-script` is a higher crate with a VM/native boundary at line 13.
 
-`World::snapshot()` captures only `World`; script, scheduler, and campaign currently hash as fixed zero placeholders at [world.rs:983](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:983>). Once a higher-level VM owns mutable state, the current core snapshot cannot capture it without either reversing dependency direction or introducing a new authoritative composite layer.
+`World::snapshot()` captures only `World`; script, scheduler, and campaign currently hash as fixed zero placeholders at [world.rs:983](../../../crates/opensherwood-core/src/world.rs:983). Once a higher-level VM owns mutable state, the current core snapshot cannot capture it without either reversing dependency direction or introducing a new authoritative composite layer.
 
 Resolve this with an ADR before VM work. Plausible designs include:
 
@@ -202,31 +202,31 @@ Resolve this with an ADR before VM work. Plausible designs include:
 
 2. **Medium — SRES accepts a missing trailer.** At `sres.rs:228–233`, exact EOF immediately after entries is accepted even though the documented retail format has an offset trailer.
 
-3. **Medium — RHM validation is much weaker than its status claim.** [rhm.rs:1235](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-formats/src/rhm.rs:1235>) requires only `FOOT`; other missing chunks become empty defaults. Duplicate chunks overwrite earlier values, order is not enforced, child versions are not validated, and unknown chunk bodies are discarded. The exact ten-chunk invariant is enforced only by the retail-data test at `tests/gamedata.rs:375–423`.
+3. **Medium — RHM validation is much weaker than its status claim.** [rhm.rs:1235](../../../crates/opensherwood-formats/src/rhm.rs:1235) requires only `FOOT`; other missing chunks become empty defaults. Duplicate chunks overwrite earlier values, order is not enforced, child versions are not validated, and unknown chunk bodies are discarded. The exact ten-chunk invariant is enforced only by the retail-data test at `tests/gamedata.rs:375–423`.
 
-4. **Medium — `POUF` is not decoded.** [rhm.rs:728](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-formats/src/rhm.rs:728>) scans for the next pair of printable length-prefixed strings and stores the intervening bytes raw. That is a useful corpus framing heuristic, not a decoded record format.
+4. **Medium — `POUF` is not decoded.** [rhm.rs:728](../../../crates/opensherwood-formats/src/rhm.rs:728) scans for the next pair of printable length-prefixed strings and stores the intervening bytes raw. That is a useful corpus framing heuristic, not a decoded record format.
 
-5. **Medium — RHP accepts ambiguous containers.** RHP correctly validates its root and known child versions at [rhp.rs:733](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-formats/src/rhp.rs:733>), but `Container::child` returns only the first matching tag at `chunk.rs:43–46`; duplicate and extra chunks are ignored.
+5. **Medium — RHP accepts ambiguous containers.** RHP correctly validates its root and known child versions at [rhp.rs:733](../../../crates/opensherwood-formats/src/rhp.rs:733), but `Container::child` returns only the first matching tag at `chunk.rs:43–46`; duplicate and extra chunks are ignored.
 
-6. **Medium — DIC table discovery is heuristic.** [dic.rs:53](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-formats/src/dic.rs:53>) finds a suffix whose offsets chain. The parser does not prove that page parsing ends exactly at the inferred table start or that the frame chain begins at BKS offset zero. `SpriteBank` validates bounds but not monotonicity, gaps, overlaps, or final exact end.
+6. **Medium — DIC table discovery is heuristic.** [dic.rs:53](../../../crates/opensherwood-formats/src/dic.rs:53) finds a suffix whose offsets chain. The parser does not prove that page parsing ends exactly at the inferred table start or that the frame chain begins at BKS offset zero. `SpriteBank` validates bounds but not monotonicity, gaps, overlaps, or final exact end.
 
-7. **Medium — SCB parser accepts structurally inconsistent programs.** [scb.rs:136](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-formats/src/scb.rs:136>) does not enforce version 1.5. Function addresses need not be sorted or in range; variable offsets, prologue operands, opcodes, native IDs, calls, or jump targets are not validated. Those invariants exist only in `tests/gamedata.rs:507–545`.
+7. **Medium — SCB parser accepts structurally inconsistent programs.** [scb.rs:136](../../../crates/opensherwood-formats/src/scb.rs:136) does not enforce version 1.5. Function addresses need not be sorted or in range; variable offsets, prologue operands, opcodes, native IDs, calls, or jump targets are not validated. Those invariants exist only in `tests/gamedata.rs:507–545`.
 
-8. **Medium — Animation displacement can overflow.** [anim_table.rs:311](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-formats/src/anim_table.rs:311>) casts `u32` origins/offsets to `i32` and subtracts. The app repeats the issue for origins at `engine.rs:55–63`.
+8. **Medium — Animation displacement can overflow.** [anim_table.rs:311](../../../crates/opensherwood-formats/src/anim_table.rs:311) casts `u32` origins/offsets to `i32` and subtracts. The app repeats the issue for origins at `engine.rs:55–63`.
 
 9. **Medium — Walk timing deliberately discards documented distance timing.** At `engine.rs:61`, a zero low-half duration is changed to one tick and the high half is ignored. Retail walk frames are documented as `ticks == 0 && advance > 0`. Animation speed and foot phase are therefore known placeholders, not verified behaviour.
 
-10. **Medium — “Every frame” is not an automated regression.** The Rust data test decodes every 97th frame plus only the first 500 page-less frames at [tests/gamedata.rs:241](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-formats/tests/gamedata.rs:241>). The all-404,855 claim rests on analyst scripts/scratch runs, not a maintained test.
+10. **Medium — “Every frame” is not an automated regression.** The Rust data test decodes every 97th frame plus only the first 500 page-less frames at [tests/gamedata.rs:241](../../../crates/opensherwood-formats/tests/gamedata.rs:241). The all-404,855 claim rests on analyst scripts/scratch runs, not a maintained test.
 
 11. **Medium — Data-backed Rust tests report success when absent.** The `need_data!` macro returns normally at `tests/gamedata.rs:40–47`, so Cargo reports a passed test, not a skipped test, when the environment is missing.
 
-12. **Medium — No fuzz targets exist.** This contradicts [docs/architecture.md:51](</C:/Users/przem/source/repos/opensherwood/docs/architecture.md:51>), which says malformed input is fuzzed.
+12. **Medium — No fuzz targets exist.** This contradicts [docs/architecture.md:51](../../architecture.md:51), which says malformed input is fuzzed.
 
 13. **Low — The DIC module header is stale.** `dic.rs:2` still says BKS pixel decoding is unknown.
 
 ### `opensherwood-assets`
 
-1. **Medium — Language selection is not modeled.** [assets/lib.rs:172](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-assets/src/lib.rs:172>) loads every numeric language directory, sorts names lexicographically, and gives the lowest name first priority. An installation containing several languages can resolve unintended text.
+1. **Medium — Language selection is not modeled.** [assets/lib.rs:172](../../../crates/opensherwood-assets/src/lib.rs:172) loads every numeric language directory, sorts names lexicographically, and gives the lowest name first priority. An installation containing several languages can resolve unintended text.
 
 2. **Medium — Mod priority reverses call order.** `push_mod` inserts at index zero at lines 213–220. Calling it in configured order makes the last call highest priority, while the docs do not define that reversal.
 
@@ -236,9 +236,9 @@ Resolve this with an ADR before VM work. Plausible designs include:
 
 5. **Medium — Root discovery is nondeterministic in ambiguous installations.** `find_child_ci` uses unsorted `read_dir(...).flatten().find_map(...)` at lines 286–290.
 
-6. **Medium — Explicit invalid `--game-dir` silently falls back to synthetic mode.** [main.rs:53](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/main.rs:53>) treats all discovery errors the same. If the user supplied a path explicitly, the app should fail.
+6. **Medium — Explicit invalid `--game-dir` silently falls back to synthetic mode.** [main.rs:53](../../../crates/opensherwood-app/src/main.rs:53) treats all discovery errors the same. If the user supplied a path explicitly, the app should fail.
 
-7. **Low/Performance — Sprite RGBA is copied for every render lookup.** [engine.rs:33](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/engine.rs:33>) clones the cached RGBA vector into a new `Arc<SpriteFrame>`, defeating much of the asset cache.
+7. **Low/Performance — Sprite RGBA is copied for every render lookup.** [engine.rs:33](../../../crates/opensherwood-app/src/engine.rs:33) clones the cached RGBA vector into a new `Arc<SpriteFrame>`, defeating much of the asset cache.
 
 ### `opensherwood-core`
 
@@ -248,23 +248,23 @@ Resolve this with an ADR before VM work. Plausible designs include:
 
 3. **Medium — Inline snapshots have no content fingerprint.** A retail snapshot can be restored against different game/mod content, even though catalog and background are not part of the snapshot.
 
-4. **Medium — `set_geometry` exposes unchecked geometry.** [world.rs:332](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:332>) accepts arbitrary geometry and immediately builds navigation without validation.
+4. **Medium — `set_geometry` exposes unchecked geometry.** [world.rs:332](../../../crates/opensherwood-core/src/world.rs:332) accepts arbitrary geometry and immediately builds navigation without validation.
 
 5. **Medium — `NavGrid::line_clear` can overflow its public inputs.** `b - a` and `abs()` at `nav.rs:244–250` are unsafe for extreme `i32` coordinates.
 
-6. **Medium/Fidelity — Civilians become guards.** [world.rs:301](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-core/src/world.rs:301>) maps both enemies and civilians to `EntityKind::Guard`. The entity model cannot yet represent teams, neutrality, civilians, VIPs, or mission objects.
+6. **Medium/Fidelity — Civilians become guards.** [world.rs:301](../../../crates/opensherwood-core/src/world.rs:301) maps both enemies and civilians to `EntityKind::Guard`. The entity model cannot yet represent teams, neutrality, civilians, VIPs, or mission objects.
 
 7. **Positive finding.** Fixed-point arithmetic itself uses saturating operations; authoritative set iteration uses deterministic structures; hash encoding is explicit; and no unsafe code was found. The synthetic M0 kernel is the strongest part of the repository.
 
 ### `opensherwood-script`
 
-The crate is only a six-line SCB header re-export at [script/lib.rs:1](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-script/src/lib.rs:1>). This is honest, but the phrase “dependency direction is established” is premature given H-10. There is no VM, ABI, scheduler, error model, snapshot state, resource budget, or native-call interface to review yet.
+The crate is only a six-line SCB header re-export at [script/lib.rs:1](../../../crates/opensherwood-script/src/lib.rs:1). This is honest, but the phrase “dependency direction is established” is premature given H-10. There is no VM, ABI, scheduler, error model, snapshot state, resource budget, or native-call interface to review yet.
 
 ### `opensherwood-render`
 
-1. **Medium — Glyph x adjustment is applied twice.** `BitmapFont::advance` already includes `x_adjust` at [font.rs:109](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-formats/src/font.rs:109>). `FontAtlas::measure` adds it again at `text.rs:49`, and `draw` moves the pen by it before calling `advance` at lines 70–77.
+1. **Medium — Glyph x adjustment is applied twice.** `BitmapFont::advance` already includes `x_adjust` at [font.rs:109](../../../crates/opensherwood-formats/src/font.rs:109). `FontAtlas::measure` adds it again at `text.rs:49`, and `draw` moves the pen by it before calling `advance` at lines 70–77.
 
-2. **Medium — Malformed public `Background` values can panic.** `apply_occluders` indexes `bg.rgba[si..si+4]` at [render/lib.rs:540](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-render/src/lib.rs:540>) without the length check used by `blit_region`.
+2. **Medium — Malformed public `Background` values can panic.** `apply_occluders` indexes `bg.rgba[si..si+4]` at [render/lib.rs:540](../../../crates/opensherwood-render/src/lib.rs:540) without the length check used by `blit_region`.
 
 3. **Medium — Public render structures allow overflow-prone dimensions and lines.** `Occluder::depth_y` performs `i32` subtraction before widening at lines 75–85. Internal RHP values are small, but the public API does not enforce that.
 
@@ -274,9 +274,9 @@ The crate is only a six-line SCB header re-export at [script/lib.rs:1](</C:/User
 
 ### `opensherwood-audio`
 
-1. **Medium — Looping buffers an entire decoded track.** [audio/lib.rs:91](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-audio/src/lib.rs:91>) uses Rodio’s `repeat_infinite`, whose implementation wraps the decoder in `Buffered`; the first playback caches every decoded sample. Use Rodio’s seek/restart-capable looped decoder or a custom streaming loop.
+1. **Medium — Looping buffers an entire decoded track.** [audio/lib.rs:91](../../../crates/opensherwood-audio/src/lib.rs:91) uses Rodio’s `repeat_infinite`, whose implementation wraps the decoder in `Buffered`; the first playback caches every decoded sample. Use Rodio’s seek/restart-capable looped decoder or a custom streaming loop.
 
-2. **Medium/Fidelity — Missions play the menu track.** [engine.rs:203](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/engine.rs:203>) handles only `MapView`; every other scenario uses `Menu.wav`.
+2. **Medium/Fidelity — Missions play the menu track.** [engine.rs:203](../../../crates/opensherwood-app/src/engine.rs:203) handles only `MapView`; every other scenario uses `Menu.wav`.
 
 3. **Low — Failed replacement retains old music.** The existing player is stopped only after the new decoder succeeds at `audio/lib.rs:82–90`.
 
@@ -284,23 +284,23 @@ The crate is only a six-line SCB header re-export at [script/lib.rs:1](</C:/User
 
 ### `opensherwood-protocol` and app session
 
-1. **Medium — Replay header fields are ceremonial.** Validation checks only that viewport and tick rate are nonzero and RNG streams nonempty at [protocol/lib.rs:334](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-protocol/src/lib.rs:334>). Playback ignores their actual values and resets using only scenario and seed at `engine.rs:767–775`.
+1. **Medium — Replay header fields are ceremonial.** Validation checks only that viewport and tick rate are nonzero and RNG streams nonempty at [protocol/lib.rs:334](../../../crates/opensherwood-protocol/src/lib.rs:334). Playback ignores their actual values and resets using only scenario and seed at `engine.rs:767–775`.
 
 2. **Medium — Tick-zero checkpoints are never compared.** Playback compares checkpoints only after stepping at `engine.rs:782–803`.
 
-3. **Medium — Session restore is not transactional.** [engine.rs:622](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/engine.rs:622>) validates only `snap.world`, may reset and mutate the session, then calls `World::restore`, which can reject the envelope version/ruleset. The error leaves a changed session.
+3. **Medium — Session restore is not transactional.** [engine.rs:622](../../../crates/opensherwood-app/src/engine.rs:622) validates only `snap.world`, may reset and mutate the session, then calls `World::restore`, which can reject the envelope version/ruleset. The error leaves a changed session.
 
 4. **Medium — Duplicate timed-event sequence values are accepted.** `engine.rs:565–578` sorts but does not reject duplicate `(tick_offset, sequence)`, leaving their order dependent on JSON input order rather than represented semantics.
 
 5. **Medium/Security — Artifact containment is lexical only.** Checks at `engine.rs:478–491` and `659–675` reject `..` and absolute paths but do not prevent a symlink/junction beneath the artifact directory from escaping it. The substring check also rejects benign names such as `frame..png`.
 
-6. **Medium — RHP errors are logged and ignored.** [engine.rs:342](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/engine.rs:342>) returns a background with empty geometry and occluders if the map’s RHP is absent or corrupt. A required gameplay asset should make reset fail.
+6. **Medium — RHP errors are logged and ignored.** [engine.rs:342](../../../crates/opensherwood-app/src/engine.rs:342) returns a background with empty geometry and occluders if the map’s RHP is absent or corrupt. A required gameplay asset should make reset fail.
 
 7. **Medium/Fidelity — Mission ambiance is hardcoded.** `engine.rs:441–445` always chooses `Day` and ignores `FOOT.variant`.
 
 8. **Medium/Fidelity — Mission identity is not cross-checked.** The mission’s `FOOT.map_id` is not verified against RHP `SPOK`.
 
-9. **Medium/Fidelity — Mission import intentionally drops authoritative data.** [mission.rs:60](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-app/src/mission.rs:60>) activates hidden player characters, substitutes default profiles, treats rail points as simple patrols, ignores waypoint command programs, and drops MEOW/objects/unknown actor groups at line 121.
+9. **Medium/Fidelity — Mission import intentionally drops authoritative data.** [mission.rs:60](../../../crates/opensherwood-app/src/mission.rs:60) activates hidden player characters, substitutes default profiles, treats rail points as simple patrols, ignores waypoint command programs, and drops MEOW/objects/unknown actor groups at line 121.
 
 10. **Medium — Sprite/profile decode failures silently degrade to colored circles.** This prevents format regressions from failing mission tests.
 
@@ -322,7 +322,7 @@ The crate is only a six-line SCB header re-export at [script/lib.rs:1](</C:/User
 
 ### `opensherwood-tools`
 
-1. **Medium — Most commands read entire inputs.** [tools/main.rs:465](</C:/Users/przem/source/repos/opensherwood/crates/opensherwood-tools/src/main.rs:465>) uses `std::fs::read`. Inspecting a 565 MiB BKS or another hostile file requires the whole file in memory.
+1. **Medium — Most commands read entire inputs.** [tools/main.rs:465](../../../crates/opensherwood-tools/src/main.rs:465) uses `std::fs::read`. Inspecting a 565 MiB BKS or another hostile file requires the whole file in memory.
 
 2. **Medium — Font-sheet CLI dimensions are unchecked.** User-controlled `columns` participates in unchecked multiplication at lines 325–338; `Canvas::new` then performs unchecked size arithmetic at lines 484–490.
 
@@ -332,17 +332,17 @@ The crate is only a six-line SCB header re-export at [script/lib.rs:1](</C:/User
 
 ### Python harness and analyst tools
 
-1. **Medium — RPC write/flush is outside the deadline.** [rpc.py:151](</C:/Users/przem/source/repos/opensherwood/harness/opensherwood_harness/rpc.py:151>) starts the timed wait only after blocking `stdin.write` and `flush`. A child that stops reading can hang the harness indefinitely.
+1. **Medium — RPC write/flush is outside the deadline.** [rpc.py:151](../../../harness/opensherwood_harness/rpc.py:151) starts the timed wait only after blocking `stdin.write` and `flush`. A child that stops reading can hang the harness indefinitely.
 
 2. **Medium — Stdout buffering is unbounded.** `_Reader(..., keep=None)` at line 142 stores unlimited unsolicited or unmatched output.
 
 3. **Medium — Malformed JSON or response-ID mismatch does not kill/resynchronize the child.** Lines 170–175 raise while leaving the transport in an uncertain state.
 
-4. **Medium — The committed digest is sparse.** [golden_digest.py:4](</C:/Users/przem/source/repos/opensherwood/harness/tools/golden_digest.py:4>) says per-tick hashes are recorded, but only every fiftieth is committed at line 40. A transient divergence that later reconverges is invisible.
+4. **Medium — The committed digest is sparse.** [golden_digest.py:4](../../../harness/tools/golden_digest.py:4) says per-tick hashes are recorded, but only every fiftieth is committed at line 40. A transient divergence that later reconverges is invisible.
 
 5. **Low — The “restore fuzz” test is deterministic enumeration, not fuzzing.** `test_determinism.py:76–92`.
 
-6. **Medium — The occluder test never checks occlusion.** [test_mission.py:59](</C:/Users/przem/source/repos/opensherwood/harness/tests/data/test_mission.py:59>) names occluders but never captures or examines a framebuffer.
+6. **Medium — The occluder test never checks occlusion.** [test_mission.py:59](../../../harness/tests/data/test_mission.py:59) names occluders but never captures or examines a framebuffer.
 
 7. **Medium — Map-view tests do not prove sprites decoded.** They check animation metadata and background color diversity, but fallback circles would still pass.
 
@@ -358,9 +358,9 @@ The crate is only a six-line SCB header re-export at [script/lib.rs:1](</C:/User
 
 ### Repository scripts and CI
 
-1. **High/Process safety — The “read-only review” script automatically commits and pushes.** [codex_full_review.ps1:1](</C:/Users/przem/source/repos/opensherwood/scripts/codex_full_review.ps1:1>) describes a read-only review, but lines 25–29 write a tracked report, run `git commit`, and push. It may also include unrelated already-staged files. Review generation and human-approved publication must be separate operations.
+1. **High/Process safety — The “read-only review” script automatically commits and pushes.** [codex_full_review.ps1:1](../../../scripts/codex_full_review.ps1:1) describes a read-only review, but lines 25–29 write a tracked report, run `git commit`, and push. It may also include unrelated already-staged files. Review generation and human-approved publication must be separate operations.
 
-2. **Medium/Supply chain — CI actions are moving tags.** [.github/workflows/ci.yml:18](</C:/Users/przem/source/repos/opensherwood/.github/workflows/ci.yml:18>) uses action major-version tags, and line 37 uses `dtolnay/rust-toolchain@master`.
+2. **Medium/Supply chain — CI actions are moving tags.** [.github/workflows/ci.yml:18](../../../.github/workflows/ci.yml:18) uses action major-version tags, and line 37 uses `dtolnay/rust-toolchain@master`.
 
 3. **Medium — Python dependencies are top-level pinned but not hash-locked.** `harness/requirements.txt:1–5` does not lock transitives or hashes.
 
@@ -374,7 +374,7 @@ The crate is only a six-line SCB header re-export at [script/lib.rs:1](</C:/User
 
 ### Documentation
 
-1. **Medium — Legal policy contradicts the accepted clean-room ADR.** [docs/legal.md:25](</C:/Users/przem/source/repos/opensherwood/docs/legal.md:25>) still describes a private `re/` directory and lines 47–50 permit implementation after static analysis “in the same sitting.” ADR-0003 requires a separate context/session at [ADR-0003:24](</C:/Users/przem/source/repos/opensherwood/docs/decisions/ADR-0003-clean-room-roles.md:24>).
+1. **Medium — Legal policy contradicts the accepted clean-room ADR.** [docs/legal.md:25](../../legal.md:25) still describes a private `re/` directory and lines 47–50 permit implementation after static analysis “in the same sitting.” ADR-0003 requires a separate context/session at [ADR-0003:24](../ADR-0003-clean-room-roles.md:24).
 
 2. **Medium — Provenance sections do not meet ADR-0003’s own schema.** The ADR requires build, edition/language, exact file/offset, method, reproduction, confidence, author/date, and dependent tests at lines 31–37. Most format specs provide only “Observation” plus a generic script list.
 
@@ -384,7 +384,7 @@ The crate is only a six-line SCB header re-export at [script/lib.rs:1](</C:/User
 
 5. **Medium — `docs/build.md:59` references nonexistent `scripts/ci_local.sh` and `.ps1`.**
 
-6. **Medium — README status is stale.** [README.md:7](</C:/Users/przem/source/repos/opensherwood/README.md:7>) says missions do not exist, while mission scenarios and tests do. It also describes original-game comparison that does not exist.
+6. **Medium — README status is stale.** [README.md:7](../../../README.md:7) says missions do not exist, while mission scenarios and tests do. It also describes original-game comparison that does not exist.
 
 7. **Low — Mojibake appears in legal/ADR text**, including the publisher parent-company name and section symbols. Legal documents should not contain encoding damage.
 
@@ -392,7 +392,7 @@ The crate is only a six-line SCB header re-export at [script/lib.rs:1](</C:/User
 
 # 2. Verification of every format-spec status
 
-The index defines “verified” as both parsing every retail file and cross-checking the interpretation by rendering, listening, or matching the original at [docs/formats/README.md:4](</C:/Users/przem/source/repos/opensherwood/docs/formats/README.md:4>). Several statuses do not satisfy that definition.
+The index defines “verified” as both parsing every retail file and cross-checking the interpretation by rendering, listening, or matching the original at [docs/formats/README.md:4](../../formats/README.md:4). Several statuses do not satisfy that definition.
 
 | Spec | Current claim | Evidence in parser/tests | Review verdict |
 |---|---|---|---|
@@ -466,7 +466,7 @@ Therefore the defensible conclusion is: **no evidence of decompiler-derived impl
 
 ## Community-source provenance
 
-[docs/formats/scb.md:97](</C:/Users/przem/source/repos/opensherwood/docs/formats/scb.md:97>) and its provenance cite the GPL-3 OpenDeathValley disassembler for field-order and opcode hypotheses and say no code was copied. GPLv3 is compatible with this project, and the hypotheses were reportedly revalidated against Robin Hood data.
+[docs/formats/scb.md:97](../../formats/scb.md:97) and its provenance cite the GPL-3 OpenDeathValley disassembler for field-order and opcode hypotheses and say no code was copied. GPLv3 is compatible with this project, and the hypotheses were reportedly revalidated against Robin Hood data.
 
 Retain precise attribution and distinguish copied facts, independently observed facts, and hypotheses. If any code is later adapted, preserve licence notices and source history explicitly.
 

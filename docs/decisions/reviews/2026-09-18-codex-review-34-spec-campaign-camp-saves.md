@@ -2,7 +2,7 @@
 
 Spec reviewer role (ADR-0009), with access to `re/`.
 
-Reviewed [revision 5 at `50d52ec`](C:/Users/przem/source/repos/opensherwood/docs/original/spec-campaign-camp-saves.md) against review 29, the listings, decompilation and campaign notes. Remaining findings:
+Reviewed [revision 5 at `50d52ec`](../../original/spec-campaign-camp-saves.md) against review 29, the listings, decompilation and campaign notes. Remaining findings:
 
 1. **Blocker — CAMP-091/300/320; §8.6; 0x0050F710, 0x00511340, 0x00580D20.** The departure contract still explicitly permits resuming an imported camp save by re-entering camp. This contradicts §8.3 and `OriginalSaveResume`, and reintroduces duplicated production, training and healing. Replace that paragraph with extraction-only support. Also qualify §8.3’s “new campaign started from it”: that cannot implicitly authorize the same unresolved reconstruction.
 

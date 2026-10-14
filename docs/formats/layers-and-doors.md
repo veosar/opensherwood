@@ -503,7 +503,7 @@ parapet; (c) click a building door (36 at (1302,968)) and record the cursor, the
 
 ## 6. Provenance
 
-- Data: `C:\Users\przem\source\gamedata\robinhood` (GOG English build, executable SHA-256
+- Data: `OPENSHERWOOD_GAME_DIR` (GOG English build, executable SHA-256
   `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`): all nine `DATA/Levels/*.rhp`, all 39
   `.rhm` and `.scb`, `Levels/Day/Lincoln.map` for the overlays, `Manual.pdf` printed pages 16-17 and 26-28
   rendered with PyMuPDF (no text layer) and read by eye.

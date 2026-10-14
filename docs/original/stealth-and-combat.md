@@ -835,7 +835,7 @@ him at once and the whole courtyard joined (a mission-wide alarm, `inferred`).
 ### Provenance (section 8)
 
 - Game: GOG build, `Robin Hood.exe` SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`,
-  English, run from the private copy `C:\Users\przem\source\gamedata\robinhood_oracle` (cnc-ddraw
+  English, run from the private copy `OPENSHERWOOD_ORACLE_DIR` (cnc-ddraw
   windowed 1024x768 at the screen origin, `maxfps=60`, `devmode=true`, `renderer=direct3d9on12`),
   profile "Analyst", medium difficulty, 2026-09-05.
 - Tools (all generic, `harness/tools/original/`): `rhcap.py` (launch, PrintWindow screenshots,
@@ -864,7 +864,7 @@ him at once and the whole courtyard joined (a mission-wide alarm, `inferred`).
 
 Data files of the GOG English build (executable SHA-256
 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`, read-only copy
-`C:\Users\przem\source\gamedata\robinhood`), 2026-09-03, analyst session, observation only:
+`OPENSHERWOOD_GAME_DIR`), 2026-09-03, analyst session, observation only:
 
 - `profile.cpf`: `harness/tools/probe/cpf_stats.py --tiers --tables` (SD / PC numeric fields as columns,
   per-family tier deltas, tables A and B); the layout correction of the SD `unknown_post` block

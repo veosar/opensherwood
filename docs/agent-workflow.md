@@ -24,7 +24,7 @@ and spec are loaded into a session; large files should be searched and read in e
 | Repeated procedure | canonical `.agents/skills/` |
 | Reviewed facts, formats and architecture | appropriate `docs/` document or ADR |
 | Milestones | `docs/roadmap.md` |
-| Current task, results, exact last error and next step | local `.claude/handoffs/<task>.md`, outside git |
+| Current task, results, exact last error and next step | local handoff file per task, outside the repository (location depends on your tooling) |
 | Automatic check cache | local `.local/agent-hooks/` per checkout/session |
 
 All handoffs, including analyst handoffs, contain only safe progress and spec links. Private

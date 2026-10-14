@@ -856,7 +856,7 @@ invokers 004030a0 - 00408af0 and callers 0046e7e0, 004a0f10, 004bb820, 00551bb0,
 
 Data checks: `python harness/tools/probe/scb_opstats.py <levels>`, `scb_semantics.py <levels> --natives`,
 `--params`, `--pseudo --class`, and an ad-hoc probe over the parsed quads on the game data copy at
-`C:\Users\przem\source\gamedata\robinhood` (read-only). Corpus facts used: 208 679 instructions in 39 files,
+`OPENSHERWOOD_GAME_DIR` (read-only). Corpus facts used: 208 679 instructions in 39 files,
 42 734 native calls, 192 distinct ids, the largest class 6948 instructions, maximum arity pushed before one call
 6, 0x07 successors 5081 no-ops / 47 immediate loads / 27 jumps / 5 other (static adjacency, not executed flow),
 value returns absent in all `Finalize` and `PostInitialize`, 1199 / 1448 `Initialize`, 235 / 274 `Hourglass`,

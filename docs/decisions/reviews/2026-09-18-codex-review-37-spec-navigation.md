@@ -2,7 +2,7 @@
 
 Spec reviewer role (ADR-0009), with access to `re/`.
 
-Reviewed [revision 5](C:/Users/przem/source/repos/opensherwood/docs/original/spec-navigation.md), commit `4e35271`, blob `0ad05e9f43ea15b463951f03e0b466575ec15798`, against the decompilation and navigation notes. Addresses are virtual addresses, image base `0x400000`. This is a spec review only.
+Reviewed [revision 5](../../original/spec-navigation.md), commit `4e35271`, blob `0ad05e9f43ea15b463951f03e0b466575ec15798`, against the decompilation and navigation notes. Addresses are virtual addresses, image base `0x400000`. This is a spec review only.
 
 1. **Blocker — NAV-111; test 15 — expression filter still fails.**
    **Address:** `0x004f5890`.

@@ -1612,7 +1612,7 @@ archive versions with their defaults (B62).
 | B78 | a camp holding, for the workshop whose item kind is 1, one active element matching the exceptional predicate and one inactive one | the recount adds exactly 1 |
 | B79 | capture of a workshop with a zone that has no members, and of a workshop with no zone at all | the first workshop's assignment list becomes empty, the second's is unchanged; after each capture both workshops have no zone and no work spots |
 
-**Oracle procedures.** Against a recording from `C:\Users\przem\source\gamedata\robinhood_oracle`:
+**Oracle procedures.** Against a recording from `OPENSHERWOOD_ORACLE_DIR`:
 
 1. *Auto-save write points* (CAMP-131, CAMP-132): start a mission and confirm the restart slot and its thumbnail
    appear before the first frame; enter the camp and confirm the Sherwood slot appears.
@@ -1681,7 +1681,7 @@ to approve.
 **Gate 1 - the per-workshop location-membership rebuild** (`LocationMembershipRebuild`, CAMP-333a). The rebuild
 decides which men the next day's assignment capture finds inside each workshop zone, hence the whole camp
 economy. *To ship without reading it:* record a camp day with the original from
-`C:\Users\przem\source\gamedata\robinhood_oracle` with a known band, note for each workshop which men the
+`OPENSHERWOOD_ORACLE_DIR` with a known band, note for each workshop which men the
 camp script's own work helpers pick up on the following day (the helpers test zone membership through natives
 204 and 205, so the recording shows the membership indirectly), and show that the engine's own membership -
 recomputed from actor positions at the same point of the pass - selects the same men for every workshop over
@@ -2111,7 +2111,7 @@ its two helpers (004e3260, 0049f510, 004a05a0); the recruit branches (004524b0) 
 0055bdf0, 004565c0, 00456670); the workshop helpers (005810c0, 0055bb00, 00580430, 00580520, 00580940,
 00580b70, 00580dc0); and the progress routine (00456db0).
 
-Files read on disk, read-only, under `C:/Users/przem/source/gamedata/robinhood`: `Campaign.bck`,
+Files read on disk, read-only, under `OPENSHERWOOD_GAME_DIR`: `Campaign.bck`,
 `DATA/Configuration/profile.cpf`, `DATA/Configuration/keyset1.cfg`, `keyset2.cfg`, `Data/Savegame/Profiles`,
 `Data/Savegame/Profile_001/{Continue,Continue_t,Restart,Restart_t}`. The mission-file inspection behind CAMP-048
 and A6 was the reviewer's, on the same installation.

@@ -2,7 +2,7 @@
 
 Spec reviewer role (ADR-0009), with access to `re/`. To be answered in the spec's next revision.
 
-Reviewed [revision 6 at `3d21293`](C:/Users/przem/source/repos/opensherwood/docs/original/spec-campaign-camp-saves.md) against review 34, the decompilation, instruction listings, campaign notes and conversion-helper bytes. Remaining findings:
+Reviewed [revision 6 at `3d21293`](../../original/spec-campaign-camp-saves.md) against review 34, the decompilation, instruction listings, campaign notes and conversion-helper bytes. Remaining findings:
 
 1. **High — CAMP-271/272; §§3.7, 8.4–8.5, B60a; 0x0050E7B0, 0x0050E800, 0x00512310.** B60a still requires refusing a snapshot away from a checkpoint, directly contradicting §8.4’s new checkpoint-on-request policy. Change its expectation to successful accrual followed by serialization and equivalent continuation. Initialize `interval_start_frame` explicitly, since it is hashed even while inactive. Also synchronize the transition description: §3.7 still says “not at level end,” and 0x00512310 closes and reopens an interval around a menu without ending the level. Define those suspension/resumption checkpoints alongside level transitions.
 
