@@ -6,7 +6,7 @@ Reviewed revision 2 at commit `e966b05`, blob `e10208494c95caf92c2b356357329a61c
 
 **Both analyst disputes are upheld.** The serialized stimulus order is **purse / apple / beer / whistle** (`0056a7d0`, `00438cb0`, `004468a0`, `0044cb40`, `00424d50`). Native 126 returns **4 for menacing and 5 for fleeing**, with sleeping returning 0 (`00575e20`, state-setting paths in `00424d50`). Review 16 was wrong on those two points.
 
-The following findings remain in [revision 2](C:/Users/przem/source/repos/opensherwood/docs/original/spec-ai-combat.md).
+The following findings remain in [revision 2](../../original/spec-ai-combat.md).
 
 1. **Blocker — AI-068, AI-069; acceptance test 1 — `004890d5–00489124`, `00488231–00488263`.**
    The multipliers are corrected, but the example still loses the rounding stages required by finding 1. With the stated `W = 80` and `g = 0.5`, the recovered calculation stores approximately **0.7999999523162842**, producing contributions **15 normally and 159 in wide mode**, not 16/160. Under the test’s assumed first evaluation on frame 0, ordinary sighting occurs on **frame 66**, not 62. Specify the intermediate precision and storage boundaries, then recalculate the examples. Also specify the global frame and observer ID: reevaluation is staggered, not universally “every 2nd frame from creation.”

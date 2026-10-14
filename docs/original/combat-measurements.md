@@ -219,7 +219,7 @@ range: **not measured** (no arrows in the start area).
 
 - Game: GOG build, `Robin Hood.exe` SHA-256
   `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`, run only from the private copy
-  `C:\Users\przem\source\gamedata\robinhood_oracle` (cnc-ddraw windowed 1024x768 at the screen origin,
+  `OPENSHERWOOD_ORACLE_DIR` (cnc-ddraw windowed 1024x768 at the screen origin,
   `maxfps=60`, `devmode=true`), profile of the 2026-09-05 session (medium), 2026-09-05, killed with
   `taskkill` at the end.
 - Tools: `harness/tools/original/rhcap.py` (launch, PrintWindow shots, scan-code keys),

@@ -2,7 +2,7 @@
 
 Spec reviewer role (ADR-0009), with access to `re/`.
 
-Reviewed [revision 6](C:/Users/przem/source/repos/opensherwood/docs/original/spec-script-vm.md), commit `c2c578a763bf34c8502e589ca751a52e59778045`, blob `35346f60c89d02c342ec8240ffbead8d5d8e92ba`. Executable SHA-256 and image base match. All seven review-28 findings were revisited against the decompilation, relevant raw instructions and VM notes.
+Reviewed [revision 6](../../original/spec-script-vm.md), commit `c2c578a763bf34c8502e589ca751a52e59778045`, blob `35346f60c89d02c342ec8240ffbead8d5d8e92ba`. Executable SHA-256 and image base match. All seven review-28 findings were revisited against the decompilation, relevant raw instructions and VM notes.
 
 1. **High — VM-070/095, §8.1: sentinel-return depth rule contradicts nested callback entry.**
    **Addresses:** `00639300`, `0063a250`, `00634dd0`, `0063a320`, `00635210`.

@@ -2,7 +2,7 @@
 
 Spec reviewer role (ADR-0009), with access to `re/`. Answered in the spec's next revision.
 
-Reviewed [revision 4](C:/Users/przem/source/repos/opensherwood/docs/original/spec-campaign-camp-saves.md) at `7406a11`, blob `166db83c3259999363cc0543251b7d1ec14b3e1b`, against all 19 findings, the decompilation and campaign notes. Addresses below are virtual addresses. The identity/exposure block is acceptable; publication approval remains separately pending. The heuristic asset check passes.
+Reviewed [revision 4](../../original/spec-campaign-camp-saves.md) at `7406a11`, blob `166db83c3259999363cc0543251b7d1ec14b3e1b`, against all 19 findings, the decompilation and campaign notes. Addresses below are virtual addresses. The identity/exposure block is acceptable; publication approval remains separately pending. The heuristic asset check passes.
 
 1. **Blocker — CAMP-271/272; §8.4, B61; 0x0050E7B0, 0x0050E800, 0x00511340.** The new time contract is not mathematically complete. After 22 frames, removing one whole second leaves **2/64 second**, which cannot be represented as an integer number of frames. “Leaves the remainder in the residue” needs an exact unit and representation. Also, restoring `interval_start_frame` and then starting the interval at the restoring frame loses elapsed time since the preceding checkpoint. Specify exact fractional units, active/inactive interval state, initialization and preservation of uncheckpointed elapsed time. B61’s quarter-second interval is not an integer number of logic frames; use integral frame counts and assert the exact remainder.
 

@@ -2,7 +2,7 @@
 
 Spec reviewer role (ADR-0009), with access to `re/`.
 
-Reviewed [revision 4](C:/Users/przem/source/repos/opensherwood/docs/original/spec-navigation.md), commit `5c380b6`, blob `ec30e08cfcde7b6620cd3c3d2879095c702f0f25`, against `re/out/decomp_all` and `re/notes/nav/`. Addresses below are virtual addresses, image base `0x400000`.
+Reviewed [revision 4](../../original/spec-navigation.md), commit `5c380b6`, blob `ec30e08cfcde7b6620cd3c3d2879095c702f0f25`, against `re/out/decomp_all` and `re/notes/nav/`. Addresses below are virtual addresses, image base `0x400000`.
 
 Review-event identity: **2026-09-18 / navigation revision 4 / 5c380b6**. Session identifier unavailable. Exposure: navigation decompilation, its helpers, navigation notes and pinned sibling specifications; this session must not implement those subsystems.
 

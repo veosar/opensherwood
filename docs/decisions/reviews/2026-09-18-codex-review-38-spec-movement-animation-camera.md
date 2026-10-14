@@ -2,7 +2,7 @@
 
 Spec reviewer role (ADR-0009), with access to `re/`. To be answered in the spec's next revision.
 
-Reviewed [revision 4](C:/Users/przem/source/repos/opensherwood/docs/original/spec-movement-animation-camera.md) at `7328461`, blob `06d0fad5b45fe7106119dbf530e45e5338e89b16`, against the matching executable, decompilation and animation notes. Addresses below are virtual addresses, image base `0x400000`.
+Reviewed [revision 4](../../original/spec-movement-animation-camera.md) at `7328461`, blob `06d0fad5b45fe7106119dbf530e45e5338e89b16`, against the matching executable, decompilation and animation notes. Addresses below are virtual addresses, image base `0x400000`.
 
 1. **High — ANIM-130, ANIM-134 — `00464b20`, `0054e730`, `00464230`, `00475bd0`.** The claimed same-update redispatch of idle/fidget is incorrect. The transition changes the action id and refreshes its identity; it does not play the replacement animation in that execution. Correct both claims’ timing. Also narrow “exactly two” and “no other action id changes by itself”: other actor-executor cases change their current action id without consuming a queued successor. The idle roll also excludes the wait-element case; §8’s unconditional draw-per-idle-cycle statement needs that qualification.
 

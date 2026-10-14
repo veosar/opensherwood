@@ -5,7 +5,7 @@ Spec reviewer role (ADR-0009), with access to `re/`. Answered in the spec's next
 Reviewed revision 3 at commit `e7b2cd45ec1dd170101be64e68f2d5517efbdbfd`, blob `c9040a2a406e8525fbd6aae32241b81fe0c72a6c`. The executable SHA-256 matches. Reviewer session: `01a0b406-a088-76b0-b80e-f5d4a5abd73d`, spec-reviewer role only.
 
 1. **Blocker — AI-008, AI-066, AI-176: the arithmetic contract still omits consequential rounding stages.**
-   **Addresses:** `0048996f–0048999a`, `00489e30`, `0047b947–0047b99e`. [Specification](/C:/Users/przem/source/repos/opensherwood/docs/original/spec-ai-combat.md:133).
+   **Addresses:** `0048996f–0048999a`, `00489e30`, `0047b947–0047b99e`. [Specification](../../original/spec-ai-combat.md:133).
 
    “Every intermediate held in a precision of at least 64 significant bits,” AI-066’s “All arithmetic is single precision,” and section 8’s `f64` policy are different contracts. The corrected 15/159 sight contributions and 54/108/60 reaction delays are supported, but do not establish general equivalence.
 
@@ -14,7 +14,7 @@ Reviewed revision 3 at commit `e7b2cd45ec1dd170101be64e68f2d5517efbdbfd`, blob `
    **Correction:** specify the consequential rounding boundaries, reconcile AI-066, and distinguish the chosen deterministic arithmetic from demonstrated original equivalence. Add boundary fixtures; withhold exact arithmetic-dependent behaviour until settled.
 
 2. **Medium — AI-068, AI-069: acceptance test 1’s observer-ID variant has an incorrect initial condition.**
-   **Addresses:** `0048c700`, `00488f60`, `00487d00`. [Test](/C:/Users/przem/source/repos/opensherwood/docs/original/spec-ai-combat.md:1557).
+   **Addresses:** `0048c700`, `00488f60`, `00487d00`. [Test](../../original/spec-ai-combat.md:1557).
 
    “A soldier with id 1 evaluates on odd frames but the contributions and frames above are unchanged because the cached value is identical” assumes a populated cache. A newly added entry starts with zero.
 
@@ -28,7 +28,7 @@ Reviewed revision 3 at commit `e7b2cd45ec1dd170101be64e68f2d5517efbdbfd`, blob `
    **Correction:** state these distinctions and the equal-score preference for the earlier eligible row. The revised circular eligibility exception and conditional reactive skill roll themselves are correct.
 
 4. **High — AI-166, AI-007: the conditional experience contract still misidentifies outcomes.**
-   **Addresses:** `0047e806–0047e951`, `0047e90c–0047e944`, `004734a1–00473505`, `00471e50`, `00471ed0`. [Resolution](/C:/Users/przem/source/repos/opensherwood/docs/original/spec-ai-combat.md:1121).
+   **Addresses:** `0047e806–0047e951`, `0047e90c–0047e944`, `004734a1–00473505`, `00471e50`, `00471ed0`. [Resolution](../../original/spec-ai-combat.md:1121).
 
    A victim without a class block returns the same result value used for damage-and-stun; the generic handler can therefore consume the trailing experience roll for a qualifying row figure. This is **one decision draw**, with no defence or stun draw. Section 9.2(15) need not leave it unresolved. Review 22’s blanket statement about a “rejected result” was also insufficiently precise.
 
@@ -37,35 +37,35 @@ Reviewed revision 3 at commit `e7b2cd45ec1dd170101be64e68f2d5517efbdbfd`, blob `
    **Correction:** define draw counts from the supported outcome conditions, distinguish attempted effects from state changes, remove the invented separate no-class rejection outcome, and replace the contradictory “finished” explanation. Keep intervening sound/reaction draws separately accounted for.
 
 5. **High — AI-082: the fit-again state-domain error remains verbatim.**
-   **Address:** `00410620`. [Passage](/C:/Users/przem/source/repos/opensherwood/docs/original/spec-ai-combat.md:575).
+   **Address:** `00410620`. [Passage](../../original/spec-ai-combat.md:575).
 
    The specification still says **“while its current action id is 7”**, although the guard reads **order state 7**.
 
    **Correction:** change the domain in the operative claim, not only in the revision-history summary.
 
 6. **High — AI-178: principal-enemy immunity bypasses the penetration roll.**
-   **Addresses:** `004a690e–004a6930`, `004a5690`, `004a18c0`. [Passage](/C:/Users/przem/source/repos/opensherwood/docs/original/spec-ai-combat.md:1260).
+   **Addresses:** `004a690e–004a6930`, `004a5690`, `004a18c0`. [Passage](../../original/spec-ai-combat.md:1260).
 
    “An immune … target goes through case (b)’s roll like any soldier” is false. The projectile checks the principal-enemy predicate and exits before calling the penetration predicate.
 
    **Correction:** specify **zero penetration draws** for this immunity path and correct acceptance test 12. The civilian permission-only path and ordinary class-based penetration comparison are supported.
 
 7. **High — AI-050, AI-003: the revised execution order and local-pause description remain incomplete.**
-   **Addresses:** `0048a980`, `0040dbe0`. [Execution contract](/C:/Users/przem/source/repos/opensherwood/docs/original/spec-ai-combat.md:344).
+   **Addresses:** `0048a980`, `0040dbe0`. [Execution contract](../../original/spec-ai-combat.md:344).
 
    The pre-tick hook is itself suppressed by the local-pause flag. The door-wait/reset check occurs **after** perception, the AI update, and deafness processing—not before them. The civilian periodic routine also remains outside the later pause/lock guard and can consume randomness and produce a remark.
 
    **Correction:** describe those observable orderings and exceptions. The timer check ordering, deadline advancement, and half-open lock example are supported, but do not justify saying all AI work stops during an actor-local pause.
 
 8. **High — AI-040–AI-042: the snapshot inventory is still insufficient.**
-   **Addresses:** `00410620`, `0048a980`, `00410010`, `00486fa0`, `005794b0`, `00579520`. [Inventory](/C:/Users/przem/source/repos/opensherwood/docs/original/spec-ai-combat.md:276).
+   **Addresses:** `00410620`, `0048a980`, `00410010`, `00486fa0`, `005794b0`, `00579520`. [Inventory](../../original/spec-ai-combat.md:276).
 
    Adding usage penalties and the cached rail roll does not cover the pending/deferred events and their ordering, lock/queue flags, rail execution position and suspension state, creation-frame stagger, custom native values, or the perception collapse increment and tracking target.
 
    **Correction:** give each authoritative quantity explicit snapshot ownership, or a demonstrated reconstruction rule. Distinguish the cached roll’s value from whether it remains available. Withhold integrated snapshot/replay clearance until the inventory and restore fixtures cover these cases.
 
 9. **High — AI-007, section 8: the proposed RNG policy contains a false exemption and does not establish complete draw ordering.**
-   **Addresses:** `005780d0`, `0041bd20`, `00419cc0`, `00419c80`. [Policy](/C:/Users/przem/source/repos/opensherwood/docs/original/spec-ai-combat.md:1660).
+   **Addresses:** `005780d0`, `0041bd20`, `00419cc0`, `00419c80`. [Policy](../../original/spec-ai-combat.md:1660).
 
    “The natives of section 6 (none draw)” is false transitively: native 140 can inspect a rail program, causing its cached roll to be generated. Actor-list order alone also does not define interleaving with script-native calls, synchronous cross-actor events, player combat, and projectile processing.
 
@@ -86,14 +86,14 @@ Reviewed revision 3 at commit `e7b2cd45ec1dd170101be64e68f2d5517efbdbfd`, blob `
     **Correction:** clear only styles 0/1 as currently understood. Document the address-dependent invalid-input behaviour and select an explicit deterministic deviation before supporting other values.
 
 12. **High — expression filter, AI-081: the internal event-name catalogue still crosses the boundary.**
-    **Addresses:** `0041f540`, `00410620`. [Catalogue](/C:/Users/przem/source/repos/opensherwood/docs/original/spec-ai-combat.md:554).
+    **Addresses:** `0041f540`, `00410620`. [Catalogue](../../original/spec-ai-combat.md:554).
 
     The passage **“the event kinds, numbered as the AI uses them internally”**, including **“59..61 my talk 1..3, 62..64 your talk 1..3”** and **“68 my talk 0, 69 your talk 0”**, reproduces the organisation and naming pattern of the diagnostic event catalogue. These private numbers are not required by the callback interface; those events are exposed as −2.
 
     **Correction:** retain independently named behavioural events and map them directly to script-visible values. Keep unnecessary private numbering and diagnostic naming in `re/`. Section 9.3’s removal of the individual-constants escape hatch and AI-140’s capability wording pass.
 
 13. **Medium — identity block: exposure is described, but individual identities remain missing.**
-    **Address:** document-wide. [Identity block](/C:/Users/przem/source/repos/opensherwood/docs/original/spec-ai-combat.md:39).
+    **Address:** document-wide. [Identity block](../../original/spec-ai-combat.md:39).
 
     “Their session ids were not recorded separately” and “the reviewer’s own session id is not known” acknowledge rather than resolve finding 16.
 

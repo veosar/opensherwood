@@ -2,7 +2,7 @@
 
 Spec reviewer role (ADR-0009), with access to `re/`. Answered in the spec's next revision.
 
-Reviewed [revision 3](C:/Users/przem/source/repos/opensherwood/docs/original/spec-script-vm.md) at commit `25b6dbe8aee71ebca4d78fb5e2382b4ff37b22a9`, checking all 20 review-17 findings against the matching executable, decompilation and VM notes. Only remaining defects follow. Addresses are virtual addresses, image base `0x400000`.
+Reviewed [revision 3](../../original/spec-script-vm.md) at commit `25b6dbe8aee71ebca4d78fb5e2382b4ff37b22a9`, checking all 20 review-17 findings against the matching executable, decompilation and VM notes. Only remaining defects follow. Addresses are virtual addresses, image base `0x400000`.
 
 1. **Medium — VM-100; §§5, 8.1: the three-layer clock still overstates the evidence.**
    **Address:** `0050f710`.

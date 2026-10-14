@@ -1899,7 +1899,7 @@ the tick. Any claim of trace equivalence with the original must account for all 
 ## 9. Validation against the data and the recordings
 
 Checks run with `harness/tools/probe/anim_actions.py --table` on the read-only copy at
-`C:\Users\przem\source\gamedata\robinhood\DATA\Characters`. Only aggregates and relations are quoted; the
+`OPENSHERWOOD_GAME_DIR\DATA\Characters`. Only aggregates and relations are quoted; the
 per-frame tables stay in the analyst workspace.
 
 - **Bonus items - the direct per-frame check.** Every bonus-item profile checked (`BONUS_Ale`, `BONUS_Arrows`) has
@@ -2109,7 +2109,7 @@ precedence is the new **ANIM-334**; the location conversion remains **ANIM-329**
   clipped burst step leaves a zero delta (ANIM-334).
 - Functions read: section 0. Notes: `re/notes/anim/` (git-ignored).
 - Data checked: `harness/tools/probe/anim_actions.py --table` on the character profiles of the read-only game copy
-  at `C:\Users\przem\source\gamedata\robinhood` (section 9). No oracle run in this session; the timing comparisons
+  at `OPENSHERWOOD_GAME_DIR` (section 9). No oracle run in this session; the timing comparisons
   use the recordings of 2026-09-05 as reported in `docs/original/stealth-and-combat.md` 8 **with** the correction in
   `docs/original/combat-measurements.md`.
 - Pinned siblings and the engine decision: the header. Formats: `docs/formats/sprites.md`,

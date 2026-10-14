@@ -109,7 +109,7 @@ into the same mission as well (a short "mission loaded" style message in white o
 ## Provenance
 
 Same session as `ui-flow.md` (build SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`,
-GOG English, 1024x768, private copy `C:\Users\przem\source\gamedata\robinhood_oracle`, 2026-09-02). Observed:
+GOG English, 1024x768, private copy `OPENSHERWOOD_ORACLE_DIR`, 2026-09-02). Observed:
 the Play! -> loading -> briefing -> mission sequence with a fresh profile (`Analyst`, Medium) and with the shipped
 profile. Texts: `python harness/tools/original/sres_text.py <gamedir>/2047/data/Text/Level.res 1000017 1000105
 1000283 1000349 1000350`; `.red` values dumped as little-endian u32 with a one-line Python script. Manual:

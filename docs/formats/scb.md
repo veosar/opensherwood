@@ -365,7 +365,7 @@ objectives of TEXT 1000105 / 1000283). Commands: `python harness/tools/probe/scb
 <gamedir>/DATA/Levels <gamedir>/DATA/Text target/release/opensherwood-tools.exe`, `python
 harness/tools/probe/scb_elements.py <gamedir>/DATA/Levels target/release/opensherwood-tools.exe`. Game build:
 GOG English, executable SHA-256 `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`; data copy
-`C:\Users\przem\source\gamedata\robinhood`. Confidence is stated per row; nothing in these sections is `observed`
+`OPENSHERWOOD_GAME_DIR`. Confidence is stated per row; nothing in these sections is `observed`
 in the ADR-0003 sense except the counts and the briefing / objective correspondence. Text sweep 2026-09-02
 (review 4, findings 1 and 15): executable messages and paths, designer helper / variable / element names
 removed or paraphrased; walkthrough statements annotated with their minimum dependency confidence.

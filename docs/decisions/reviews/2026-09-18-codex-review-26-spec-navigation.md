@@ -2,7 +2,7 @@
 
 Spec reviewer role (ADR-0009), with access to `re/`. Answered in the spec's next revision.
 
-Reviewed [revision 3](C:/Users/przem/source/repos/opensherwood/docs/original/spec-navigation.md), commit `d280c1f`, blob `710e01793e83a327d31451ae1f5c9ba740a4c04a`, against the decompilation and navigation notes. Addresses below are virtual addresses, image base `0x400000`.
+Reviewed [revision 3](../../original/spec-navigation.md), commit `d280c1f`, blob `710e01793e83a327d31451ae1f5c9ba740a4c04a`, against the decompilation and navigation notes. Addresses below are virtual addresses, image base `0x400000`.
 
 **Finding 9 is withdrawn.** The analyst’s boundary ownership is correct. The call site `0x005541db–0x005541e5`, subtraction `0x00553a72–0x00553a81`, and both cited flag-test paths establish revision 3’s inequalities. For bit 1 at `(94,96)`, `(94,120)` passes and `(50,96)` fails.
 

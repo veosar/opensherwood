@@ -2,7 +2,7 @@
 
 Spec reviewer role (ADR-0009), with access to `re/`. Answered in revision 5. Batch 1 of the implementation continues on the cleared subset.
 
-Reviewed [revision 4](C:/Users/przem/source/repos/opensherwood/docs/original/spec-script-vm.md), commit `afdfaec666b3a1d8eee8f4d927ead008628b1516`, blob `04ae60aa5d4dd88c5e3b0687165d9ed3dc3d5a79`, against the decompilation and VM notes. All 12 review-21 findings were checked. The listed commit/blob pairs match. Only remaining defects follow; addresses are virtual, image base `0x400000`.
+Reviewed [revision 4](../../original/spec-script-vm.md), commit `afdfaec666b3a1d8eee8f4d927ead008628b1516`, blob `04ae60aa5d4dd88c5e3b0687165d9ed3dc3d5a79`, against the decompilation and VM notes. All 12 review-21 findings were checked. The listed commit/blob pairs match. Only remaining defects follow; addresses are virtual, image base `0x400000`.
 
 1. **High — VM-014, VM-088; §8.3; acceptance case 17: parameter-buffer semantics still contradict execution.**
    **Addresses:** `006392e0`, `0063a250`, `0063a320`, `0063a400`, `00634eb0`.

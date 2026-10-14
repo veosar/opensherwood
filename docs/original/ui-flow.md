@@ -339,7 +339,7 @@ exported and viewed 2026-09-05); they are probably drawn from the sprite bank or
 
 - Game: GOG build with the 2025-04-08 Ready2Play launcher, `Robin Hood.exe` SHA-256
   `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`, English (`2047/data`), run from the private
-  copy `C:\Users\przem\source\gamedata\robinhood_oracle` (identical files, own `ddraw.ini` and savegames; the
+  copy `OPENSHERWOOD_ORACLE_DIR` (identical files, own `ddraw.ini` and savegames; the
   running game locks `DATA\robinhood.bks`, so the copy used by the engine's tests must not be the one played).
   In-game version string "v1.1" on the loading screen.
 - cnc-ddraw `ddraw.ini`: `windowed=true`, `fullscreen=false`, `devmode=true`, `maxfps=60`, `savesettings=0`,

@@ -232,7 +232,7 @@ weeks of engine work plus three oracle sessions.
 
 ## Provenance
 
-- Data: `C:\Users\przem\source\gamedata\robinhood` (GOG English build, executable SHA-256
+- Data: `OPENSHERWOOD_GAME_DIR` (GOG English build, executable SHA-256
   `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`), `DATA/Levels/H01_Lin_VL.{rhm,scb}`,
   `lincoln.rhp`, `2047/data/Text/Level.res` (TEXT 1000283 read with `harness/tools/original/sres_text.py`
   and paraphrased), `Manual.pdf` rendered with PyMuPDF and read by eye (printed pages 14-18, 24-28).

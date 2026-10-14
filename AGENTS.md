@@ -77,8 +77,8 @@ winning a mission); each implementation batch extends the harness and adds repla
 ## Context and handoffs (both agents)
 
 - No issue tracker: current progress, verification evidence and the next step live in a local handoff
-  (`.claude/handoffs/<task>.md`, outside git); milestones in `docs/roadmap.md`, durable findings in `docs/`,
-  procedures in canonical `.agents/skills/`.
+  (one file per task, kept outside the repository; the location depends on your tooling); milestones in
+  `docs/roadmap.md`, durable findings in `docs/`, procedures in canonical `.agents/skills/`.
 - Compaction preserves the task, clean-room role and subsystem exposure, branch, changed files, commits,
   build/test commands and results, exact errors and the next step. A handoff is a checkpoint: the current
   request and newer evidence take precedence.

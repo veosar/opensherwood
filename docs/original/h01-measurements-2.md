@@ -256,11 +256,11 @@ yard by climbing the ivy east of the gate (Robin does it by himself on a walk or
 
 - Game: GOG build, `Robin Hood.exe` SHA-256
   `1d64cf088f1202e67045759fe23aaa879434ea662a922e93cff537a839da12b5`, run only from the private copy
-  `C:\Users\przem\source\gamedata\robinhood_oracle` (cnc-ddraw windowed 1024x768 at the screen origin,
+  `OPENSHERWOOD_ORACLE_DIR` (cnc-ddraw windowed 1024x768 at the screen origin,
   `maxfps=60`), profile "Analyst" (medium), 2026-09-05; killed with `Stop-Process` at the end.
 - Data cross-checks: `DATA/Levels/H01_Lin_VL.rhm` through `harness/tools/probe/rhm_full.py --json` (the
   `ZORG` and `SKRO` records: positions, `unknown_a` / `unknown_b`, `flags5`), read from the analysis copy
-  `C:\Users\przem\source\gamedata\robinhood`; the manual (rendered pages, printed 16, 17, 28) read by eye
+  `OPENSHERWOOD_GAME_DIR`; the manual (rendered pages, printed 16, 17, 28) read by eye
   and paraphrased.
 - Who: analyst session (a Claude agent); no engine code read or written beyond the documents named
   above.
