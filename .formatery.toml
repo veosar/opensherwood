@@ -1,0 +1,16 @@
+# Włącza formatowanie plików ze stage w pre-commit. Bez tombi: domyślnie sortuje klucze i tablice (kolejność
+# members w Cargo.toml odzwierciedla kierunek zależności crate'ów, AGENTS.md).
+narzedzia = ["ruff", "oxfmt", "rustfmt"]
+# Pomijane: fixtury z sumą kontrolną (golden_digest.py), pliki i skille agentów (zmieniane tylko świadomie), ustawienia agenta.
+wyklucz = [
+  "harness/fixtures/**",
+  ".claude/**",
+  ".agents/**",
+  ".github/skills/**",
+  ".github/instructions/**",
+  ".github/copilot-instructions.md",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "re/**",
+  "oracle/**",
+]

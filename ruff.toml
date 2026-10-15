@@ -1,0 +1,11 @@
+# Python (harness/, scripts/): formatowanie `ruff format`, lintery tylko poprawność (styl robi formater).
+line-length = 120
+required-version = "==0.17.0"
+
+[lint]
+select = ["F", "E9", "B", "PLE"]
+
+[lint.per-file-ignores]
+# fixture pytesta przekazana jako argument testu wygląda jak redefinicja importu
+"**/test_*.py" = ["F811"]
+"**/conftest.py" = ["F811"]
