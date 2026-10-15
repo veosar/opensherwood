@@ -13,6 +13,7 @@ Usage:
         --context [--id N ...] [--limit K]   folded lines calling the given ids, over the whole corpus
         --all-unknown         also list unknown ids that occur only outside the load path, by frequency
 """
+
 import collections
 import os
 import re
@@ -108,8 +109,9 @@ def main():
     only = {int(x) for x in args[args.index("--id") + 1 :] if x.isdigit()} if "--id" in args else set()
 
     per_file = {}
-    per_id = collections.defaultdict(lambda: dict(files=set(), cbs=collections.Counter(), fns=collections.Counter(),
-                                                  level=0, element=0, n=0))
+    per_id = collections.defaultdict(
+        lambda: dict(files=set(), cbs=collections.Counter(), fns=collections.Counter(), level=0, element=0, n=0)
+    )
     all_counts = collections.Counter()
     for f in files:
         base = os.path.basename(f)[:-4]
@@ -145,8 +147,10 @@ def main():
             if only and nid not in only:
                 continue
             p = per_id[nid]
-            print(f"native {nid}: files={len(p['files'])} calls_at_load={p['n']} level={p['level']} element={p['element']} "
-                  f"callbacks={dict(p['cbs'])} corpus_calls={all_counts[nid]}")
+            print(
+                f"native {nid}: files={len(p['files'])} calls_at_load={p['n']} level={p['level']} element={p['element']} "
+                f"callbacks={dict(p['cbs'])} corpus_calls={all_counts[nid]}"
+            )
             print(f"   via functions: {p['fns'].most_common(8)}")
             print(f"   files: {sorted(p['files'])}")
     if "--all-unknown" in args:

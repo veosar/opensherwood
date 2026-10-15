@@ -57,7 +57,9 @@ def test_first_briefing_scene_matches_the_original_behind_the_parchment(binary, 
         e.step(1, [{"tick_offset": 0, "sequence": 0, "kind": "pointer_move", "x256": 1000 * 256, "y256": 700 * 256}])
         assert e.observe(entities=False)["ui"]["screen"] == "briefing"
         e.capture(path="briefing_for_oracle.png")
-    result = compare(tmp_path / "briefing_for_oracle.png", BRIEFING_ORIGINAL, BRIEFING_MASKS, diff_out=tmp_path / "briefing_diff.png")
+    result = compare(
+        tmp_path / "briefing_for_oracle.png", BRIEFING_ORIGINAL, BRIEFING_MASKS, diff_out=tmp_path / "briefing_diff.png"
+    )
     print("briefing vs original:", result)
     assert result.ssim > 0.97, str(result)
     assert result.fraction_over_32 < 0.01, str(result)

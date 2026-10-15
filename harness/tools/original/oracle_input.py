@@ -19,6 +19,7 @@ Usage (python oracle_input.py ...):
   mmove x y / mclick x y [button] [n]  in-mission cursor control with screenshot feedback
   rec <prefix> <secs> <dt>  save every frame with its timestamp (no change detection) to captures/original/
 """
+
 import ctypes
 import ctypes.wintypes
 import os

@@ -8,6 +8,7 @@ index resolves to when read as a 0-based position in the matching `profile.cpf` 
 (BORG -> SD, OILE -> CV, TOTO -> PC). `--cast` lists the resolved cast of the named missions; `--scot`
 dumps the player-character records (which carry no profile index).
 """
+
 import collections
 import glob
 import os
@@ -65,7 +66,9 @@ def main(argv):
                 for rec in g["records"]:
                     fl = bytes.fromhex(rec["flags10"])
                     bits = [i for i, v in enumerate(fl) if v]
-                    print(f"    u12={rec['B']} flagbytes={bits} u08={rec['flags']:#x} trailer={rec['trailer']} {rec['name'] or '-'}")
+                    print(
+                        f"    u12={rec['B']} flagbytes={bits} u08={rec['flags']:#x} trailer={rec['trailer']} {rec['name'] or '-'}"
+                    )
         return
 
     tally = {t: collections.defaultdict(collections.Counter) for t in SECTION}
@@ -83,7 +86,9 @@ def main(argv):
             c = tally[tag].get(idx)
             used = sum(c.values()) if c else 0
             named = {k: v for k, v in c.most_common(6) if k != "-"} if c else {}
-            print(f"  {idx:3d} x{used:<4d} in {len(per_mission[tag].get(idx, ())):2d} missions -> {resolve(tag, idx):48s} {named}")
+            print(
+                f"  {idx:3d} x{used:<4d} in {len(per_mission[tag].get(idx, ())):2d} missions -> {resolve(tag, idx):48s} {named}"
+            )
 
 
 if __name__ == "__main__":

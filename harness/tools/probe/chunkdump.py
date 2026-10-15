@@ -3,6 +3,7 @@
 Usage: python chunkdump.py <file> [TAG] [max_bytes]
 Without TAG: list the children. With TAG: hexdump that child's body (after the version word).
 """
+
 import struct
 import sys
 

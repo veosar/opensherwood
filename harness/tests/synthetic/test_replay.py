@@ -112,6 +112,7 @@ def test_initial_checkpoint_is_compared_before_anything_is_applied(engine):
     # The presentation digests are compared too: a tampered session digest or frame hash at a
     # checkpoint is a divergence of that name, with nothing else differing.
     for field in ("session", "frame"):
+
         def tamper(obj, field=field):
             if obj["type"] == "checkpoint" and obj["tick"] == 75:
                 obj[field] = "11" * 32

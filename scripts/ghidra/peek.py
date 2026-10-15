@@ -8,6 +8,7 @@ and must stay in the analyst's workspace (never in the repository).
 
 Usage: python scripts/ghidra/peek.py <exe> <hex address> [length] [--u16|--u32|--i32|--f32|--str]
 """
+
 from __future__ import annotations
 
 import struct
@@ -17,7 +18,7 @@ from pathlib import Path
 
 def sections(data: bytes):
     pe = struct.unpack_from("<I", data, 0x3C)[0]
-    assert data[pe:pe + 4] == b"PE\0\0", "not a PE image"
+    assert data[pe : pe + 4] == b"PE\0\0", "not a PE image"
     nsec = struct.unpack_from("<H", data, pe + 6)[0]
     opt_size = struct.unpack_from("<H", data, pe + 20)[0]
     base = struct.unpack_from("<I", data, pe + 24 + 28)[0]
@@ -25,7 +26,7 @@ def sections(data: bytes):
     out = []
     for i in range(nsec):
         s = off + i * 40
-        name = data[s:s + 8].rstrip(b"\0").decode("ascii", "replace")
+        name = data[s : s + 8].rstrip(b"\0").decode("ascii", "replace")
         vsize, vaddr, rsize, raw = struct.unpack_from("<IIII", data, s + 8)
         out.append((name, base + vaddr, vsize, raw, rsize))
     return base, out
@@ -52,7 +53,7 @@ def main() -> int:
     if off is None:
         print(f"{va:#x}: not backed by file bytes (uninitialised data or outside the image)")
         return 1
-    chunk = data[off:off + length]
+    chunk = data[off : off + length]
     if mode == "--str":
         print(chunk.split(b"\0")[0].decode("latin-1", "replace"))
         return 0
@@ -61,11 +62,14 @@ def main() -> int:
         code, size = fmt
         vals = [struct.unpack_from(code, chunk, i)[0] for i in range(0, len(chunk) - size + 1, size)]
         for i in range(0, len(vals), 8):
-            row = vals[i:i + 8]
-            print(f"{va + i * size:08x}: " + " ".join(f"{v:>12}" if not isinstance(v, float) else f"{v:>12.5g}" for v in row))
+            row = vals[i : i + 8]
+            print(
+                f"{va + i * size:08x}: "
+                + " ".join(f"{v:>12}" if not isinstance(v, float) else f"{v:>12.5g}" for v in row)
+            )
         return 0
     for i in range(0, len(chunk), 16):
-        row = chunk[i:i + 16]
+        row = chunk[i : i + 16]
         print(f"{va + i:08x}: {row.hex(' '):<48} {''.join(chr(b) if 32 <= b < 127 else '.' for b in row)}")
     return 0
 

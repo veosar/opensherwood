@@ -5,6 +5,7 @@ Colours: PCs green, NPC humans red, civilians yellow, VIPs magenta, objects cyan
 beam-me points (POW) orange, bushes blue, rails (patrol paths) lime lines, script polygons (GULP) purple,
 scrolls gold, ZORG entries pink.
 """
+
 import json
 import sys
 

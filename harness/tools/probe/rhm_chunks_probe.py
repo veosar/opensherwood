@@ -2,6 +2,7 @@
 
 Usage: python rhm_chunks_probe.py <dir> [TAG ...]
 """
+
 import collections
 import glob
 import os
@@ -30,7 +31,7 @@ def parse_rail(body):
             blob = r.raw(blen)
             pts.append((x, y, five.hex(), blob.hex()))
         rails.append(pts)
-    assert r.done(), f"rail left {len(body)-r.p}"
+    assert r.done(), f"rail left {len(body) - r.p}"
     return rails
 
 
@@ -47,7 +48,7 @@ def parse_gulp(body):
         tail = r.raw(5)
         name = r.pstr() if r.u8() else None
         polys.append((a, poly, tail.hex(), name))
-    assert r.done(), f"gulp left {len(body)-r.p}"
+    assert r.done(), f"gulp left {len(body) - r.p}"
     return pts, polys
 
 
@@ -61,7 +62,7 @@ def parse_skro(body):
         h["six"] = six.hex()
         h["name"] = r.pstr()
         out.append(h)
-    assert r.done(), f"skro left {len(body)-r.p}"
+    assert r.done(), f"skro left {len(body) - r.p}"
     return out
 
 
@@ -74,7 +75,7 @@ def parse_zorg(body):
         h = header(r)
         h["a"], h["b"] = a, b
         out.append(h)
-    assert r.done(), f"zorg left {len(body)-r.p}"
+    assert r.done(), f"zorg left {len(body) - r.p}"
     return out
 
 
@@ -118,19 +119,37 @@ def main():
         if "GULP" in want:
             try:
                 pts, polys = parse_gulp(bodies["GULP"][1])
-                print(name, "GULP OK", len(pts), "points,", len(polys), "polys:", [(a, len(p), t, nm) for a, p, t, nm in polys][:6])
+                print(
+                    name,
+                    "GULP OK",
+                    len(pts),
+                    "points,",
+                    len(polys),
+                    "polys:",
+                    [(a, len(p), t, nm) for a, p, t, nm in polys][:6],
+                )
             except Exception as e:  # noqa: BLE001
                 print(name, "GULP FAIL", e)
         if "SKRO" in want:
             try:
                 out = parse_skro(bodies["SKRO"][1])
-                print(name, "SKRO OK", [(o["x"], o["y"], o["dir"], o["flags"], o["P"], o["Q"], o["R"], o["six"], o["name"]) for o in out][:4])
+                print(
+                    name,
+                    "SKRO OK",
+                    [(o["x"], o["y"], o["dir"], o["flags"], o["P"], o["Q"], o["R"], o["six"], o["name"]) for o in out][
+                        :4
+                    ],
+                )
             except Exception as e:  # noqa: BLE001
                 print(name, "SKRO FAIL", e)
         if "ZORG" in want:
             try:
                 out = parse_zorg(bodies["ZORG"][1])
-                print(name, "ZORG OK", [(o["a"], o["b"], o["x"], o["y"], o["dir"], o["flags"], o["P"], o["Q"], o["R"]) for o in out][:8])
+                print(
+                    name,
+                    "ZORG OK",
+                    [(o["a"], o["b"], o["x"], o["y"], o["dir"], o["flags"], o["P"], o["Q"], o["R"]) for o in out][:8],
+                )
             except Exception as e:  # noqa: BLE001
                 print(name, "ZORG FAIL", e)
         if "CAVE" in want:
@@ -138,7 +157,14 @@ def main():
             print(name, "CAVE", struct.unpack_from("<H", b)[0], len(b), hexs(b[2:]))
         if "HIRN" in want:
             g = parse_hirn(bodies["HIRN"][1])
-            print(name, "HIRN", {k: (v[0], len(v[1]), struct.unpack_from("<H", v[1])[0] if len(v[1]) >= 2 else None) for k, v in g.items()})
+            print(
+                name,
+                "HIRN",
+                {
+                    k: (v[0], len(v[1]), struct.unpack_from("<H", v[1])[0] if len(v[1]) >= 2 else None)
+                    for k, v in g.items()
+                },
+            )
             for k in ("BUSH", "NLIP"):
                 if k in g and len(g[k][1]) > 2:
                     print("   ", k, hexs(g[k][1][:200]))

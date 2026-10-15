@@ -3,7 +3,9 @@
 Layout (docs/formats/sprites.md): page = u16 count + count * 4 RGB565 pixels; a frame stream is
 ceil(w/4)*h u16 symbols, each a 4x1 run; colour 0x07C0 is transparent.
 """
+
 import sys, os, struct
+
 sys.path.insert(0, os.path.dirname(__file__))
 import numpy as np
 from spritebank import Bank, rgb565_to_rgb8, write_png
@@ -38,10 +40,11 @@ def decode_span_frame(b, i):
     px = np.full((h, w), KEY, dtype=np.uint16)
     p = 0
     for y in range(h):
-        a, e = int(s[p]), int(s[p + 1]); p += 2
+        a, e = int(s[p]), int(s[p + 1])
+        p += 2
         if e == 0xFFFF:
             continue
-        px[y, a:e + 1] = s[p:p + e - a + 1]
+        px[y, a : e + 1] = s[p : p + e - a + 1]
         p += e - a + 1
     assert p == len(s)
     return px

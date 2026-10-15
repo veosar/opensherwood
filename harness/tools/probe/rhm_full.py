@@ -3,6 +3,7 @@
 Usage: python rhm_full.py <dir-or-file> [--stats] [--json FILE]
 Parses every chunk of every file, asserts exact consumption and prints a summary or failures.
 """
+
 import collections
 import glob
 import json
@@ -125,7 +126,18 @@ def rec_toto(r):
 
 
 def rec_boom(r):
-    d = dict(x=r.u16(), y=r.u16(), i16a=r.i16(), u16b=r.u16(), u16c=r.u16(), u16d=r.u16(), u16e=r.u16(), P=r.i16(), Q=r.u16(), R=r.u16())
+    d = dict(
+        x=r.u16(),
+        y=r.u16(),
+        i16a=r.i16(),
+        u16b=r.u16(),
+        u16c=r.u16(),
+        u16d=r.u16(),
+        u16e=r.u16(),
+        P=r.i16(),
+        Q=r.u16(),
+        R=r.u16(),
+    )
     d["sprite"] = r.pstr()
     d["label"] = r.pstr()
     d["X"] = r.u32()
@@ -149,7 +161,7 @@ def parse_boyz(b):
         if tag != "MEOW":
             fn = RECS[tag]
             recs = [fn(g) for _ in range(n)]
-        assert g.done(), f"{tag} left {len(gb)-g.p}"
+        assert g.done(), f"{tag} left {len(gb) - g.p}"
         groups.append(dict(tag=tag, version=ver, count=n, records=recs))
     assert r.done()
     return groups
@@ -185,17 +197,39 @@ def parse_hirn(b):
             for _ in range(n):
                 d = dict(u32=g.u32(), poly=polygon(g))
                 m = g.u16()
-                d["points"] = [dict(x=g.u16(), y=g.u16(), Q=g.u16(), R=g.u16(), flag=g.u8(), val=g.u16()) for _ in range(m)]
+                d["points"] = [
+                    dict(x=g.u16(), y=g.u16(), Q=g.u16(), R=g.u16(), flag=g.u8(), val=g.u16()) for _ in range(m)
+                ]
                 recs.append(d)
         else:
             raise ValueError(tag)
-        assert g.done(), f"{tag} left {len(gb)-g.p}"
+        assert g.done(), f"{tag} left {len(gb) - g.p}"
         out[tag] = dict(version=ver, records=recs)
     assert r.done()
     return out
 
 
-CMD_ARGS = {0: 0, 1: 0, 7: 0, 9: 0, 0x0A: 0, 0x0B: 0, 0x0C: 0, 0x0E: 0, 0x10: 0, 2: 2, 3: 2, 4: 2, 8: 2, 0x0D: 2, 0x0F: 2, 5: 4, 6: 6, 0x81: 4, 0x82: 6}
+CMD_ARGS = {
+    0: 0,
+    1: 0,
+    7: 0,
+    9: 0,
+    0x0A: 0,
+    0x0B: 0,
+    0x0C: 0,
+    0x0E: 0,
+    0x10: 0,
+    2: 2,
+    3: 2,
+    4: 2,
+    8: 2,
+    0x0D: 2,
+    0x0F: 2,
+    5: 4,
+    6: 6,
+    0x81: 4,
+    0x82: 6,
+}
 
 
 def parse_commands(blk):
@@ -225,7 +259,7 @@ def parse_program(blob):
             blk = r.raw(ln)
             blocks.append((pct, blk.hex(), parse_commands(blk)))
         tables.append(dict(id=tid, blocks=blocks))
-    assert r.done(), f"program left {len(blob)-r.p}"
+    assert r.done(), f"program left {len(blob) - r.p}"
     return dict(tables=tables)
 
 
@@ -277,7 +311,9 @@ def parse_ting(b):
         m = f.u16()
         items = []
         for _ in range(m):
-            it = dict(sprite=f.pstr(), anim=f.pstr(), dx=f.i16(), dy=f.i16(), u16=f.u16(), b3=f.raw(3).hex(), poly=polygon(f))
+            it = dict(
+                sprite=f.pstr(), anim=f.pstr(), dx=f.i16(), dy=f.i16(), u16=f.u16(), b3=f.raw(3).hex(), poly=polygon(f)
+            )
             items.append(it)
         assert f.done()
         e["flim"] = dict(version=ver, items=items)
@@ -291,7 +327,7 @@ def parse_ting(b):
         e["x"], e["y"] = r.u16(), r.u16()
         e["u16a"], e["u32b"], e["u16c"], e["u32d"], e["i16e"] = r.u16(), r.u32(), r.u16(), r.u32(), r.i16()
         out.append(e)
-    assert r.done(), f"ting left {len(b)-r.p}"
+    assert r.done(), f"ting left {len(b) - r.p}"
     return out
 
 
@@ -323,7 +359,18 @@ def parse_cave(b):
     return out
 
 
-PARSERS = dict(FOOT=parse_foot, POUF=parse_pouf, BOYZ=parse_boyz, ZORG=parse_zorg, HIRN=parse_hirn, RAIL=parse_rail, SKRO=parse_skro, TING=parse_ting, GULP=parse_gulp, CAVE=parse_cave)
+PARSERS = dict(
+    FOOT=parse_foot,
+    POUF=parse_pouf,
+    BOYZ=parse_boyz,
+    ZORG=parse_zorg,
+    HIRN=parse_hirn,
+    RAIL=parse_rail,
+    SKRO=parse_skro,
+    TING=parse_ting,
+    GULP=parse_gulp,
+    CAVE=parse_cave,
+)
 
 
 def parse_file(data):
@@ -363,7 +410,16 @@ def main():
         for g in m["BOYZ"]["data"]:
             for rec in g["records"]:
                 for k, v in rec.items():
-                    if isinstance(v, (int, str)) and k not in ("x", "y", "name", "sprite", "label", "flags10", "x2", "y2"):
+                    if isinstance(v, (int, str)) and k not in (
+                        "x",
+                        "y",
+                        "name",
+                        "sprite",
+                        "label",
+                        "flags10",
+                        "x2",
+                        "y2",
+                    ):
                         stats[(g["tag"], k)][v] += 1
         for e in m["TING"]["data"]:
             for k in ("u16a", "u32b", "u16c", "u32d", "i16e"):

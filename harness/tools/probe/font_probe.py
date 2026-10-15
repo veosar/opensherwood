@@ -6,6 +6,7 @@ Usage:
 
 Generic: reads only what is given on the command line, embeds no game bytes.
 """
+
 import bz2
 import collections
 import glob
@@ -19,14 +20,18 @@ GLYPH_RECORD = "<HIIii"  # code, x, width, x_adjust, advance_adjust
 
 
 def write_png(path, w, h, rgb):
-    raw = b"".join(b"\0" + bytes(rgb[y * w * 3:(y + 1) * w * 3]) for y in range(h))
+    raw = b"".join(b"\0" + bytes(rgb[y * w * 3 : (y + 1) * w * 3]) for y in range(h))
 
     def chunk(tag, body):
         return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF)
 
     with open(path, "wb") as f:
-        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
-                + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+        f.write(
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b"")
+        )
 
 
 def rgb565(p):
@@ -36,7 +41,7 @@ def rgb565(p):
 
 def read_blob(b, off):
     w, h, comp, size = struct.unpack_from("<HHII", b, off)
-    stream = b[off + 12:off + 12 + size]
+    stream = b[off + 12 : off + 12 + size]
     raw = bz2.decompress(stream) if comp == 2 else zlib.decompress(stream)
     assert len(raw) == w * h * 2, (len(raw), w, h)
     return w, h, struct.unpack("<%dH" % (w * h), raw), off + 12 + size
@@ -54,9 +59,19 @@ def parse_bfn(b):
         off += struct.calcsize(GLYPH_RECORD)
     colour = read_blob(b, off)
     mask = read_blob(b, colour[3])
-    return dict(version=version, name=name, unknown_2e=u2e, cell_height=cell_h, unknown_36=u36,
-                unknown_3a=u3a, spacing=spacing, glyphs=glyphs, colour=colour[:3], mask=mask[:3],
-                consumed=mask[3] == len(b))
+    return dict(
+        version=version,
+        name=name,
+        unknown_2e=u2e,
+        cell_height=cell_h,
+        unknown_36=u36,
+        unknown_3a=u3a,
+        spacing=spacing,
+        glyphs=glyphs,
+        colour=colour[:3],
+        mask=mask[:3],
+        consumed=mask[3] == len(b),
+    )
 
 
 def parse_tfn(b):
@@ -105,13 +120,28 @@ def main():
         summary = {k: v for k, v in font.items() if k not in ("glyphs", "colour", "mask")}
         summary["strip"] = font["colour"][:2]
         print(os.path.basename(f), len(b), "bytes", summary)
-        print("  glyphs", len(g), "codes ascending", all(g[i][0] < g[i + 1][0] for i in range(len(g) - 1)),
-              "max x+w", max(e[1] + e[2] for e in g), "x_adjust", collections.Counter(e[3] for e in g),
-              "advance_adjust", collections.Counter(e[4] for e in g))
+        print(
+            "  glyphs",
+            len(g),
+            "codes ascending",
+            all(g[i][0] < g[i + 1][0] for i in range(len(g) - 1)),
+            "max x+w",
+            max(e[1] + e[2] for e in g),
+            "x_adjust",
+            collections.Counter(e[3] for e in g),
+            "advance_adjust",
+            collections.Counter(e[4] for e in g),
+        )
         print("  x pitch", collections.Counter(g[i + 1][1] - g[i][1] for i in range(1, len(g) - 1)).most_common(3))
         mask_hist = collections.Counter(font["mask"][2])
-        print("  mask distinct", len(mask_hist), "top", [(hex(k), v) for k, v in mask_hist.most_common(4)],
-              "colour distinct", len(set(font["colour"][2])))
+        print(
+            "  mask distinct",
+            len(mask_hist),
+            "top",
+            [(hex(k), v) for k, v in mask_hist.most_common(4)],
+            "colour distinct",
+            len(set(font["colour"][2])),
+        )
         if png_dir:
             layers_png(os.path.join(png_dir, os.path.basename(f).split(".")[0] + "_layers.png"), font)
     for f in sorted(glob.glob(os.path.join(d, "*.tfn"))):

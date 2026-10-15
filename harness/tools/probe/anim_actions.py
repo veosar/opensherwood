@@ -16,6 +16,7 @@ Usage:
 Layout facts used: docs/formats/sprite-animations.md (blocks of 16, `unknown_0x0c` = action id, the
 timing word split into a tick half and an advance half, the per-animation displacement).
 """
+
 import collections
 import glob
 import os
@@ -39,8 +40,11 @@ def blocks(path):
         ticks = [f["duration"] & 0xFFFF for f in fr]
         adv = [(f["duration"] >> 16) for f in fr]
         adv = [x - 65536 if x >= 32768 else x for x in adv]
-        out.append(dict(id=a["u0c"], n=len(fr), ticks=ticks, adv=adv,
-                        disp=(a["u04"] - ORIGIN, a["u08"] - ORIGIN), u02=a["u02"]))
+        out.append(
+            dict(
+                id=a["u0c"], n=len(fr), ticks=ticks, adv=adv, disp=(a["u04"] - ORIGIN, a["u08"] - ORIGIN), u02=a["u02"]
+            )
+        )
     return out
 
 
@@ -50,8 +54,10 @@ def table(d, names, ids):
         for b in blocks(os.path.join(d, name + ".rhs")):
             if ids and b["id"] not in ids:
                 continue
-            print(f"id={b['id']:3d} n={b['n']:2d} ticks={sum(b['ticks']):3d} {b['ticks']} "
-                  f"adv={sum(b['adv']):4d} {b['adv']} disp={b['disp']} u02={b['u02']}")
+            print(
+                f"id={b['id']:3d} n={b['n']:2d} ticks={sum(b['ticks']):3d} {b['ticks']} "
+                f"adv={sum(b['adv']):4d} {b['adv']} disp={b['disp']} u02={b['u02']}"
+            )
 
 
 def families(d):
@@ -110,17 +116,17 @@ def main(argv):
     ids = set()
     if "--ids" in argv:
         k = argv.index("--ids")
-        ids = {int(x) for x in argv[k + 1:]}
+        ids = {int(x) for x in argv[k + 1 :]}
         argv = argv[:k]
     if "--table" in argv:
-        table(d, argv[argv.index("--table") + 1:], ids)
+        table(d, argv[argv.index("--table") + 1 :], ids)
     elif "--families" in argv:
         families(d)
     elif "--matrix" in argv:
-        matrix(d, argv[argv.index("--matrix") + 1:], ids)
+        matrix(d, argv[argv.index("--matrix") + 1 :], ids)
     elif "--sheet" in argv:
         k = argv.index("--sheet")
-        sheet(d, argv[k + 1], argv[k + 2], int(argv[k + 3]), [int(x) for x in argv[k + 4:]])
+        sheet(d, argv[k + 1], argv[k + 2], int(argv[k + 3]), [int(x) for x in argv[k + 4 :]])
     else:
         print(__doc__)
 

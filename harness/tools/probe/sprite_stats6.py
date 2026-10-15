@@ -1,12 +1,15 @@
 """Page-0xFFFF frames: print small non-trivial streams, then test RLE hypotheses on all of them."""
+
 import sys, os
+
 sys.path.insert(0, os.path.dirname(__file__))
 import numpy as np
 from spritebank import Bank
 
 b = Bank()
 idx = b.frames_of_page(0xFFFF)
-w = b.width[idx].astype(np.int64); h = b.height[idx].astype(np.int64)
+w = b.width[idx].astype(np.int64)
+h = b.height[idx].astype(np.int64)
 area = w * h
 order = np.argsort(area, kind="stable")
 shown = 0
@@ -15,7 +18,7 @@ for k in order:
         continue
     i = idx[k]
     s = b.stream(i)
-    print(f"frame {i:6d} {w[k]:3d}x{h[k]:3d} len {len(s)*2:5d} :", " ".join(f"{v:04x}" for v in s[:48]))
+    print(f"frame {i:6d} {w[k]:3d}x{h[k]:3d} len {len(s) * 2:5d} :", " ".join(f"{v:04x}" for v in s[:48]))
     shown += 1
     if shown >= 25:
         break
@@ -31,11 +34,13 @@ def decode(s, w, h, count_minus_one):
         while x < w:
             if p >= n:
                 return False, p
-            skip = int(s[p]); p += 1
+            skip = int(s[p])
+            p += 1
             x += skip
             if p >= n:
                 return False, p
-            c = int(s[p]); p += 1
+            c = int(s[p])
+            p += 1
             if c == 0xFFFF:
                 x = w
                 break
@@ -48,7 +53,8 @@ def decode(s, w, h, count_minus_one):
 
 
 for cm1 in (True, False):
-    ok = 0; bad = []
+    ok = 0
+    bad = []
     for k in range(len(idx)):
         i = idx[k]
         s = b.stream(i)

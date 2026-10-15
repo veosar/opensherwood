@@ -4,14 +4,24 @@ Usage as a library:
     from rhp_chunks import load_chunks, MAP_SIZES
     chunks = load_chunks(path)   # dict tag -> (version, body_bytes)
 """
+
 import os
 import struct
 import sys
 
 GAME = os.environ.get("OPENSHERWOOD_GAME_DIR") or sys.exit("set OPENSHERWOOD_GAME_DIR to the game directory")
 LEVELS = os.path.join(GAME, "DATA", "Levels")
-MAPS = ["Croisement01", "Croisement02", "Croisement03", "derby", "leicester", "lincoln",
-        "nottingham", "sherwood", "york"]
+MAPS = [
+    "Croisement01",
+    "Croisement02",
+    "Croisement03",
+    "derby",
+    "leicester",
+    "lincoln",
+    "nottingham",
+    "sherwood",
+    "york",
+]
 
 
 def rhp_path(name):
@@ -36,10 +46,10 @@ def walk(body):
     """Yield (tag, version, body) for consecutive chunks in `body`."""
     pos = 0
     while pos + 8 <= len(body):
-        tag = body[pos:pos + 4].decode("latin-1")
+        tag = body[pos : pos + 4].decode("latin-1")
         size = struct.unpack_from("<I", body, pos + 4)[0]
         ver = struct.unpack_from("<I", body, pos + 8)[0]
-        yield tag, ver, body[pos + 12:pos + 8 + size]
+        yield tag, ver, body[pos + 12 : pos + 8 + size]
         pos += 8 + size
     assert pos == len(body), (pos, len(body))
 
@@ -58,10 +68,10 @@ def load_chunks(path):
 def hexdump(b, start=0, n=256, width=16):
     lines = []
     for off in range(start, min(len(b), start + n), width):
-        chunk = b[off:off + width]
+        chunk = b[off : off + width]
         hx = " ".join(f"{c:02x}" for c in chunk)
         asc = "".join(chr(c) if 32 <= c < 127 else "." for c in chunk)
-        lines.append(f"{off:06x}  {hx:<{width*3}}  {asc}")
+        lines.append(f"{off:06x}  {hx:<{width * 3}}  {asc}")
     return "\n".join(lines)
 
 

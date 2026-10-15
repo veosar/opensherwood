@@ -14,6 +14,7 @@ Usage:
   python scb_semantics.py <dir> --messages               message ids sent (natives 43/44/109/110) vs handled
   python scb_semantics.py <dir> --find 25 26 ...         folded lines using the given opcodes (hex), with context
 """
+
 import collections
 import glob
 import os
@@ -193,9 +194,18 @@ def bucket(src):
 
 
 def cmd_natives(files, only=None):
-    per = collections.defaultdict(lambda: dict(n=0, arity=collections.Counter(), ret=0, args=collections.defaultdict(collections.Counter),
-                                              imm=collections.defaultdict(collections.Counter), uses=collections.Counter(), fns=collections.Counter(),
-                                              classes=collections.Counter()))
+    per = collections.defaultdict(
+        lambda: dict(
+            n=0,
+            arity=collections.Counter(),
+            ret=0,
+            args=collections.defaultdict(collections.Counter),
+            imm=collections.defaultdict(collections.Counter),
+            uses=collections.Counter(),
+            fns=collections.Counter(),
+            classes=collections.Counter(),
+        )
+    )
     for f in files:
         _, classes, _ = parse(open(f, "rb").read())
         for cls in classes:
@@ -224,7 +234,9 @@ def cmd_natives(files, only=None):
         if only and nid not in only:
             continue
         p = per[nid]
-        print(f"native {nid}: n={p['n']} arity={dict(p['arity'])} ret_used={p['ret']}/{p['n']} classes={dict(p['classes'])}")
+        print(
+            f"native {nid}: n={p['n']} arity={dict(p['arity'])} ret_used={p['ret']}/{p['n']} classes={dict(p['classes'])}"
+        )
         print(f"   in: {p['fns'].most_common(6)}")
         for k in sorted(p["args"]):
             top = p["args"][k].most_common(6)

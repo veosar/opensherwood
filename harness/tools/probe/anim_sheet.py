@@ -14,6 +14,7 @@ duration word). Layout facts used (docs/formats/sprite-animations.md): a frame i
 Generic: reads only the files named on the command line and OPENSHERWOOD_GAME_DIR; embeds no game bytes;
 never writes into the repository unless told to.
 """
+
 import argparse
 import os
 import struct
@@ -57,7 +58,7 @@ def parse_rhs(path):
     p = 6
     seqs = []
     for _ in range(nseq):
-        name = d[p:p + 32].split(b"\0")[0].decode("latin-1")
+        name = d[p : p + 32].split(b"\0")[0].decode("latin-1")
         nanim, w, h, u26, u2a = struct.unpack_from("<HHHII", d, p + 32)
         p += 46
         anims = []
@@ -82,7 +83,7 @@ def text(img, x, y, s, scale=1):
         for r, row in enumerate(g):
             for c, bit in enumerate(row):
                 if bit == "1":
-                    img[y + r * scale:y + (r + 1) * scale, x + c * scale:x + (c + 1) * scale] = INK
+                    img[y + r * scale : y + (r + 1) * scale, x + c * scale : x + (c + 1) * scale] = INK
         x += 4 * scale
 
 
@@ -102,7 +103,7 @@ def blit(img, rgba, x, y):
     x1, y1 = min(x + w, W), min(y + h, H)
     if x1 <= x0 or y1 <= y0:
         return
-    src = rgba[y0 - y:y1 - y, x0 - x:x1 - x]
+    src = rgba[y0 - y : y1 - y, x0 - x : x1 - x]
     dst = img[y0:y1, x0:x1]
     a = src[..., 3:4].astype(np.uint16)
     dst[..., :3] = ((src[..., :3] * a + dst[..., :3] * (255 - a)) // 255).astype(np.uint8)
@@ -136,8 +137,8 @@ def render_cells(bank, pages, cells, cols, scale, labels):
             rgba = rgba.repeat(scale, axis=0).repeat(scale, axis=1)
         ox, oy = cx + (-minx + 1) * scale, cy + (-miny + 7) * scale
         blit(img, rgba, ox + (r["anchor"][0] - ORIGIN) * scale, oy + (r["anchor"][1] - ORIGIN) * scale)
-        img[oy, ox - 3:ox + 4] = CROSS
-        img[oy - 3:oy + 4, ox] = CROSS
+        img[oy, ox - 3 : ox + 4] = CROSS
+        img[oy - 3 : oy + 4, ox] = CROSS
         text(img, cx + 2, cy + 1, labels[i])
     img[-1, :] = GRID
     img[:, -1] = GRID
@@ -172,7 +173,9 @@ def main():
             img = render_cells(bank, pages, refs, len(refs), a.scale, labels)
             p = os.path.join(a.out_dir, f"{stem}_anim_{n}.png")
             write_png(p, img)
-            print(f"anim {n}: {len(refs)} frames u0c={anims[n]['u0c']} u04/u08={anims[n]['u04']}/{anims[n]['u08']} -> {p}")
+            print(
+                f"anim {n}: {len(refs)} frames u0c={anims[n]['u0c']} u04/u08={anims[n]['u04']}/{anims[n]['u08']} -> {p}"
+            )
         return
 
     if a.blocks:

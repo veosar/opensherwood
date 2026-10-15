@@ -2,6 +2,7 @@
 
 Usage: python rhm_inventory.py <dir-with-rhm-files>
 """
+
 import collections
 import glob
 import os
