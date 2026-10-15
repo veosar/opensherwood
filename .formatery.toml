@@ -1,0 +1,16 @@
+# Formatters applied to staged files in pre-commit. No tombi: it sorts keys and arrays by default (the order of
+# members in Cargo.toml reflects the crate dependency direction, AGENTS.md).
+narzedzia = ["ruff", "oxfmt", "rustfmt"]
+# Skipped: checksummed fixtures (golden_digest.py), agent files and skills (changed only deliberately), agent settings.
+wyklucz = [
+  "harness/fixtures/**",
+  ".claude/**",
+  ".agents/**",
+  ".github/skills/**",
+  ".github/instructions/**",
+  ".github/copilot-instructions.md",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "re/**",
+  "oracle/**",
+]
