@@ -2,11 +2,11 @@
 
 Status: **mostly decoded**. Every chunk's record framing is known and consumed exactly on all 9 files. The
 geometry chunks (`STAT` polygons, `WOAW`, `007 `, `FACE`, `PPPP`, `TEXT`, `DARK`, `FLIM`) are decoded and
-verified by overlay; `FARM`, ` AZ `, `TUPO`, `LOUD` and the second half of `STAT` are only partially understood
+verified by overlay; `FARM`, `AZ`, `TUPO`, `LOUD` and the second half of `STAT` are only partially understood
 and stay raw in the parser (`crates/opensherwood-formats/src/rhp.rs`).
 
 One `.rhp` per location: `sherwood`, `nottingham`, `lincoln`, `york`, `derby`, `leicester`, `Croisement01..03`
-(forest crossroads used by ambush missions). The prerendered background is *not* inside; it is in
+(forest crossroads used by ambush missions). The prerendered background is _not_ inside; it is in
 `Levels/<Variant>/<map>.map` (RGB565 image blob). All 2D coordinates below are pixels of that background,
 origin top-left, `x` to the right, `y` down. Background sizes: Croisement01/03 1408x960, Croisement02 1792x1152,
 Sherwood 1920x1088, Derby 1920x2752, Leicester 3136x1984, Lincoln 2944x2176, Nottingham 2304x3520, York 3136x2318.
@@ -16,40 +16,40 @@ Sherwood 1920x1088, Derby 1920x2752, Leicester 3136x1984, Lincoln 2944x2176, Not
 The file is one chunk: `tag char[4]`, `size u32` (= file size - 8), then a body that starts with `version u32`
 (2) followed by child chunks with the same `tag,size,body` shape; each child body also starts with a `u32`
 version. The engine checks versions ("version %d does not match %d in chunk %s"). All offsets below are relative
-to the child body *after* its version word.
+to the child body _after_ its version word.
 
-| Tag | Version | Content | Parser |
-|---|---|---|---|
-| `SPOK` | 3 | 9-byte header | typed |
-| `STAT` | 2 | boundary of the walkable ground, segments, obstacle polygons, then path graph (undecoded) | typed + raw rest |
-| `TEXT` | 2 | polygons with a kind byte (0..8) | typed |
-| `WOAW` | 3 | layers and 3D "projection areas" | typed |
-| `007 ` | 2 | bonds between projection areas ("007" = Bond) | typed |
-| `FACE` | 2 | foreground occluder masks (trees, rocks, walls) | typed |
-| `FLIM` | 2 | animated background elements (sprite instances) | typed |
-| `FARM` | 4 | buildings (door position, entry points) | raw |
-| ` AZ ` | 2 | records with points; doors/lifts? | raw |
-| `DARK` | 2 | dark zone polygons | typed |
-| `TUPO` | 3 | named "patch" records (`pixel_vert`, `notpatch`); the leading count, with the `FLIM` count, sizes the map's part of the script element table (`scb.md`, Index spaces) | raw, count typed (`Rhp::tupo_count`) |
-| `LOUD` | 2 | sound sources / zones (`RHSoundGeometry`) | raw |
-| `PPPP` | 4 | zone polygons and jump lines | typed |
+| Tag    | Version | Content                                                                                                                                                               | Parser                               |
+| ------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `SPOK` | 3       | 9-byte header                                                                                                                                                         | typed                                |
+| `STAT` | 2       | boundary of the walkable ground, segments, obstacle polygons, then path graph (undecoded)                                                                             | typed + raw rest                     |
+| `TEXT` | 2       | polygons with a kind byte (0..8)                                                                                                                                      | typed                                |
+| `WOAW` | 3       | layers and 3D "projection areas"                                                                                                                                      | typed                                |
+| `007 ` | 2       | bonds between projection areas ("007" = Bond)                                                                                                                         | typed                                |
+| `FACE` | 2       | foreground occluder masks (trees, rocks, walls)                                                                                                                       | typed                                |
+| `FLIM` | 2       | animated background elements (sprite instances)                                                                                                                       | typed                                |
+| `FARM` | 4       | buildings (door position, entry points)                                                                                                                               | raw                                  |
+| `AZ`   | 2       | records with points; doors/lifts?                                                                                                                                     | raw                                  |
+| `DARK` | 2       | dark zone polygons                                                                                                                                                    | typed                                |
+| `TUPO` | 3       | named "patch" records (`pixel_vert`, `notpatch`); the leading count, with the `FLIM` count, sizes the map's part of the script element table (`scb.md`, Index spaces) | raw, count typed (`Rhp::tupo_count`) |
+| `LOUD` | 2       | sound sources / zones (`RHSoundGeometry`)                                                                                                                             | raw                                  |
+| `PPPP` | 4       | zone polygons and jump lines                                                                                                                                          | typed                                |
 
 ## Common framing
 
-* `Point`: `u16 x, u16 y`. `Point3`: `u16 x, u16 y, u16 z` (z = height above the ground plane).
-* `Polyline` / polygon: `u8 id, u16 count, count x Point, u8 id2`. The two id bytes are the same in every map
+- `Point`: `u16 x, u16 y`. `Point3`: `u16 x, u16 y, u16 z` (z = height above the ground plane).
+- `Polyline` / polygon: `u8 id, u16 count, count x Point, u8 id2`. The two id bytes are the same in every map
   for the same list position (e.g. the first `STAT` polygon is always `0x5a ... 0x82`, the first obstacle
   `0xe6 ... 0x42`, then `0x88 ... 0xcd`, `0xbb ... 0x0f`): they are editor-assigned pseudo-random ids, not
   checksums (sum/xor of the list bytes do not match) and not data. They are exposed as `id` / `id2`.
-* Counts are `u16` unless stated.
+- Counts are `u16` unless stated.
 
 ## `SPOK` (9 bytes)
 
-| Offset | Type | Field | Values |
-|---|---|---|---|
-| 0x00 | u32 | `unknown_0x00` | 100 / 86 / 101 (Croisement01..03), 92 (sherwood), 413 derby, 639 leicester, 194 lincoln, 444 nottingham, 916 york; equals the first `u32` of the `FOOT` chunk of missions on that map |
-| 0x04 | u32 | `unknown_0x04` | 1 (forest maps, sherwood) or 0 (towns) |
-| 0x08 | u8 | `unknown_0x08` | 0 |
+| Offset | Type | Field          | Values                                                                                                                                                                                |
+| ------ | ---- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0x00   | u32  | `unknown_0x00` | 100 / 86 / 101 (Croisement01..03), 92 (sherwood), 413 derby, 639 leicester, 194 lincoln, 444 nottingham, 916 york; equals the first `u32` of the `FOOT` chunk of missions on that map |
+| 0x04   | u32  | `unknown_0x04` | 1 (forest maps, sherwood) or 0 (towns)                                                                                                                                                |
+| 0x08   | u8   | `unknown_0x08` | 0                                                                                                                                                                                     |
 
 ## `STAT` (static geometry)
 
@@ -159,7 +159,7 @@ count x {
 Kinds seen: 1, 2, 3, 4, 5, 6, 7, 8, 0x12, 0x16, 0x17 (7 = two polylines is the most common; 4 = mask only).
 `packed_size` equals the total byte count of the rows. Overlay evidence (Croisement01, all 103 masks): every
 mask lands exactly on a tree trunk, rock or bush of the background and the masks are the parts of the background
-drawn *in front of* sprites. Largest mask 1606x831 (lincoln). Counts: 103, 142, 131, 236, 466, 428, 527, 166,
+drawn _in front of_ sprites. Largest mask 1606x831 (lincoln). Counts: 103, 142, 131, 236, 466, 428, 527, 166,
 828 (file order as above).
 
 ## `FLIM` (animated elements)
@@ -186,15 +186,15 @@ JUMP-ZONE / jump-line). Croisement01: 11 zones, 13 jump lines; sherwood 2 / 1.
 
 ## Raw chunks (layout partially known, not parsed)
 
-* `FARM`: `u16 n`, then records of 37 bytes in Croisement01: `u8 0, u8 1, u16 0, u8 1, u16 0, u8 flag,
+- `FARM`: `u16 n`, then records of 37 bytes in Croisement01: `u8 0, u8 1, u16 0, u8 1, u16 0, u8 flag,
   u8[5] 0, u16 a, u8 0, u8 id, Point door, u16 b, u16 c, Point p1, Point p2, u16 d, u16 e`; the door lies on a
   bond and `p1`/`p2` are just inside it. Sherwood records are 53 bytes (an extra point list); not resolved.
-* ` AZ `: `u16 n`, records of about 40 bytes with a `u16 0x1a/0x1e/0x23...` word, an id byte and three points.
-* `TUPO`: `u16 n`, then `pstring16 short name, pstring16 long name` and a 100-byte record. `n` is
+- `AZ`: `u16 n`, records of about 40 bytes with a `u16 0x1a/0x1e/0x23...` word, an id byte and three points.
+- `TUPO`: `u16 n`, then `pstring16 short name, pstring16 long name` and a 100-byte record. `n` is
   `Rhp::tupo_count()`: the script element table of a level starts with the `FLIM` entries and then these `n`
   patches (`scb.md`, Index spaces; `sherwood-hub.md` 4.1). Counts: Croisement01 6, Croisement02 9,
   Croisement03 9, Derby 7, Nottingham 11, Leicester 16, Lincoln 12, York 10, Sherwood 0.
-* `LOUD`: `u16 n`, then `u32 id, u8 1, u8 kind (1 or 2)` and a variable record ending in `u8 100, u8[6],
+- `LOUD`: `u16 n`, then `u32 id, u8 1, u8 kind (1 or 2)` and a variable record ending in `u8 100, u8[6],
   u32 0xff/0xfb`; kind 2 carries `u16 500, u16 1500` (sound distances?).
 
 ## Provenance

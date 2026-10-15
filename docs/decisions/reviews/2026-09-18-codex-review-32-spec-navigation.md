@@ -53,15 +53,15 @@ The asset check passes. Existing probes consume all nine maps’ `STAT`, `FARM` 
 
 **Implementation clearance:**
 
-| Area | Clearance |
-|---|---|
-| Static formats | Cleared for the established layouts; unread `TUPO`/`PPPP` semantics remain excluded. |
+| Area                    | Clearance                                                                                                                                                                                                      |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Static formats          | Cleared for the established layouts; unread `TUPO`/`PPPP` semantics remain excluded.                                                                                                                           |
 | Corner graph and search | Graph decoding, availability predicate, quadrant rules, corner walks and waypoint ordering cleared independently. Full search integration waits on findings 1, 2 and 5 and the applicable deviation approvals. |
-| Click resolution | Established resolution and cursor rules cleared; deferred patch/jump behavior remains explicitly provisional. |
-| Doors | Admission, native state changes and passage action ordering cleared. The opening waiver fixes the former fallback circularity; original leaf interaction remains unread. |
-| Buildings | Established admission, placement, occupancy and removal semantics cleared. Full execution inherits the movement boundary. |
-| Stairs | Revised gait ordering, endpoints and run-flag rule cleared. Precise execution timing inherits the movement boundary. Original ladder/climb execution remains withheld; stairs substitution is only a fallback. |
-| Movement hand-off | Waypoint delivery, approach-test semantics and navigation-owned crossing state cleared. Complete collision/proximity execution waits on finding 4. |
+| Click resolution        | Established resolution and cursor rules cleared; deferred patch/jump behavior remains explicitly provisional.                                                                                                  |
+| Doors                   | Admission, native state changes and passage action ordering cleared. The opening waiver fixes the former fallback circularity; original leaf interaction remains unread.                                       |
+| Buildings               | Established admission, placement, occupancy and removal semantics cleared. Full execution inherits the movement boundary.                                                                                      |
+| Stairs                  | Revised gait ordering, endpoints and run-flag rule cleared. Precise execution timing inherits the movement boundary. Original ladder/climb execution remains withheld; stairs substitution is only a fallback. |
+| Movement hand-off       | Waypoint delivery, approach-test semantics and navigation-owned crossing state cleared. Complete collision/proximity execution waits on finding 4.                                                             |
 
 Dynamic patches and faithful ladder/climb behavior remain deferred. Scheduling, canonical availability order and numeric-policy approvals remain separate from factual review, as does publication approval.
 

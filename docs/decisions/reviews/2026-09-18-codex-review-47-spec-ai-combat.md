@@ -85,19 +85,19 @@ The automated asset check passes. The order priorities, geometric recognition co
 
 The updated clearance table is:
 
-| Component | Cleared individual contracts | Still withheld |
-|---|---|---|
-| Perception | Previously reviewed lifetimes, caching, staggering, rounding and fixtures | Existing geometry/gate exclusions; placement and memory corrections |
-| Hearing | Previously reviewed noise rules; child-only whistle predicate | Existing oracle discrepancies |
-| State machine | Earlier reviewed transitions, callbacks and guards; beggar’s ranged-weapon predicate | Findings 6–12; remaining reset and acceptance boundaries |
-| Rails | Cursor/opcode rules, cached rolls, waiter ordering; wait and frozen-timer fixture contracts | Colleague synchronization correction; existing search exclusions |
-| Orders | AI-185 movement contract; supported portions of mode/intent dispatch | Findings 1–5; untraced action executors |
-| Combat | Reviewed scoring, decision draws, queued delivery, sweep ownership; corrected AI-166 and four fixtures | Gesture targeting, cadence and admissibility corrections |
-| Energy | Costs, recovery amount, cadence and movement guard; restore-phase fixture | Existing in-fight recovery discrepancy |
-| Knock-out | Thresholds, decay phase, coma behavior and AI-174(c)’s identified allow-flag callers | Reversed body-state meanings; remaining body-action effects |
-| Bow | Reviewed aim boundaries, penetration and immunity behavior | Planning and target corrections; interpolation and record-selection exclusions |
-| Snapshot / replay | Test 16’s eight bounded continuation scenarios | Pending-event, unfinished-sweep and collapsing-cone coverage; consumed-roll counterpart; planned-action state |
-| RNG | Corrected original execution-order account | Proposed stream policy requires ratification; integrated seeded/hash expectations remain withheld |
+| Component         | Cleared individual contracts                                                                           | Still withheld                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| Perception        | Previously reviewed lifetimes, caching, staggering, rounding and fixtures                              | Existing geometry/gate exclusions; placement and memory corrections                                           |
+| Hearing           | Previously reviewed noise rules; child-only whistle predicate                                          | Existing oracle discrepancies                                                                                 |
+| State machine     | Earlier reviewed transitions, callbacks and guards; beggar’s ranged-weapon predicate                   | Findings 6–12; remaining reset and acceptance boundaries                                                      |
+| Rails             | Cursor/opcode rules, cached rolls, waiter ordering; wait and frozen-timer fixture contracts            | Colleague synchronization correction; existing search exclusions                                              |
+| Orders            | AI-185 movement contract; supported portions of mode/intent dispatch                                   | Findings 1–5; untraced action executors                                                                       |
+| Combat            | Reviewed scoring, decision draws, queued delivery, sweep ownership; corrected AI-166 and four fixtures | Gesture targeting, cadence and admissibility corrections                                                      |
+| Energy            | Costs, recovery amount, cadence and movement guard; restore-phase fixture                              | Existing in-fight recovery discrepancy                                                                        |
+| Knock-out         | Thresholds, decay phase, coma behavior and AI-174(c)’s identified allow-flag callers                   | Reversed body-state meanings; remaining body-action effects                                                   |
+| Bow               | Reviewed aim boundaries, penetration and immunity behavior                                             | Planning and target corrections; interpolation and record-selection exclusions                                |
+| Snapshot / replay | Test 16’s eight bounded continuation scenarios                                                         | Pending-event, unfinished-sweep and collapsing-cone coverage; consumed-roll counterpart; planned-action state |
+| RNG               | Corrected original execution-order account                                                             | Proposed stream policy requires ratification; integrated seeded/hash expectations remain withheld             |
 
 **These components do not yet form an implementable whole for playing a mission with the navigation and VM specifications.** The incorrect order/body contracts and unresolved action effects interrupt that whole. The eight restore fixtures improve coverage but do not establish integrated replay clearance or mission completion.
 

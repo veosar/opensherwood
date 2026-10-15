@@ -23,22 +23,22 @@ any reasonable time, and every review said so.
    act art. 75-76); the maintainer keeps the acquisition record and the store terms privately; the workflow is
    to be assessed by counsel before a release.
 2. **Two-tier wall, enforced by session separation.**
-   - *Analysts* work in the git-ignored `re/` workspace (Ghidra project, exported decompilation, notes). Their
+   - _Analysts_ work in the git-ignored `re/` workspace (Ghidra project, exported decompilation, notes). Their
      only deliverable is a specification: behaviour in prose and mathematics, state machines, tables of format
      layouts, constants as facts, the semantics of each native by id, the algorithms in the analyst's own words.
      Provenance names the function addresses and the build hash. **Never committed:** decompiler output or its
      paraphrase line by line, pseudocode transcribed from a function, the binary's identifiers, its string table,
      tables of values copied from its memory or data segments, game text.
-   - *Implementers* write original Rust from the specifications. They never open `re/`. A session that has read
+   - _Implementers_ write original Rust from the specifications. They never open `re/`. A session that has read
      decompilation for a subsystem does not implement that subsystem.
-   - *Reviewers* are two distinct roles. A *spec reviewer* may read `re/` and checks a specification (evidence,
+   - _Reviewers_ are two distinct roles. A _spec reviewer_ may read `re/` and checks a specification (evidence,
      transcription, completeness, the expression filter); its output is corrections to the specification only,
-     never code, patches or translated algorithms. An *implementation reviewer* checks code against the cleared
+     never code, patches or translated algorithms. An _implementation reviewer_ checks code against the cleared
      specification and never reads `re/`. One session does not hold both roles for the same subsystem.
      The spec review by the other agent (skill `cross-agent-review`) is a required step of this process, kept
      even where an agent setup otherwise avoids cross-agent review loops; the project does not pin the
      reviewer's model or reasoning effort.
-   - *Handoffs.* Implementer sessions are started fresh (no inherited analyst context, tool output, notes or
+   - _Handoffs._ Implementer sessions are started fresh (no inherited analyst context, tool output, notes or
      memory carrying decompilation), receive only cleared specifications, and route every question back through
      a specification amendment. Exposure is tracked per subsystem in the spec's identity block; `.gitignore` is
      not access control, so implementer briefs forbid `re/` explicitly and exposure through helper routines
@@ -54,23 +54,24 @@ any reasonable time, and every review said so.
    canonical input, with a recorded replay per mission, and no assumption left in a winning path.
 5. **Expression filter** (conservative project policy, not a claim about what is copyrightable):
 
-   | Material | Boundary |
-   |---|---|
-   | Line-by-line paraphrase | Refused, including one instruction or basic block rewritten as one sentence. |
-   | Internal structure | Recovered class layouts, function decomposition, call graphs and branch structure are not prescribed unless a functional or interface requirement demands it. |
-   | Identifiers | Ours are chosen independently; a compatibility token whose exact spelling a file format requires is allowed individually and marked. |
-   | Constants | Individual functional facts with provenance are allowed; reconstructing a copied table as many "constants" is not. |
+   | Material                   | Boundary                                                                                                                                                                                     |
+   | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | Line-by-line paraphrase    | Refused, including one instruction or basic block rewritten as one sentence.                                                                                                                 |
+   | Internal structure         | Recovered class layouts, function decomposition, call graphs and branch structure are not prescribed unless a functional or interface requirement demands it.                                |
+   | Identifiers                | Ours are chosen independently; a compatibility token whose exact spelling a file format requires is allowed individually and marked.                                                         |
+   | Constants                  | Individual functional facts with provenance are allowed; reconstructing a copied table as many "constants" is not.                                                                           |
    | Constant and string tables | Copied content, its ordering and encoded substitutes are refused; a formula that merely re-encodes a curated table does not pass. Tables loaded from data files are named by file and field. |
-   | Algorithms | Required results, state transitions and observable orderings are described; the implementer chooses the organisation. |
+   | Algorithms                 | Required results, state transitions and observable orderings are described; the implementer chooses the organisation.                                                                        |
 
    There is no safe numerical granularity; the reviewer judges each specification against this table.
 
-   *Clarification (2026-09-13, after the campaign review):* a mapping from a data-file field, flag or id to its
+   _Clarification (2026-09-13, after the campaign review):_ a mapping from a data-file field, flag or id to its
    meaning (which flag byte selects which capability, which workshop kind produces which item kind, which
    native id has which semantics) is an **interface fact** the player's files require and is allowed, entry
    by entry, with its data-file provenance, exactly like the native table. What stays refused is a table of
    tuned values that the program carries as content (balance numbers, colour lists, curves) unless the rule
    that generates it is described or the data file it is loaded from is named.
+
 6. **Gate.** `scripts/check_no_assets.py` inspects the index (what a commit records), the outgoing commits of a
    push (`scripts/hooks/pre-push`, installed by `git config core.hooksPath scripts/hooks`) and named drafts
    (`--paths`); it refuses Ghidra project files and directories, exporter signatures and decompiler idioms in

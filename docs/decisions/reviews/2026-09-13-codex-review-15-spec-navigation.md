@@ -14,19 +14,19 @@ Spec reviewer role (ADR-0009), with access to `re/`. Answered in the spec's next
 
 6. **Medium — §8 — replace the inaccurate validation record with reproducible byte checks.** Addresses: `0x00558670`, `0x0051b2a0`. I independently decoded and re-encoded every `STAT` byte on all nine maps, with identical bytes and zero remainder. For two explicitly audited maps, offsets relative to the body after the version are:
 
-   | Boundary | Croisement01 | Lincoln |
-   |---|---:|---:|
-   | Graph header | 2122 | 6770 |
-   | First node, half-open span | 2140–2171 | 6788–6809 |
-   | Edge-count word | 13607 | 26309 |
-   | First edge, half-open span | 13609–13637 | 26311–26339 |
-   | Record-count word | 87473 | 109135 |
-   | First record, half-open span | 87475–87483 | 109137–109145 |
-   | End of body | 108915 | 133005 |
+   | Boundary                     | Croisement01 |       Lincoln |
+   | ---------------------------- | -----------: | ------------: |
+   | Graph header                 |         2122 |          6770 |
+   | First node, half-open span   |    2140–2171 |     6788–6809 |
+   | Edge-count word              |        13607 |         26309 |
+   | First edge, half-open span   |  13609–13637 |   26311–26339 |
+   | Record-count word            |        87473 |        109135 |
+   | First record, half-open span |  87475–87483 | 109137–109145 |
+   | End of body                  |       108915 |        133005 |
 
    The first edge’s cost occupies relative bytes 16–19; its mask occupies 20–23. Costs differ from corner distance by at most approximately 1.414 pixels across the nine maps. Also correct “single bits on forest maps”: combined masks occur, and Nottingham/York have nonzero node masks. All 140 passage approach points are inside their respective sectors; 138 and 133 count only points exclusively inside that side. “Inside neither” does not prove boundary coincidence.
 
-7. **High — native 4, §7.9 — lift doors are included.** Addresses: `0x005716a0`, `0x0057e060`, particularly `0x0057e14c` and `0x0057e342`. The lift loader appends its doors to the same flat list queried by native 4. On all nine maps, `FARM` precedes ` AZ `, so lift doors follow the `FARM` doors. Lincoln therefore has 79 entries after both chunks, not 59. Remove “lift doors are **not** in it”.
+7. **High — native 4, §7.9 — lift doors are included.** Addresses: `0x005716a0`, `0x0057e060`, particularly `0x0057e14c` and `0x0057e342`. The lift loader appends its doors to the same flat list queried by native 4. On all nine maps, `FARM` precedes `AZ`, so lift doors follow the `FARM` doors. Lincoln therefore has 79 entries after both chunks, not 59. Remove “lift doors are **not** in it”.
 
 8. **High — NAV-170 — the door admission table conflates distinct door types.** Address: `0x0051abe0`. Type 0 does not perform the building-capacity test assigned to it. Types 1 and 2 perform entry-side capacity checks, but type 2 rejects the plain soldier subclass that type 1 can admit. The gate/default handling distinguishes civilian locks from soldier locks; “other classes: lock_soldier clear” is too broad. Recheck each supported actor category and crossing direction and replace the incorrect rows with behavioral requirements.
 
@@ -56,7 +56,7 @@ Spec reviewer role (ADR-0009), with access to `re/`. Answered in the spec's next
 
 21. **High — NAV-142; missing execution, acceptance-test, and implementation-choice sections — insufficient implementation contract.** Addresses: `0x005532a0`, `0x004d23d0`, `0x0055aa60`, `0x00561040`, lift handlers `0x0046a900`/`0x00469770`/`0x0046a000`. An implementer still lacks deterministic request scheduling and snapshot rules, precise geometric boundary predicates, complete waypoint arrival, collision/sliding behavior, lift transition timing, patch effects, door interaction, and defined invalid-input handling. There are no synthetic inputs with expected results. Add these, plus clock conversion, numeric precision, RNG ordering, and explicitly approved deviations; copying asynchronous worker timing would conflict with the repository’s determinism contract.
 
-22. **Medium — §7 and earlier format specification — establish explicit precedence.** Addresses: `0x004ef340`, `0x00558670`, `0x00579810`, `0x005787f0`. The comparison with `nav.rs` and `geom.rs` correctly identifies the current flat grid, erosion, and merged walkable areas. However, the earlier spec still presents incompatible material-list, bond-routing, and door-native interpretations. State exactly which claims are superseded. Independent nine-map checks support the proposed `WOAW`, `TEXT`, `007 `, `FARM`, and ` AZ ` framing and their checked references; they do not clear the behavioral errors above.
+22. **Medium — §7 and earlier format specification — establish explicit precedence.** Addresses: `0x004ef340`, `0x00558670`, `0x00579810`, `0x005787f0`. The comparison with `nav.rs` and `geom.rs` correctly identifies the current flat grid, erosion, and merged walkable areas. However, the earlier spec still presents incompatible material-list, bond-routing, and door-native interpretations. State exactly which claims are superseded. Independent nine-map checks support the proposed `WOAW`, `TEXT`, `007 `, `FARM`, and `AZ` framing and their checked references; they do not clear the behavioral errors above.
 
 23. **Blocker — identity block and necessity record — incomplete and overstated.** Address: documentary requirement, ADR-0009 and `SPEC-TEMPLATE.md`. Reviewed [spec-navigation.md](../../original/spec-navigation.md), blob `cc6933a0781477bfd068f1df28b57b9ef2892133`. The executable hash matches. Add identifiable analyst/reviewer sessions, exposure tracking, language/edition, maintainer authorization, and a separate publication-approval field. Replace “Reading stopped when every branch … was explained”: the draft explicitly leaves essential branches unread, and its validation claims contain errors. Cite the earlier unsuccessful investigations and state the actual stopping condition.
 

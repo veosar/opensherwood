@@ -50,22 +50,22 @@ I reviewed committed objects only, treating `dc9f006` as inclusive because the r
 
 10. **[MEDIUM] Documentation and tests overstate completion.** The stealth document contains a duplicate obsolete section with 200/150 radii immediately after the current 250/350 section ([stealth-and-combat.md:442](../../original/stealth-and-combat.md:442), [stealth-and-combat.md:477](../../original/stealth-and-combat.md:477)). The harness example still advertises protocol/ruleset 5 ([harness.md:27](../../harness.md:27)); the roadmap simultaneously says the `;` minimap key is missing and marks incomplete Options as done ([roadmap.md:47](../../roadmap.md:47), [roadmap.md:49](../../roadmap.md:49)). Campaign/lost-page tests force outcomes with `debug.vm` ([test_script.py:410](../../../harness/tests/data/test_script.py:410)), contrary to the canonical-input test rule ([AGENTS.md:31](../../../AGENTS.md:31)).
 
-   **Fix:** remove the obsolete block, update version examples and roadmap states, and drive these flows from a synthetic script/canonical events or a lower-level UI unit fixture.
+**Fix:** remove the obsolete block, update version examples and roadmap states, and drive these flows from a synthetic script/canonical events or a lower-level UI unit fixture.
 
 ## Review-8 closure
 
-| Finding | Status |
-|---|---|
-| 1 taint closure | Open |
-| 2 campaign graph successor | Closed |
-| 3 transactional callbacks/overflow | Closed |
-| 4 AI work budget | Open |
-| 5 campaign money/replay | Open |
-| 6 native result validation | Native half closed; equivalent ordinary-call bypass remains |
-| 7 persistence | Partial |
-| 8 asset-derived history | Open |
-| 9 Select Player protocol | Partial |
-| 10 Options | Partial, as admitted |
-| 11 disposition accuracy | Open because multiple “Done” claims remain false |
+| Finding                            | Status                                                      |
+| ---------------------------------- | ----------------------------------------------------------- |
+| 1 taint closure                    | Open                                                        |
+| 2 campaign graph successor         | Closed                                                      |
+| 3 transactional callbacks/overflow | Closed                                                      |
+| 4 AI work budget                   | Open                                                        |
+| 5 campaign money/replay            | Open                                                        |
+| 6 native result validation         | Native half closed; equivalent ordinary-call bypass remains |
+| 7 persistence                      | Partial                                                     |
+| 8 asset-derived history            | Open                                                        |
+| 9 Select Player protocol           | Partial                                                     |
+| 10 Options                         | Partial, as admitted                                        |
+| 11 disposition accuracy            | Open because multiple “Done” claims remain false            |
 
 `git diff --check dc9f006^..HEAD` passed. I did not run the full suite because the live worktree acquired concurrent uncommitted edits, which would test code outside the requested committed range. The independent review required by [cross-agent-review/SKILL.md](../../../.agents/skills/cross-agent-review/SKILL.md) was attempted, but the Claude process could not connect through the environment firewall.

@@ -20,17 +20,17 @@ Review 40 findings **1, 2, 4, 5, 6 and 8 are closed**. The corrected arithmetic 
 
 The automated asset check and manual **expression filter pass**. The excluded admissibility tables remain excluded; the new corrections prescribe behavioral results and necessary restore state.
 
-| Area | Cleared | Still waiting |
-|---|---|---|
-| Perception | Reviewed lifetimes, caching, staggering, posture rounding and fixed-value fixtures | Excluded geometry, unidentified gates and unverified arithmetic boundaries |
-| Hearing | Noise, margin, deafness and staggering rules | Excluded oracle discrepancies |
-| State machine | Reviewed transitions and ordering; corrected callback payload/value contract and native guards | Section 9.2 exclusions, including reset details, menacing, tower-guard and civilian branches |
-| Rails | Reviewed cursor/opcode rules, cached rolls, waiter order; native 140 styles 0/1 | Restore fixtures, excluded behavior and invalid-style deviation ratification |
-| Orders | AI-185’s bounded movement-order contract | Context dispatch, cancellation, Ctrl queueing and gestures |
-| Combat rolls | Contribution and friendly-target scoring; reviewed indications/counts; queued engagement and pending sweep-candidate ownership | Findings 1–2; exact admissibility remains excluded; cadence unresolved |
-| Energy | Costs, recovery amount/cadence and movement-based guard, including blocked actors | Oracle timing discrepancy |
-| Knock-out | Punch scaling, thresholds, decay phase, coma 300 and conditional NPC-floor predicate | Setter-flag callers, body effects and scripted phase |
-| Bow | Aim boundaries and fixtures; penetration comparison and immunity draw count | Exact interpolation boundaries, record/flag selection and excluded target behavior |
+| Area          | Cleared                                                                                                                        | Still waiting                                                                                |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| Perception    | Reviewed lifetimes, caching, staggering, posture rounding and fixed-value fixtures                                             | Excluded geometry, unidentified gates and unverified arithmetic boundaries                   |
+| Hearing       | Noise, margin, deafness and staggering rules                                                                                   | Excluded oracle discrepancies                                                                |
+| State machine | Reviewed transitions and ordering; corrected callback payload/value contract and native guards                                 | Section 9.2 exclusions, including reset details, menacing, tower-guard and civilian branches |
+| Rails         | Reviewed cursor/opcode rules, cached rolls, waiter order; native 140 styles 0/1                                                | Restore fixtures, excluded behavior and invalid-style deviation ratification                 |
+| Orders        | AI-185’s bounded movement-order contract                                                                                       | Context dispatch, cancellation, Ctrl queueing and gestures                                   |
+| Combat rolls  | Contribution and friendly-target scoring; reviewed indications/counts; queued engagement and pending sweep-candidate ownership | Findings 1–2; exact admissibility remains excluded; cadence unresolved                       |
+| Energy        | Costs, recovery amount/cadence and movement-based guard, including blocked actors                                              | Oracle timing discrepancy                                                                    |
+| Knock-out     | Punch scaling, thresholds, decay phase, coma 300 and conditional NPC-floor predicate                                           | Setter-flag callers, body effects and scripted phase                                         |
+| Bow           | Aim boundaries and fixtures; penetration comparison and immunity draw count                                                    | Exact interpolation boundaries, record/flag selection and excluded target behavior           |
 
 Natives **85, 87, 88, 90, 99, 128, 130, 228, 235 and 240** remain excluded from complete contract clearance. Integrated snapshot/replay/hash behavior awaits the restore fixtures and RNG-policy ratification.
 

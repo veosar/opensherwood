@@ -55,19 +55,19 @@ Reviewed the `d5d7cec` commit object; `HEAD` advanced to `4deba8b` during the au
 
 ## Disposition-row audit
 
-| Row | Result |
-|---|---|
-| 3 | Partial: barrier and 202/203 distinction work; notice integration triggers findings 2 and 5 |
-| 4 | Fail: findings 2 and 3 |
-| 5 | Fail: finding 4 |
-| 6 | Pass |
-| 7 | Pass |
-| 10 | Pass |
-| 11 | Pass for current production paths; finding 8 remains |
-| 12 | Pass for the stated render half |
-| 1 | Fail: finding 1 |
-| 8 | Fail: finding 7 |
-| 14 | Fail: finding 9 |
+| Row | Result                                                                                      |
+| --- | ------------------------------------------------------------------------------------------- |
+| 3   | Partial: barrier and 202/203 distinction work; notice integration triggers findings 2 and 5 |
+| 4   | Fail: findings 2 and 3                                                                      |
+| 5   | Fail: finding 4                                                                             |
+| 6   | Pass                                                                                        |
+| 7   | Pass                                                                                        |
+| 10  | Pass                                                                                        |
+| 11  | Pass for current production paths; finding 8 remains                                        |
+| 12  | Pass for the stated render half                                                             |
+| 1   | Fail: finding 1                                                                             |
+| 8   | Fail: finding 7                                                                             |
+| 14  | Fail: finding 9                                                                             |
 
 Exact-commit `git diff --check` passed, and the asset checker passed despite finding 1. Cargo tests could not start in the read-only environment because Cargo was denied access to `target/debug/.cargo-lock`.
 

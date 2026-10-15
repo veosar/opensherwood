@@ -5,14 +5,14 @@ Status: `profile.cpf` container **verified** (the grammar below consumes the ret
 **established** (see [rhm.md](rhm.md), "Actor profile mapping"); the numeric fields are `unknown_*` with
 observed values. `keyset*.cfg`, `Profiles` and `release.log` remain **stub**.
 
-This document describes the *layout* of the file and the *rules* for using it. It deliberately does not
+This document describes the _layout_ of the file and the _rules_ for using it. It deliberately does not
 reproduce the table contents (sprite names, designer labels, voice codes): the engine reads them from the
 player's own `profile.cpf` at run time, and copying them here would put game data into the repository
 (`docs/legal.md`). Where a role is given for an index range it is a description in our own words.
 
 ## `profile.cpf`
 
-30,441 bytes, no magic. `cpf` is a table of *profiles*: the ten player characters, the 68 armed
+30,441 bytes, no magic. `cpf` is a table of _profiles_: the ten player characters, the 68 armed
 non-player humans, the 63 campaign levels and the 24 civilians, plus numeric tables in front. The mission
 files reference the actor tables by 0-based position (`BORG.profile`, `OILE.profile`, `TOTO.profile`); the
 level table maps the two-letter level codes of `Text/RHLevel??.red` to `.rhm` files, maps and music.
@@ -33,11 +33,11 @@ u32  n_cv (24)         n_cv x CV
 
 All three actor record kinds start with the same three strings:
 
-| Field | Type | Meaning |
-|---|---|---|
-| sprite | pstring | base name of the sprite profile: `Characters/<sprite>.rhs` (83 distinct files over the 102 entries; all exist) |
-| sequence | pstring | the 32-char sequence name inside that `.rhs` (equal to it for all 102 entries; French) |
-| label | pstring | designer label in French (unit kind plus a colour word for soldiers, a "do not use" marker for spare entries); empty for PCs. Not used by the engine as far as the data shows |
+| Field    | Type    | Meaning                                                                                                                                                                       |
+| -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| sprite   | pstring | base name of the sprite profile: `Characters/<sprite>.rhs` (83 distinct files over the 102 entries; all exist)                                                                |
+| sequence | pstring | the 32-char sequence name inside that `.rhs` (equal to it for all 102 entries; French)                                                                                        |
+| label    | pstring | designer label in French (unit kind plus a colour word for soldiers, a "do not use" marker for spare entries); empty for PCs. Not used by the engine as far as the data shows |
 
 then a kind-specific block that contains the `voice` code (`char[4]`). The code is two letters for the kind
 (`PC` player character, `SD` soldier, `VP` story antagonist, `CV` civilian) plus two letters for the
@@ -54,7 +54,7 @@ CV   = sprite, sequence, label, u8[8] unknown_pre, code voice
 
 **Rule for sprites at run time.** A mission actor's sprite is `Characters/<sprite>.rhs` where `sprite` is
 the first string of the table entry its `profile` index selects (SD for `BORG`, CV for `OILE`, PC for
-`TOTO`). The `sequence` string is the name *inside* that file and is not what the sprite bank is keyed by.
+`TOTO`). The `sequence` string is the name _inside_ that file and is not what the sprite bank is keyed by.
 Player-character slots (`SCOT`) carry no profile; the campaign state decides which PC entry they use.
 
 #### PC table (10 entries; `TOTO.profile` indexes it; the player's team is drawn from it)
@@ -65,7 +65,7 @@ Two entries share one voice set (the hero's two outfits); the other eight have t
 
 `unknown_pre` as `u16[4]`: the first word is 256 for the seven named entries and 0 for the three merry men;
 the other three words are small values (0..=100) that differ per character (ability values; which is which
-is unknown). `unknown_post` starts with a `u16` id that is *not* the table position (a permutation of
+is unknown). `unknown_post` starts with a `u16` id that is _not_ the table position (a permutation of
 1..=10), continues with small `u16` values, the same six `f32` as the SD records (`-6, -3, 6, 3`, then
 `150, 150`) and ends with two `u16` in 50..=200 (100/80 for the hero entries, 50..=200 for the others).
 
@@ -76,22 +76,22 @@ variant order is 00 blue, 01 yellow, 02 orange, 03 red, 04 black, 05 green (the 
 the first `u16` of `unknown_pre` grows by 10 per step from blue to black; green repeats orange). Early
 missions use blue / yellow, the last story mission red / black: the colour is the enemy's strength tier.
 
-| Index | Role (own words) |
-|---|---|
-| 0-5 | halberdier family, six colour tiers (a pole-arm unit) |
-| 6-11 | swordsman family |
-| 12-17 | archer family |
-| 18-23 | officer family |
-| 24-29 | knight-on-foot family |
-| 30-35 | lancer family (the second pole-arm unit) |
-| 36-41 | crossbowman family |
-| 42, 43 | merry-man recruits with bow / with staff (training targets in the camp) |
-| 44 | the camp trainer |
-| 45-51 | hostile green variants of the seven families, one each, in family order (referenced only by `H04_Lei_VL`) |
-| 52, 56-58, 63-64 | spare entries the designers marked as not to be used (0 references from any mission) |
-| 53-55 | mounted knights (yellow, orange, red) |
-| 59-62 | the four armed story antagonists (the manual's named enemies) |
-| 65-67 | special officers (orange, red, black) |
+| Index            | Role (own words)                                                                                          |
+| ---------------- | --------------------------------------------------------------------------------------------------------- |
+| 0-5              | halberdier family, six colour tiers (a pole-arm unit)                                                     |
+| 6-11             | swordsman family                                                                                          |
+| 12-17            | archer family                                                                                             |
+| 18-23            | officer family                                                                                            |
+| 24-29            | knight-on-foot family                                                                                     |
+| 30-35            | lancer family (the second pole-arm unit)                                                                  |
+| 36-41            | crossbowman family                                                                                        |
+| 42, 43           | merry-man recruits with bow / with staff (training targets in the camp)                                   |
+| 44               | the camp trainer                                                                                          |
+| 45-51            | hostile green variants of the seven families, one each, in family order (referenced only by `H04_Lei_VL`) |
+| 52, 56-58, 63-64 | spare entries the designers marked as not to be used (0 references from any mission)                      |
+| 53-55            | mounted knights (yellow, orange, red)                                                                     |
+| 59-62            | the four armed story antagonists (the manual's named enemies)                                             |
+| 65-67            | special officers (orange, red, black)                                                                     |
 
 The sprite of each entry is read from the file; all 68 point at existing `Characters/*.rhs` files, and
 several entries share a sprite (the spare entries and the green variants reuse family sprites).
@@ -102,7 +102,7 @@ change by a fixed step per colour tier inside a family (e.g. a blue halberdier's
 one's 120). Hit points and combat skills is the obvious reading; unverified. `unknown_post` (55 bytes;
 layout re-read on 2026-09-03, `cpf_stats.py`): `u16 w0` (1..15, constant per family), a flag byte (eight
 distinct values in `0xc0..=0xf1`), **four** `u16` (percentages falling with the tier, zero for the green
-spare variants), a `u16` *class id* unique per unit type (`0x0b..=0x14` for the regular kinds,
+spare variants), a `u16` _class id_ unique per unit type (`0x0b..=0x14` for the regular kinds,
 `0x15..=0x1b` for the hostile green variants), `u16 0`, `u16` ranged kind (0, 2, 3 or 4), `u16 0`, `u8 0`,
 `f32[4] = -6, -3, 6, 3`, `u8 1`, `f32[2] = 150, 150` (the 300x300 sprite canvas centre, see
 [sprites.md](sprites.md)), `u16` (`0x40` for most kinds, a small value for the mounted knights and the
@@ -118,7 +118,7 @@ man, 16 and 19..=21 the unarmed versions of the four antagonists, 22 a corpse, 1
 23 a soldier sprite reused as a civilian (`H12_Not_MP`; its label says so). Seven entries (the unarmed PC
 versions, the priest, the minstrel, the corpse, the reused soldier) have an empty voice code.
 
-`unknown_pre` as `(u32, u32)`: the first word is a civilian *kind*: 0 man, 1 woman, 3 child, 4 beggar, 5
+`unknown_pre` as `(u32, u32)`: the first word is a civilian _kind_: 0 man, 1 woman, 3 child, 4 beggar, 5
 notable. The second word is 0 for the tax collector, the two rich civilians and the unarmed friar, 1
 otherwise (meaning unknown).
 
@@ -198,31 +198,31 @@ see Provenance).
 
 SD `unknown_pre` = `u16 p0, p1, p2, p3, p4; u8 pole; u16 q0, q1, q2, q3, q4`:
 
-| Field | Values | Reading | Why |
-|---|---|---|---|
-| `p0` | 30..250; +10 per tier inside a family (blue halberdier 80, blue archer 30, blue officer 130; the four antagonists 250; merry men and trainer 80) | **hit points** | the largest and most uniform column; archers "delicate", lancers "not tough", officers and knights "very tough", antagonists near-immortal |
-| `p1`, `p2` | 0..100 each; +5 per tier (blue halberdier 10 / 40, blue knight 80 / 80, antagonists 100 / 100; `p2` lowest for archers) | melee attack and defence skills (which is which is open; `p2` low for archers = "delicate", high for knights = armour) | vary with tier and family, present for every kind |
-| `p3` | officers only: 80 at blue falling by 20 per tier to 0; 0 elsewhere | officer's chance to send his men rather than fight, fading with rank | the only falling `pre` column; matches the manual's officer note |
-| `p4` | 0 for most kinds; 35..100 for officers, knights on foot and mounted knights (+10 per tier; blue officer 35, blue knight 50), trainer 95, antagonists 100 | **knock-out resistance** | exactly the kinds the manual calls hard / impossible to knock out |
-| `pole` | 1 halberdier, lancer; 0 else | pole weapon (reach; see table A heads) | the two families with the longest reach bands in table A |
-| `q0` | 0 for melee kinds; 30..70 archers and crossbowmen (+10 per tier), 100 the merry man with a bow, 80 the trainer | **ranged skill** | non-zero exactly for the units with a bow / crossbow set in their sprite |
-| `q1`, `q2` | 0..100 each; the steepest tier dependence, +10..20 per tier for the melee kinds (blue halberdier 5 / 10, blue knight 60 / 80), constant 30 / 10 for archers and crossbowmen, 100 / 100 antagonists | melee experience values (parry / counter chances?) that the tier raises for melee kinds only | steepest tier dependence; constant for ranged kinds |
-| `q3` | 0 soldiers, 1 officers, 2 knights / mounted / antagonists / merry men / trainer | a rank or behaviour class | constant per family |
-| `q4` | 0 | - | - |
+| Field      | Values                                                                                                                                                                                             | Reading                                                                                                                | Why                                                                                                                                        |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `p0`       | 30..250; +10 per tier inside a family (blue halberdier 80, blue archer 30, blue officer 130; the four antagonists 250; merry men and trainer 80)                                                   | **hit points**                                                                                                         | the largest and most uniform column; archers "delicate", lancers "not tough", officers and knights "very tough", antagonists near-immortal |
+| `p1`, `p2` | 0..100 each; +5 per tier (blue halberdier 10 / 40, blue knight 80 / 80, antagonists 100 / 100; `p2` lowest for archers)                                                                            | melee attack and defence skills (which is which is open; `p2` low for archers = "delicate", high for knights = armour) | vary with tier and family, present for every kind                                                                                          |
+| `p3`       | officers only: 80 at blue falling by 20 per tier to 0; 0 elsewhere                                                                                                                                 | officer's chance to send his men rather than fight, fading with rank                                                   | the only falling `pre` column; matches the manual's officer note                                                                           |
+| `p4`       | 0 for most kinds; 35..100 for officers, knights on foot and mounted knights (+10 per tier; blue officer 35, blue knight 50), trainer 95, antagonists 100                                           | **knock-out resistance**                                                                                               | exactly the kinds the manual calls hard / impossible to knock out                                                                          |
+| `pole`     | 1 halberdier, lancer; 0 else                                                                                                                                                                       | pole weapon (reach; see table A heads)                                                                                 | the two families with the longest reach bands in table A                                                                                   |
+| `q0`       | 0 for melee kinds; 30..70 archers and crossbowmen (+10 per tier), 100 the merry man with a bow, 80 the trainer                                                                                     | **ranged skill**                                                                                                       | non-zero exactly for the units with a bow / crossbow set in their sprite                                                                   |
+| `q1`, `q2` | 0..100 each; the steepest tier dependence, +10..20 per tier for the melee kinds (blue halberdier 5 / 10, blue knight 60 / 80), constant 30 / 10 for archers and crossbowmen, 100 / 100 antagonists | melee experience values (parry / counter chances?) that the tier raises for melee kinds only                           | steepest tier dependence; constant for ranged kinds                                                                                        |
+| `q3`       | 0 soldiers, 1 officers, 2 knights / mounted / antagonists / merry men / trainer                                                                                                                    | a rank or behaviour class                                                                                              | constant per family                                                                                                                        |
+| `q4`       | 0                                                                                                                                                                                                  | -                                                                                                                      | -                                                                                                                                          |
 
 SD `unknown_post` = `u16 w0; u8 flags; u16 s0, s1, s2, s3; u16 class; u16 0; u16 ranged_kind; u16 0; u8 0;
 f32[4]; u8 1; f32[2]; u16 t; u32 a, b`:
 
-| Field | Values | Reading | Why |
-|---|---|---|---|
-| `w0` | 1..15, constant per family and rising with the unit's strength (merry men 1, pole-arms 3, officers 7, mounted knights 15) | a value / danger rating of the unit | constant per family, ordered by strength |
-| `flags` | bit 0 set on every mission-usable enemy and the hostile green variants, clear on the merry men and the unused green spares; bits 1-2 on the mounted knights only; bit 3 on the antagonists only; bits 4-5 on subsets of the foot-soldier families | bit 0 = hostile; bit 3 = principal enemy (duel only); bits 1-2 = mounted; bits 4-5 unknown (4: stays at post?) | value sets |
-| `s0..s3` | 0..100 each, falling 5 or 10 per tier; every family has its own zero / non-zero pattern (blue halberdier `(0, 0, 75, 25)`, blue archer `(100, 0, 0, 50)`, the trainer all 100, merry men and antagonists all 0) | **stimulus susceptibility** in percent: purse, apple, beer, whistle | matches the manual's stimulus table in 29 of 32 cells (purse and beer in all eight kinds; the family-by-family match is stealth-and-combat.md section 5); `inferred`, medium-high |
-| `class` | `0x0b..=0x14`, one per regular unit type (shared by the units of one type, e.g. archers, the merry man with a bow and the trainer); `0x15..=0x1b` the seven hostile green kinds | combat class = table A block index + 1 | 27 = 10 PC ids + 17 class ids, exact |
-| `ranged_kind` | 3 archers, 4 crossbowmen, 2 merry man with bow, 0 else | projectile weapon kind | non-zero only with `q0` |
-| `t` | 0x40; 3 mounted; 10 antagonists | unknown | - |
-| `a` | 0..3, constant per family (0 the ranged kinds and the merry men, 3 the two pole-arm families, 2 the knights) | melee weapon kind (0 none, 1 sword, 2 two-handed, 3 pole) | the knights' two-handed sword, the pole arms |
-| `b` | 0..2, constant per family (0 archers, lancers, merry men; 2 halberdiers, knights, mounted knights) | armour (0 none, 1 mail or shield, 2 plate) | archers "delicate", lancers "peasants", crossbowmen "chain mail", cavalry "heavy armour" |
+| Field         | Values                                                                                                                                                                                                                                            | Reading                                                                                                        | Why                                                                                                                                                                               |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `w0`          | 1..15, constant per family and rising with the unit's strength (merry men 1, pole-arms 3, officers 7, mounted knights 15)                                                                                                                         | a value / danger rating of the unit                                                                            | constant per family, ordered by strength                                                                                                                                          |
+| `flags`       | bit 0 set on every mission-usable enemy and the hostile green variants, clear on the merry men and the unused green spares; bits 1-2 on the mounted knights only; bit 3 on the antagonists only; bits 4-5 on subsets of the foot-soldier families | bit 0 = hostile; bit 3 = principal enemy (duel only); bits 1-2 = mounted; bits 4-5 unknown (4: stays at post?) | value sets                                                                                                                                                                        |
+| `s0..s3`      | 0..100 each, falling 5 or 10 per tier; every family has its own zero / non-zero pattern (blue halberdier `(0, 0, 75, 25)`, blue archer `(100, 0, 0, 50)`, the trainer all 100, merry men and antagonists all 0)                                   | **stimulus susceptibility** in percent: purse, apple, beer, whistle                                            | matches the manual's stimulus table in 29 of 32 cells (purse and beer in all eight kinds; the family-by-family match is stealth-and-combat.md section 5); `inferred`, medium-high |
+| `class`       | `0x0b..=0x14`, one per regular unit type (shared by the units of one type, e.g. archers, the merry man with a bow and the trainer); `0x15..=0x1b` the seven hostile green kinds                                                                   | combat class = table A block index + 1                                                                         | 27 = 10 PC ids + 17 class ids, exact                                                                                                                                              |
+| `ranged_kind` | 3 archers, 4 crossbowmen, 2 merry man with bow, 0 else                                                                                                                                                                                            | projectile weapon kind                                                                                         | non-zero only with `q0`                                                                                                                                                           |
+| `t`           | 0x40; 3 mounted; 10 antagonists                                                                                                                                                                                                                   | unknown                                                                                                        | -                                                                                                                                                                                 |
+| `a`           | 0..3, constant per family (0 the ranged kinds and the merry men, 3 the two pole-arm families, 2 the knights)                                                                                                                                      | melee weapon kind (0 none, 1 sword, 2 two-handed, 3 pole)                                                      | the knights' two-handed sword, the pole arms                                                                                                                                      |
+| `b`           | 0..2, constant per family (0 archers, lancers, merry men; 2 halberdiers, knights, mounted knights)                                                                                                                                                | armour (0 none, 1 mail or shield, 2 plate)                                                                     | archers "delicate", lancers "peasants", crossbowmen "chain mail", cavalry "heavy armour"                                                                                          |
 
 PC `unknown_pre` = `u16[4]`: `(256 for the seven named heroes else 0, bow, x, sword)`: the bow column is
 non-zero (10..100, the hero 100) exactly for the three heroes the manual allows to shoot and 0 for the

@@ -6,7 +6,7 @@ AI agent working in this repository must follow the rules in the "Hard rules" se
 ## Summary
 
 OpenSherwood is a clean-room, open-source reimplementation of the game engine behind
-*Robin Hood: The Legend of Sherwood* (Spellbound Entertainment, 2002). It is a new program that
+_Robin Hood: The Legend of Sherwood_ (Spellbound Entertainment, 2002). It is a new program that
 reads the data files of a copy of the game the player already owns. It does not contain, and must
 never contain, any part of the original game: no executable code, no graphics, no sound, no text,
 no maps, no scripts.
@@ -25,7 +25,7 @@ obtained by analysing the files of a legally purchased GOG copy for the purpose 
 2. **Two-tier wall (ADR-0009).** The original executable is decompiled for interoperability by analysts in the
    private `re/` directory (git-ignored). Output of decompilers or disassemblers never enters the repository,
    nor do line-by-line paraphrases, the binary's identifiers or strings, value tables copied from it, or game
-   text. What may be committed is *knowledge*: file format specifications, behaviour descriptions, constants,
+   text. What may be committed is _knowledge_: file format specifications, behaviour descriptions, constants,
    algorithms described in our own words, and tests that check our implementation against observable behaviour
    of the original. Implementers work only from those specifications and never read the decompilation of the
    subsystem they implement. Every spec records how the knowledge was obtained (see "Provenance").
@@ -69,11 +69,11 @@ be assessed by counsel before a public release that includes decompilation-deriv
 ## Legal basis
 
 - European Union: Directive 2009/24/EC, Article 5(3) (observing, studying and testing a program one
-  is entitled to use) and Article 6 (decompilation for interoperability). CJEU C-13/20 *Top System*
+  is entitled to use) and Article 6 (decompilation for interoperability). CJEU C-13/20 _Top System_
   (2021) confirmed decompilation for error correction under Article 5(1).
 - Poland: Ustawa o prawie autorskim i prawach pokrewnych, art. 75 ust. 2-3 (analysis and decompilation
   for interoperability).
-- United States: *Sega v. Accolade* (9th Cir. 1992), *Sony v. Connectix* (9th Cir. 2000);
+- United States: _Sega v. Accolade_ (9th Cir. 1992), _Sony v. Connectix_ (9th Cir. 2000);
   DMCA §1201(f) (reverse engineering for interoperability).
 
 ## If we receive a takedown or cease-and-desist

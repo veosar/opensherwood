@@ -34,11 +34,12 @@ Reviewed revision 3 at `03b413e`, blob `1b65f0bafaa59f6ac4dd704fe7a0c6e4d841df03
 12. **Medium — ground-mark draw count — ANIM-370 — 0051c0d0.** The final sentence still unconditionally says “12 draws.” Starting with an eligible even-counter draw removes the mark on draw **11**; starting odd removes it on draw **12**. Keep six eligible ageing events as the invariant and correct this remaining fixed-duration statement.
 
 13. **High — sibling amendments falsely marked absorbed — §12; ANIM-120, ANIM-240, ANIM-242, ANIM-329 — 00464b20, 00561040, 00560460, 005758d0.** Against the explicitly pinned commits:
-   - VM-231 still says walks arrive within “radius + 5” and does not specify native 51’s deferred freeze admission.
-   - VM-219’s small-map fallback omits the negative-component condition.
-   - NAV-150 still describes intersecting boxes and references obsolete movement claim IDs.
 
-   Restore these as outstanding amendments or pin revisions that actually contain the corrections. “Already absorbed — no action” is inaccurate.
+- VM-231 still says walks arrive within “radius + 5” and does not specify native 51’s deferred freeze admission.
+- VM-219’s small-map fallback omits the negative-component condition.
+- NAV-150 still describes intersecting boxes and references obsolete movement claim IDs.
+
+Restore these as outstanding amendments or pin revisions that actually contain the corrections. “Already absorbed — no action” is inaccurate.
 
 14. **Medium — exposure traceability — identity block — document-wide.** The delegated readers’ missing identities are now acknowledged, but they remain untraceable. Record each delegate separately with any retained handle or archival reference. If recovery is impossible, retain this explicitly as unresolved provenance; attributing their exposure to the parent does not establish their identities.
 

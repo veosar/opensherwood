@@ -3,15 +3,15 @@
 One file per decision, numbered, never rewritten (write a new ADR that supersedes an old one).
 `reviews/` holds the full text of design reviews between the agents that led to these decisions.
 
-| ADR | Decision |
-|---|---|
-| [0001](ADR-0001-rust.md) | Implementation language: Rust |
-| [0002](ADR-0002-presentation.md) | CPU compositor is authoritative; presentation through winit + wgpu |
-| [0003](ADR-0003-clean-room-roles.md) | Analyst / implementer separation for reverse engineering |
-| [0004](ADR-0004-protocol.md) | JSON-RPC 2.0 over stdio, canonical input events, replay and hash schema from M0 |
-| [0005](ADR-0005-name.md) | Project name: OpenSherwood |
-| [0006](ADR-0006-scripting.md) | SCB VM first; one Lua 5.1 interpreter everywhere for mods |
-| [0007](ADR-0007-roadmap.md) | Vertical-slice roadmap, tutorial mission first |
-| [0008](ADR-0008-script-vm-ownership.md) | Script VM, its state and natives live in core; `opensherwood-script` only translates SCB to the core IR |
+| ADR                                                       | Decision                                                                                                                          |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| [0001](ADR-0001-rust.md)                                  | Implementation language: Rust                                                                                                     |
+| [0002](ADR-0002-presentation.md)                          | CPU compositor is authoritative; presentation through winit + wgpu                                                                |
+| [0003](ADR-0003-clean-room-roles.md)                      | Analyst / implementer separation for reverse engineering                                                                          |
+| [0004](ADR-0004-protocol.md)                              | JSON-RPC 2.0 over stdio, canonical input events, replay and hash schema from M0                                                   |
+| [0005](ADR-0005-name.md)                                  | Project name: OpenSherwood                                                                                                        |
+| [0006](ADR-0006-scripting.md)                             | SCB VM first; one Lua 5.1 interpreter everywhere for mods                                                                         |
+| [0007](ADR-0007-roadmap.md)                               | Vertical-slice roadmap, tutorial mission first                                                                                    |
+| [0008](ADR-0008-script-vm-ownership.md)                   | Script VM, its state and natives live in core; `opensherwood-script` only translates SCB to the core IR                           |
 | [0009](ADR-0009-decompilation-driven-reimplementation.md) | Decompilation-driven reimplementation behind a two-tier wall; Rust stays; every hypothesis subsystem rebuilt from a reviewed spec |
-| [0010](ADR-0010-logic-frame.md) | One logic frame of 46.875 ms drives the whole simulation (the original's realised frame); the three-clock model is removed |
+| [0010](ADR-0010-logic-frame.md)                           | One logic frame of 46.875 ms drives the whole simulation (the original's realised frame); the three-clock model is removed        |

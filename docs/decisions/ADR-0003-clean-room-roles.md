@@ -23,7 +23,7 @@ never writes engine code for the subsystem being analysed.
 results and the original game as a black box (playing it, using its console, reading its data files). The
 implementer never reads decompiler output, annotated disassembly or private address maps.
 
-For AI agents this means: static analysis of the executable is done by a *separate agent session* (a subagent or
+For AI agents this means: static analysis of the executable is done by a _separate agent session_ (a subagent or
 a separate Codex/Claude run) whose only deliverable is a spec document. The implementing session works from that
 document. A session that has seen decompiler output does not implement that subsystem.
 

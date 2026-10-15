@@ -86,7 +86,7 @@ Spec reviewer role (ADR-0009), with access to `re/`. Answered in the spec's next
 
     > “its ‘stop’ with reason 6”
 
-    > “*refused* (5) or *cancelled* (6)”
+    > “_refused_ (5) or _cancelled_ (6)”
 
     > “a random-pick routine on entry `k − 1` … then two values set on an object not identified”
 

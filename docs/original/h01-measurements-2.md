@@ -22,15 +22,15 @@ what was learned about them anyway.
 
 ### 1.1 What the pointer shows
 
-| Under the pointer | Pointer | Method |
-|---|---|---|
-| open ground | arrow with a green tail (walk) | `ptr_mud` |
-| a scroll (parchment) | an **open hand**, no badge; the arrow disappears entirely | `ptr_scroll3`, `r1_hover_ko`, `s111_hover` (three scrolls) |
-| a `ZORG` item | the same **hand with a round black badge carrying a digit**: `1` over item 107 at (301,1226) (`unknown_a` 8, `unknown_b` 1), `5` over the arrow pile 103 at (192,1078) (kind 0, `unknown_b` 5), `2` over the arrow pile 100 at (2199,1092) (kind 0, `unknown_b` 2) | `rd_hover_purse`, `rd_hover_arrows`, `k1_hover_arrows` |
-| Robin | the walk arrow (the selection ring under him) | `ptr_robin` |
-| a wall face / unreachable spot | a white-and-red **cross** (the blocked-path sign) | `a1_hover_scroll`, `a2_end` |
-| an enemy while a fight is on | arrow with a red tail | `p2_end` |
-| any spot with Left Alt held | a yellow curved pointer (section 6) | `alt_held` |
+| Under the pointer              | Pointer                                                                                                                                                                                                                                                            | Method                                                     |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| open ground                    | arrow with a green tail (walk)                                                                                                                                                                                                                                     | `ptr_mud`                                                  |
+| a scroll (parchment)           | an **open hand**, no badge; the arrow disappears entirely                                                                                                                                                                                                          | `ptr_scroll3`, `r1_hover_ko`, `s111_hover` (three scrolls) |
+| a `ZORG` item                  | the same **hand with a round black badge carrying a digit**: `1` over item 107 at (301,1226) (`unknown_a` 8, `unknown_b` 1), `5` over the arrow pile 103 at (192,1078) (kind 0, `unknown_b` 5), `2` over the arrow pile 100 at (2199,1092) (kind 0, `unknown_b` 2) | `rd_hover_purse`, `rd_hover_arrows`, `k1_hover_arrows`     |
+| Robin                          | the walk arrow (the selection ring under him)                                                                                                                                                                                                                      | `ptr_robin`                                                |
+| a wall face / unreachable spot | a white-and-red **cross** (the blocked-path sign)                                                                                                                                                                                                                  | `a1_hover_scroll`, `a2_end`                                |
+| an enemy while a fight is on   | arrow with a red tail                                                                                                                                                                                                                                              | `p2_end`                                                   |
+| any spot with Left Alt held    | a yellow curved pointer (section 6)                                                                                                                                                                                                                                | `alt_held`                                                 |
 
 So the badge digit is the record's `unknown_b`, and for arrows it is also what the counter receives
 (1.3): **`unknown_b` is the stack size**, shown before the pick-up (confidence high: three items, three
@@ -74,7 +74,7 @@ Scrolls behave the same way: hand, click, walk, stop, a pause, then the page (1.
   284 px order took 5.2 s = 1 s turn/start + 3.3 s at 85 px/s + the pause, consistent with 8.1 of the
   stealth document. Confidence medium (the pointer sat over the sprite during that recording).
 
-For the engine: no radius rule is needed - the item is taken when the walk *to the item* arrives, i.e.
+For the engine: no radius rule is needed - the item is taken when the walk _to the item_ arrives, i.e.
 when the feet reach the base (arrows) or come within about 20 px (scrolls), plus the stoop delay.
 Whether a walk that merely passes an item takes it: **no** (ar1, r2).
 
