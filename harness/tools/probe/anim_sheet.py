@@ -68,9 +68,9 @@ def parse_rhs(path):
             for _ in range(n):
                 fi, dur, ax, ay, u = struct.unpack_from("<IIHHH", d, p)
                 p += 14
-                frames.append(dict(frame=fi, duration=dur, anchor=(ax, ay), unknown=u))
-            anims.append(dict(u02=u02, u04=u04, u08=u08, u0c=u0c, frames=frames))
-        seqs.append(dict(name=name, w=w, h=h, u26=u26, u2a=u2a, anims=anims))
+                frames.append({"frame": fi, "duration": dur, "anchor": (ax, ay), "unknown": u})
+            anims.append({"u02": u02, "u04": u04, "u08": u08, "u0c": u0c, "frames": frames})
+        seqs.append({"name": name, "w": w, "h": h, "u26": u26, "u2a": u2a, "anims": anims})
     if p != len(d):
         sys.exit(f"{path}: {len(d) - p} trailing bytes")
     return seqs
@@ -187,7 +187,7 @@ def main():
                     cells.append(an["frames"][i])
                     labels.append(f"{b}:{an['u0c']}" if i == 0 else f"{i}:{an['frames'][i]['duration'] & 0xFFFF}")
                 else:
-                    cells.append(dict(frame=0, anchor=(ORIGIN, ORIGIN), duration=0))
+                    cells.append({"frame": 0, "anchor": (ORIGIN, ORIGIN), "duration": 0})
                     labels.append("")
         img = render_cells(bank, pages, cells, cols, a.scale, labels)
         p = os.path.join(a.out_dir, f"{stem}_blocks_{b0}_{b1}_dir{a.dir}.png")

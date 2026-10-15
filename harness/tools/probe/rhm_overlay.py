@@ -21,7 +21,7 @@ def main():
         if label:
             d.text((x + r + 1, y - 6), label, fill=col)
 
-    colours = dict(SCOT="lime", BORG="red", OILE="yellow", TOTO="magenta", BOOM="cyan")
+    colours = {"SCOT": "lime", "BORG": "red", "OILE": "yellow", "TOTO": "magenta", "BOOM": "cyan"}
     for g in m["BOYZ"]["data"]:
         col = colours.get(g["tag"], "white")
         for rec in g["records"]:

@@ -193,9 +193,9 @@ def bucket(src):
 
 
 def cmd_natives(files, only=None):
-    per = collections.defaultdict(lambda: dict(n=0, arity=collections.Counter(), ret=0, args=collections.defaultdict(collections.Counter),
-                                              imm=collections.defaultdict(collections.Counter), uses=collections.Counter(), fns=collections.Counter(),
-                                              classes=collections.Counter()))
+    per = collections.defaultdict(lambda: {"n": 0, "arity": collections.Counter(), "ret": 0, "args": collections.defaultdict(collections.Counter),
+                                              "imm": collections.defaultdict(collections.Counter), "uses": collections.Counter(), "fns": collections.Counter(),
+                                              "classes": collections.Counter()})
     for f in files:
         _, classes, _ = parse(open(f, "rb").read())
         for cls in classes:

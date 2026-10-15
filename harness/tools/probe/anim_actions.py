@@ -39,8 +39,8 @@ def blocks(path):
         ticks = [f["duration"] & 0xFFFF for f in fr]
         adv = [(f["duration"] >> 16) for f in fr]
         adv = [x - 65536 if x >= 32768 else x for x in adv]
-        out.append(dict(id=a["u0c"], n=len(fr), ticks=ticks, adv=adv,
-                        disp=(a["u04"] - ORIGIN, a["u08"] - ORIGIN), u02=a["u02"]))
+        out.append({"id": a["u0c"], "n": len(fr), "ticks": ticks, "adv": adv,
+                        "disp": (a["u04"] - ORIGIN, a["u08"] - ORIGIN), "u02": a["u02"]})
     return out
 
 
@@ -97,7 +97,7 @@ def sheet(d, name, out, scale, ids):
                 cells.append(fr[k])
                 labels.append(str(i) if k == 0 else f"{k}:{fr[k]['duration'] & 0xFFFF}")
             else:
-                cells.append(dict(frame=0, anchor=(ORIGIN, ORIGIN), duration=0))
+                cells.append({"frame": 0, "anchor": (ORIGIN, ORIGIN), "duration": 0})
                 labels.append("")
     bank = Bank()
     img = render_cells(bank, load_pages(bank), cells, cols, scale, labels)

@@ -108,8 +108,8 @@ def main():
     only = {int(x) for x in args[args.index("--id") + 1 :] if x.isdigit()} if "--id" in args else set()
 
     per_file = {}
-    per_id = collections.defaultdict(lambda: dict(files=set(), cbs=collections.Counter(), fns=collections.Counter(),
-                                                  level=0, element=0, n=0))
+    per_id = collections.defaultdict(lambda: {"files": set(), "cbs": collections.Counter(), "fns": collections.Counter(),
+                                                  "level": 0, "element": 0, "n": 0})
     all_counts = collections.Counter()
     for f in files:
         base = os.path.basename(f)[:-4]

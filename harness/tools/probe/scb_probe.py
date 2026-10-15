@@ -48,7 +48,7 @@ def parse(d):
         p += 4
         quads = d[p : p + QUAD * nquads]
         p += QUAD * nquads
-        classes.append(dict(path=path, name=name, nvars=nvars, sizevars=sizevars, vars=vars_, funcs=funcs, nquads=nquads, quads=quads))
+        classes.append({"path": path, "name": name, "nvars": nvars, "sizevars": sizevars, "vars": vars_, "funcs": funcs, "nquads": nquads, "quads": quads})
     return ver, classes, p
 
 

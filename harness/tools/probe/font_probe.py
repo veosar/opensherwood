@@ -54,9 +54,9 @@ def parse_bfn(b):
         off += struct.calcsize(GLYPH_RECORD)
     colour = read_blob(b, off)
     mask = read_blob(b, colour[3])
-    return dict(version=version, name=name, unknown_2e=u2e, cell_height=cell_h, unknown_36=u36,
-                unknown_3a=u3a, spacing=spacing, glyphs=glyphs, colour=colour[:3], mask=mask[:3],
-                consumed=mask[3] == len(b))
+    return {"version": version, "name": name, "unknown_2e": u2e, "cell_height": cell_h, "unknown_36": u36,
+                "unknown_3a": u3a, "spacing": spacing, "glyphs": glyphs, "colour": colour[:3], "mask": mask[:3],
+                "consumed": mask[3] == len(b)}
 
 
 def parse_tfn(b):
@@ -66,7 +66,7 @@ def parse_tfn(b):
     u2e, size = struct.unpack_from("<II", b, 0x2E)
     face = b[0x36:0x56].split(b"\0")[0].decode("latin-1")
     r, g, bl, hi = b[0x56:0x5A]
-    return dict(version=version, name=name, unknown_2e=u2e, size=size, face=face, colour=(r, g, bl), unknown_59=hi)
+    return {"version": version, "name": name, "unknown_2e": u2e, "size": size, "face": face, "colour": (r, g, bl), "unknown_59": hi}
 
 
 def layers_png(path, font, cols=520, scale=2):

@@ -52,7 +52,7 @@ class R:
 
 def header(r):
     """Common element header: x, y, dir, flags, P, Q, R."""
-    return dict(x=r.u16(), y=r.u16(), dir=r.u32(), flags=r.u32(), P=r.i16(), Q=r.u16(), R=r.u16())
+    return {"x": r.u16(), "y": r.u16(), "dir": r.u32(), "flags": r.u32(), "P": r.i16(), "Q": r.u16(), "R": r.u16()}
 
 
 def opt_name(r):
@@ -107,7 +107,7 @@ def polygon(r):
 
 
 def rec_boom(r):
-    d = dict(x=r.u16(), y=r.u16(), i16a=r.i16(), u16b=r.u16(), u32c=r.u32(), u16d=r.u16(), P=r.i16(), Q=r.u16(), R=r.u16())
+    d = {"x": r.u16(), "y": r.u16(), "i16a": r.i16(), "u16b": r.u16(), "u32c": r.u32(), "u16d": r.u16(), "P": r.i16(), "Q": r.u16(), "R": r.u16()}
     d["sprite"] = r.pstr()
     d["label"] = r.pstr()
     d["X"] = r.u32()

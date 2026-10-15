@@ -15,7 +15,7 @@ from scb_probe import QUAD, parse
 
 def main():
     files = sorted(glob.glob(os.path.join(sys.argv[1], "*.scb")))
-    st = collections.defaultdict(lambda: dict(n=0, a=collections.Counter(), b=collections.Counter(), c0=0, cmax=0, cfit=0, cfloat=0, a_low=set(), b_low=set(), c_vals=collections.Counter()))
+    st = collections.defaultdict(lambda: {"n": 0, "a": collections.Counter(), "b": collections.Counter(), "c0": 0, "cmax": 0, "cfit": 0, "cfloat": 0, "a_low": set(), "b_low": set(), "c_vals": collections.Counter()})
     init_ok = init_bad = 0
     call_targets = collections.Counter()
     for f in files:
