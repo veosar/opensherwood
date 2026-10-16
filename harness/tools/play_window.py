@@ -39,7 +39,7 @@ def find_window(pid: int, timeout: float = 20.0) -> int:
     while time.monotonic() < deadline:
         found: list[int] = []
 
-        def visit(hwnd, _):
+        def visit(hwnd, _, found=found):
             if win32gui.IsWindowVisible(hwnd) and win32gui.GetParent(hwnd) == 0:
                 _, owner = win32process.GetWindowThreadProcessId(hwnd)
                 if owner == pid:

@@ -504,7 +504,7 @@ def cmd_messages(files):
 
                 cmp_local = []
 
-                def on_use(src, use, fname=fname):
+                def on_use(src, use, fname=fname, cmp_local=cmp_local):
                     if fname == "ProcessMessage" and use == "op29.c" and src.startswith("imm:"):
                         cmp_local.append(int(src[4:]))
 
