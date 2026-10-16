@@ -88,7 +88,8 @@ def _select_hero(e: Engine) -> tuple[int, int]:
     robin = next(x for x in obs["entities"] if x["kind"] == "player")
     cam = obs["camera"]
     sx, sy = robin["x"] // 256 - cam[0], robin["y"] // 256 - cam[1]
-    assert 0 <= sx < 1024 and 0 <= sy < 768, (sx, sy)
+    assert 0 <= sx < 1024, (sx, sy)
+    assert 0 <= sy < 768, (sx, sy)
     e.step(2, pointer_click(sx, sy, "left"))
     assert e.observe(entities=False)["selected"] is not None
     return sx, sy
@@ -113,11 +114,15 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
         # the page on the briefing parchment.
         assert sc["objectives"] == [{"index": 0, "primary": True, "done": False}]
         assert sc["texts"] == [0]
-        assert sc["sequence_active"] and not sc["mission_won"] and not sc["faulted"]
+        assert sc["sequence_active"]
+        assert not sc["mission_won"]
+        assert not sc["faulted"]
         assert obs["ui"]["screen"] == "briefing"
         vm = e.call("debug.vm")
-        assert vm["present"] and vm["classes"] == 47
-        assert vm["counters"]["faults"] == 0 and vm["counters"]["traps"] == 0
+        assert vm["present"]
+        assert vm["classes"] == 47
+        assert vm["counters"]["faults"] == 0
+        assert vm["counters"]["traps"] == 0
         # Enter dismisses a page (one session tick, the world does not tick); pages 1 and 2 follow each
         # dismissal, the third dismissal ends the sequence and closes the parchment.
         for expected in ([1], [2], []):
@@ -145,7 +150,8 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
             {"policy": 211},
         ]
         sc = e.observe(entities=False)["script"]
-        assert sc["tainted"] is True and sc["assumptions"] == AT_LOAD, sc["assumptions"]
+        assert sc["tainted"] is True, sc["assumptions"]
+        assert sc["assumptions"] == AT_LOAD, sc["assumptions"]
         # Nothing left to dismiss: Enter in the world is not a page dismissal.
         e.step(1, key_press("enter"))
         assert e.observe(entities=False).get("ui") is None
@@ -153,8 +159,10 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
         e.step(600)
         vm = e.call("debug.vm")
         assert vm["counters"]["callbacks"] >= 600
-        assert vm["counters"]["budget_aborts"] == 0 and vm["counters"]["faults"] == 0
-        assert not vm["faulted"] and vm["counters"]["traps"] == 0
+        assert vm["counters"]["budget_aborts"] == 0
+        assert vm["counters"]["faults"] == 0
+        assert not vm["faulted"]
+        assert vm["counters"]["traps"] == 0
         assert vm["counters"]["arity_mismatches"] == {}
         assert not vm["mission_won"]
         sc = e.observe(entities=False)["script"]
@@ -175,8 +183,10 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
             {"unresolved_effect": 59},
             "walk_completion",
         ], sc["assumptions"]
-        assert "sight_cone" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
-        assert vm["fault"] is None and vm["counters"]["transactions_rolled_back"] == 0
+        assert "sight_cone" not in sc["assumptions"]
+        assert "knock_out" not in sc["assumptions"]
+        assert vm["fault"] is None
+        assert vm["counters"]["transactions_rolled_back"] == 0
 
 
 def test_first_mission_script_is_deterministic_across_processes(binary, game_dir, tmp_path):
@@ -197,9 +207,11 @@ def test_seed_changes_the_gameplay_rng_stream(binary, game_dir, tmp_path):
     synthetic corridor's `rng` test (`harness/tests/synthetic/test_determinism.py`)."""
     _, va, oa = _run_first_mission(binary, game_dir, tmp_path, seed=1)
     _, vb, ob = _run_first_mission(binary, game_dir, tmp_path, seed=2)
-    assert oa["rng_draws"] > 0 and ob["rng_draws"] > 0, (oa["rng_draws"], ob["rng_draws"])
+    assert oa["rng_draws"] > 0, (oa["rng_draws"], ob["rng_draws"])
+    assert ob["rng_draws"] > 0, (oa["rng_draws"], ob["rng_draws"])
     assert oa["hashes"]["rng"] != ob["hashes"]["rng"]
-    assert va["rng_draws"] == 0 and vb["rng_draws"] == 0, "H01 draws no script randomness in 600 ticks"
+    assert va["rng_draws"] == 0, "H01 draws no script randomness in 600 ticks"
+    assert vb["rng_draws"] == 0, "H01 draws no script randomness in 600 ticks"
 
 
 def test_mission_replay_round_trip_from_the_first_page(binary, game_dir, tmp_path):
@@ -236,26 +248,35 @@ def test_mission_replay_round_trip_from_the_first_page(binary, game_dir, tmp_pat
         assert final["tick"] == session_ticks - 8
         lines = [json.loads(l) for l in rec["jsonl"].splitlines() if l.strip()]
         header = lines[0]
-        assert header["time"] == "session" and header["scenario"] == {"mission": FIRST_MISSION}
-        assert header["seed"] == 7 and header["viewport"] == [1024, 768]
+        assert header["time"] == "session"
+        assert header["scenario"] == {"mission": FIRST_MISSION}
+        assert header["seed"] == 7
+        assert header["viewport"] == [1024, 768]
         assert set(header["rng_streams"]) == {"gameplay", "script"}
         assert header["content_fingerprint"]
         events = [l for l in lines if l["type"] == "event"]
         assert [x["tick"] for x in events[:6]] == [0, 0, 1, 1, 2, 2], "Enter presses at ticks 0, 1, 2"
-        assert events[0]["kind"] == "key_down" and events[0]["key"] == "enter"
+        assert events[0]["kind"] == "key_down"
+        assert events[0]["key"] == "enter"
         checkpoints = [l for l in lines if l["type"] == "checkpoint"]
-        assert checkpoints[0]["tick"] == 0 and checkpoints[0]["world_tick"] == 0
-        assert checkpoints[-1]["tick"] == session_ticks and checkpoints[-1]["world_tick"] == final["tick"]
-        assert checkpoints[1]["tick"] == 10 and checkpoints[1]["world_tick"] == 7, "the pages lag the world"
+        assert checkpoints[0]["tick"] == 0
+        assert checkpoints[0]["world_tick"] == 0
+        assert checkpoints[-1]["tick"] == session_ticks
+        assert checkpoints[-1]["world_tick"] == final["tick"]
+        assert checkpoints[1]["tick"] == 10, "the pages lag the world"
+        assert checkpoints[1]["world_tick"] == 7, "the pages lag the world"
         assert rec["checkpoints"] == 1 + session_ticks // 10 + 1
         # Screens are in the checkpoints: tick 0 (briefing page) and tick 70 (pause menu, 3 frames in)
         # have session digests and frames of their own; the world-screen checkpoints share one digest.
         by_tick = {c["tick"]: c for c in checkpoints}
-        assert by_tick[70]["frame"] == paused_frame and by_tick[70]["world_tick"] == 63
+        assert by_tick[70]["frame"] == paused_frame
+        assert by_tick[70]["world_tick"] == 63
         assert checkpoints[-1]["frame"] == final_frame
         world_digests = {c["session"] for c in checkpoints if c["tick"] not in (0, 70)}
-        assert len(world_digests) == 1 and by_tick[0]["session"] not in world_digests
-        assert by_tick[70]["session"] not in world_digests and by_tick[70]["session"] != by_tick[0]["session"]
+        assert len(world_digests) == 1
+        assert by_tick[0]["session"] not in world_digests
+        assert by_tick[70]["session"] not in world_digests
+        assert by_tick[70]["session"] != by_tick[0]["session"]
 
         played = e.replay_play(jsonl=rec["jsonl"])
         assert played["first_divergence"] is None, played
@@ -263,7 +284,8 @@ def test_mission_replay_round_trip_from_the_first_page(binary, game_dir, tmp_pat
         assert played["ticks"] == session_ticks
         assert played["hashes"] == final["hashes"]
         after = e.observe(entities=False)
-        assert after["tick"] == final["tick"] and after.get("ui") is None
+        assert after["tick"] == final["tick"]
+        assert after.get("ui") is None
         assert e.capture()["hash"] == final_frame
         # The taint travels with the state: the assumptions are in the `scripts` hash the checkpoints
         # compare, and playback ends with the recording's set (tainted from load, see
@@ -272,7 +294,8 @@ def test_mission_replay_round_trip_from_the_first_page(binary, game_dir, tmp_pat
         assert after["script"]["assumptions"] == final["script"]["assumptions"]
         # The same replay from the file, with divergence reporting off, still matches everything.
         played = e.replay_play(path="replays/h01_from_first_page.jsonl", stop_on_divergence=False)
-        assert played["first_divergence"] is None and played["checkpoints_ok"] == rec["checkpoints"]
+        assert played["first_divergence"] is None
+        assert played["checkpoints_ok"] == rec["checkpoints"]
 
 
 def test_mission_snapshot_restore_continuation(binary, game_dir, tmp_path):
@@ -383,7 +406,9 @@ def test_sherwood_camp_and_outro_load_strictly_and_run(binary, game_dir, tmp_pat
         for name in ("Sherwood", "sherwood"):
             e.reset({"mission": name}, seed=1)
             vm = e.call("debug.vm")
-            assert vm["present"] and vm["classes"] == 31 and vm["elements"] == 116
+            assert vm["present"]
+            assert vm["classes"] == 31
+            assert vm["elements"] == 116
             assert e.call("debug.vm", {"element": 21})["element"] == {"kind": "actor", "entity": 51}
             assert e.call("debug.vm", {"element": 28})["element"]["kind"] == "scroll"
             assert e.call("debug.vm", {"element": 50})["element"]["kind"] == "scroll"
@@ -393,17 +418,24 @@ def test_sherwood_camp_and_outro_load_strictly_and_run(binary, game_dir, tmp_pat
             assert len(vm["scrolls"]) == 23
         e.step(EARLY_TICKS)
         vm = e.call("debug.vm")
-        assert not vm["faulted"] and vm["counters"]["traps"] == 0 and vm["counters"]["faults"] == 0
-        assert not vm["mission_won"] and not vm["mission_lost"]
+        assert not vm["faulted"]
+        assert vm["counters"]["traps"] == 0
+        assert vm["counters"]["faults"] == 0
+        assert not vm["mission_won"]
+        assert not vm["mission_lost"]
         e.reset({"mission": "SherwoodOutro"}, seed=1)
         vm = e.call("debug.vm")
-        assert vm["present"] and vm["classes"] == 11 and vm["elements"] == 73
+        assert vm["present"]
+        assert vm["classes"] == 11
+        assert vm["elements"] == 73
         assert e.call("debug.vm", {"element": 70})["element"] == {"kind": "actor", "entity": 0}
         assert e.call("debug.vm", {"element": 54})["element"]["kind"] == "object"
         assert e.observe(entities=False)["map_size"] == [1920, 1088]
         e.step(EARLY_TICKS)
         vm = e.call("debug.vm")
-        assert not vm["faulted"] and vm["counters"]["traps"] == 0 and vm["counters"]["faults"] == 0
+        assert not vm["faulted"]
+        assert vm["counters"]["traps"] == 0
+        assert vm["counters"]["faults"] == 0
 
 
 def test_starting_money_is_seeded_before_initialize(binary, game_dir, tmp_path):
@@ -478,7 +510,9 @@ def test_clicking_a_scroll_stops_short_of_it_and_pauses_before_its_text(binary, 
         first = reachable[0]
         walk_to(e, first["x"], first["y"] + 10)
         p = e.observe()["entities"][robin_index]
-        assert p["target"] is None and p["pickup"] is None and not e.observe(entities=False).get("ui")
+        assert p["target"] is None
+        assert p["pickup"] is None
+        assert not e.observe(entities=False).get("ui")
         still = next(x for x in e.call("debug.vm", {})["scrolls"] if x["element"] == first["element"])
         assert still["active"], "a walk onto the scroll does not read it"
         taken = []
@@ -520,7 +554,8 @@ def test_clicking_a_scroll_stops_short_of_it_and_pauses_before_its_text(binary, 
                     assert (12 if was_far else 0) <= short <= 26, f"stopped {short:.1f} px short of scroll {s['element']}"
                     assert p["pickup_ticks"] == 15, p
                 if p["pickup"] is None:
-                    assert arrived is not None and t + 1 == arrived + 15, (t + 1, arrived)
+                    assert arrived is not None, (t + 1, arrived)
+                    assert t + 1 == arrived + 15, (t + 1, arrived)
                     break
             else:
                 raise AssertionError(f"the reading of scroll {s['element']} never resolved")

@@ -17,7 +17,8 @@ def test_tutorial_loads_with_its_actors(binary, game_dir):
         assert kinds["guard"] >= 20
         robin = next(x for x in obs["entities"] if x["kind"] == "player")
         assert robin["anim"]["set"] == "RobinHood"
-        assert 0 <= robin["x"] // 256 < 1408 and 0 <= robin["y"] // 256 < 960
+        assert 0 <= robin["x"] // 256 < 1408
+        assert 0 <= robin["y"] // 256 < 960
 
 
 def test_every_mission_file_loads(binary, game_dir):
@@ -75,7 +76,8 @@ def test_walking_into_an_obstacle_stops_and_occluders_hide_the_sprite(binary, ga
         # the river, so the path bends around the tree and ends on the closest reachable ground.
         e.step(1, pointer_click(sx - 260, sy + 40, "left"))
         p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
-        assert p["target"] is not None and len(p["path"]) >= 2, "expected a multi-point path"
+        assert p["target"] is not None, "expected a multi-point path"
+        assert len(p["path"]) >= 2, "expected a multi-point path"
         e.step(700)
         p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
         assert p["target"] is None
@@ -149,7 +151,9 @@ def test_double_click_runs_and_c_s_crouch_and_stand(binary, game_dir):
             if mode == "run":
                 e.step(1, pointer_click(sx - 150, sy + 30, "left"))
             p = _hero(e)
-            assert p["target"] is not None and p["gait"] == mode and p["posture"] == "standing"
+            assert p["target"] is not None
+            assert p["gait"] == mode
+            assert p["posture"] == "standing"
             e.step(20)
             p = _hero(e)
             covered[mode] = abs(p["x"] - start["x"]) + abs(p["y"] - start["y"])
@@ -182,7 +186,8 @@ def test_double_click_runs_and_c_s_crouch_and_stand(binary, game_dir):
         cam = e.observe(entities=False)["camera"]
         e.step(1, pointer_click(p["x"] // 256 - cam[0], p["y"] // 256 - cam[1], "right"))
         p = _hero(e)
-        assert p["target"] is None and e.observe(entities=False)["selected"] is not None
+        assert p["target"] is None
+        assert e.observe(entities=False)["selected"] is not None
         e.step(1, pointer_click(sx + 200, sy, "right"))
         assert e.observe(entities=False)["selected"] is None
 
@@ -266,7 +271,8 @@ def test_running_near_a_soldier_alerts_him_at_once_from_afar(binary, game_dir):
         robin_index = next(i for i, x in enumerate(obs["entities"]) if x["kind"] == "player")
         rx, ry = _pos(obs["entities"][robin_index])
         gi, guard = _nearest_soldier(e)
-        assert guard["ai_state"] == "patrol" and guard["action"] == 0
+        assert guard["ai_state"] == "patrol"
+        assert guard["action"] == 0
         gx, gy = _pos(guard)
         near = math.hypot(gx - rx, gy - ry)
         assert 250 < near < 300, near
@@ -289,18 +295,23 @@ def test_running_near_a_soldier_alerts_him_at_once_from_afar(binary, game_dir):
         assert _entity(e, robin_index)["gait"] == "run"
         # The tick of the double click: the archer heard the run and is already charging.
         g = _entity(e, gi)
-        assert g["ai_state"] == "alerted" and g["heard"] is True, g
-        assert g["gait"] == "run" and g["target"] is not None
-        assert g["last_seen"] is not None and g["alert_origin"] is not None
+        assert g["ai_state"] == "alerted", g
+        assert g["heard"] is True, g
+        assert g["gait"] == "run"
+        assert g["target"] is not None
+        assert g["last_seen"] is not None
+        assert g["alert_origin"] is not None
         assert g["action"] == 151, g["action"]
         states = {"alerted"}
         for _ in range(120):
             e.step(1)
             states.add(_entity(e, gi)["ai_state"])
             assert _entity(e, fi)["ai_state"] == "patrol", "out of earshot"
-        assert "noticed" not in states and "alarm" not in states, states
+        assert "noticed" not in states, states
+        assert "alarm" not in states, states
         vm = e.call("debug.vm")
-        assert not vm["faulted"] and vm["counters"]["traps"] == 0
+        assert not vm["faulted"]
+        assert vm["counters"]["traps"] == 0
         # The taint (ADR-0008, "Hypotheses and taint"): the run's first tick already recorded the
         # steward objective's stub and the tick rate; a soldier alerted through the measured noise
         # channel (`heard`, within the 330 px bound) records no `noise_radius`, whether or not his
@@ -311,7 +322,8 @@ def test_running_near_a_soldier_alerts_him_at_once_from_afar(binary, game_dir):
         sc = e.observe(entities=False)["script"]
         assert sc["tainted"], sc
         assert {"policy": 235} in sc["assumptions"]
-        assert "noise_radius" not in sc["assumptions"] and "knock_out" not in sc["assumptions"]
+        assert "noise_radius" not in sc["assumptions"]
+        assert "knock_out" not in sc["assumptions"]
         # The charge itself records nothing; the five-second timeout and the return destination it
         # stores are the hypothesis (`alert_timeout`, Codex review 10, finding 1).
         assert "alert_timeout" in sc["assumptions"], sc["assumptions"]
@@ -358,7 +370,8 @@ def test_a_heard_charge_records_the_alert_timeout_and_replays_to_the_same_set(bi
         e.step(1, pointer_click(tx - cam[0], ty - cam[1], "left"))
         assert _entity(e, robin_index)["gait"] == "run"
         g = _entity(e, gi)
-        assert g["ai_state"] == "alerted" and g["heard"] is True, g
+        assert g["ai_state"] == "alerted", g
+        assert g["heard"] is True, g
         e.step(120)
         rec = e.replay_stop(path="replays/h01_heard_charge.jsonl")
         final = e.observe(entities=False)
@@ -443,7 +456,8 @@ def test_a_crouched_approach_from_behind_is_not_noticed(binary, game_dir):
         p = _entity(e, robin_index)
         assert abs(_pos(p)[0] - behind[0]) + abs(_pos(p)[1] - behind[1]) < 16
         g = _entity(e, gi)
-        assert g["ai_state"] == "patrol" and g["last_seen"] is None
+        assert g["ai_state"] == "patrol"
+        assert g["last_seen"] is None
 
 
 def test_knock_out_from_behind_puts_the_soldier_out_of_action(binary, game_dir):
@@ -463,8 +477,11 @@ def test_knock_out_from_behind_puts_the_soldier_out_of_action(binary, game_dir):
         elements = obs["script"]["actor_elements"]
         vi = elements.index(87)
         victim = obs["entities"][vi]
-        assert victim["kind"] == "guard" and victim["team"] == "enemy" and victim["ai_state"] == "patrol"
-        assert victim["hp"] > 0 and victim["knockout_resistance"] == 0
+        assert victim["kind"] == "guard"
+        assert victim["team"] == "enemy"
+        assert victim["ai_state"] == "patrol"
+        assert victim["hp"] > 0
+        assert victim["knockout_resistance"] == 0
         vx, vy = _pos(victim)
         c, s = _facing_vector(victim["facing256"])
         # Staging point: 240 px down the corridor (south-west), then the spot 60 px behind him.
@@ -502,15 +519,18 @@ def test_knock_out_from_behind_puts_the_soldier_out_of_action(binary, game_dir):
         assert states == ["patrol", "knocked_down", "lying"], states
         p = _entity(e, robin_index)
         assert p["action"] == 123 or p["ai_state"] == "patrol"
-        assert v["action"] == 47 and v["fell_backward"] is False
+        assert v["action"] == 47
+        assert v["fell_backward"] is False
         e.step(5)
         vm = e.call("debug.vm")
         assert vm["counters"]["out_of_action_true"] > 0, "the script's Hourglass polls native 90 on him"
-        assert not vm["faulted"] and vm["counters"]["traps"] == 0
+        assert not vm["faulted"]
+        assert vm["counters"]["traps"] == 0
         # Native 90 reported the knock-out and the blow consulted `p4`: both hypotheses taint the outcome.
         sc = e.observe(entities=False)["script"]
         assert sc["tainted"], sc
-        assert "knock_out" in sc["assumptions"] and "profile_stats" in sc["assumptions"], sc["assumptions"]
+        assert "knock_out" in sc["assumptions"], sc["assumptions"]
+        assert "profile_stats" in sc["assumptions"], sc["assumptions"]
         # The script reacts: the girl gets a path and the running gait (natives 132 / 140).
         girl = next(x for x in e.observe()["entities"] if x["npc_gait"] == "run")
         assert girl["kind"] == "guard"
@@ -548,7 +568,8 @@ def _halberdier(e):
     ]
     gi, guard = min(soldiers, key=lambda ix: math.hypot(_pos(ix[1])[0] - want[0], _pos(ix[1])[1] - want[1]))
     assert math.hypot(_pos(guard)[0] - want[0], _pos(guard)[1] - want[1]) < 40, (_pos(guard), want)
-    assert guard["hp_max"] == 80 and guard["hp"] == 80, guard
+    assert guard["hp_max"] == 80, guard
+    assert guard["hp"] == 80, guard
     return gi, guard
 
 
@@ -605,15 +626,20 @@ def test_attack_order_closes_in_and_the_fight_starts_with_the_bars(binary, game_
         obs = e.observe()
         robin_index = next(i for i, x in enumerate(obs["entities"]) if x["kind"] == "player")
         robin = obs["entities"][robin_index]
-        assert robin["hp"] == 100 and robin["hp_max"] == 100 and robin["energy"] == 20
-        assert not robin["in_combat"] and robin["foe"] is None
+        assert robin["hp"] == 100
+        assert robin["hp_max"] == 100
+        assert robin["energy"] == 20
+        assert not robin["in_combat"]
+        assert robin["foe"] is None
         gi, guard = _halberdier(e)
-        assert guard["energy"] == 20 and not guard["in_combat"]
+        assert guard["energy"] == 20
+        assert not guard["in_combat"]
         _click_map(e, *_pos(robin))
         _click_actor(e, gi)
         guard = _entity(e, gi)
         p = _entity(e, robin_index)
-        assert p["attack_target"] == guard["id"] and p["target"] is not None
+        assert p["attack_target"] == guard["id"]
+        assert p["target"] is not None
         # Walking: no bars under Robin's feet; the pointer rests on the soldier, whose bars show.
         e.step(5)
         cam = e.observe(entities=False)["camera"]
@@ -628,16 +654,23 @@ def test_attack_order_closes_in_and_the_fight_starts_with_the_bars(binary, game_
             ticks += 1
             assert ticks < 900, "never reached him"
         p, g = _entity(e, robin_index), _entity(e, gi)
-        assert p["ai_state"] == "fighting" and g["ai_state"] == "fighting"
-        assert p["in_combat"] and g["in_combat"]
-        assert p["foe"] == g["id"] and g["foe"] == p["id"]
-        assert p["target"] is None and p["attack_target"] is None and g["target"] is None
+        assert p["ai_state"] == "fighting"
+        assert g["ai_state"] == "fighting"
+        assert p["in_combat"]
+        assert g["in_combat"]
+        assert p["foe"] == g["id"]
+        assert g["foe"] == p["id"]
+        assert p["target"] is None
+        assert p["attack_target"] is None
+        assert g["target"] is None
         d = math.hypot(_pos(p)[0] - _pos(g)[0], _pos(p)[1] - _pos(g)[1])
         # The measured fighting distance is 52 px; the approach stops within one step of it,
         # and a step is 4 - 5 px at the logic frame (ADR-0010).
         assert 45 <= d <= 53, d
-        assert p["action"] == 54 and g["action"] == 54
-        assert p["hp"] == 100 and g["hp"] == 80
+        assert p["action"] == 54
+        assert g["action"] == 54
+        assert p["hp"] == 100
+        assert g["hp"] == 80
         gx, gy = _pos(g)
         assert math.hypot(gx - _pos(guard)[0], gy - _pos(guard)[1]) < 60, "fights near his post"
         # The bars: the pointer moved onto the soldier (no click), his bars bright, Robin's dark.
@@ -659,7 +692,8 @@ def test_attack_order_closes_in_and_the_fight_starts_with_the_bars(binary, game_
         assert _pixel(fight["path"], gsx - 10, gsy + 8) == (255, 0, 0)
         assert _pixel(fight["path"], gsx + 9, gsy + 12) == (0, 200, 255)
         vm = e.call("debug.vm")
-        assert not vm["faulted"] and vm["counters"]["traps"] == 0
+        assert not vm["faulted"]
+        assert vm["counters"]["traps"] == 0
 
 
 def test_the_soldiers_blows_wear_robin_down_to_the_lost_page(binary, game_dir, tmp_path):
@@ -695,7 +729,8 @@ def test_the_soldiers_blows_wear_robin_down_to_the_lost_page(binary, game_dir, t
                 hp = p["hp"]
             if g["energy"] < 20:
                 soldier_spent = True
-                assert g["energy"] == 19 and g["energy_ticks"] > 0
+                assert g["energy"] == 19
+                assert g["energy_ticks"] > 0
             elif soldier_spent:
                 soldier_regained = True
             hp_at[chunk * 30] = p["hp"]
@@ -712,26 +747,31 @@ def test_the_soldiers_blows_wear_robin_down_to_the_lost_page(binary, game_dir, t
         # The cadence: 100 -> about 40 hp after 100 s in the model (2130 logic frames, measured
         # 100 -> 30 in 90 s with a 25-hp blow among the hits); asserted loosely.
         assert 10 <= hp_at[2130] <= 70, hp_at[2130]
-        assert soldier_spent and soldier_regained
+        assert soldier_spent
+        assert soldier_regained
         intervals = [b - a for a, b in zip(hits, hits[1:])]
         mean = sum(intervals) / len(intervals)
         # 5.5 - 11 s between landed hits, in logic frames.
         assert 117 <= mean <= 235, (mean, intervals)
         obs = e.observe()
         p, g = obs["entities"][robin_index], obs["entities"][gi]
-        assert p["hp"] == 0 and not p["alive"] and p["ai_state"] in ("dying", "dead")
+        assert p["hp"] == 0
+        assert not p["alive"]
+        assert p["ai_state"] in ("dying", "dead")
         assert p["action"] in (44, 48), p["action"]
         assert obs["hero_dead"] is True
         assert obs.get("ui", {}).get("screen") == "lost", obs.get("ui")
         # The world is frozen under the page on the tick of the blow: the soldier is unhurt.
-        assert g["alive"] and g["hp"] == 80
+        assert g["alive"]
+        assert g["hp"] == 80
         tick = obs["tick"]
         e.step(3)
         assert e.observe(entities=False)["tick"] == tick, "paused under the lost page"
         sc = obs["script"]
         assert {"attack_policy": "block"} in sc["assumptions"], sc["assumptions"]
         assert "knock_out" not in sc["assumptions"]
-        assert snapshot is not None and hashes_after_snapshot is not None
+        assert snapshot is not None
+        assert hashes_after_snapshot is not None
 
 
 def test_a_reciprocal_fight_replays_with_equal_hashes(binary, game_dir, tmp_path):
@@ -747,14 +787,19 @@ def test_a_reciprocal_fight_replays_with_equal_hashes(binary, game_dir, tmp_path
         e.skip_briefing()
         robin_index, gi = _start_fight(e)
         p, g = _entity(e, robin_index), _entity(e, gi)
-        assert p["ai_state"] == "fighting" and g["ai_state"] == "fighting"
-        assert p["foe"] == g["id"] and g["foe"] == p["id"]
+        assert p["ai_state"] == "fighting"
+        assert g["ai_state"] == "fighting"
+        assert p["foe"] == g["id"]
+        assert g["foe"] == p["id"]
         # Long enough for the soldier's first swings (318 +- 32 ticks apart, two in three landing).
         e.step(400)
         p, g = _entity(e, robin_index), _entity(e, gi)
-        assert p["foe"] == g["id"] and g["foe"] == p["id"], (p["ai_state"], g["ai_state"])
-        assert p["in_combat"] and g["in_combat"]
-        assert p["alive"] and g["hp"] == 80, "Robin's strikes never land; he is worn down slowly"
+        assert p["foe"] == g["id"], (p["ai_state"], g["ai_state"])
+        assert g["foe"] == p["id"], (p["ai_state"], g["ai_state"])
+        assert p["in_combat"]
+        assert g["in_combat"]
+        assert p["alive"], "Robin's strikes never land; he is worn down slowly"
+        assert g["hp"] == 80, "Robin's strikes never land; he is worn down slowly"
         final = e.observe(entities=False)
         rec = e.replay_stop(path="replays/h01_reciprocal_fight.jsonl")
         assert rec["checkpoints"] >= 16, rec["checkpoints"]
@@ -767,8 +812,10 @@ def test_a_reciprocal_fight_replays_with_equal_hashes(binary, game_dir, tmp_path
         assert after["script"]["assumptions"] == final["script"]["assumptions"]
         assert {"attack_policy": "hit_chance"} in after["script"]["assumptions"], after["script"]["assumptions"]
         p, g = _entity(e, robin_index), _entity(e, gi)
-        assert p["foe"] == g["id"] and g["foe"] == p["id"]
-        assert p["ai_state"] == "fighting" and g["ai_state"] == "fighting"
+        assert p["foe"] == g["id"]
+        assert g["foe"] == p["id"]
+        assert p["ai_state"] == "fighting"
+        assert g["ai_state"] == "fighting"
 
 
 def _stroke(e, x, y):
@@ -800,7 +847,8 @@ def test_two_powerful_blows_kill_the_soldier_the_script_polls(binary, game_dir, 
         robin_index = next(i for i, x in enumerate(obs["entities"]) if x["kind"] == "player")
         vi = obs["script"]["actor_elements"].index(87)
         victim = obs["entities"][vi]
-        assert victim["kind"] == "guard" and victim["team"] == "enemy"
+        assert victim["kind"] == "guard"
+        assert victim["team"] == "enemy"
         assert victim["hp"] == victim["hp_max"] == 80
         vx, vy = _pos(victim)
         staging = (vx - 170, vy + 170)
@@ -823,7 +871,8 @@ def test_two_powerful_blows_kill_the_soldier_the_script_polls(binary, game_dir, 
             if _entity(e, vi)["ai_state"] == "alerted":
                 break
         v = _entity(e, vi)
-        assert v["ai_state"] == "alerted" and v["heard"] is True, v["ai_state"]
+        assert v["ai_state"] == "alerted", v["ai_state"]
+        assert v["heard"] is True, v["ai_state"]
         # He is running: the click goes where he is.
         _click_actor(e, vi)
         assert _entity(e, robin_index)["attack_target"] == v["id"]
@@ -832,8 +881,11 @@ def test_two_powerful_blows_kill_the_soldier_the_script_polls(binary, game_dir, 
             if _entity(e, robin_index)["in_combat"]:
                 break
         p, v = _entity(e, robin_index), _entity(e, vi)
-        assert p["in_combat"] and v["in_combat"] and v["foe"] == p["id"], (p["ai_state"], v["ai_state"])
-        assert v["hp"] == 80 and v["ai_state"] == "fighting"
+        assert p["in_combat"], (p["ai_state"], v["ai_state"])
+        assert v["in_combat"], (p["ai_state"], v["ai_state"])
+        assert v["foe"] == p["id"], (p["ai_state"], v["ai_state"])
+        assert v["hp"] == 80
+        assert v["ai_state"] == "fighting"
         assert e.call("debug.vm")["counters"]["out_of_action_true"] == 0
         landed = 0
         strokes = 0
@@ -863,17 +915,25 @@ def test_two_powerful_blows_kill_the_soldier_the_script_polls(binary, game_dir, 
             if not v["alive"]:
                 break
         v = _entity(e, vi)
-        assert landed == 2 and not v["alive"] and v["hp"] == 0, (landed, strokes, v["hp"])
-        assert v["ai_state"] in ("dying", "dead") and v["action"] in (44, 48)
+        assert landed == 2, (landed, strokes, v["hp"])
+        assert not v["alive"], (landed, strokes, v["hp"])
+        assert v["hp"] == 0, (landed, strokes, v["hp"])
+        assert v["ai_state"] in ("dying", "dead")
+        assert v["action"] in (44, 48)
         assert v["fell_backward"] is True, "struck from the front"
         e.step(5)
         vm = e.call("debug.vm")
         assert vm["counters"]["out_of_action_true"] > 0, "native 90 reports him out of action"
-        assert not vm["faulted"] and vm["counters"]["traps"] == 0
+        assert not vm["faulted"]
+        assert vm["counters"]["traps"] == 0
         e.step(80)
         p, v = _entity(e, robin_index), _entity(e, vi)
-        assert v["ai_state"] == "dead" and v["action"] == 48 and not v["in_combat"]
-        assert p["alive"] and not p["in_combat"] and p["ai_state"] == "patrol"
+        assert v["ai_state"] == "dead"
+        assert v["action"] == 48
+        assert not v["in_combat"]
+        assert p["alive"]
+        assert not p["in_combat"]
+        assert p["ai_state"] == "patrol"
         assert not e.observe(entities=False)["hero_dead"]
         sc = e.observe(entities=False)["script"]
         assert {"attack_policy": "hit_chance"} in sc["assumptions"], sc["assumptions"]
@@ -977,12 +1037,18 @@ def test_first_mission_lists_its_items_and_the_tip_scrolls_are_active(binary, ga
         assert active == {"arrows": 3, "pouch": 1}, active
         # The two records the tests act on, by element id: the walkway pile and the steward's purse.
         pile = _element(e, WALKWAY_PILE)
-        assert pile["kind"] == "item" and pile["item_kind"] == "arrows" and items[WALKWAY_PILE]["active"]
+        assert pile["kind"] == "item"
+        assert pile["item_kind"] == "arrows"
+        assert items[WALKWAY_PILE]["active"]
         assert (pile["x"], pile["y"], pile["stack"]) == (items[WALKWAY_PILE]["x"], items[WALKWAY_PILE]["y"], items[WALKWAY_PILE]["stack"])
         purse = _element(e, STEWARDS_PURSE)
-        assert purse["kind"] == "item" and purse["item_kind"] == "purse" and not items[STEWARDS_PURSE]["active"]
+        assert purse["kind"] == "item"
+        assert purse["item_kind"] == "purse"
+        assert not items[STEWARDS_PURSE]["active"]
         scrolls = {s["element"]: s["active"] for s in e.call("debug.vm")["scrolls"]}
-        assert scrolls[113] and scrolls[120] and scrolls[121], scrolls
+        assert scrolls[113], scrolls
+        assert scrolls[120], scrolls
+        assert scrolls[121], scrolls
         robin = _hero(e)
         assert (robin["arrows"], robin["purses"], robin["pickup"], robin["pickup_ticks"]) == (0, 0, None, 0)
 
@@ -1008,11 +1074,14 @@ def test_clicking_an_arrow_pile_walks_robin_there_and_takes_it(binary, game_dir,
         # nothing is taken.
         _click_map(e, x - 14, y)
         robin = _entity(e, robin_index)
-        assert robin["pickup"] is None and robin["target"] is not None
+        assert robin["pickup"] is None
+        assert robin["target"] is not None
         _walk_until_arrived(e, robin_index, 900)
         robin = _entity(e, robin_index)
-        assert abs(_pos(robin)[0] - x) < 40 and abs(_pos(robin)[1] - y) < 40, _pos(robin)
-        assert robin["arrows"] == 0 and _items(e)[WALKWAY_PILE]["active"], "a passing walk takes nothing"
+        assert abs(_pos(robin)[0] - x) < 40, _pos(robin)
+        assert abs(_pos(robin)[1] - y) < 40, _pos(robin)
+        assert robin["arrows"] == 0, "a passing walk takes nothing"
+        assert _items(e)[WALKWAY_PILE]["active"], "a passing walk takes nothing"
         cam = _scroll_to(e, x, y)
         e.capture("item_before.png")
         before = tmp_path / "item_before.png"
@@ -1026,9 +1095,11 @@ def test_clicking_an_arrow_pile_walks_robin_there_and_takes_it(binary, game_dir,
             counter_before = im.convert("RGB").crop((90, 724, 130, 748)).tobytes()
         _click_pickup(e, x, y)
         robin = _entity(e, robin_index)
-        assert robin["pickup"] == WALKWAY_PILE and robin["target"] is not None, robin
+        assert robin["pickup"] == WALKWAY_PILE, robin
+        assert robin["target"] is not None, robin
         assert robin["pickup_ticks"] == 0
-        assert abs(robin["target"][0] / 256 - x) < 2 and abs(robin["target"][1] / 256 - y) < 2
+        assert abs(robin["target"][0] / 256 - x) < 2
+        assert abs(robin["target"][1] / 256 - y) < 2
         # The arrival: the feet within 8 px of the record, the stoop starts.
         for _ in range(200):
             e.step(1)
@@ -1038,21 +1109,27 @@ def test_clicking_an_arrow_pile_walks_robin_there_and_takes_it(binary, game_dir,
         assert robin["target"] is None, "the walk to the pile never ended"
         rx, ry = _pos(robin)
         assert (rx - x) ** 2 + (ry - y) ** 2 <= ITEM_TAKE_RADIUS**2, (rx, ry)
-        assert robin["pickup"] == WALKWAY_PILE and robin["pickup_ticks"] == STOOP_TICKS, robin
-        assert robin["arrows"] == 0 and _items(e)[WALKWAY_PILE]["active"], "not taken before the stoop"
+        assert robin["pickup"] == WALKWAY_PILE, robin
+        assert robin["pickup_ticks"] == STOOP_TICKS, robin
+        assert robin["arrows"] == 0, "not taken before the stoop"
+        assert _items(e)[WALKWAY_PILE]["active"], "not taken before the stoop"
         # Mid-stoop: the pause is authoritative (snapshotted, hashed).
         e.step(STOOP_TICKS // 2)
         robin = _entity(e, robin_index)
-        assert robin["pickup_ticks"] == STOOP_TICKS - STOOP_TICKS // 2 and robin["arrows"] == 0
+        assert robin["pickup_ticks"] == STOOP_TICKS - STOOP_TICKS // 2
+        assert robin["arrows"] == 0
         snap = e.snapshot()
         e.step(STOOP_TICKS - STOOP_TICKS // 2 - 1)
         assert _entity(e, robin_index)["arrows"] == 0, "the last tick of the stoop"
         e.step(1)
         robin = _entity(e, robin_index)
-        assert robin["arrows"] == stack and robin["purses"] == 0, robin
-        assert robin["pickup"] is None and robin["pickup_ticks"] == 0
+        assert robin["arrows"] == stack, robin
+        assert robin["purses"] == 0, robin
+        assert robin["pickup"] is None
+        assert robin["pickup_ticks"] == 0
         it = _items(e)[WALKWAY_PILE]
-        assert it["taken"] and not it["active"], it
+        assert it["taken"], it
+        assert not it["active"], it
         vm = e.call("debug.vm")
         assert "item_pickup" not in vm["assumptions"], "the arrows' take is measured"
         assert vm["money"] == 100, "arrows are not money"
@@ -1069,8 +1146,10 @@ def test_clicking_an_arrow_pile_walks_robin_there_and_takes_it(binary, game_dir,
         h1 = e.step(5)["hashes"]["total"]
         e.restore(snapshot_id=snap["id"])
         robin = _entity(e, robin_index)
-        assert robin["pickup"] == WALKWAY_PILE and robin["pickup_ticks"] == STOOP_TICKS - STOOP_TICKS // 2
-        assert robin["arrows"] == 0 and _items(e)[WALKWAY_PILE]["active"]
+        assert robin["pickup"] == WALKWAY_PILE
+        assert robin["pickup_ticks"] == STOOP_TICKS - STOOP_TICKS // 2
+        assert robin["arrows"] == 0
+        assert _items(e)[WALKWAY_PILE]["active"]
         e.step(STOOP_TICKS - STOOP_TICKS // 2)
         assert _entity(e, robin_index)["arrows"] == stack
         h2 = e.step(5)["hashes"]["total"]
@@ -1092,7 +1171,8 @@ def test_a_pickup_replays_through_the_stoop(binary, game_dir, tmp_path):
         _click_pickup(e, pile["x"], pile["y"])
         assert _entity(e, robin_index)["pickup"] == WALKWAY_PILE
         ticks, arrived = _walk_pickup(e, robin_index, 900)
-        assert arrived is not None and ticks == arrived + STOOP_TICKS, (ticks, arrived)
+        assert arrived is not None, (ticks, arrived)
+        assert ticks == arrived + STOOP_TICKS, (ticks, arrived)
         assert _entity(e, robin_index)["arrows"] == pile["stack"]
         e.step(10)
         total = e.observe(entities=False)["hashes"]["total"]
@@ -1101,7 +1181,8 @@ def test_a_pickup_replays_through_the_stoop(binary, game_dir, tmp_path):
         assert played.get("first_divergence") is None, played
         assert e.observe(entities=False)["hashes"]["total"] == total
         robin = _entity(e, robin_index)
-        assert robin["arrows"] == pile["stack"] and robin["pickup"] is None
+        assert robin["arrows"] == pile["stack"]
+        assert robin["pickup"] is None
         assert _items(e)[WALKWAY_PILE]["taken"]
 
 
@@ -1140,10 +1221,12 @@ def test_robin_on_the_walkway_behind_the_archers_stays_unnoticed(binary, game_di
             o = e.observe()
             for i in near:
                 states.add(o["entities"][i]["ai_state"])
-            assert o["entities"][robin_index]["alive"] and not o["hero_dead"]
+            assert o["entities"][robin_index]["alive"]
+            assert not o["hero_dead"]
         assert states == {"patrol"}, states
         sc = e.observe(entities=False)["script"]
-        assert "sight_cone" not in sc["assumptions"] and "alert_policy" not in sc["assumptions"], sc["assumptions"]
+        assert "sight_cone" not in sc["assumptions"], sc["assumptions"]
+        assert "alert_policy" not in sc["assumptions"], sc["assumptions"]
 
 
 def test_taking_the_stewards_purse_completes_the_third_objective(binary, game_dir, tmp_path):
@@ -1177,7 +1260,8 @@ def test_taking_the_stewards_purse_completes_the_third_objective(binary, game_di
             if objective_added and _items(e)[STEWARDS_PURSE]["active"]:
                 break
         assert objective_added, "the tip scroll did not add objective 3"
-        assert _items(e)[STEWARDS_PURSE]["active"] and _items(e)[104]["active"]
+        assert _items(e)[STEWARDS_PURSE]["active"]
+        assert _items(e)[104]["active"]
         assert not any(o["index"] == 3 and o["done"] for o in sc["objectives"])
         # Click the purse: the walk with the pick-up intent, the stoop, the take, the money and the
         # counter.
@@ -1185,9 +1269,11 @@ def test_taking_the_stewards_purse_completes_the_third_objective(binary, game_di
         _click_pickup(e, purse["x"], purse["y"])
         assert _entity(e, robin_index)["pickup"] == STEWARDS_PURSE
         ticks, arrived = _walk_pickup(e, robin_index, 1800)
-        assert arrived is not None and ticks == arrived + STOOP_TICKS
+        assert arrived is not None
+        assert ticks == arrived + STOOP_TICKS
         robin = _entity(e, robin_index)
-        assert robin["purses"] == 1 and robin["arrows"] == 0, robin
+        assert robin["purses"] == 1, robin
+        assert robin["arrows"] == 0, robin
         vm = e.call("debug.vm")
         assert vm["money"] == money_at_start + 25 * purse["stack"], vm["money"]
         assert _items(e)[STEWARDS_PURSE]["taken"]
@@ -1198,5 +1284,7 @@ def test_taking_the_stewards_purse_completes_the_third_objective(binary, game_di
             if any(o["index"] == 3 and o["done"] for o in sc["objectives"]):
                 break
         assert any(o["index"] == 3 and o["done"] for o in sc["objectives"]), sc["objectives"]
-        assert {"policy": 235} in sc["assumptions"] and "item_pickup" in sc["assumptions"]
-        assert not sc["mission_won"] and not sc["faulted"]
+        assert {"policy": 235} in sc["assumptions"]
+        assert "item_pickup" in sc["assumptions"]
+        assert not sc["mission_won"]
+        assert not sc["faulted"]

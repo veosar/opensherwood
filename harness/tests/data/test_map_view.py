@@ -17,7 +17,8 @@ def test_map_view_renders_background_and_sprites_deterministically(binary, game_
     for run in range(2):
         with Engine(binary=binary, game_dir=game_dir, artifacts=OUT) as e:
             h = e.hello()
-            assert h["content_fingerprint"] and "map_view" in h["capabilities"]
+            assert h["content_fingerprint"]
+            assert "map_view" in h["capabilities"]
             e.reset({"map_view": {"map": "sherwood", "ambiance": "Day"}}, seed=1)
             obs = e.observe()
             assert obs["map_size"] == [1920, 1088]
@@ -73,7 +74,8 @@ def test_snapshot_envelope_checks_content_identity_and_catalog(binary, game_dir)
             edit(bad)
             with pytest.raises(EngineError) as ei:
                 e.restore(snapshot=bad)
-            assert ei.value.code == -32000 and needle in ei.value.message, ei.value.message
+            assert ei.value.code == -32000, ei.value.message
+            assert needle in ei.value.message, ei.value.message
             assert e.observe()["hashes"] == before, f"{needle}: the failed restore changed the world"
 
         refused(lambda b: b.__setitem__("content", "0" * 64), "different game content")
@@ -93,7 +95,8 @@ def test_snapshot_envelope_checks_content_identity_and_catalog(binary, game_dir)
         # the session's; the synthetic session then shows the map view at the snapshot's tick.
         e.reset("corridor", seed=1)
         r = e.restore(snapshot=snap["snapshot"])
-        assert r["tick"] == 20 and r["hashes"] == snap["hashes"]
+        assert r["tick"] == 20
+        assert r["hashes"] == snap["hashes"]
         obs = e.observe()
         assert obs["scenario"] == {"map_view": {"map": "sherwood", "ambiance": "Day"}}
         assert obs["map_size"] == [1920, 1088]
