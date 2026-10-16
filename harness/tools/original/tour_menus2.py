@@ -25,7 +25,7 @@ def main():
             click(MENU_X, OPT_ROWS["back"], wait=1.5); shot("options_%s_after_back" % k)
     click(MENU_X, OPT_ROWS["back"], wait=1.5); main_menu = shot("t2_main")
     for k in ("load", "select", "credits"):
-        click(MENU_X, ROWS[k], wait=2.0); s = shot("menu_" + k)
+        click(MENU_X, ROWS[k], wait=2.0); shot("menu_" + k)
         if k == "credits":
             time.sleep(5.0); shot("menu_credits_later")
         key("escape", wait=1.5); e = shot("menu_%s_after_escape" % k)

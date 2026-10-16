@@ -37,7 +37,6 @@ def decode(s, w, h, count_minus_one):
                 return False, p
             c = int(s[p]); p += 1
             if c == 0xFFFF:
-                x = w
                 break
             c = c + 1 if count_minus_one else c
             x += c

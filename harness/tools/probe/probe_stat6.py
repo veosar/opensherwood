@@ -4,7 +4,7 @@ from rhp_chunks import load_chunks, rhp_path, map_size, hexdump, MAPS
 def parse(b):
     top = struct.unpack_from("<HH", b, 0); pos = 4
     assert b[pos:pos+5] == b"\0\0\0\0\0"; pos += 5
-    tag = b[pos]; n = struct.unpack_from("<H", b, pos + 1)[0]; pos += 3
+    _ = b[pos]; n = struct.unpack_from("<H", b, pos + 1)[0]; pos += 3
     boundary = [struct.unpack_from("<HH", b, pos + 4 * k) for k in range(n)]; pos += 4 * n
     assert b[pos] == 0x82; nseg = struct.unpack_from("<H", b, pos + 1)[0]; pos += 3
     segs = [struct.unpack_from("<HHHH", b, pos + 8 * k) for k in range(nseg)]; pos += 8 * nseg
