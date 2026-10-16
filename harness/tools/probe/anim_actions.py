@@ -68,7 +68,7 @@ def families(d):
 
 def matrix(d, names, ids):
     rows = {n: {b["id"]: b for b in blocks(os.path.join(d, n + ".rhs"))} for n in names}
-    allids = sorted(set(i for n in names for i in rows[n]))
+    allids = sorted({i for n in names for i in rows[n]})
     print("id | " + " | ".join(names))
     for i in allids:
         if ids and i not in ids:

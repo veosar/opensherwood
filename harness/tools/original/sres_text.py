@@ -39,7 +39,7 @@ def read_text(data, pos):
 
 def main(argv):
     data = open(argv[0], "rb").read()
-    want = set(int(a) for a in argv[1:])
+    want = {int(a) for a in argv[1:]}
     for tag, eid, body, nxt in entries(data):
         if tag != b"TEXT":
             continue

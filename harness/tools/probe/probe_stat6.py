@@ -21,5 +21,5 @@ if __name__ == "__main__":
         ver, b = load_chunks(rhp_path(m))["STAT"]; W, H = map_size(m)
         top, boundary, segs, zz, obst, pos = parse(b)
         oob = sum(1 for _, pts, _, _ in obst for x, y in pts if x > W or y > H)
-        print(f"{m:13s} top={top} boundary={len(boundary)} segs={len(segs)} zz={zz} obst={len(obst)} oob={oob} flags={sorted(set(f for *_, f in obst))} end@{pos:06x}/{len(b):06x}")
+        print(f"{m:13s} top={top} boundary={len(boundary)} segs={len(segs)} zz={zz} obst={len(obst)} oob={oob} flags={sorted({f for *_, f in obst})} end@{pos:06x}/{len(b):06x}")
         print("   next:", b[pos:pos + 48].hex(' '))

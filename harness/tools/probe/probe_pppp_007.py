@@ -22,4 +22,4 @@ for m in MAPS:
     for i in range(min(n, 6)):
         r = struct.unpack_from("<hhhhHHH", b, 2 + 14 * i); print("   ", r)
     recs = [struct.unpack_from("<hhhhHHH", b, 2 + 14 * i) for i in range(n)]
-    print("   a range", min(r[4] for r in recs), max(r[4] for r in recs), "b set", sorted(set(r[5] for r in recs))[:12], "c set", sorted(set(r[6] for r in recs)))
+    print("   a range", min(r[4] for r in recs), max(r[4] for r in recs), "b set", sorted({r[5] for r in recs})[:12], "c set", sorted({r[6] for r in recs}))
