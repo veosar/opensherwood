@@ -17,7 +17,8 @@ class ExporterTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory(prefix="exporter-characterization-")
         cls.addClassCleanup(cls.temporary.cleanup)
-        cls.build = Path(cls.temporary.name)
+        # The exporters report canonical paths: macOS /var is /private/var, Windows TEMP may be an 8.3 short name.
+        cls.build = Path(cls.temporary.name).resolve()
         sources = list(FIXTURES.rglob("*.java"))
         for source in sorted((ROOT / "scripts" / "ghidra").glob("*.java")):
             # Replace API imports only; the exporter methods are compiled verbatim.
