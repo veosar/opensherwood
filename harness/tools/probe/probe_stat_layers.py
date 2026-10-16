@@ -112,7 +112,7 @@ def main(argv):
         for off, _id, n, id2, pts, gap in records[:80]:
             xs = [x for x, _ in pts]
             ys = [y for _, y in pts]
-            hit = f" contains point" if pt and inside(pts, *pt) else ""
+            hit = " contains point" if pt and inside(pts, *pt) else ""
             print(f"  @{off:6d} id=0x{_id:02x} n={n:4d} id2=0x{id2:02x} bbox=({min(xs)},{min(ys)})-({max(xs)},{max(ys)}) gap={len(gap)}B {gap[:24].hex()}{hit}")
         print(f"  {len(records)} records, tail {len(tail)} bytes: {tail[:32].hex()}")
 
