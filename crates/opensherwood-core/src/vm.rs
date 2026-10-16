@@ -772,119 +772,164 @@ impl Program {
         }
         let mut total_code = 0usize;
         for (ci, c) in self.classes.iter().enumerate() {
-            if c.code.len() > MAX_CODE || c.functions.len() > MAX_TABLE {
-                return Err(format!("class {ci} too large"));
-            }
-            total_code = total_code.saturating_add(c.code.len());
-            if total_code > MAX_PROGRAM_CODE {
-                return Err("program code too large".into());
-            }
-            if c.variable_count as usize > MAX_TABLE {
-                return Err(format!("class {ci} has too many variables"));
-            }
-            if let Some(e) = c.element
-                && e as usize >= self.elements.len()
-            {
-                return Err(format!("class {ci} bound to element {e} out of range"));
-            }
-            if let Some(z) = c.zone
-                && !matches!(self.locations.get(z as usize), Some(Location::Polygon(_)))
-            {
+            self.validate_class(ci, c, &mut total_code)?;
+        }
+        self.validate_elements()?;
+        let mut vertices = 0usize;
+        for (i, l) in self.locations.iter().enumerate() {
+            Self::validate_location(i, l, &mut vertices)?;
+        }
+        Ok(())
+    }
+
+    fn validate_function(ci: usize, c: &Class, fi: usize, f: &Function) -> Result<(), String> {
+        if f.address as usize >= c.code.len() {
+            return Err(format!("class {ci} function {fi} address out of range"));
+        }
+        if fi > 0 && f.address <= c.functions[fi - 1].address {
+            return Err(format!(
+                "class {ci} functions are not laid out in table order"
+            ));
+        }
+        if f.locals as usize > MAX_TABLE
+            || f.temps as usize > MAX_TABLE
+            || f.param_count as usize > MAX_STACK
+        {
+            return Err(format!("class {ci} function {fi} frame too large"));
+        }
+        match c.code[f.address as usize] {
+            Instr::Enter { locals, temps } if locals == f.locals && temps == f.temps => {}
+            _ => {
                 return Err(format!(
-                    "class {ci} bound to zone {z} which is not a polygon"
+                    "class {ci} function {fi} does not start with its prologue"
                 ));
             }
-            if c.functions.is_empty() != c.code.is_empty() {
-                return Err(format!("class {ci} functions and code disagree"));
-            }
-            if c.functions.first().is_some_and(|f| f.address != 0) {
-                return Err(format!("class {ci} code does not start with a function"));
-            }
-            for (fi, f) in c.functions.iter().enumerate() {
-                if f.address as usize >= c.code.len() {
-                    return Err(format!("class {ci} function {fi} address out of range"));
-                }
-                if fi > 0 && f.address <= c.functions[fi - 1].address {
-                    return Err(format!(
-                        "class {ci} functions are not laid out in table order"
-                    ));
-                }
-                if f.locals as usize > MAX_TABLE
-                    || f.temps as usize > MAX_TABLE
-                    || f.param_count as usize > MAX_STACK
-                {
-                    return Err(format!("class {ci} function {fi} frame too large"));
-                }
-                match c.code[f.address as usize] {
-                    Instr::Enter { locals, temps } if locals == f.locals && temps == f.temps => {}
-                    _ => {
-                        return Err(format!(
-                            "class {ci} function {fi} does not start with its prologue"
-                        ));
-                    }
-                }
-            }
-            // Every instruction belongs to the function whose range holds it; functions are laid
-            // out in table order.
-            let mut fi = 0usize;
-            for (pc, ins) in c.code.iter().enumerate() {
-                while fi + 1 < c.functions.len() && c.functions[fi + 1].address as usize <= pc {
-                    fi += 1;
-                }
-                let Some(f) = c.functions.get(fi) else {
-                    return Err(format!(
-                        "class {ci} instruction {pc} outside every function"
-                    ));
-                };
-                let end = c
-                    .functions
-                    .get(fi + 1)
-                    .map_or(c.code.len(), |n| n.address as usize);
-                let _ = end;
-                let slot_ok = |s: Slot| match s.space {
-                    Space::Global => s.index < GLOBAL_CELLS as u32,
-                    Space::Class => s.index < c.variable_count,
-                    Space::Local => s.index < f.locals,
-                    Space::Temp => s.index < f.temps,
-                };
-                // A jump or call target addresses the class code (VM-002); the retail
-                // `0xFFFFFFFF` of VM-070 is accepted and ends the callback at run time.
-                let target_ok = |t: u32| t as usize <= c.code.len() || t == END_OF_CALLBACK;
-                let ok = match *ins {
-                    Instr::Nop | Instr::Return | Instr::Bad { .. } => true,
-                    Instr::Enter { locals, temps } => locals == f.locals && temps == f.temps,
-                    Instr::ReturnValue { src }
-                    | Instr::PushParam { src }
-                    | Instr::PushArg { src } => slot_ok(src),
-                    Instr::StoreParam { src, .. } => slot_ok(src),
-                    Instr::LoadParam { dst, .. }
-                    | Instr::LoadResult { dst }
-                    | Instr::LoadNativeResult { dst }
-                    | Instr::LoadImm { dst, .. } => slot_ok(dst),
-                    Instr::Call { target } | Instr::Jump { target } => target_ok(target),
-                    Instr::Native { id } => {
-                        if id as usize >= NATIVE_TABLE_SIZE {
-                            return Err(format!(
-                                "class {ci} instruction {pc} calls native {id}, beyond the table of {NATIVE_TABLE_SIZE}"
-                            ));
-                        }
-                        true
-                    }
-                    Instr::JumpIfNonZero { cond, target } | Instr::JumpIfZero { cond, target } => {
-                        slot_ok(cond) && target_ok(target)
-                    }
-                    Instr::Move { dst, src }
-                    | Instr::NegInt { dst, src }
-                    | Instr::NegFloat { dst, src }
-                    | Instr::FloatToInt { dst, src }
-                    | Instr::IntToFloat { dst, src } => slot_ok(dst) && slot_ok(src),
-                    Instr::Binary { dst, a, b, .. } => slot_ok(dst) && slot_ok(a) && slot_ok(b),
-                };
-                if !ok {
-                    return Err(format!("class {ci} instruction {pc} out of range"));
-                }
-            }
         }
+        Ok(())
+    }
+
+    fn validate_instruction(
+        ci: usize,
+        c: &Class,
+        pc: usize,
+        ins: &Instr,
+        f: &Function,
+    ) -> Result<(), String> {
+        let slot_ok = |s: Slot| match s.space {
+            Space::Global => s.index < GLOBAL_CELLS as u32,
+            Space::Class => s.index < c.variable_count,
+            Space::Local => s.index < f.locals,
+            Space::Temp => s.index < f.temps,
+        };
+        // A jump or call target addresses the class code (VM-002); the retail
+        // `0xFFFFFFFF` of VM-070 is accepted and ends the callback at run time.
+        let target_ok = |t: u32| t as usize <= c.code.len() || t == END_OF_CALLBACK;
+        let ok = match *ins {
+            Instr::Nop | Instr::Return | Instr::Bad { .. } => true,
+            Instr::Enter { locals, temps } => locals == f.locals && temps == f.temps,
+            Instr::ReturnValue { src } | Instr::PushParam { src } | Instr::PushArg { src } => {
+                slot_ok(src)
+            }
+            Instr::StoreParam { src, .. } => slot_ok(src),
+            Instr::LoadParam { dst, .. }
+            | Instr::LoadResult { dst }
+            | Instr::LoadNativeResult { dst }
+            | Instr::LoadImm { dst, .. } => slot_ok(dst),
+            Instr::Call { target } | Instr::Jump { target } => target_ok(target),
+            Instr::Native { id } => {
+                if id as usize >= NATIVE_TABLE_SIZE {
+                    return Err(format!(
+                        "class {ci} instruction {pc} calls native {id}, beyond the table of {NATIVE_TABLE_SIZE}"
+                    ));
+                }
+                true
+            }
+            Instr::JumpIfNonZero { cond, target } | Instr::JumpIfZero { cond, target } => {
+                slot_ok(cond) && target_ok(target)
+            }
+            Instr::Move { dst, src }
+            | Instr::NegInt { dst, src }
+            | Instr::NegFloat { dst, src }
+            | Instr::FloatToInt { dst, src }
+            | Instr::IntToFloat { dst, src } => slot_ok(dst) && slot_ok(src),
+            Instr::Binary { dst, a, b, .. } => slot_ok(dst) && slot_ok(a) && slot_ok(b),
+        };
+        if !ok {
+            return Err(format!("class {ci} instruction {pc} out of range"));
+        }
+        Ok(())
+    }
+
+    fn validate_class_code(ci: usize, c: &Class) -> Result<(), String> {
+        // Every instruction belongs to the function whose range holds it; functions are laid
+        // out in table order.
+        let mut fi = 0usize;
+        for (pc, ins) in c.code.iter().enumerate() {
+            while fi + 1 < c.functions.len() && c.functions[fi + 1].address as usize <= pc {
+                fi += 1;
+            }
+            let Some(f) = c.functions.get(fi) else {
+                return Err(format!(
+                    "class {ci} instruction {pc} outside every function"
+                ));
+            };
+            let end = c
+                .functions
+                .get(fi + 1)
+                .map_or(c.code.len(), |n| n.address as usize);
+            let _ = end;
+            Self::validate_instruction(ci, c, pc, ins, f)?;
+        }
+        Ok(())
+    }
+
+    fn validate_class_tables(
+        &self,
+        ci: usize,
+        c: &Class,
+        total_code: &mut usize,
+    ) -> Result<(), String> {
+        if c.code.len() > MAX_CODE || c.functions.len() > MAX_TABLE {
+            return Err(format!("class {ci} too large"));
+        }
+        *total_code = total_code.saturating_add(c.code.len());
+        if *total_code > MAX_PROGRAM_CODE {
+            return Err("program code too large".into());
+        }
+        if c.variable_count as usize > MAX_TABLE {
+            return Err(format!("class {ci} has too many variables"));
+        }
+        if let Some(e) = c.element
+            && e as usize >= self.elements.len()
+        {
+            return Err(format!("class {ci} bound to element {e} out of range"));
+        }
+        if let Some(z) = c.zone
+            && !matches!(self.locations.get(z as usize), Some(Location::Polygon(_)))
+        {
+            return Err(format!(
+                "class {ci} bound to zone {z} which is not a polygon"
+            ));
+        }
+        if c.functions.is_empty() != c.code.is_empty() {
+            return Err(format!("class {ci} functions and code disagree"));
+        }
+        if c.functions.first().is_some_and(|f| f.address != 0) {
+            return Err(format!("class {ci} code does not start with a function"));
+        }
+        Ok(())
+    }
+
+    fn validate_class(&self, ci: usize, c: &Class, total_code: &mut usize) -> Result<(), String> {
+        self.validate_class_tables(ci, c, total_code)?;
+        for (fi, f) in c.functions.iter().enumerate() {
+            Self::validate_function(ci, c, fi, f)?;
+        }
+        Self::validate_class_code(ci, c)?;
+        Ok(())
+    }
+
+    fn validate_elements(&self) -> Result<(), String> {
         let coord_ok = |v: i32| v.unsigned_abs() <= MAX_LOCATION_COORD as u32;
         for (i, el) in self.elements.iter().enumerate() {
             match *el {
@@ -903,25 +948,27 @@ impl Program {
                 Element::Map(_) | Element::Unmodelled(_) | Element::Actor(_) => {}
             }
         }
-        let mut vertices = 0usize;
-        for (i, l) in self.locations.iter().enumerate() {
-            match l {
-                Location::Point { x, y } => {
-                    if !(coord_ok(*x) && coord_ok(*y)) {
-                        return Err(format!("location {i} out of range"));
-                    }
+        Ok(())
+    }
+
+    fn validate_location(i: usize, l: &Location, vertices: &mut usize) -> Result<(), String> {
+        let coord_ok = |v: i32| v.unsigned_abs() <= MAX_LOCATION_COORD as u32;
+        match l {
+            Location::Point { x, y } => {
+                if !(coord_ok(*x) && coord_ok(*y)) {
+                    return Err(format!("location {i} out of range"));
                 }
-                Location::Polygon(pts) => {
-                    if pts.len() > MAX_POLYGON_VERTICES {
-                        return Err(format!("location {i} has too many vertices"));
-                    }
-                    vertices = vertices.saturating_add(pts.len());
-                    if vertices > MAX_LOCATION_VERTICES {
-                        return Err("program locations have too many vertices".into());
-                    }
-                    if pts.iter().any(|&(x, y)| !(coord_ok(x) && coord_ok(y))) {
-                        return Err(format!("location {i} out of range"));
-                    }
+            }
+            Location::Polygon(pts) => {
+                if pts.len() > MAX_POLYGON_VERTICES {
+                    return Err(format!("location {i} has too many vertices"));
+                }
+                *vertices = vertices.saturating_add(pts.len());
+                if *vertices > MAX_LOCATION_VERTICES {
+                    return Err("program locations have too many vertices".into());
+                }
+                if pts.iter().any(|&(x, y)| !(coord_ok(x) && coord_ok(y))) {
+                    return Err(format!("location {i} out of range"));
                 }
             }
         }
@@ -934,32 +981,7 @@ impl Program {
         let mut e = Encoder::new("program");
         e.u32(self.classes.len() as u32);
         for c in &self.classes {
-            e.str(&c.name).u32(c.variable_count);
-            match c.element {
-                Some(x) => e.u8(1).u32(x),
-                None => e.u8(0),
-            };
-            match c.zone {
-                Some(x) => e.u8(1).u32(x),
-                None => e.u8(0),
-            };
-            match c.rail_point {
-                Some((r, p)) => e.u8(1).u32(r).u32(p),
-                None => e.u8(0),
-            };
-            e.u32(c.functions.len() as u32);
-            for f in &c.functions {
-                e.str(&f.name)
-                    .u32(f.address)
-                    .u32(f.param_count)
-                    .u8(u8::from(f.has_result))
-                    .u32(f.locals)
-                    .u32(f.temps);
-            }
-            e.u32(c.code.len() as u32);
-            for ins in &c.code {
-                encode_instr(&mut e, ins);
-            }
+            Self::encode_class(c, &mut e);
         }
         e.u32(self.elements.len() as u32);
         for el in &self.elements {
@@ -980,6 +1002,35 @@ impl Program {
             }
         }
         e.finish()
+    }
+
+    fn encode_class(c: &Class, e: &mut Encoder) {
+        e.str(&c.name).u32(c.variable_count);
+        match c.element {
+            Some(x) => e.u8(1).u32(x),
+            None => e.u8(0),
+        };
+        match c.zone {
+            Some(x) => e.u8(1).u32(x),
+            None => e.u8(0),
+        };
+        match c.rail_point {
+            Some((r, p)) => e.u8(1).u32(r).u32(p),
+            None => e.u8(0),
+        };
+        e.u32(c.functions.len() as u32);
+        for f in &c.functions {
+            e.str(&f.name)
+                .u32(f.address)
+                .u32(f.param_count)
+                .u8(u8::from(f.has_result))
+                .u32(f.locals)
+                .u32(f.temps);
+        }
+        e.u32(c.code.len() as u32);
+        for ins in &c.code {
+            encode_instr(e, ins);
+        }
     }
 
     /// Element handle of the first entity of `kind` in entity order; `NONE_HANDLE` when absent.
@@ -2144,6 +2195,17 @@ impl VmState {
     /// Check every invariant a snapshot must satisfy (`program_count` is the number of rail
     /// programs of the world, `entity_count` its entities).
     pub fn validate(&self, program_count: usize, entity_count: usize) -> Result<(), String> {
+        self.validate_program_state(entity_count)?;
+        self.validate_instances()?;
+        self.validate_buffers()?;
+        self.validate_sequences(entity_count)?;
+        self.validate_texts_and_presence(entity_count)?;
+        self.validate_paths_and_calls(program_count)?;
+        self.validate_callback_state()?;
+        self.rng.validate()
+    }
+
+    fn validate_program_state(&self, entity_count: usize) -> Result<(), String> {
         self.program.validate()?;
         if self.program_digest != self.program.digest() {
             return Err("vm program digest does not match the program".into());
@@ -2168,6 +2230,10 @@ impl VmState {
         if self.instances.len() != self.program.classes.len() {
             return Err("vm instances do not match the classes".into());
         }
+        Ok(())
+    }
+
+    fn validate_instances(&self) -> Result<(), String> {
         for (i, (inst, c)) in self.instances.iter().zip(&self.program.classes).enumerate() {
             if inst.vars.len() != c.variable_count as usize {
                 return Err(format!("vm class {i} variable block has the wrong size"));
@@ -2179,6 +2245,10 @@ impl VmState {
                 return Err(format!("vm instance {i} parameter buffer too long"));
             }
         }
+        Ok(())
+    }
+
+    fn validate_buffers(&self) -> Result<(), String> {
         if self.globals.len() != GLOBAL_CELLS {
             return Err("vm global block has the wrong size".into());
         }
@@ -2215,6 +2285,46 @@ impl VmState {
                 return Err("vm open recording has no level".into());
             }
         }
+        Ok(())
+    }
+
+    fn validate_sequence_element(el: &SeqElement, entity_count: usize) -> Result<(), String> {
+        let entity_ok = |e: u32| (e as usize) < entity_count;
+        let coord_ok = |v: i32| v.unsigned_abs() <= MAX_LOCATION_COORD as u32;
+        let ok = match *el {
+            SeqElement::Walk { entity, x, y } => entity_ok(entity) && coord_ok(x) && coord_ok(y),
+            SeqElement::Teleport { entity, to } => {
+                entity_ok(entity) && to.is_none_or(|(x, y)| coord_ok(x) && coord_ok(y))
+            }
+            _ => true,
+        };
+        if !ok {
+            return Err("vm sequence element out of range".into());
+        }
+        Ok(())
+    }
+
+    fn validate_sequence_tokens(s: &Sequence, entity_count: usize) -> Result<(), String> {
+        let entity_ok = |e: u32| (e as usize) < entity_count;
+        let coord_ok = |v: i32| v.unsigned_abs() <= MAX_LOCATION_COORD as u32;
+        for t in &s.tokens {
+            if let SeqToken::Walk { entity, x, y } = *t
+                && !(entity_ok(entity) && coord_ok(x) && coord_ok(y))
+            {
+                return Err("vm sequence token out of range".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_sequence_elements(s: &Sequence, entity_count: usize) -> Result<(), String> {
+        for el in &s.elements {
+            Self::validate_sequence_element(el, entity_count)?;
+        }
+        Ok(())
+    }
+
+    fn validate_sequences(&self, entity_count: usize) -> Result<(), String> {
         let mut total_elements = 0usize;
         for s in &self.sequences {
             if s.elements.len() > MAX_QUEUE || s.next as usize > s.elements.len() {
@@ -2227,35 +2337,18 @@ impl VmState {
             if s.tokens.len() > MAX_QUEUE {
                 return Err("vm sequence has too many tokens".into());
             }
-            let entity_ok = |e: u32| (e as usize) < entity_count;
-            let coord_ok = |v: i32| v.unsigned_abs() <= MAX_LOCATION_COORD as u32;
-            for el in &s.elements {
-                let ok = match *el {
-                    SeqElement::Walk { entity, x, y } => {
-                        entity_ok(entity) && coord_ok(x) && coord_ok(y)
-                    }
-                    SeqElement::Teleport { entity, to } => {
-                        entity_ok(entity) && to.is_none_or(|(x, y)| coord_ok(x) && coord_ok(y))
-                    }
-                    _ => true,
-                };
-                if !ok {
-                    return Err("vm sequence element out of range".into());
-                }
-            }
-            for t in &s.tokens {
-                if let SeqToken::Walk { entity, x, y } = *t
-                    && !(entity_ok(entity) && coord_ok(x) && coord_ok(y))
-                {
-                    return Err("vm sequence token out of range".into());
-                }
-            }
+            Self::validate_sequence_elements(s, entity_count)?;
+            Self::validate_sequence_tokens(s, entity_count)?;
             if let SeqWait::Text(id) = s.wait
                 && id >= self.next_text_id
             {
                 return Err("vm sequence waits for a text id beyond the counter".into());
             }
         }
+        Ok(())
+    }
+
+    fn validate_texts_and_presence(&self, entity_count: usize) -> Result<(), String> {
         if self.texts.iter().any(|t| t.id >= self.next_text_id) {
             return Err("vm text id beyond the counter".into());
         }
@@ -2281,6 +2374,10 @@ impl VmState {
         {
             return Err("vm taken item is not a pick-up item of the table".into());
         }
+        Ok(())
+    }
+
+    fn validate_paths_and_calls(&self, program_count: usize) -> Result<(), String> {
         if self.paths.len() > MAX_TABLE
             || self
                 .paths
@@ -2301,6 +2398,10 @@ impl VmState {
         if self.assumptions.len() > MAX_QUEUE {
             return Err("vm assumption set too large".into());
         }
+        Ok(())
+    }
+
+    fn validate_callback_state(&self) -> Result<(), String> {
         if self.faults.len() > MAX_QUEUE
             || self.seen_missing.len() > MAX_QUEUE
             || self.seen_sentinel.len() > MAX_QUEUE
@@ -2327,7 +2428,7 @@ impl VmState {
         {
             return Err("vm action change names a class that does not exist".into());
         }
-        self.rng.validate()
+        Ok(())
     }
 
     /// Whether the script executed over any hypothesis source of the registry ([`Assumption`]):
@@ -2341,85 +2442,9 @@ impl VmState {
     /// Encode the `scripts` hash part (program identity and script-visible state).
     pub fn encode_scripts(&self, e: &mut Encoder) {
         e.str(&self.program_digest);
-        e.u32(self.instances.len() as u32);
-        for inst in &self.instances {
-            e.u32(inst.vars.len() as u32);
-            for v in &inst.vars {
-                e.i32(*v);
-            }
-            e.u32(inst.params.len() as u32);
-            for v in &inst.params {
-                e.i32(*v);
-            }
-            e.u32(inst.args.len() as u32);
-            for v in &inst.args {
-                e.i32(*v);
-            }
-            e.i32(inst.native_result).i32(inst.callback_return);
-        }
-        e.u32(self.globals.len() as u32);
-        for v in &self.globals {
-            e.i32(*v);
-        }
-        e.u32(self.mission_vars.len() as u32);
-        for v in &self.mission_vars {
-            e.i32(*v);
-        }
-        e.u32(self.objectives.len() as u32);
-        for o in &self.objectives {
-            e.i32(o.index).u8(u8::from(o.primary)).u8(u8::from(o.done));
-        }
-        match self.debriefing {
-            Some(d) => e.u8(1).i32(d),
-            None => e.u8(0),
-        };
-        e.u8(u8::from(self.mission_won));
-        e.u8(u8::from(self.mission_lost)).i32(self.money);
-        e.u32(self.patches.len() as u32);
-        for p in &self.patches {
-            e.i32(*p);
-        }
-        e.u32(self.pc_actions.len() as u32);
-        for (pc, k, v) in &self.pc_actions {
-            e.i32(*pc).i32(*k).i32(*v);
-        }
-        e.u32(self.campaign_values.len() as u32);
-        for v in &self.campaign_values {
-            e.i32(*v);
-        }
-        e.u32(self.npc_values.len() as u32);
-        for (npc, k, v) in &self.npc_values {
-            e.i32(*npc).i32(*k).i32(*v);
-        }
-        e.u32(self.door_bytes.len() as u32);
-        for (door, k, v) in &self.door_bytes {
-            e.i32(*door).i32(*k).i32(*v);
-        }
-        e.i32(self.banner_count);
-        e.u8(u8::from(self.force_victory));
-        e.u32(self.attributes.len() as u32);
-        for a in &self.attributes {
-            e.i32(a.element).i32(a.attr).i32(a.value);
-        }
-        e.u32(self.states.len() as u32);
-        for (k, v) in &self.states {
-            e.i32(*k).i32(*v);
-        }
-        e.u32(self.inactive_elements.len() as u32);
-        for k in &self.inactive_elements {
-            e.i32(*k);
-        }
-        e.u32(self.taken_items.len() as u32);
-        for k in &self.taken_items {
-            e.i32(*k);
-        }
-        e.u32(self.paths.len() as u32);
-        for p in &self.paths {
-            match p {
-                Some(p) => e.u8(1).u32(*p),
-                None => e.u8(0),
-            };
-        }
+        self.encode_instances(e);
+        self.encode_mission_state(e);
+        self.encode_element_state(e);
         e.u8(u8::from(self.lenient));
         match self.fault {
             Some(f) => {
@@ -2462,31 +2487,101 @@ impl VmState {
         }
     }
 
+    fn encode_instances(&self, e: &mut Encoder) {
+        e.u32(self.instances.len() as u32);
+        for inst in &self.instances {
+            e.u32(inst.vars.len() as u32);
+            for v in &inst.vars {
+                e.i32(*v);
+            }
+            e.u32(inst.params.len() as u32);
+            for v in &inst.params {
+                e.i32(*v);
+            }
+            e.u32(inst.args.len() as u32);
+            for v in &inst.args {
+                e.i32(*v);
+            }
+            e.i32(inst.native_result).i32(inst.callback_return);
+        }
+    }
+
+    fn encode_mission_state(&self, e: &mut Encoder) {
+        e.u32(self.globals.len() as u32);
+        for v in &self.globals {
+            e.i32(*v);
+        }
+        e.u32(self.mission_vars.len() as u32);
+        for v in &self.mission_vars {
+            e.i32(*v);
+        }
+        e.u32(self.objectives.len() as u32);
+        for o in &self.objectives {
+            e.i32(o.index).u8(u8::from(o.primary)).u8(u8::from(o.done));
+        }
+        match self.debriefing {
+            Some(d) => e.u8(1).i32(d),
+            None => e.u8(0),
+        };
+        e.u8(u8::from(self.mission_won));
+        e.u8(u8::from(self.mission_lost)).i32(self.money);
+        e.u32(self.patches.len() as u32);
+        for p in &self.patches {
+            e.i32(*p);
+        }
+        e.u32(self.pc_actions.len() as u32);
+        for (pc, k, v) in &self.pc_actions {
+            e.i32(*pc).i32(*k).i32(*v);
+        }
+        e.u32(self.campaign_values.len() as u32);
+        for v in &self.campaign_values {
+            e.i32(*v);
+        }
+        e.u32(self.npc_values.len() as u32);
+        for (npc, k, v) in &self.npc_values {
+            e.i32(*npc).i32(*k).i32(*v);
+        }
+        e.u32(self.door_bytes.len() as u32);
+        for (door, k, v) in &self.door_bytes {
+            e.i32(*door).i32(*k).i32(*v);
+        }
+        e.i32(self.banner_count);
+        e.u8(u8::from(self.force_victory));
+    }
+
+    fn encode_element_state(&self, e: &mut Encoder) {
+        e.u32(self.attributes.len() as u32);
+        for a in &self.attributes {
+            e.i32(a.element).i32(a.attr).i32(a.value);
+        }
+        e.u32(self.states.len() as u32);
+        for (k, v) in &self.states {
+            e.i32(*k).i32(*v);
+        }
+        e.u32(self.inactive_elements.len() as u32);
+        for k in &self.inactive_elements {
+            e.i32(*k);
+        }
+        e.u32(self.taken_items.len() as u32);
+        for k in &self.taken_items {
+            e.i32(*k);
+        }
+        e.u32(self.paths.len() as u32);
+        for p in &self.paths {
+            match p {
+                Some(p) => e.u8(1).u32(*p),
+                None => e.u8(0),
+            };
+        }
+    }
+
     /// Encode the `scheduler` hash part (queues, sequences with their tokens, texts, presence).
     /// Frames and stacks are not encoded: they are empty whenever a hash is taken (`validate`
     /// refuses a snapshot where they are not).
     pub fn encode_scheduler(&self, e: &mut Encoder) {
         e.u32(self.sequences.len() as u32);
         for s in &self.sequences {
-            e.u32(s.next);
-            match s.wait {
-                SeqWait::None => e.u8(0),
-                SeqWait::Ticks(n) => e.u8(1).u32(n),
-                SeqWait::Text(id) => e.u8(2).u64(id),
-                SeqWait::Barrier => e.u8(3),
-            };
-            e.u32(s.elements.len() as u32);
-            for el in &s.elements {
-                encode_element(e, el);
-            }
-            s.provenance.encode(e);
-            e.u32(s.tokens.len() as u32);
-            for t in &s.tokens {
-                match *t {
-                    SeqToken::Walk { entity, x, y } => e.u8(1).u32(entity).i32(x).i32(y),
-                    SeqToken::Animation { id } => e.u8(2).u32(id),
-                };
-            }
+            Self::encode_sequence(s, e);
         }
         match &self.collecting {
             Some(r) => {
@@ -2521,6 +2616,28 @@ impl VmState {
         e.u32(self.pending_action_changes.len() as u32);
         for c in &self.pending_action_changes {
             e.u32(c.class).i32(c.previous).i32(c.new);
+        }
+    }
+
+    fn encode_sequence(s: &Sequence, e: &mut Encoder) {
+        e.u32(s.next);
+        match s.wait {
+            SeqWait::None => e.u8(0),
+            SeqWait::Ticks(n) => e.u8(1).u32(n),
+            SeqWait::Text(id) => e.u8(2).u64(id),
+            SeqWait::Barrier => e.u8(3),
+        };
+        e.u32(s.elements.len() as u32);
+        for el in &s.elements {
+            encode_element(e, el);
+        }
+        s.provenance.encode(e);
+        e.u32(s.tokens.len() as u32);
+        for t in &s.tokens {
+            match *t {
+                SeqToken::Walk { entity, x, y } => e.u8(1).u32(entity).i32(x).i32(y),
+                SeqToken::Animation { id } => e.u8(2).u32(id),
+            };
         }
     }
 
@@ -3088,29 +3205,7 @@ impl World {
             if self.vm_out_of_work() {
                 break;
             }
-            // The actor bound to the class: a dead actor's fall is the melee's, not the
-            // knock-out's.
-            let dead = self
-                .vm
-                .as_ref()
-                .and_then(|vm| {
-                    let handle = vm.program.classes.get(change.class as usize)?.element?;
-                    match vm.program.elements.get(handle as usize)? {
-                        Element::Actor(i) => self.entities.get(*i as usize).map(|e| !e.alive),
-                        _ => None,
-                    }
-                })
-                .unwrap_or(false);
-            if let Some(vm) = self.vm.as_mut() {
-                let ids = [change.previous, change.new];
-                let fallen = ids.iter().any(|&a| KNOCK_OUT_ACTIONS.contains(&(a as u32)));
-                if fallen && !dead {
-                    vm.assume(Assumption::KnockOut);
-                }
-                if (fallen && dead) || ids.iter().any(|&a| COMBAT_ACTIONS.contains(&(a as u32))) {
-                    vm.assume(Assumption::CombatActions);
-                }
-            }
+            self.vm_assume_action_change(change);
             // The handler runs whole or not at all: an exhausted one (or one whose capture
             // does not fit the budget) is rolled back and waits for the next tick; a
             // deterministic failure (a trap, a fault such as the frame limit) is rolled back
@@ -3134,6 +3229,32 @@ impl World {
         }
         if let Some(vm) = self.vm.as_mut() {
             vm.pending_action_changes.drain(..done);
+        }
+    }
+
+    fn vm_assume_action_change(&mut self, change: ActionChange) {
+        // The actor bound to the class: a dead actor's fall is the melee's, not the
+        // knock-out's.
+        let dead = self
+            .vm
+            .as_ref()
+            .and_then(|vm| {
+                let handle = vm.program.classes.get(change.class as usize)?.element?;
+                match vm.program.elements.get(handle as usize)? {
+                    Element::Actor(i) => self.entities.get(*i as usize).map(|e| !e.alive),
+                    _ => None,
+                }
+            })
+            .unwrap_or(false);
+        if let Some(vm) = self.vm.as_mut() {
+            let ids = [change.previous, change.new];
+            let fallen = ids.iter().any(|&a| KNOCK_OUT_ACTIONS.contains(&(a as u32)));
+            if fallen && !dead {
+                vm.assume(Assumption::KnockOut);
+            }
+            if (fallen && dead) || ids.iter().any(|&a| COMBAT_ACTIONS.contains(&(a as u32))) {
+                vm.assume(Assumption::CombatActions);
+            }
         }
     }
 
@@ -3296,29 +3417,14 @@ impl World {
         let mut budget = vm.budget;
         let mut exhausted = false;
         let mut events: Vec<(u32, u32, bool)> = Vec::new();
-        'scan: for (ci, c) in vm.program.classes.iter().enumerate() {
+        for (ci, c) in vm.program.classes.iter().enumerate() {
             let Some(z) = c.zone else { continue };
             let Some(Location::Polygon(poly)) = vm.program.locations.get(z as usize) else {
                 continue;
             };
-            for (ei, e) in self.entities.iter().enumerate() {
-                // One unit per entity looked at, plus one per edge for every character tested.
-                let player = e.kind == EntityKind::Player && e.alive && e.active;
-                let cost = if player { 1 + poly.len() as u64 } else { 1 };
-                if budget < cost {
-                    budget = 0;
-                    exhausted = true;
-                    break 'scan;
-                }
-                budget -= cost;
-                if !player {
-                    continue;
-                }
-                let inside = poly.len() >= 3 && point_in_polygon(e.x.round(), e.y.round(), poly);
-                let was = vm.zone_presence.contains(&(ci as u32, ei as u32));
-                if inside != was {
-                    events.push((ci as u32, ei as u32, inside));
-                }
+            if !self.vm_scan_zone(vm, ci, poly, &mut budget, &mut events) {
+                exhausted = true;
+                break;
             }
         }
         if let Some(vm) = self.vm.as_mut() {
@@ -3332,32 +3438,65 @@ impl World {
             if self.vm_out_of_work() {
                 return;
             }
-            let actor = self
-                .vm
-                .as_ref()
-                .map_or(NONE_HANDLE, |vm| vm.program.element_of_entity(entity));
-            if let Some(vm) = self.vm.as_mut() {
-                if inside {
-                    vm.zone_presence.insert((class, entity));
-                    if at_load {
-                        // Presence starts empty: a character inside at load enters on the
-                        // first scan (hypothesis).
-                        vm.assume(Assumption::ZoneAtLoad);
-                    }
-                } else {
-                    vm.zone_presence.remove(&(class, entity));
-                }
-            }
-            let name = if inside {
-                callbacks::ENTER_ZONE
-            } else {
-                callbacks::EXIT_ZONE
-            };
-            // VM-093: the entering / leaving actor is the current actor.
-            self.vm_with_current_actor(actor, |w| {
-                w.vm_dispatch(class, name, &[actor]);
-            });
+            self.vm_zone_event(class, entity, inside, at_load);
         }
+    }
+
+    fn vm_scan_zone(
+        &self,
+        vm: &VmState,
+        ci: usize,
+        poly: &[(i32, i32)],
+        budget: &mut u64,
+        events: &mut Vec<(u32, u32, bool)>,
+    ) -> bool {
+        for (ei, e) in self.entities.iter().enumerate() {
+            // One unit per entity looked at, plus one per edge for every character tested.
+            let player = e.kind == EntityKind::Player && e.alive && e.active;
+            let cost = if player { 1 + poly.len() as u64 } else { 1 };
+            if *budget < cost {
+                *budget = 0;
+                return false;
+            }
+            *budget -= cost;
+            if !player {
+                continue;
+            }
+            let inside = poly.len() >= 3 && point_in_polygon(e.x.round(), e.y.round(), poly);
+            let was = vm.zone_presence.contains(&(ci as u32, ei as u32));
+            if inside != was {
+                events.push((ci as u32, ei as u32, inside));
+            }
+        }
+        true
+    }
+
+    fn vm_zone_event(&mut self, class: u32, entity: u32, inside: bool, at_load: bool) {
+        let actor = self
+            .vm
+            .as_ref()
+            .map_or(NONE_HANDLE, |vm| vm.program.element_of_entity(entity));
+        if let Some(vm) = self.vm.as_mut() {
+            if inside {
+                vm.zone_presence.insert((class, entity));
+                if at_load {
+                    // Presence starts empty: a character inside at load enters on the
+                    // first scan (hypothesis).
+                    vm.assume(Assumption::ZoneAtLoad);
+                }
+            } else {
+                vm.zone_presence.remove(&(class, entity));
+            }
+        }
+        let name = if inside {
+            callbacks::ENTER_ZONE
+        } else {
+            callbacks::EXIT_ZONE
+        };
+        // VM-093: the entering / leaving actor is the current actor.
+        self.vm_with_current_actor(actor, |w| {
+            w.vm_dispatch(class, name, &[actor]);
+        });
     }
 
     /// A player character's reading of the scroll `handle` (`World::resolve_pickups`, at the
@@ -3440,110 +3579,147 @@ impl World {
     /// Run sequence `i` until it blocks; returns true when it has finished.
     fn vm_advance_sequence(&mut self, i: usize) -> bool {
         loop {
-            // What the sequence waits for, checked against the world without holding it mutably.
-            let Some(vm) = self.vm.as_ref() else {
-                return true;
+            let el = match self.vm_next_sequence_element(i) {
+                Ok(el) => el,
+                Err(finished) => return finished,
             };
-            let Some(seq) = vm.sequences.get(i) else {
-                return true;
-            };
-            match seq.wait {
-                // `Wait(n)` holds the sequence for exactly n ticks: the tick that brings the
-                // count to zero runs the next element.
-                SeqWait::Ticks(n) if n > 1 => {
-                    if let Some(seq) = self.vm.as_mut().and_then(|vm| vm.sequences.get_mut(i)) {
-                        seq.wait = SeqWait::Ticks(n - 1);
-                    }
-                    return false;
-                }
-                SeqWait::Text(id) => {
-                    if vm.texts.iter().any(|t| t.id == id) {
-                        return false;
-                    }
-                }
-                SeqWait::Barrier => {
-                    if !seq.tokens.iter().all(|&t| self.seq_token_done(t)) {
-                        return false;
-                    }
-                }
-                SeqWait::Ticks(_) | SeqWait::None => {}
+            if !self.vm_sequence_element(i, &el) {
+                return false;
             }
-            // A barrier released by a walk that did not arrive rests on the completion
-            // hypothesis (`SeqToken::Walk`).
-            let walk_without_arrival = seq.wait == SeqWait::Barrier
-                && seq
-                    .tokens
-                    .iter()
-                    .any(|&t| self.walk_completed_without_arrival(t));
-            let el = {
-                let Some(vm) = self.vm.as_mut() else {
-                    return true;
-                };
-                if !charge(vm, 1) {
-                    return false;
+        }
+    }
+
+    fn vm_sequence_waiting(&mut self, i: usize) -> Option<bool> {
+        // What the sequence waits for, checked against the world without holding it mutably.
+        let vm = self.vm.as_ref()?;
+        let seq = vm.sequences.get(i)?;
+        match seq.wait {
+            // `Wait(n)` holds the sequence for exactly n ticks: the tick that brings the
+            // count to zero runs the next element.
+            SeqWait::Ticks(n) if n > 1 => {
+                if let Some(seq) = self.vm.as_mut().and_then(|vm| vm.sequences.get_mut(i)) {
+                    seq.wait = SeqWait::Ticks(n - 1);
                 }
-                if walk_without_arrival {
-                    vm.assume(Assumption::WalkCompletion);
+                return Some(true);
+            }
+            SeqWait::Text(id) => {
+                if vm.texts.iter().any(|t| t.id == id) {
+                    return Some(true);
                 }
-                let Some(seq) = vm.sequences.get_mut(i) else {
-                    return true;
-                };
-                if seq.wait == SeqWait::Barrier {
-                    seq.tokens.clear();
+            }
+            SeqWait::Barrier => {
+                if !seq.tokens.iter().all(|&t| self.seq_token_done(t)) {
+                    return Some(true);
                 }
-                seq.wait = SeqWait::None;
-                let Some(el) = seq.elements.get(seq.next as usize).cloned() else {
-                    return true;
-                };
-                seq.next += 1;
-                el
+            }
+            SeqWait::Ticks(_) | SeqWait::None => {}
+        }
+        Some(false)
+    }
+
+    /// The next element, or whether the sequence finished when it cannot advance.
+    fn vm_next_sequence_element(&mut self, i: usize) -> Result<SeqElement, bool> {
+        match self.vm_sequence_waiting(i) {
+            None => return Err(true),
+            Some(true) => return Err(false),
+            Some(false) => {}
+        }
+        let Some(vm) = self.vm.as_ref() else {
+            return Err(true);
+        };
+        let Some(seq) = vm.sequences.get(i) else {
+            return Err(true);
+        };
+        // A barrier released by a walk that did not arrive rests on the completion
+        // hypothesis (`SeqToken::Walk`).
+        let walk_without_arrival = seq.wait == SeqWait::Barrier
+            && seq
+                .tokens
+                .iter()
+                .any(|&t| self.walk_completed_without_arrival(t));
+        let el = {
+            let Some(vm) = self.vm.as_mut() else {
+                return Err(true);
             };
-            match el {
-                SeqElement::Text(t) => {
-                    if let Some(vm) = self.vm.as_mut() {
-                        let id = vm.show_text(t, true);
-                        if let (Some(id), Some(seq)) = (id, vm.sequences.get_mut(i)) {
-                            seq.wait = SeqWait::Text(id);
-                            return false;
-                        }
-                    }
+            if !charge(vm, 1) {
+                return Err(false);
+            }
+            if walk_without_arrival {
+                vm.assume(Assumption::WalkCompletion);
+            }
+            let Some(seq) = vm.sequences.get_mut(i) else {
+                return Err(true);
+            };
+            if seq.wait == SeqWait::Barrier {
+                seq.tokens.clear();
+            }
+            seq.wait = SeqWait::None;
+            let Some(el) = seq.elements.get(seq.next as usize).cloned() else {
+                return Err(true);
+            };
+            seq.next += 1;
+            el
+        };
+        Ok(el)
+    }
+
+    fn vm_sequence_text(&mut self, i: usize, t: i32) -> bool {
+        if let Some(vm) = self.vm.as_mut() {
+            let id = vm.show_text(t, true);
+            if let (Some(id), Some(seq)) = (id, vm.sequences.get_mut(i)) {
+                seq.wait = SeqWait::Text(id);
+                return false;
+            }
+        }
+        true
+    }
+
+    fn vm_sequence_timer(&mut self, i: usize, n: u32) -> bool {
+        if n > 0 {
+            // VM-221 with ADR-0010: a timer of `n` counts `n` logic frames.
+            if let Some(seq) = self.vm.as_mut().and_then(|vm| vm.sequences.get_mut(i)) {
+                seq.wait = SeqWait::Ticks(n);
+            }
+            return false;
+        }
+        true
+    }
+
+    fn vm_sequence_element(&mut self, i: usize, el: &SeqElement) -> bool {
+        match *el {
+            SeqElement::Text(t) => {
+                return self.vm_sequence_text(i, t);
+            }
+            SeqElement::Wait(n) => {
+                return self.vm_sequence_timer(i, n);
+            }
+            SeqElement::Barrier => {
+                if let Some(seq) = self.vm.as_mut().and_then(|vm| vm.sequences.get_mut(i)) {
+                    seq.wait = SeqWait::Barrier;
                 }
-                SeqElement::Wait(n) => {
-                    if n > 0 {
-                        // VM-221 with ADR-0010: a timer of `n` counts `n` logic frames.
-                        if let Some(seq) = self.vm.as_mut().and_then(|vm| vm.sequences.get_mut(i)) {
-                            seq.wait = SeqWait::Ticks(n);
-                        }
-                        return false;
-                    }
+            }
+            SeqElement::Camera(loc) => self.vm_camera(loc),
+            // VM-120: a message element is delivered synchronously when its sequence
+            // reaches it, with the current actor set for an actor target (VM-093).
+            SeqElement::Message(m) => self.vm_deliver(m),
+            SeqElement::Walk { entity, x, y } => {
+                self.vm_walk(entity, x, y);
+                self.vm_push_token(i, SeqToken::Walk { entity, x, y });
+            }
+            SeqElement::Teleport { entity, to } => self.vm_teleport(entity, to),
+            SeqElement::Animation { id, .. } => {
+                if let Some(vm) = self.vm.as_mut() {
+                    inc_id(&mut vm.counters.stub_natives, id);
                 }
-                SeqElement::Barrier => {
-                    if let Some(seq) = self.vm.as_mut().and_then(|vm| vm.sequences.get_mut(i)) {
-                        seq.wait = SeqWait::Barrier;
-                    }
-                }
-                SeqElement::Camera(loc) => self.vm_camera(loc),
-                // VM-120: a message element is delivered synchronously when its sequence
-                // reaches it, with the current actor set for an actor target (VM-093).
-                SeqElement::Message(m) => self.vm_deliver(m),
-                SeqElement::Walk { entity, x, y } => {
-                    self.vm_walk(entity, x, y);
-                    self.vm_push_token(i, SeqToken::Walk { entity, x, y });
-                }
-                SeqElement::Teleport { entity, to } => self.vm_teleport(entity, to),
-                SeqElement::Animation { id, .. } => {
-                    if let Some(vm) = self.vm.as_mut() {
-                        inc_id(&mut vm.counters.stub_natives, id);
-                    }
-                    self.vm_push_token(i, SeqToken::Animation { id });
-                }
-                SeqElement::Stub { id } => {
-                    if let Some(vm) = self.vm.as_mut() {
-                        inc_id(&mut vm.counters.stub_natives, id);
-                    }
+                self.vm_push_token(i, SeqToken::Animation { id });
+            }
+            SeqElement::Stub { id } => {
+                if let Some(vm) = self.vm.as_mut() {
+                    inc_id(&mut vm.counters.stub_natives, id);
                 }
             }
         }
+        true
     }
 
     /// Record a completion token on sequence `i` (bounded).
@@ -3741,212 +3917,293 @@ impl World {
                 pop_frame(vm);
                 continue;
             };
-            let mut terminate = false;
-            match ins {
-                Instr::Nop => advance(vm),
-                Instr::Bad { opcode } => {
-                    if opcode == 0x04 {
-                        // VM-044: reported, then the next instruction.
-                        inc(&mut vm.counters.faults);
-                        advance(vm);
-                    } else {
-                        // VM-040 and VM-069: the unchecked fetch and the endless loop.
-                        terminate = fault(vm, Fault::BadOpcode, true);
-                    }
-                }
-                Instr::Enter { locals, temps } => {
-                    if !charge(vm, u64::from(locals) + u64::from(temps)) {
-                        inc(&mut vm.counters.budget_aborts);
-                        return CallOutcome::Exhausted;
-                    }
-                    if let Some(f) = vm.frames.last_mut() {
-                        f.locals = vec![0; locals as usize];
-                        f.temps = vec![0; temps as usize];
-                    }
-                    advance(vm);
-                }
-                Instr::PushParam { src } => {
-                    let v = read(vm, src);
-                    let full = vm
-                        .instances
-                        .get_mut(ci)
-                        .is_none_or(|i| i.params.len() >= MAX_STACK);
-                    if full {
-                        terminate = fault(vm, Fault::UncheckedAccess(0x02), true);
-                    } else {
-                        vm.instances[ci].params.push(v);
-                    }
-                    advance(vm);
-                }
-                Instr::Call { target } => {
-                    if !push_frame(vm, ci as u32, target, pc.wrapping_add(1)) {
-                        terminate = true;
-                    }
-                }
-                Instr::Return => pop_frame(vm),
-                Instr::ReturnValue { src } => {
-                    let v = read(vm, src);
-                    if let Some(i) = vm.instances.get_mut(ci) {
-                        i.callback_return = v;
-                    }
-                    // VM-047: at a depth greater than one the caller frame's result slot takes
-                    // the value too (VM-095 (2): also across a nested callback).
-                    if vm.frames.len() >= 2 {
-                        let n = vm.frames.len();
-                        vm.frames[n - 2].result = v;
-                        vm.frames[n - 2].result_written = true;
-                    }
-                    pop_frame(vm);
-                }
-                Instr::LoadParam { dst, offset } => {
-                    let v = vm
-                        .frames
-                        .last()
-                        .filter(|_| offset.is_multiple_of(4))
-                        .and_then(|f| f.params.get((offset / 4) as usize).copied());
-                    let v = v.unwrap_or_else(|| {
-                        // 8.1: `S(a) := 0`, the callback continues.
-                        fault(vm, Fault::UncheckedAccess(0x08), false);
-                        0
-                    });
-                    terminate = !write(vm, dst, v);
-                    advance(vm);
-                }
-                Instr::StoreParam { src, offset } => {
-                    let v = read(vm, src);
-                    let ok = offset.is_multiple_of(4)
-                        && vm
-                            .frames
-                            .last_mut()
-                            .and_then(|f| f.params.get_mut((offset / 4) as usize))
-                            .map(|c| *c = v)
-                            .is_some();
-                    if !ok {
-                        terminate = fault(vm, Fault::UncheckedAccess(0x09), true);
-                    }
-                    advance(vm);
-                }
-                Instr::LoadResult { dst } => {
-                    let (v, written) = vm
-                        .frames
-                        .last()
-                        .map_or((0, false), |f| (f.result, f.result_written));
-                    if !written {
-                        // VM-071: the original reads whatever the allocation left there.
-                        vm.assume(Assumption::UnwrittenResultSlot);
-                    }
-                    terminate = !write(vm, dst, v);
-                    advance(vm);
-                }
-                Instr::PushArg { src } => {
-                    let v = read(vm, src);
-                    let full = vm
-                        .instances
-                        .get_mut(ci)
-                        .is_none_or(|i| i.args.len() >= NATIVE_ARG_CELLS);
-                    if full {
-                        // VM-051 / VM-087: a persistent imbalance overflows the 12-cell buffer.
-                        terminate = fault(vm, Fault::UncheckedAccess(0x0b), true);
-                    } else {
-                        vm.instances[ci].args.push(v);
-                    }
-                    advance(vm);
-                }
-                Instr::Native { id } => {
-                    let arity = crate::natives::native_row(id).map_or(0, |r| u64::from(r.arity));
-                    if !charge(vm, arity) {
-                        inc(&mut vm.counters.budget_aborts);
-                        return CallOutcome::Exhausted;
-                    }
-                    // VM-095: the instruction restores its own `pc` from a local copy, so a
-                    // nested callback the native runs cannot move it.
-                    let here = vm.pc;
-                    let ok = self.native_invoke(id);
-                    let Some(vm) = self.vm.as_mut() else {
-                        return CallOutcome::Aborted;
-                    };
-                    vm.pc = here;
-                    if ok {
-                        advance(vm);
-                    } else {
-                        terminate = true;
-                    }
-                }
-                Instr::LoadNativeResult { dst } => {
-                    let v = vm.instances.get(ci).map_or(0, |i| i.native_result);
-                    terminate = !write(vm, dst, v);
-                    advance(vm);
-                }
-                Instr::Jump { target } => {
-                    if target == END_OF_CALLBACK {
-                        // VM-070 with 8.1: not a termination - the current frame is popped
-                        // exactly as by 0x06 and its saved return address decides what
-                        // follows (a script-call frame returns to its caller, an engine
-                        // callback frame ends that invocation).
-                        vm.assume(Assumption::UnresolvedJump);
-                        fault(vm, Fault::SentinelJump(ci as u32, pc), false);
-                        pop_frame(vm);
-                    } else {
-                        vm.pc = target;
-                    }
-                }
-                Instr::JumpIfNonZero { cond, target } => {
-                    if read(vm, cond) != 0 {
-                        vm.pc = target;
-                    } else {
-                        advance(vm);
-                    }
-                }
-                Instr::JumpIfZero { cond, target } => {
-                    if read(vm, cond) == 0 {
-                        vm.pc = target;
-                    } else {
-                        advance(vm);
-                    }
-                }
-                Instr::Move { dst, src } => {
-                    let v = read(vm, src);
-                    terminate = !write(vm, dst, v);
-                    advance(vm);
-                }
-                Instr::LoadImm { dst, value } => {
-                    terminate = !write(vm, dst, value);
-                    advance(vm);
-                }
-                Instr::NegInt { dst, src } => {
-                    let v = read(vm, src).wrapping_neg();
-                    terminate = !write(vm, dst, v);
-                    advance(vm);
-                }
-                Instr::NegFloat { dst, src } => {
-                    // VM-060: the x87 flips the sign bit, NaNs included.
-                    let v = read(vm, src) ^ i32::MIN;
-                    terminate = !write(vm, dst, v);
-                    advance(vm);
-                }
-                Instr::FloatToInt { dst, src } => {
-                    let v = float_to_int(read(vm, src));
-                    terminate = !write(vm, dst, v);
-                    advance(vm);
-                }
-                Instr::IntToFloat { dst, src } => {
-                    let v = (read(vm, src) as f32).to_bits() as i32;
-                    terminate = !write(vm, dst, v);
-                    advance(vm);
-                }
-                Instr::Binary { op, dst, a, b } => {
-                    let (x, y) = (read(vm, a), read(vm, b));
-                    match op.apply(x, y) {
-                        Ok(v) => terminate = !write(vm, dst, v),
-                        Err(()) => terminate = fault(vm, Fault::Trap, true),
-                    }
-                    advance(vm);
-                }
-            }
-            if terminate {
-                return CallOutcome::Aborted;
+            if let Err(outcome) = self.vm_instruction(ci, pc, ins) {
+                return outcome;
             }
         }
+    }
+
+    fn vm_instruction(&mut self, ci: usize, pc: u32, ins: Instr) -> Result<(), CallOutcome> {
+        let Some(vm) = self.vm.as_mut() else {
+            return Err(CallOutcome::Aborted);
+        };
+        let mut terminate = false;
+        match ins {
+            Instr::Nop => advance(vm),
+            Instr::Bad { opcode } => {
+                terminate = Self::vm_instr_bad(vm, opcode);
+            }
+            Instr::Enter { locals, temps } => {
+                Self::vm_instr_enter(vm, locals, temps)?;
+            }
+            Instr::PushParam { src } => {
+                terminate = Self::vm_instr_push_param(vm, ci, src);
+            }
+            Instr::Call { target } => {
+                terminate = Self::vm_instr_call(vm, pc, ci, target);
+            }
+            Instr::Return => pop_frame(vm),
+            Instr::ReturnValue { src } => {
+                Self::vm_instr_return_value(vm, ci, src);
+            }
+            Instr::LoadParam { dst, offset } => {
+                let v = vm
+                    .frames
+                    .last()
+                    .filter(|_| offset.is_multiple_of(4))
+                    .and_then(|f| f.params.get((offset / 4) as usize).copied());
+                let v = v.unwrap_or_else(|| {
+                    // 8.1: `S(a) := 0`, the callback continues.
+                    fault(vm, Fault::UncheckedAccess(0x08), false);
+                    0
+                });
+                terminate = !write(vm, dst, v);
+                advance(vm);
+            }
+            Instr::StoreParam { src, offset } => {
+                terminate = Self::vm_instr_store_param(vm, src, offset);
+            }
+            Instr::LoadResult { dst } => {
+                terminate = Self::vm_instr_load_result(vm, dst);
+            }
+            Instr::PushArg { src } => {
+                terminate = Self::vm_instr_push_arg(vm, ci, src);
+            }
+            Instr::Native { id } => {
+                terminate = self.vm_instr_native(id)?;
+            }
+            Instr::LoadNativeResult { dst } => {
+                let v = vm.instances.get(ci).map_or(0, |i| i.native_result);
+                terminate = !write(vm, dst, v);
+                advance(vm);
+            }
+            Instr::Jump { target } => {
+                Self::vm_instr_jump(vm, pc, ci, target);
+            }
+            Instr::JumpIfNonZero { cond, target } => {
+                Self::vm_instr_jump_if_nonzero(vm, cond, target);
+            }
+            Instr::JumpIfZero { cond, target } => {
+                Self::vm_instr_jump_if_zero(vm, cond, target);
+            }
+            Instr::Move { dst, src } => {
+                let v = read(vm, src);
+                terminate = !write(vm, dst, v);
+                advance(vm);
+            }
+            Instr::LoadImm { dst, value } => {
+                terminate = !write(vm, dst, value);
+                advance(vm);
+            }
+            Instr::NegInt { dst, src } => {
+                let v = read(vm, src).wrapping_neg();
+                terminate = !write(vm, dst, v);
+                advance(vm);
+            }
+            Instr::NegFloat { dst, src } => {
+                // VM-060: the x87 flips the sign bit, NaNs included.
+                let v = read(vm, src) ^ i32::MIN;
+                terminate = !write(vm, dst, v);
+                advance(vm);
+            }
+            Instr::FloatToInt { dst, src } => {
+                let v = float_to_int(read(vm, src));
+                terminate = !write(vm, dst, v);
+                advance(vm);
+            }
+            Instr::IntToFloat { dst, src } => {
+                let v = (read(vm, src) as f32).to_bits() as i32;
+                terminate = !write(vm, dst, v);
+                advance(vm);
+            }
+            Instr::Binary { op, dst, a, b } => {
+                terminate = Self::vm_instr_binary(vm, op, dst, a, b);
+            }
+        }
+        if terminate {
+            Err(CallOutcome::Aborted)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn vm_instr_bad(vm: &mut VmState, opcode: u8) -> bool {
+        let mut terminate = false;
+        if opcode == 0x04 {
+            // VM-044: reported, then the next instruction.
+            inc(&mut vm.counters.faults);
+            advance(vm);
+        } else {
+            // VM-040 and VM-069: the unchecked fetch and the endless loop.
+            terminate = fault(vm, Fault::BadOpcode, true);
+        }
+        terminate
+    }
+
+    fn vm_instr_enter(vm: &mut VmState, locals: u32, temps: u32) -> Result<(), CallOutcome> {
+        if !charge(vm, u64::from(locals) + u64::from(temps)) {
+            inc(&mut vm.counters.budget_aborts);
+            return Err(CallOutcome::Exhausted);
+        }
+        if let Some(f) = vm.frames.last_mut() {
+            f.locals = vec![0; locals as usize];
+            f.temps = vec![0; temps as usize];
+        }
+        advance(vm);
+        Ok(())
+    }
+
+    fn vm_instr_push_param(vm: &mut VmState, ci: usize, src: Slot) -> bool {
+        let mut terminate = false;
+        let v = read(vm, src);
+        let full = vm
+            .instances
+            .get_mut(ci)
+            .is_none_or(|i| i.params.len() >= MAX_STACK);
+        if full {
+            terminate = fault(vm, Fault::UncheckedAccess(0x02), true);
+        } else {
+            vm.instances[ci].params.push(v);
+        }
+        advance(vm);
+        terminate
+    }
+
+    fn vm_instr_call(vm: &mut VmState, pc: u32, ci: usize, target: u32) -> bool {
+        let mut terminate = false;
+        if !push_frame(vm, ci as u32, target, pc.wrapping_add(1)) {
+            terminate = true;
+        }
+        terminate
+    }
+
+    fn vm_instr_return_value(vm: &mut VmState, ci: usize, src: Slot) {
+        let v = read(vm, src);
+        if let Some(i) = vm.instances.get_mut(ci) {
+            i.callback_return = v;
+        }
+        // VM-047: at a depth greater than one the caller frame's result slot takes
+        // the value too (VM-095 (2): also across a nested callback).
+        if vm.frames.len() >= 2 {
+            let n = vm.frames.len();
+            vm.frames[n - 2].result = v;
+            vm.frames[n - 2].result_written = true;
+        }
+        pop_frame(vm);
+    }
+
+    fn vm_instr_store_param(vm: &mut VmState, src: Slot, offset: u32) -> bool {
+        let mut terminate = false;
+        let v = read(vm, src);
+        let ok = offset.is_multiple_of(4)
+            && vm
+                .frames
+                .last_mut()
+                .and_then(|f| f.params.get_mut((offset / 4) as usize))
+                .map(|c| *c = v)
+                .is_some();
+        if !ok {
+            terminate = fault(vm, Fault::UncheckedAccess(0x09), true);
+        }
+        advance(vm);
+        terminate
+    }
+
+    fn vm_instr_load_result(vm: &mut VmState, dst: Slot) -> bool {
+        let (v, written) = vm
+            .frames
+            .last()
+            .map_or((0, false), |f| (f.result, f.result_written));
+        if !written {
+            // VM-071: the original reads whatever the allocation left there.
+            vm.assume(Assumption::UnwrittenResultSlot);
+        }
+        let terminate = !write(vm, dst, v);
+        advance(vm);
+        terminate
+    }
+
+    fn vm_instr_push_arg(vm: &mut VmState, ci: usize, src: Slot) -> bool {
+        let mut terminate = false;
+        let v = read(vm, src);
+        let full = vm
+            .instances
+            .get_mut(ci)
+            .is_none_or(|i| i.args.len() >= NATIVE_ARG_CELLS);
+        if full {
+            // VM-051 / VM-087: a persistent imbalance overflows the 12-cell buffer.
+            terminate = fault(vm, Fault::UncheckedAccess(0x0b), true);
+        } else {
+            vm.instances[ci].args.push(v);
+        }
+        advance(vm);
+        terminate
+    }
+
+    fn vm_instr_native(&mut self, id: u32) -> Result<bool, CallOutcome> {
+        let Some(vm) = self.vm.as_mut() else {
+            return Err(CallOutcome::Aborted);
+        };
+        let mut terminate = false;
+        let arity = crate::natives::native_row(id).map_or(0, |r| u64::from(r.arity));
+        if !charge(vm, arity) {
+            inc(&mut vm.counters.budget_aborts);
+            return Err(CallOutcome::Exhausted);
+        }
+        // VM-095: the instruction restores its own `pc` from a local copy, so a
+        // nested callback the native runs cannot move it.
+        let here = vm.pc;
+        let ok = self.native_invoke(id);
+        let Some(vm) = self.vm.as_mut() else {
+            return Err(CallOutcome::Aborted);
+        };
+        vm.pc = here;
+        if ok {
+            advance(vm);
+        } else {
+            terminate = true;
+        }
+        Ok(terminate)
+    }
+
+    fn vm_instr_jump(vm: &mut VmState, pc: u32, ci: usize, target: u32) {
+        if target == END_OF_CALLBACK {
+            // VM-070 with 8.1: not a termination - the current frame is popped
+            // exactly as by 0x06 and its saved return address decides what
+            // follows (a script-call frame returns to its caller, an engine
+            // callback frame ends that invocation).
+            vm.assume(Assumption::UnresolvedJump);
+            fault(vm, Fault::SentinelJump(ci as u32, pc), false);
+            pop_frame(vm);
+        } else {
+            vm.pc = target;
+        }
+    }
+
+    fn vm_instr_jump_if_nonzero(vm: &mut VmState, cond: Slot, target: u32) {
+        if read(vm, cond) != 0 {
+            vm.pc = target;
+        } else {
+            advance(vm);
+        }
+    }
+
+    fn vm_instr_jump_if_zero(vm: &mut VmState, cond: Slot, target: u32) {
+        if read(vm, cond) == 0 {
+            vm.pc = target;
+        } else {
+            advance(vm);
+        }
+    }
+
+    fn vm_instr_binary(vm: &mut VmState, op: BinOp, dst: Slot, a: Slot, b: Slot) -> bool {
+        let (x, y) = (read(vm, a), read(vm, b));
+        let terminate = match op.apply(x, y) {
+            Ok(v) => !write(vm, dst, v),
+            Err(()) => fault(vm, Fault::Trap, true),
+        };
+        advance(vm);
+        terminate
     }
 }
 

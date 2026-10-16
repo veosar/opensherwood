@@ -236,78 +236,7 @@ pub fn parse_with(data: &[u8], limits: &Limits) -> Result<Archive, FormatError> 
         let tag = r.tag("SRES entry tag")?;
         let id = r.u32("SRES entry id")?;
         let unknown_0x08 = r.u32("SRES entry unknown_0x08")?;
-        let body = match &tag {
-            b"PIC " => Body::Picture(budget.picture(&mut r)?),
-            b"PICC" => {
-                let n = r.u32("SRES picture count")?;
-                budget.count(n, r.pos() - 4, "SRES picture count")?;
-                let mut pics = Vec::with_capacity(n as usize);
-                for _ in 0..n {
-                    pics.push(budget.picture(&mut r)?);
-                }
-                Body::PictureCollection(pics)
-            }
-            b"BTTN" | b"RDO " | b"NPTF" | b"SLID" => {
-                let kind = match &tag {
-                    b"BTTN" => WidgetKind::Button,
-                    b"RDO " => WidgetKind::Radio,
-                    b"NPTF" => WidgetKind::InputField,
-                    _ => WidgetKind::Slider,
-                };
-                let states = r.u32("SRES widget states")?;
-                let mut pictures = Vec::with_capacity(states.count_ones() as usize);
-                for _ in 0..states.count_ones() {
-                    pictures.push(budget.picture(&mut r)?);
-                }
-                Body::Widget {
-                    kind,
-                    states,
-                    pictures,
-                }
-            }
-            b"CUR " => {
-                let unknown_0x0c = r.u16("SRES cursor unknown_0x0c")?;
-                let hotspot_x = r.u16("SRES cursor hotspot x")?;
-                let hotspot_y = r.u16("SRES cursor hotspot y")?;
-                let unknown_0x12 = r.u16("SRES cursor unknown_0x12")?;
-                let n = r.u32("SRES cursor frame count")?;
-                budget.count(n, r.pos() - 4, "SRES cursor frame count")?;
-                let mut frames = Vec::with_capacity(n as usize);
-                for _ in 0..n {
-                    frames.push(budget.picture(&mut r)?);
-                }
-                Body::Cursor {
-                    unknown_0x0c,
-                    hotspot_x,
-                    hotspot_y,
-                    unknown_0x12,
-                    frames,
-                }
-            }
-            b"TEXT" => {
-                let n = r.u16("SRES text count")?;
-                let mut v = Vec::with_capacity(usize::from(n));
-                for _ in 0..n {
-                    v.push(r.pstring16_utf16("SRES text")?);
-                }
-                Body::Text(v)
-            }
-            b"WAVE" => {
-                let n = r.u16("SRES wave count")?;
-                let mut v = Vec::with_capacity(usize::from(n));
-                for _ in 0..n {
-                    v.push(r.pstring16("SRES wave path")?);
-                }
-                Body::Wave(v)
-            }
-            other => {
-                return Err(FormatError::BadMagic {
-                    offset,
-                    expected: "PIC /PICC/BTTN/RDO /NPTF/SLID/CUR /TEXT/WAVE".into(),
-                    found: tag_string(*other),
-                });
-            }
-        };
+        let body = parse_body(&mut r, &mut budget, tag, offset)?;
         entries.push(Entry {
             tag,
             id,
@@ -316,16 +245,101 @@ pub fn parse_with(data: &[u8], limits: &Limits) -> Result<Archive, FormatError> 
             body,
         });
     }
+    let offsets = parse_offsets(&mut r, &entries)?;
+    Ok(Archive {
+        version,
+        entries,
+        offsets,
+    })
+}
+
+fn parse_body(
+    r: &mut Reader<'_>,
+    budget: &mut Budget<'_>,
+    tag: [u8; 4],
+    offset: usize,
+) -> Result<Body, FormatError> {
+    Ok(match &tag {
+        b"PIC " => Body::Picture(budget.picture(r)?),
+        b"PICC" => {
+            let n = r.u32("SRES picture count")?;
+            budget.count(n, r.pos() - 4, "SRES picture count")?;
+            let mut pics = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                pics.push(budget.picture(r)?);
+            }
+            Body::PictureCollection(pics)
+        }
+        b"BTTN" | b"RDO " | b"NPTF" | b"SLID" => {
+            let kind = match &tag {
+                b"BTTN" => WidgetKind::Button,
+                b"RDO " => WidgetKind::Radio,
+                b"NPTF" => WidgetKind::InputField,
+                _ => WidgetKind::Slider,
+            };
+            let states = r.u32("SRES widget states")?;
+            let mut pictures = Vec::with_capacity(states.count_ones() as usize);
+            for _ in 0..states.count_ones() {
+                pictures.push(budget.picture(r)?);
+            }
+            Body::Widget {
+                kind,
+                states,
+                pictures,
+            }
+        }
+        b"CUR " => {
+            let unknown_0x0c = r.u16("SRES cursor unknown_0x0c")?;
+            let hotspot_x = r.u16("SRES cursor hotspot x")?;
+            let hotspot_y = r.u16("SRES cursor hotspot y")?;
+            let unknown_0x12 = r.u16("SRES cursor unknown_0x12")?;
+            let n = r.u32("SRES cursor frame count")?;
+            budget.count(n, r.pos() - 4, "SRES cursor frame count")?;
+            let mut frames = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                frames.push(budget.picture(r)?);
+            }
+            Body::Cursor {
+                unknown_0x0c,
+                hotspot_x,
+                hotspot_y,
+                unknown_0x12,
+                frames,
+            }
+        }
+        b"TEXT" => {
+            let n = r.u16("SRES text count")?;
+            let mut v = Vec::with_capacity(usize::from(n));
+            for _ in 0..n {
+                v.push(r.pstring16_utf16("SRES text")?);
+            }
+            Body::Text(v)
+        }
+        b"WAVE" => {
+            let n = r.u16("SRES wave count")?;
+            let mut v = Vec::with_capacity(usize::from(n));
+            for _ in 0..n {
+                v.push(r.pstring16("SRES wave path")?);
+            }
+            Body::Wave(v)
+        }
+        other => {
+            return Err(FormatError::BadMagic {
+                offset,
+                expected: "PIC /PICC/BTTN/RDO /NPTF/SLID/CUR /TEXT/WAVE".into(),
+                found: tag_string(*other),
+            });
+        }
+    })
+}
+
+fn parse_offsets(r: &mut Reader<'_>, entries: &[Entry]) -> Result<Vec<u32>, FormatError> {
     // Trailer: one u32 offset per entry (the first is always 12, the end of the header) plus a final
     // sentinel equal to the offset of the trailer itself.
     let trailer_start = r.pos();
     let mut offsets = Vec::new();
     if r.remaining() == 0 {
-        return Ok(Archive {
-            version,
-            entries,
-            offsets,
-        });
+        return Ok(offsets);
     }
     offsets.reserve(entries.len() + 1);
     for expected in entries
@@ -344,11 +358,7 @@ pub fn parse_with(data: &[u8], limits: &Limits) -> Result<Archive, FormatError> 
         offsets.push(off);
     }
     r.expect_end("SRES trailer")?;
-    Ok(Archive {
-        version,
-        entries,
-        offsets,
-    })
+    Ok(offsets)
 }
 
 #[cfg(test)]

@@ -565,42 +565,10 @@ impl Replay {
                     header = Some(h);
                 }
                 ReplayLine::Event(e) => {
-                    if header.is_none() {
-                        return Err(format!("line {}: event before header", n + 1));
-                    }
-                    if e.tick >= replay_limits::MAX_TICK
-                        || events.len() >= replay_limits::MAX_EVENTS
-                    {
-                        return Err(format!("line {}: replay too long", n + 1));
-                    }
-                    if let Some(prev) = events.last()
-                        && (e.tick, e.sequence) <= (prev.tick, prev.sequence)
-                    {
-                        return Err(format!(
-                            "line {}: events must be strictly ordered by (tick, sequence)",
-                            n + 1
-                        ));
-                    }
-                    events.push(e);
+                    Self::parse_event(header.as_ref(), &mut events, e, n)?;
                 }
                 ReplayLine::Checkpoint(c) => {
-                    if header.is_none() {
-                        return Err(format!("line {}: checkpoint before header", n + 1));
-                    }
-                    if c.tick > replay_limits::MAX_TICK
-                        || checkpoints.len() >= replay_limits::MAX_CHECKPOINTS
-                    {
-                        return Err(format!("line {}: replay too long", n + 1));
-                    }
-                    if let Some(prev) = checkpoints.last()
-                        && c.tick <= prev.tick
-                    {
-                        return Err(format!(
-                            "line {}: checkpoints must be strictly ordered",
-                            n + 1
-                        ));
-                    }
-                    checkpoints.push(c);
+                    Self::parse_checkpoint(header.as_ref(), &mut checkpoints, c, n)?;
                 }
             }
         }
@@ -612,6 +580,54 @@ impl Replay {
         };
         replay.check_checkpoints()?;
         Ok(replay)
+    }
+
+    fn parse_event(
+        header: Option<&ReplayHeader>,
+        events: &mut Vec<ReplayEvent>,
+        e: ReplayEvent,
+        n: usize,
+    ) -> Result<(), String> {
+        if header.is_none() {
+            return Err(format!("line {}: event before header", n + 1));
+        }
+        if e.tick >= replay_limits::MAX_TICK || events.len() >= replay_limits::MAX_EVENTS {
+            return Err(format!("line {}: replay too long", n + 1));
+        }
+        if let Some(prev) = events.last()
+            && (e.tick, e.sequence) <= (prev.tick, prev.sequence)
+        {
+            return Err(format!(
+                "line {}: events must be strictly ordered by (tick, sequence)",
+                n + 1
+            ));
+        }
+        events.push(e);
+        Ok(())
+    }
+
+    fn parse_checkpoint(
+        header: Option<&ReplayHeader>,
+        checkpoints: &mut Vec<ReplayCheckpoint>,
+        c: ReplayCheckpoint,
+        n: usize,
+    ) -> Result<(), String> {
+        if header.is_none() {
+            return Err(format!("line {}: checkpoint before header", n + 1));
+        }
+        if c.tick > replay_limits::MAX_TICK || checkpoints.len() >= replay_limits::MAX_CHECKPOINTS {
+            return Err(format!("line {}: replay too long", n + 1));
+        }
+        if let Some(prev) = checkpoints.last()
+            && c.tick <= prev.tick
+        {
+            return Err(format!(
+                "line {}: checkpoints must be strictly ordered",
+                n + 1
+            ));
+        }
+        checkpoints.push(c);
+        Ok(())
     }
 
     /// A replay compares something: its first checkpoint is at tick 0 (the state right after

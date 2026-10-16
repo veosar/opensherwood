@@ -307,24 +307,7 @@ impl Framebuffer {
             (-dy, y0 - ymin),
             (dy, ymax - y0),
         ] {
-            if p == 0 {
-                if q < 0 {
-                    return None;
-                }
-                continue;
-            }
-            let r = q as f64 / p as f64;
-            if p < 0 {
-                if r > t1 {
-                    return None;
-                }
-                t0 = t0.max(r);
-            } else {
-                if r < t0 {
-                    return None;
-                }
-                t1 = t1.min(r);
-            }
+            Self::clip_parameter(p, q, &mut t0, &mut t1)?;
         }
         if t0 > t1 {
             return None;
@@ -336,6 +319,25 @@ impl Framebuffer {
             px(t1, x0, dx),
             px(t1, y0, dy),
         ))
+    }
+
+    fn clip_parameter(p: i64, q: i64, t0: &mut f64, t1: &mut f64) -> Option<()> {
+        if p == 0 {
+            return (q >= 0).then_some(());
+        }
+        let r = q as f64 / p as f64;
+        if p < 0 {
+            if r > *t1 {
+                return None;
+            }
+            *t0 = t0.max(r);
+        } else {
+            if r < *t0 {
+                return None;
+            }
+            *t1 = t1.min(r);
+        }
+        Some(())
     }
 
     /// Copy an opaque RGBA region of `src` (source rectangle at `sx,sy`) to `dx,dy`, clipped.
@@ -423,18 +425,21 @@ impl Framebuffer {
                     continue;
                 }
                 let di = ((dy * fb_w + dx) * 4) as usize;
-                if a == 255 {
-                    self.rgba[di..di + 3].copy_from_slice(&rgba[si..si + 3]);
-                } else {
-                    for c in 0..3 {
-                        let s = u32::from(rgba[si + c]);
-                        let d = u32::from(self.rgba[di + c]);
-                        self.rgba[di + c] = ((s * a + d * (255 - a)) / 255) as u8;
-                    }
-                }
-                self.rgba[di + 3] = 255;
+                self.blend_pixel(di, &rgba[si..si + 4], a);
             }
         }
+    }
+
+    fn blend_pixel(&mut self, di: usize, rgba: &[u8], a: u32) {
+        if a == 255 {
+            self.rgba[di..di + 3].copy_from_slice(&rgba[..3]);
+        } else {
+            for (c, &s) in rgba.iter().take(3).enumerate() {
+                let d = u32::from(self.rgba[di + c]);
+                self.rgba[di + c] = ((u32::from(s) * a + d * (255 - a)) / 255) as u8;
+            }
+        }
+        self.rgba[di + 3] = 255;
     }
 
     /// BLAKE3 of dimensions and pixels.
@@ -794,31 +799,7 @@ pub fn render_with_items(
     );
     // Pick-up items lie on the ground: the `BONUS_*` picture of the kind and stack when the app
     // loaded it, else a placeholder disc coloured by kind; before the markers and the sprites.
-    if let Some(vm) = world.vm.as_ref() {
-        for item in vm.items().into_iter().filter(|it| it.active) {
-            let (x, y) = (
-                px(Fixed::from_int(item.x), cx),
-                px(Fixed::from_int(item.y), cy),
-            );
-            if let Some((art, frame)) = items
-                .and_then(|a| a.for_item(item.kind, u32::from(item.stack)))
-                .and_then(|anim| anim.frame_at(world.tick))
-                .and_then(|art| sprites.frame(art.frame).map(|f| (art, f)))
-            {
-                let fx = to_i32(i64::from(x) + i64::from(art.offset_x));
-                let fy = to_i32(i64::from(y) + i64::from(art.offset_y));
-                fb.blit_rgba(fx, fy, frame.width, frame.height, &frame.rgba);
-                continue;
-            }
-            let fill = match item.kind {
-                ItemKind::Purse | ItemKind::Pouch => palette::ITEM_PURSE,
-                ItemKind::Arrows => palette::ITEM_ARROWS,
-                ItemKind::Unknown(_) => palette::ITEM_UNKNOWN,
-            };
-            fb.fill_circle(x, y, ITEM_DISC_RADIUS, fill);
-            fb.circle(x, y, ITEM_DISC_RADIUS, palette::ITEM_RIM);
-        }
-    }
+    render_items(&mut fb, world, sprites, items);
     // Ground markers first (target lines, selection circles), then sprites in depth order
     // (dead bodies stay on the map).
     for e in world.entities.iter().filter(|e| e.active) {
@@ -851,6 +832,73 @@ pub fn render_with_items(
             );
         }
     }
+    render_actors(&mut fb, world, background, sprites);
+    draw_figure_target_outline(&mut fb, world);
+    render_combat_hud(&mut fb, world);
+    let (mx, my) = (
+        Fixed::from_raw(world.pointer.0).round(),
+        Fixed::from_raw(world.pointer.1).round(),
+    );
+    fb.line(
+        mx.saturating_sub(4),
+        my,
+        mx.saturating_add(4),
+        my,
+        palette::POINTER,
+    );
+    fb.line(
+        mx,
+        my.saturating_sub(4),
+        mx,
+        my.saturating_add(4),
+        palette::POINTER,
+    );
+    fb
+}
+
+fn render_items(
+    fb: &mut Framebuffer,
+    world: &World,
+    sprites: &mut dyn SpriteSource,
+    items: Option<&ItemArt>,
+) {
+    let (cx, cy) = world.camera;
+    let px = |f: Fixed, c: i32| to_i32(i64::from(f.round()) - i64::from(c));
+    if let Some(vm) = world.vm.as_ref() {
+        for item in vm.items().into_iter().filter(|it| it.active) {
+            let (x, y) = (
+                px(Fixed::from_int(item.x), cx),
+                px(Fixed::from_int(item.y), cy),
+            );
+            if let Some((art, frame)) = items
+                .and_then(|a| a.for_item(item.kind, u32::from(item.stack)))
+                .and_then(|anim| anim.frame_at(world.tick))
+                .and_then(|art| sprites.frame(art.frame).map(|f| (art, f)))
+            {
+                let fx = to_i32(i64::from(x) + i64::from(art.offset_x));
+                let fy = to_i32(i64::from(y) + i64::from(art.offset_y));
+                fb.blit_rgba(fx, fy, frame.width, frame.height, &frame.rgba);
+                continue;
+            }
+            let fill = match item.kind {
+                ItemKind::Purse | ItemKind::Pouch => palette::ITEM_PURSE,
+                ItemKind::Arrows => palette::ITEM_ARROWS,
+                ItemKind::Unknown(_) => palette::ITEM_UNKNOWN,
+            };
+            fb.fill_circle(x, y, ITEM_DISC_RADIUS, fill);
+            fb.circle(x, y, ITEM_DISC_RADIUS, palette::ITEM_RIM);
+        }
+    }
+}
+
+fn render_actors(
+    fb: &mut Framebuffer,
+    world: &World,
+    background: Option<&Background>,
+    sprites: &mut dyn SpriteSource,
+) {
+    let (cx, cy) = world.camera;
+    let px = |f: Fixed, c: i32| to_i32(i64::from(f.round()) - i64::from(c));
     // Painter's order: characters lower on the map (larger feet y) are nearer the viewer and drawn
     // last; ties are broken by entity index so the order is deterministic.
     let mut order: Vec<(i32, usize)> = world
@@ -912,7 +960,11 @@ pub fn render_with_items(
             });
         }
     }
-    draw_figure_target_outline(&mut fb, world);
+}
+
+fn render_combat_hud(fb: &mut Framebuffer, world: &World) {
+    let (cx, cy) = world.camera;
+    let px = |f: Fixed, c: i32| to_i32(i64::from(f.round()) - i64::from(c));
     // The bars of every fighter and of the actor under the pointer, then the damage numbers
     // (`combat-measurements.md` 1.2), over the sprites.
     let hovered = world.actor_at_pointer();
@@ -966,33 +1018,8 @@ pub fn render_with_items(
         let x = i64::from(d.x) - i64::from(cx) + i64::from(damage_numbers::LEFT);
         let y = i64::from(d.y) - i64::from(cy) + i64::from(damage_numbers::TOP)
             - i64::from(damage_numbers::rise(d.age));
-        draw_number(
-            &mut fb,
-            d.amount,
-            to_i32(x),
-            to_i32(y),
-            palette::DAMAGE_NUMBER,
-        );
+        draw_number(fb, d.amount, to_i32(x), to_i32(y), palette::DAMAGE_NUMBER);
     }
-    let (mx, my) = (
-        Fixed::from_raw(world.pointer.0).round(),
-        Fixed::from_raw(world.pointer.1).round(),
-    );
-    fb.line(
-        mx.saturating_sub(4),
-        my,
-        mx.saturating_add(4),
-        my,
-        palette::POINTER,
-    );
-    fb.line(
-        mx,
-        my.saturating_sub(4),
-        mx,
-        my.saturating_add(4),
-        palette::POINTER,
-    );
-    fb
 }
 
 #[cfg(test)]
@@ -1303,6 +1330,31 @@ mod tests {
         assert!(fb.rgba.chunks_exact(4).all(|p| p == [7, 7, 7, 255]));
     }
 
+    fn check_occluder_extremes(x: i32, y: i32, w: u32, h: u32, ext: &[i32]) {
+        let o = Occluder {
+            x,
+            y,
+            width: w,
+            height: h,
+            bits: vec![0xFF; 16],
+            line: Some(((x, y), (y, x))),
+        };
+        for &mx in ext {
+            for &my in ext {
+                let _ = o.covers(mx, my);
+            }
+            let _ = o.depth_y(mx);
+        }
+        let bottom = Occluder { line: None, ..o };
+        for &mx in ext {
+            let d = bottom.depth_y(mx);
+            assert_eq!(
+                i64::from(d),
+                (i64::from(y) + i64::from(h)).clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+            );
+        }
+    }
+
     #[test]
     fn occluder_math_is_total_at_extremes() {
         let ext = [i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX];
@@ -1311,29 +1363,7 @@ mod tests {
             for &y in &ext {
                 for &w in &sizes {
                     for &h in &sizes {
-                        let o = Occluder {
-                            x,
-                            y,
-                            width: w,
-                            height: h,
-                            bits: vec![0xFF; 16],
-                            line: Some(((x, y), (y, x))),
-                        };
-                        for &mx in &ext {
-                            for &my in &ext {
-                                let _ = o.covers(mx, my);
-                            }
-                            let _ = o.depth_y(mx);
-                        }
-                        let bottom = Occluder { line: None, ..o };
-                        for &mx in &ext {
-                            let d = bottom.depth_y(mx);
-                            assert_eq!(
-                                i64::from(d),
-                                (i64::from(y) + i64::from(h))
-                                    .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
-                            );
-                        }
+                        check_occluder_extremes(x, y, w, h, &ext);
                     }
                 }
             }

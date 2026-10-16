@@ -297,25 +297,28 @@ pub fn referenced_sprites(mission: &Mission, table: &ProfileTable) -> BTreeSet<S
     for group in &mission.actor_groups {
         match group {
             ActorGroup::Npcs { records, .. } => {
-                for r in records {
-                    if let Some(p) = index(&table.soldiers, r.profile) {
-                        out.insert(p.sprite.clone());
-                    }
-                }
+                out.extend(
+                    records
+                        .iter()
+                        .filter_map(|r| index(&table.soldiers, r.profile))
+                        .map(|p| p.sprite.clone()),
+                );
             }
             ActorGroup::Civilians { records, .. } => {
-                for r in records {
-                    if let Some(p) = index(&table.civilians, r.profile) {
-                        out.insert(p.sprite.clone());
-                    }
-                }
+                out.extend(
+                    records
+                        .iter()
+                        .filter_map(|r| index(&table.civilians, r.profile))
+                        .map(|p| p.sprite.clone()),
+                );
             }
             ActorGroup::Vips { records, .. } => {
-                for r in records {
-                    if let Some(p) = index(&table.player_characters, r.profile) {
-                        out.insert(p.sprite.clone());
-                    }
-                }
+                out.extend(
+                    records
+                        .iter()
+                        .filter_map(|r| index(&table.player_characters, r.profile))
+                        .map(|p| p.sprite.clone()),
+                );
             }
             _ => {}
         }
@@ -483,12 +486,7 @@ pub fn build_spec_with_stats(
     let table = loaded.profiles.as_ref();
     let mut actors = Vec::new();
     let mut profiles: Vec<String> = Vec::new();
-    let mut use_profile = |p: &str| {
-        if !profiles.iter().any(|x| x == p) {
-            profiles.push(p.to_string());
-        }
-        p.to_string()
-    };
+    let mut use_profile = |p: &str| register_profile(&mut profiles, p);
     let mut stats = ProgramStats::default();
     // Every rail is translated once, in index order: the script assigns rails by index
     // (native 132) and actors reference theirs by index.
@@ -685,19 +683,7 @@ pub fn compile_rail(rail: &[RailPoint], stats: &mut ProgramStats) -> Vec<Instruc
         return Vec::new();
     }
     stats.rails += 1;
-    for c in rail
-        .iter()
-        .flat_map(|p| &p.tables)
-        .flat_map(|t| &t.blocks)
-        .flat_map(|b| &b.commands)
-    {
-        stats.commands += 1;
-        if TRANSLATED_OPCODES.contains(&c.opcode) {
-            stats.translated += 1;
-        } else {
-            *stats.unknown.entry(c.opcode).or_insert(0) += 1;
-        }
-    }
+    count_rail_commands(rail, stats);
     // (point index, arriving while travelling forward)
     let visits: Vec<(usize, bool)> = (0..n)
         .map(|i| (i, i != 0))
@@ -740,6 +726,29 @@ pub fn compile_rail(rail: &[RailPoint], stats: &mut ProgramStats) -> Vec<Instruc
         out[f.at] = Instruction::Jump { pc: visit_pc[k] };
     }
     out
+}
+
+fn count_rail_commands(rail: &[RailPoint], stats: &mut ProgramStats) {
+    for c in rail
+        .iter()
+        .flat_map(|p| &p.tables)
+        .flat_map(|t| &t.blocks)
+        .flat_map(|b| &b.commands)
+    {
+        stats.commands += 1;
+        if TRANSLATED_OPCODES.contains(&c.opcode) {
+            stats.translated += 1;
+        } else {
+            *stats.unknown.entry(c.opcode).or_insert(0) += 1;
+        }
+    }
+}
+
+fn register_profile(profiles: &mut Vec<String>, profile: &str) -> String {
+    if !profiles.iter().any(|p| p == profile) {
+        profiles.push(profile.to_string());
+    }
+    profile.to_string()
 }
 
 /// One table: a single 100 % block inline, otherwise a `Choose` over the blocks (each block

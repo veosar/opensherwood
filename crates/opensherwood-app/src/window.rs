@@ -100,6 +100,86 @@ struct App {
     exit: bool,
 }
 
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+    use winit::platform::windows::EventLoopBuilderExtWindows;
+
+    #[test]
+    fn window_events_preserve_input_order_and_release_on_focus_loss() {
+        struct Probe(App);
+        impl ApplicationHandler for Probe {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                let window = event_loop
+                    .create_window(Window::default_attributes().with_visible(false))
+                    .unwrap();
+                let id = window.id();
+                let device_id = winit::event::DeviceId::dummy();
+                for event in [
+                    WindowEvent::CursorMoved {
+                        device_id,
+                        position: PhysicalPosition::new(10.0, 20.0),
+                    },
+                    WindowEvent::MouseInput {
+                        device_id,
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                    },
+                    WindowEvent::MouseInput {
+                        device_id,
+                        state: ElementState::Pressed,
+                        button: MouseButton::Other(8),
+                    },
+                    WindowEvent::MouseWheel {
+                        device_id,
+                        delta: MouseScrollDelta::LineDelta(0.0, 1.6),
+                        phase: winit::event::TouchPhase::Moved,
+                    },
+                    WindowEvent::Focused(false),
+                ] {
+                    self.0.window_event(event_loop, id, event);
+                }
+                assert_eq!(self.0.pointer, (10.0, 20.0));
+                assert!(self.0.held_buttons.is_empty());
+                assert!(self.0.held_keys.is_empty());
+                assert_eq!(
+                    self.0.pending,
+                    vec![
+                        InputEvent::PointerMove { x256: 0, y256: 0 },
+                        InputEvent::PointerDown {
+                            button: Button::Left
+                        },
+                        InputEvent::Wheel { delta: 2 },
+                        InputEvent::KeyUp { key: Key::Enter },
+                        InputEvent::PointerUp {
+                            button: Button::Left
+                        },
+                    ]
+                );
+                event_loop.exit();
+            }
+            fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+        }
+        let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
+        let mut probe = Probe(App {
+            session: Session::new(None, std::env::temp_dir()),
+            rpc: None,
+            gpu: None,
+            viewport: (1024, 768),
+            scale: 1,
+            windowed: true,
+            pending: vec![],
+            held_keys: [Key::Enter].into_iter().collect(),
+            held_buttons: std::collections::BTreeSet::new(),
+            last_tick: Instant::now(),
+            accumulator: Duration::ZERO,
+            pointer: (0.0, 0.0),
+            exit: false,
+        });
+        event_loop.run_app(&mut probe).unwrap();
+    }
+}
+
 const SHADER: &str = r"
 struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 @vertex
@@ -363,6 +443,64 @@ impl Gpu {
 }
 
 impl App {
+    fn handle_mouse_button(&mut self, state: ElementState, button: MouseButton) {
+        if std::env::var_os("OPENSHERWOOD_TRACE_INPUT").is_some() {
+            eprintln!(
+                "opensherwood: mouse {button:?} {state:?} at {:?} -> logical {:?}",
+                self.pointer,
+                self.to_logical(self.pointer)
+            );
+        }
+        let button = match button {
+            MouseButton::Left => Button::Left,
+            MouseButton::Right => Button::Right,
+            MouseButton::Middle => Button::Middle,
+            _ => return,
+        };
+        self.pending.push(match state {
+            ElementState::Pressed => {
+                self.held_buttons.insert(button);
+                InputEvent::PointerDown { button }
+            }
+            ElementState::Released => {
+                self.held_buttons.remove(&button);
+                InputEvent::PointerUp { button }
+            }
+        });
+    }
+
+    fn handle_keyboard(&mut self, event: &winit::event::KeyEvent) {
+        if event.repeat {
+            return;
+        }
+        if event.physical_key == PhysicalKey::Code(KeyCode::F11) {
+            // Presentation toggle: neither the press nor the release reaches the simulation.
+            if event.state == ElementState::Pressed
+                && let Some(g) = &self.gpu
+            {
+                let fullscreen = g.window.fullscreen().is_none();
+                g.window.set_fullscreen(
+                    fullscreen.then_some(winit::window::Fullscreen::Borderless(None)),
+                );
+            }
+            return;
+        }
+        if let PhysicalKey::Code(code) = event.physical_key
+            && let Some(key) = map_key(code)
+        {
+            self.pending.push(match event.state {
+                ElementState::Pressed => {
+                    self.held_keys.insert(key);
+                    InputEvent::KeyDown { key }
+                }
+                ElementState::Released => {
+                    self.held_keys.remove(&key);
+                    InputEvent::KeyUp { key }
+                }
+            });
+        }
+    }
+
     /// Window physical position -> logical viewport 24.8 coordinates.
     fn to_logical(&self, pos: (f64, f64)) -> (i32, i32) {
         let Some(gpu) = &self.gpu else {
@@ -590,29 +728,7 @@ impl ApplicationHandler for App {
                 self.pending.push(InputEvent::PointerMove { x256, y256 });
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if std::env::var_os("OPENSHERWOOD_TRACE_INPUT").is_some() {
-                    eprintln!(
-                        "opensherwood: mouse {button:?} {state:?} at {:?} -> logical {:?}",
-                        self.pointer,
-                        self.to_logical(self.pointer)
-                    );
-                }
-                let button = match button {
-                    MouseButton::Left => Button::Left,
-                    MouseButton::Right => Button::Right,
-                    MouseButton::Middle => Button::Middle,
-                    _ => return,
-                };
-                self.pending.push(match state {
-                    ElementState::Pressed => {
-                        self.held_buttons.insert(button);
-                        InputEvent::PointerDown { button }
-                    }
-                    ElementState::Released => {
-                        self.held_buttons.remove(&button);
-                        InputEvent::PointerUp { button }
-                    }
-                });
+                self.handle_mouse_button(state, button);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let steps = match delta {
@@ -623,37 +739,7 @@ impl ApplicationHandler for App {
                     self.pending.push(InputEvent::Wheel { delta: steps });
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.repeat {
-                    return;
-                }
-                if event.physical_key == PhysicalKey::Code(KeyCode::F11) {
-                    // Presentation toggle: neither the press nor the release reaches the simulation.
-                    if event.state == ElementState::Pressed
-                        && let Some(g) = &self.gpu
-                    {
-                        let fullscreen = g.window.fullscreen().is_none();
-                        g.window.set_fullscreen(
-                            fullscreen.then_some(winit::window::Fullscreen::Borderless(None)),
-                        );
-                    }
-                    return;
-                }
-                if let PhysicalKey::Code(code) = event.physical_key
-                    && let Some(key) = map_key(code)
-                {
-                    self.pending.push(match event.state {
-                        ElementState::Pressed => {
-                            self.held_keys.insert(key);
-                            InputEvent::KeyDown { key }
-                        }
-                        ElementState::Released => {
-                            self.held_keys.remove(&key);
-                            InputEvent::KeyUp { key }
-                        }
-                    });
-                }
-            }
+            WindowEvent::KeyboardInput { event, .. } => self.handle_keyboard(&event),
             WindowEvent::RedrawRequested => self.redraw(),
             _ => {}
         }

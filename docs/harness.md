@@ -14,6 +14,13 @@ The harness is how agents (and CI) verify that the engine works without a human 
 4. **Oracle comparisons** (`harness/oracle`): compare our tick traces with traces recorded from the original game.
    Windows only, local only. See `docs/oracle.md`.
 
+Local Rust characterization tests also pin six profile/options frame hashes and the tools' text and PNG
+output (`opensherwood-app` UI tests and `opensherwood-tools/tests/cli.rs`). Set `OPENSHERWOOD_GAME_DIR` to
+the local copy of the retail data to run them; without it they return early. Only output digests are
+stored in the tests. The CLI test removes its temporary overlay PNG after checking both exports.
+Synthetic tests cover the minimap pixels and profile edits; a Windows-only hidden-window test checks
+input ordering and releases held input on focus loss.
+
 ## Protocol
 
 JSON-RPC 2.0, one JSON object per line, request on stdin, response on stdout, logs on stderr.

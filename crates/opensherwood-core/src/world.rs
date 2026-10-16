@@ -1240,16 +1240,30 @@ impl ObstacleIndex {
                     return None;
                 }
                 let c = (cy * self.cols + cx) as usize;
-                let (from, to) = (self.cell_start[c] as usize, self.cell_start[c + 1] as usize);
-                for &k in &self.entries[from..to] {
-                    if !charge_budget(budget, 1) {
-                        return None;
-                    }
-                    let (ox, oy, hw, hh) = self.boxes[k as usize];
-                    if (x - ox).abs() <= hw + size && (y - oy).abs() <= hh + size {
-                        return Some(true);
-                    }
+                if self.cell_blocked(c, x, y, size, budget)? {
+                    return Some(true);
                 }
+            }
+        }
+        Some(false)
+    }
+
+    fn cell_blocked(
+        &self,
+        c: usize,
+        x: Fixed,
+        y: Fixed,
+        size: Fixed,
+        budget: &mut u64,
+    ) -> Option<bool> {
+        let (from, to) = (self.cell_start[c] as usize, self.cell_start[c + 1] as usize);
+        for &k in &self.entries[from..to] {
+            if !charge_budget(budget, 1) {
+                return None;
+            }
+            let (ox, oy, hw, hh) = self.boxes[k as usize];
+            if (x - ox).abs() <= hw + size && (y - oy).abs() <= hh + size {
+                return Some(true);
             }
         }
         Some(false)
@@ -1325,83 +1339,8 @@ impl World {
         world.set_geometry(spec.geometry.clone())?;
         world.entities.clear();
         world.goal = (Fixed::from_int(-1000), Fixed::from_int(-1000));
-        let f = Fixed::from_int;
         for (i, a) in spec.actors.iter().enumerate() {
-            let kind = match a.team {
-                Team::Player => EntityKind::Player,
-                Team::Enemy | Team::Civilian => EntityKind::Guard,
-            };
-            // Programs are shared: identical rails give one entry, in first-use order.
-            let program = if kind == EntityKind::Guard && !a.program.is_empty() {
-                if a.program.len() > MAX_PROGRAM_LEN {
-                    return Err(format!("actor {i} program too long"));
-                }
-                let idx = world
-                    .programs
-                    .iter()
-                    .position(|p| *p == a.program)
-                    .unwrap_or_else(|| {
-                        world.programs.push(a.program.clone());
-                        world.programs.len() - 1
-                    });
-                Some(idx as u32)
-            } else {
-                None
-            };
-            world.entities.push(Entity {
-                id: EntityId {
-                    index: i as u32,
-                    generation: 1,
-                },
-                kind,
-                x: f(a.x),
-                y: f(a.y),
-                size: f(12),
-                speed: if kind == EntityKind::Player {
-                    SYNTHETIC_PLAYER_SPEED
-                } else {
-                    SYNTHETIC_GUARD_SPEED
-                },
-                target: None,
-                path: Vec::new(),
-                patrol: a.patrol.iter().map(|&(x, y)| (f(x), f(y))).collect(),
-                patrol_index: 0,
-                wait_ticks: 0,
-                facing256: a.facing256.rem_euclid(256),
-                alive: true,
-                anim: Some(AnimState::new(a.profile.clone(), 0)),
-                program,
-                pc: 0,
-                active: a.active,
-                ai_locked: false,
-                gait: Gait::Walk,
-                posture: Posture::Standing,
-                team: a.team,
-                ai_state: AiState::Patrol,
-                state_ticks: 0,
-                last_seen: None,
-                alert_origin: None,
-                attack_target: None,
-                action: 0,
-                hp: a.hit_points,
-                hp_max: a.hit_points,
-                energy: ENERGY_MAX,
-                energy_ticks: 0,
-                foe: None,
-                pending_stimulus: None,
-                pose: FightPose::Idle,
-                pose_ticks: 0,
-                swing_ticks: 0,
-                figure: None,
-                knockout_resistance: a.knockout_resistance,
-                npc_gait: Gait::Walk,
-                fell_backward: false,
-                heard: false,
-                arrows: 0,
-                purses: 0,
-                pickup: None,
-                pickup_ticks: 0,
-            });
+            world.add_mission_actor(i, a)?;
         }
         // The original opens a mission with the camera on the hero.
         if let Some(hero) = world.entities.iter().find(|e| e.kind == EntityKind::Player) {
@@ -1410,25 +1349,7 @@ impl World {
         }
         // Every rail becomes a program the script can assign (native 132), shared like the
         // actors' own programs.
-        let mut paths = Vec::with_capacity(spec.rails.len());
-        for (i, rail) in spec.rails.iter().enumerate() {
-            if rail.is_empty() {
-                paths.push(None);
-                continue;
-            }
-            if rail.len() > MAX_PROGRAM_LEN {
-                return Err(format!("rail {i} program too long"));
-            }
-            let idx = world
-                .programs
-                .iter()
-                .position(|p| p == rail)
-                .unwrap_or_else(|| {
-                    world.programs.push(rail.clone());
-                    world.programs.len() - 1
-                });
-            paths.push(Some(idx as u32));
-        }
+        let paths = world.mission_paths(&spec.rails)?;
         world.validate()?;
         if let Some(program) = &spec.script {
             world.attach_script(
@@ -1441,6 +1362,109 @@ impl World {
             world.validate()?;
         }
         Ok(world)
+    }
+
+    fn add_mission_actor(&mut self, i: usize, a: &ActorSpec) -> Result<(), String> {
+        let f = Fixed::from_int;
+        let kind = match a.team {
+            Team::Player => EntityKind::Player,
+            Team::Enemy | Team::Civilian => EntityKind::Guard,
+        };
+        // Programs are shared: identical rails give one entry, in first-use order.
+        let program = if kind == EntityKind::Guard && !a.program.is_empty() {
+            if a.program.len() > MAX_PROGRAM_LEN {
+                return Err(format!("actor {i} program too long"));
+            }
+            let idx = self
+                .programs
+                .iter()
+                .position(|p| *p == a.program)
+                .unwrap_or_else(|| {
+                    self.programs.push(a.program.clone());
+                    self.programs.len() - 1
+                });
+            Some(idx as u32)
+        } else {
+            None
+        };
+        self.entities.push(Entity {
+            id: EntityId {
+                index: i as u32,
+                generation: 1,
+            },
+            kind,
+            x: f(a.x),
+            y: f(a.y),
+            size: f(12),
+            speed: if kind == EntityKind::Player {
+                SYNTHETIC_PLAYER_SPEED
+            } else {
+                SYNTHETIC_GUARD_SPEED
+            },
+            target: None,
+            path: Vec::new(),
+            patrol: a.patrol.iter().map(|&(x, y)| (f(x), f(y))).collect(),
+            patrol_index: 0,
+            wait_ticks: 0,
+            facing256: a.facing256.rem_euclid(256),
+            alive: true,
+            anim: Some(AnimState::new(a.profile.clone(), 0)),
+            program,
+            pc: 0,
+            active: a.active,
+            ai_locked: false,
+            gait: Gait::Walk,
+            posture: Posture::Standing,
+            team: a.team,
+            ai_state: AiState::Patrol,
+            state_ticks: 0,
+            last_seen: None,
+            alert_origin: None,
+            attack_target: None,
+            action: 0,
+            hp: a.hit_points,
+            hp_max: a.hit_points,
+            energy: ENERGY_MAX,
+            energy_ticks: 0,
+            foe: None,
+            pending_stimulus: None,
+            pose: FightPose::Idle,
+            pose_ticks: 0,
+            swing_ticks: 0,
+            figure: None,
+            knockout_resistance: a.knockout_resistance,
+            npc_gait: Gait::Walk,
+            fell_backward: false,
+            heard: false,
+            arrows: 0,
+            purses: 0,
+            pickup: None,
+            pickup_ticks: 0,
+        });
+        Ok(())
+    }
+
+    fn mission_paths(&mut self, rails: &[Vec<Instruction>]) -> Result<Vec<Option<u32>>, String> {
+        let mut paths = Vec::with_capacity(rails.len());
+        for (i, rail) in rails.iter().enumerate() {
+            if rail.is_empty() {
+                paths.push(None);
+                continue;
+            }
+            if rail.len() > MAX_PROGRAM_LEN {
+                return Err(format!("rail {i} program too long"));
+            }
+            let idx = self
+                .programs
+                .iter()
+                .position(|p| p == rail)
+                .unwrap_or_else(|| {
+                    self.programs.push(rail.clone());
+                    self.programs.len() - 1
+                });
+            paths.push(Some(idx as u32));
+        }
+        Ok(paths)
     }
 
     /// Centre the camera on a map point, clamped to the map. Any `i32` point is accepted: the
@@ -1823,6 +1847,562 @@ impl World {
     /// range and `elapsed` below the frame duration; nothing falls back silently. Without a
     /// catalog (synthetic worlds, no sprite bank) only the size bounds apply.
     pub fn validate_with(&self, catalog: &Catalog) -> Result<(), String> {
+        self.validate_dimensions()?;
+        self.validate_programs()?;
+        // Every entity by id (the attack target and foe checks below look ids up here rather
+        // than scanning the table per entity).
+        let mut ids: BTreeMap<EntityId, (EntityKind, Team, usize)> = BTreeMap::new();
+        for (slot, e) in self.entities.iter().enumerate() {
+            if ids.insert(e.id, (e.kind, e.team, slot)).is_some() {
+                return Err(format!("duplicate entity id {:?}", e.id));
+            }
+            self.validate_entity(e, catalog)?;
+        }
+        for e in &self.entities {
+            Self::validate_attack_target(e, &ids)?;
+            self.validate_entity_foe(e, &ids)?;
+        }
+        self.validate_obstacles()?;
+        self.validate_figure_input(&ids)?;
+        self.validate_damage_numbers()?;
+        self.validate_cursors()?;
+        self.validate_selection(&ids)?;
+        self.validate_vm_stream()?;
+        // Every stream derives from the world seed with its assigned id: a snapshot cannot
+        // smuggle in another generator.
+        if self.rng.seed != self.seed || self.rng.stream != GAMEPLAY_RNG_STREAM {
+            return Err(format!(
+                "gameplay rng stream identity ({}, {}) does not derive from the world seed {} and stream {GAMEPLAY_RNG_STREAM}",
+                self.rng.seed, self.rng.stream, self.seed
+            ));
+        }
+        self.rng.validate()
+    }
+
+    fn validate_entity_patrol(e: &Entity) -> Result<(), String> {
+        match e.kind {
+            EntityKind::Obstacle => {
+                if e.patrol.len() != 1 {
+                    return Err(format!(
+                        "obstacle {:?} needs exactly one extent entry",
+                        e.id
+                    ));
+                }
+                // The box the index and the collision test share: non-negative and
+                // bounded (a negative extent would index by magnitude and fail open).
+                let (hw, hh) = e.patrol[0];
+                let max = Fixed::from_int(MAX_OBSTACLE_HALF_EXTENT);
+                if hw < Fixed::ZERO || hh < Fixed::ZERO || hw > max || hh > max {
+                    return Err(format!(
+                        "obstacle {:?} half extents ({}, {}) outside 0..={MAX_OBSTACLE_HALF_EXTENT}",
+                        e.id,
+                        hw.round(),
+                        hh.round()
+                    ));
+                }
+            }
+            EntityKind::Player | EntityKind::Guard => {
+                if e.patrol.len() > MAX_ENTITIES {
+                    return Err(format!("entity {:?} has too many waypoints", e.id));
+                }
+                if !e.patrol.is_empty() && e.patrol_index as usize >= e.patrol.len() {
+                    return Err(format!("entity {:?} patrol index out of range", e.id));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_entity_program(&self, e: &Entity) -> Result<(), String> {
+        if let Some(p) = e.program {
+            let Some(program) = self.programs.get(p as usize) else {
+                return Err(format!("entity {:?} program {p} does not exist", e.id));
+            };
+            if e.pc as usize > program.len() {
+                return Err(format!("entity {:?} pc out of range", e.id));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_catalog_animation(
+        e: &Entity,
+        a: &AnimState,
+        catalog: &Catalog,
+    ) -> Result<(), String> {
+        let Some(set) = catalog.sets.get(&a.set) else {
+            return Err(format!(
+                "entity {:?} animation profile '{}' is not in the catalog",
+                e.id, a.set
+            ));
+        };
+        let Some(frames) = set.animations.get(a.animation as usize) else {
+            return Err(format!(
+                "entity {:?} animation {} does not exist in profile '{}'",
+                e.id, a.animation, a.set
+            ));
+        };
+        // An empty animation holds frame 0 (nothing advances it).
+        if a.frame as usize >= frames.len().max(1) {
+            return Err(format!(
+                "entity {:?} frame {} out of range for animation {} of '{}'",
+                e.id, a.frame, a.animation, a.set
+            ));
+        }
+        let hold = frames
+            .get(a.frame as usize)
+            .map_or(1, |f| f.duration.max(1));
+        if a.elapsed >= hold {
+            return Err(format!(
+                "entity {:?} animation timer {} exceeds the frame's {hold} frames",
+                e.id, a.elapsed
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_entity_animation(e: &Entity, catalog: &Catalog) -> Result<(), String> {
+        if let Some(a) = &e.anim {
+            if a.set.len() > 256 || a.animation > 1 << 20 || a.frame > 1 << 20 {
+                return Err(format!(
+                    "entity {:?} has an out-of-range animation state",
+                    e.id
+                ));
+            }
+            if !catalog.sets.is_empty() {
+                Self::validate_catalog_animation(e, a, catalog)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_entity_dimensions(e: &Entity) -> Result<(), String> {
+        if e.speed < Fixed::ZERO || e.size < Fixed::ZERO {
+            return Err(format!("entity {:?} has a negative speed or size", e.id));
+        }
+        if e.size > Fixed::from_int(MAX_ENTITY_SIZE) {
+            return Err(format!(
+                "entity {:?} size {} exceeds {MAX_ENTITY_SIZE}",
+                e.id,
+                e.size.round()
+            ));
+        }
+        let bound = Fixed::from_int(MAX_ENTITY_COORD);
+        if e.x.abs() > bound || e.y.abs() > bound {
+            return Err(format!("entity {:?} position out of range", e.id));
+        }
+        if (e.kind == EntityKind::Player) != (e.team == Team::Player) {
+            return Err(format!(
+                "entity {:?} kind {:?} does not match team {:?}",
+                e.id, e.kind, e.team
+            ));
+        }
+        if e.state_ticks > MAX_STATE_TICKS {
+            return Err(format!("entity {:?} state ticks out of range", e.id));
+        }
+        for (name, p) in [("last seen", e.last_seen), ("alert origin", e.alert_origin)] {
+            if let Some((x, y)) = p
+                && (x.abs() > bound || y.abs() > bound)
+            {
+                return Err(format!("entity {:?} {name} position out of range", e.id));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_entity_life(e: &Entity) -> Result<(), String> {
+        // The stealth layer's invariants (`ai.rs`): dead is one state, a timed state
+        // carries its timer and an untimed one none, the alert states belong to enemy
+        // soldiers and the blow to player characters, a returning soldier knows where to,
+        // a patrolling one remembers nothing.
+        if e.ai_state.dead() == e.alive {
+            return Err(format!(
+                "entity {:?} dead state {:?} disagrees with alive = {}",
+                e.id, e.ai_state, e.alive
+            ));
+        }
+        // The melee's invariants (`ai.rs`): hit points within the maximum and 0 exactly
+        // when dead, energy within its bar with its regain timer running exactly while
+        // below full, a foe exactly in the fighting state (an opponent of the other side),
+        // a timed pose exactly outside the idle one and only in a fight, the swing timer
+        // only in a fight, a figure only on a player character who attacks or fights.
+        if e.kind != EntityKind::Obstacle {
+            if e.hp < 0 || e.hp > e.hp_max {
+                return Err(format!(
+                    "entity {:?} hit points {} outside 0..={}",
+                    e.id, e.hp, e.hp_max
+                ));
+            }
+            if (e.hp > 0) != e.alive {
+                return Err(format!(
+                    "entity {:?} hit points {} disagree with alive = {}",
+                    e.id, e.hp, e.alive
+                ));
+            }
+            if !(0..=ENERGY_MAX).contains(&e.energy) {
+                return Err(format!(
+                    "entity {:?} energy {} out of range",
+                    e.id, e.energy
+                ));
+            }
+            if (e.energy < ENERGY_MAX) != (e.energy_ticks > 0) || e.energy_ticks > MAX_STATE_TICKS {
+                return Err(format!(
+                    "entity {:?} energy timer {} inconsistent with energy {}",
+                    e.id, e.energy_ticks, e.energy
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_entity_combat(e: &Entity) -> Result<(), String> {
+        if (e.ai_state == AiState::Fighting) != e.foe.is_some() {
+            return Err(format!(
+                "entity {:?} in the {:?} state with foe {:?}",
+                e.id, e.ai_state, e.foe
+            ));
+        }
+        if (e.pose != FightPose::Idle) != (e.pose_ticks > 0)
+            || e.pose_ticks > MAX_STATE_TICKS
+            || (e.pose != FightPose::Idle && e.ai_state != AiState::Fighting)
+        {
+            return Err(format!(
+                "entity {:?} pose {:?} with {} pose ticks in the {:?} state",
+                e.id, e.pose, e.pose_ticks, e.ai_state
+            ));
+        }
+        if e.swing_ticks > MAX_STATE_TICKS || (e.swing_ticks > 0 && e.ai_state != AiState::Fighting)
+        {
+            return Err(format!(
+                "entity {:?} swing timer {} outside a fight",
+                e.id, e.swing_ticks
+            ));
+        }
+        if e.figure.is_some()
+            && !(e.kind == EntityKind::Player
+                && (e.attack_target.is_some() || e.ai_state == AiState::Fighting))
+        {
+            return Err(format!(
+                "entity {:?} holds a figure without an attack order or a fight",
+                e.id
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_entity_pickup(&self, e: &Entity) -> Result<(), String> {
+        // The pick-up counters never go negative and stay bounded; a pick-up order belongs
+        // to a player character and names a pick-up item of the script's table.
+        if !(0..=MAX_PICKUP_COUNT).contains(&e.arrows)
+            || !(0..=MAX_PICKUP_COUNT).contains(&e.purses)
+        {
+            return Err(format!(
+                "entity {:?} carries {} arrows and {} purses, outside 0..={MAX_PICKUP_COUNT}",
+                e.id, e.arrows, e.purses
+            ));
+        }
+        if let Some(h) = e.pickup {
+            let known = self
+                .vm
+                .as_ref()
+                .is_some_and(|vm| vm.item(h).is_some() || vm.scroll(h).is_some());
+            if e.kind != EntityKind::Player || !known {
+                return Err(format!(
+                    "entity {:?} has a pick-up order on {h}, which is not a pick-up item \
+                     or scroll it can take",
+                    e.id
+                ));
+            }
+        }
+        if e.pickup_ticks > MAX_PICKUP_TICKS || (e.pickup.is_none() && e.pickup_ticks != 0) {
+            return Err(format!(
+                "entity {:?} has a pick-up pause of {} ticks with the order {:?}",
+                e.id, e.pickup_ticks, e.pickup
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_entity_state(e: &Entity) -> Result<(), String> {
+        if e.ai_state == AiState::Fighting
+            && !(e.kind == EntityKind::Player
+                || (e.kind == EntityKind::Guard && e.team == Team::Enemy))
+        {
+            return Err(format!(
+                "entity {:?} fights but is neither a player character nor an enemy soldier",
+                e.id
+            ));
+        }
+        if e.ai_state.timed() != (e.state_ticks > 0) {
+            return Err(format!(
+                "entity {:?} state ticks {} inconsistent with the {} state {:?}",
+                e.id,
+                e.state_ticks,
+                if e.ai_state.timed() {
+                    "timed"
+                } else {
+                    "untimed"
+                },
+                e.ai_state
+            ));
+        }
+        if e.ai_state.alert() && !(e.kind == EntityKind::Guard && e.team == Team::Enemy) {
+            return Err(format!(
+                "entity {:?} in the alert state {:?} is not an enemy soldier",
+                e.id, e.ai_state
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_entity_alert(e: &Entity) -> Result<(), String> {
+        if e.heard && !e.ai_state.alert() {
+            return Err(format!(
+                "entity {:?} was heard but is in the {:?} state, not an alert state",
+                e.id, e.ai_state
+            ));
+        }
+        if e.ai_state == AiState::Punching && e.kind != EntityKind::Player {
+            return Err(format!(
+                "entity {:?} delivers the punch but is not a player character",
+                e.id
+            ));
+        }
+        if matches!(e.ai_state, AiState::Returning | AiState::ReturnPending)
+            && e.alert_origin.is_none()
+        {
+            return Err(format!(
+                "entity {:?} is returning without an alert origin",
+                e.id
+            ));
+        }
+        if e.ai_state == AiState::Patrol && (e.last_seen.is_some() || e.alert_origin.is_some()) {
+            return Err(format!(
+                "entity {:?} patrols with a last seen position or an alert origin",
+                e.id
+            ));
+        }
+        if let Some(p) = e.pending_stimulus {
+            let bound = Fixed::from_int(MAX_ENTITY_COORD);
+            let soldier = e.kind == EntityKind::Guard && e.team == Team::Enemy && e.alive;
+            if !soldier || p.x.abs() > bound || p.y.abs() > bound {
+                return Err(format!(
+                    "entity {:?} holds a pending stimulus {p:?} but is not a living enemy \
+                     soldier or the position is out of range",
+                    e.id
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_entity(&self, e: &Entity, catalog: &Catalog) -> Result<(), String> {
+        if !(0..256).contains(&e.facing256) {
+            return Err(format!(
+                "entity {:?} facing {} out of range",
+                e.id, e.facing256
+            ));
+        }
+        Self::validate_entity_patrol(e)?;
+        self.validate_entity_program(e)?;
+        if e.path.len() > MAX_ENTITIES {
+            return Err(format!("entity {:?} has too many path points", e.id));
+        }
+        Self::validate_entity_animation(e, catalog)?;
+        Self::validate_entity_dimensions(e)?;
+        Self::validate_entity_life(e)?;
+        Self::validate_entity_combat(e)?;
+        self.validate_entity_pickup(e)?;
+        Self::validate_entity_state(e)?;
+        Self::validate_entity_alert(e)?;
+        Ok(())
+    }
+
+    fn validate_attack_target(
+        e: &Entity,
+        ids: &BTreeMap<EntityId, (EntityKind, Team, usize)>,
+    ) -> Result<(), String> {
+        if let Some(t) = e.attack_target {
+            let victim = ids.get(&t);
+            let ok = e.kind == EntityKind::Player
+                && t != e.id
+                && victim.is_some_and(|&(kind, team, _)| {
+                    kind == EntityKind::Guard && team == Team::Enemy
+                });
+            if !ok {
+                return Err(format!(
+                    "entity {:?} attack target {t:?} is invalid: the order goes from a player character to an enemy soldier",
+                    e.id
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_reciprocal_foe(
+        &self,
+        e: &Entity,
+        f: EntityId,
+        foe: Option<&(EntityKind, Team, usize)>,
+    ) -> Result<(), String> {
+        // Reciprocity is an invariant (Codex review 10, finding 7; Codex review 11,
+        // finding 5): the opponent of every living, active fighter fights back with
+        // the reciprocal id while he lives. A dead opponent is the stale reference
+        // the next tick ends (`kill` detaches him on the tick of the blow); an
+        // inactive fighter (hidden by native 113 mid-fight) is left to the tick that
+        // ends his fight from the other side.
+        if let Some(&(_, _, fi)) = foe
+            && e.alive
+            && e.active
+            && e.ai_state == AiState::Fighting
+        {
+            let o = &self.entities[fi];
+            if o.alive && (o.ai_state != AiState::Fighting || o.foe != Some(e.id)) {
+                return Err(format!(
+                    "entity {:?} fights {f:?}, who is {:?} with foe {:?}: a fight between two living actors is reciprocal",
+                    e.id, o.ai_state, o.foe
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_entity_foe(
+        &self,
+        e: &Entity,
+        ids: &BTreeMap<EntityId, (EntityKind, Team, usize)>,
+    ) -> Result<(), String> {
+        if let Some(f) = e.foe {
+            let foe = ids.get(&f);
+            let ok = f != e.id
+                && foe.is_some_and(|&(kind, team, _)| match e.kind {
+                    EntityKind::Player => kind == EntityKind::Guard && team == Team::Enemy,
+                    _ => kind == EntityKind::Player,
+                });
+            if !ok {
+                return Err(format!(
+                    "entity {:?} foe {f:?} is invalid: a fight is between a player character and an enemy soldier",
+                    e.id
+                ));
+            }
+            self.validate_reciprocal_foe(e, f, foe)?;
+        }
+        Ok(())
+    }
+
+    fn validate_obstacles(&self) -> Result<(), String> {
+        // The obstacle index the tick would build must be bounded (its rebuild is not charged
+        // to the budget; the cap keeps it at the size of a fraction of one tick's work).
+        let boxes: Vec<(Fixed, Fixed, Fixed, Fixed)> = self
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Obstacle)
+            .filter_map(|e| e.patrol.first().map(|&(hw, hh)| (e.x, e.y, hw, hh)))
+            .collect();
+        let entries = ObstacleIndex::entry_count(&boxes, self.map_size);
+        if entries > MAX_OBSTACLE_INDEX_ENTRIES {
+            return Err(format!(
+                "obstacle index would need {entries} entries (limit {MAX_OBSTACLE_INDEX_ENTRIES})"
+            ));
+        }
+        // No cell may hold more candidates than one movement query can test on its turn
+        // (`MAX_MOVEMENT_QUERY_WORK`).
+        let occupancy = ObstacleIndex::max_occupancy(&boxes, self.map_size);
+        if occupancy > MAX_OBSTACLE_CELL_OCCUPANCY {
+            return Err(format!(
+                "an obstacle index cell would hold {occupancy} obstacles (limit {MAX_OBSTACLE_CELL_OCCUPANCY})"
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_figure_input(
+        &self,
+        ids: &BTreeMap<EntityId, (EntityKind, Team, usize)>,
+    ) -> Result<(), String> {
+        if let Some((x, y)) = self.press {
+            let bound = Fixed::from_int(MAX_ENTITY_COORD);
+            if x.abs() > bound || y.abs() > bound {
+                return Err(format!("press position ({x:?}, {y:?}) out of range"));
+            }
+        }
+        if let Some(t) = self.figure_target {
+            let soldier = ids
+                .get(&t)
+                .is_some_and(|&(kind, team, _)| kind == EntityKind::Guard && team == Team::Enemy);
+            if self.press.is_none() || !soldier {
+                return Err(format!(
+                    "figure target {t:?} without a held left button or not an enemy soldier"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_damage_numbers(&self) -> Result<(), String> {
+        if self.damage_numbers.len() > MAX_DAMAGE_NUMBERS {
+            return Err(format!(
+                "{} damage numbers exceed the limit",
+                self.damage_numbers.len()
+            ));
+        }
+        if let Some(d) = self
+            .damage_numbers
+            .iter()
+            .find(|d| d.age >= DAMAGE_NUMBER_TICKS)
+        {
+            return Err(format!("damage number {d:?} outlived its rise"));
+        }
+        Ok(())
+    }
+
+    fn validate_cursors(&self) -> Result<(), String> {
+        for cursor in self.cursors.all() {
+            if !self.entities.is_empty() && cursor as usize >= self.entities.len() {
+                return Err(format!(
+                    "simulation cursor {cursor} beyond the {} entities",
+                    self.entities.len()
+                ));
+            }
+            if self.entities.is_empty() && cursor != 0 {
+                return Err("simulation cursor without entities".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_selection(
+        &self,
+        ids: &BTreeMap<EntityId, (EntityKind, Team, usize)>,
+    ) -> Result<(), String> {
+        if let Some(sel) = self.selected
+            && !ids.contains_key(&sel)
+        {
+            return Err(format!("selected entity {sel:?} does not exist"));
+        }
+        if let Some(c) = self.last_ground_click {
+            let bound = Fixed::from_int(MAX_ENTITY_COORD);
+            if c.tick > self.tick || c.x.abs() > bound || c.y.abs() > bound {
+                return Err(format!("last ground click {c:?} out of range"));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_vm_stream(&self) -> Result<(), String> {
+        if let Some(vm) = &self.vm {
+            vm.validate(self.programs.len(), self.entities.len())?;
+            if vm.rng.seed != self.seed || vm.rng.stream != SCRIPT_RNG_STREAM {
+                return Err(format!(
+                    "script rng stream identity ({}, {}) does not derive from the world seed {} and stream {SCRIPT_RNG_STREAM}",
+                    vm.rng.seed, vm.rng.stream, self.seed
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_dimensions(&self) -> Result<(), String> {
         if self.viewport.0 == 0
             || self.viewport.1 == 0
             || self.viewport.0 > MAX_VIEWPORT
@@ -1851,6 +2431,35 @@ impl World {
             return Err(format!("{} entities exceed the limit", self.entities.len()));
         }
         check_geometry(&self.geometry, self.map_size)?;
+        Ok(())
+    }
+
+    fn validate_program_instruction(
+        i: usize,
+        j: usize,
+        ins: &Instruction,
+        program: &[Instruction],
+    ) -> Result<(), String> {
+        let in_range = |pc: u32| (pc as usize) < program.len();
+        let ok = match ins {
+            Instruction::Jump { pc } => in_range(*pc),
+            Instruction::Choose { arms } => {
+                arms.len() <= 256 && arms.iter().all(|&(_, pc)| in_range(pc))
+            }
+            Instruction::Face { facing256 } => (0..256).contains(facing256),
+            Instruction::Turn { delta256 } => delta256.unsigned_abs() < 256,
+            Instruction::GoTo { x, y } => {
+                x.unsigned_abs() <= MAX_MAP_SIZE && y.unsigned_abs() <= MAX_MAP_SIZE
+            }
+            Instruction::Wait { .. } | Instruction::Stop | Instruction::Nop { .. } => true,
+        };
+        if !ok {
+            return Err(format!("program {i} instruction {j} out of range"));
+        }
+        Ok(())
+    }
+
+    fn validate_programs(&self) -> Result<(), String> {
         if self.programs.len() > MAX_ENTITIES {
             return Err(format!("{} programs exceed the limit", self.programs.len()));
         }
@@ -1858,458 +2467,11 @@ impl World {
             if p.len() > MAX_PROGRAM_LEN {
                 return Err(format!("program {i} too long"));
             }
-            let in_range = |pc: u32| (pc as usize) < p.len();
             for (j, ins) in p.iter().enumerate() {
-                let ok = match ins {
-                    Instruction::Jump { pc } => in_range(*pc),
-                    Instruction::Choose { arms } => {
-                        arms.len() <= 256 && arms.iter().all(|&(_, pc)| in_range(pc))
-                    }
-                    Instruction::Face { facing256 } => (0..256).contains(facing256),
-                    Instruction::Turn { delta256 } => delta256.unsigned_abs() < 256,
-                    Instruction::GoTo { x, y } => {
-                        x.unsigned_abs() <= MAX_MAP_SIZE && y.unsigned_abs() <= MAX_MAP_SIZE
-                    }
-                    Instruction::Wait { .. } | Instruction::Stop | Instruction::Nop { .. } => true,
-                };
-                if !ok {
-                    return Err(format!("program {i} instruction {j} out of range"));
-                }
+                Self::validate_program_instruction(i, j, ins, p)?;
             }
         }
-        // Every entity by id (the attack target and foe checks below look ids up here rather
-        // than scanning the table per entity).
-        let mut ids: BTreeMap<EntityId, (EntityKind, Team, usize)> = BTreeMap::new();
-        for (slot, e) in self.entities.iter().enumerate() {
-            if ids.insert(e.id, (e.kind, e.team, slot)).is_some() {
-                return Err(format!("duplicate entity id {:?}", e.id));
-            }
-            if !(0..256).contains(&e.facing256) {
-                return Err(format!(
-                    "entity {:?} facing {} out of range",
-                    e.id, e.facing256
-                ));
-            }
-            match e.kind {
-                EntityKind::Obstacle => {
-                    if e.patrol.len() != 1 {
-                        return Err(format!(
-                            "obstacle {:?} needs exactly one extent entry",
-                            e.id
-                        ));
-                    }
-                    // The box the index and the collision test share: non-negative and
-                    // bounded (a negative extent would index by magnitude and fail open).
-                    let (hw, hh) = e.patrol[0];
-                    let max = Fixed::from_int(MAX_OBSTACLE_HALF_EXTENT);
-                    if hw < Fixed::ZERO || hh < Fixed::ZERO || hw > max || hh > max {
-                        return Err(format!(
-                            "obstacle {:?} half extents ({}, {}) outside 0..={MAX_OBSTACLE_HALF_EXTENT}",
-                            e.id,
-                            hw.round(),
-                            hh.round()
-                        ));
-                    }
-                }
-                EntityKind::Player | EntityKind::Guard => {
-                    if e.patrol.len() > MAX_ENTITIES {
-                        return Err(format!("entity {:?} has too many waypoints", e.id));
-                    }
-                    if !e.patrol.is_empty() && e.patrol_index as usize >= e.patrol.len() {
-                        return Err(format!("entity {:?} patrol index out of range", e.id));
-                    }
-                }
-            }
-            if let Some(p) = e.program {
-                let Some(program) = self.programs.get(p as usize) else {
-                    return Err(format!("entity {:?} program {p} does not exist", e.id));
-                };
-                if e.pc as usize > program.len() {
-                    return Err(format!("entity {:?} pc out of range", e.id));
-                }
-            }
-            if e.path.len() > MAX_ENTITIES {
-                return Err(format!("entity {:?} has too many path points", e.id));
-            }
-            if let Some(a) = &e.anim {
-                if a.set.len() > 256 || a.animation > 1 << 20 || a.frame > 1 << 20 {
-                    return Err(format!(
-                        "entity {:?} has an out-of-range animation state",
-                        e.id
-                    ));
-                }
-                if !catalog.sets.is_empty() {
-                    let Some(set) = catalog.sets.get(&a.set) else {
-                        return Err(format!(
-                            "entity {:?} animation profile '{}' is not in the catalog",
-                            e.id, a.set
-                        ));
-                    };
-                    let Some(frames) = set.animations.get(a.animation as usize) else {
-                        return Err(format!(
-                            "entity {:?} animation {} does not exist in profile '{}'",
-                            e.id, a.animation, a.set
-                        ));
-                    };
-                    // An empty animation holds frame 0 (nothing advances it).
-                    if a.frame as usize >= frames.len().max(1) {
-                        return Err(format!(
-                            "entity {:?} frame {} out of range for animation {} of '{}'",
-                            e.id, a.frame, a.animation, a.set
-                        ));
-                    }
-                    let hold = frames
-                        .get(a.frame as usize)
-                        .map_or(1, |f| f.duration.max(1));
-                    if a.elapsed >= hold {
-                        return Err(format!(
-                            "entity {:?} animation timer {} exceeds the frame's {hold} frames",
-                            e.id, a.elapsed
-                        ));
-                    }
-                }
-            }
-            if e.speed < Fixed::ZERO || e.size < Fixed::ZERO {
-                return Err(format!("entity {:?} has a negative speed or size", e.id));
-            }
-            if e.size > Fixed::from_int(MAX_ENTITY_SIZE) {
-                return Err(format!(
-                    "entity {:?} size {} exceeds {MAX_ENTITY_SIZE}",
-                    e.id,
-                    e.size.round()
-                ));
-            }
-            let bound = Fixed::from_int(MAX_ENTITY_COORD);
-            if e.x.abs() > bound || e.y.abs() > bound {
-                return Err(format!("entity {:?} position out of range", e.id));
-            }
-            if (e.kind == EntityKind::Player) != (e.team == Team::Player) {
-                return Err(format!(
-                    "entity {:?} kind {:?} does not match team {:?}",
-                    e.id, e.kind, e.team
-                ));
-            }
-            if e.state_ticks > MAX_STATE_TICKS {
-                return Err(format!("entity {:?} state ticks out of range", e.id));
-            }
-            for (name, p) in [("last seen", e.last_seen), ("alert origin", e.alert_origin)] {
-                if let Some((x, y)) = p
-                    && (x.abs() > bound || y.abs() > bound)
-                {
-                    return Err(format!("entity {:?} {name} position out of range", e.id));
-                }
-            }
-            // The stealth layer's invariants (`ai.rs`): dead is one state, a timed state
-            // carries its timer and an untimed one none, the alert states belong to enemy
-            // soldiers and the blow to player characters, a returning soldier knows where to,
-            // a patrolling one remembers nothing.
-            if e.ai_state.dead() == e.alive {
-                return Err(format!(
-                    "entity {:?} dead state {:?} disagrees with alive = {}",
-                    e.id, e.ai_state, e.alive
-                ));
-            }
-            // The melee's invariants (`ai.rs`): hit points within the maximum and 0 exactly
-            // when dead, energy within its bar with its regain timer running exactly while
-            // below full, a foe exactly in the fighting state (an opponent of the other side),
-            // a timed pose exactly outside the idle one and only in a fight, the swing timer
-            // only in a fight, a figure only on a player character who attacks or fights.
-            if e.kind != EntityKind::Obstacle {
-                if e.hp < 0 || e.hp > e.hp_max {
-                    return Err(format!(
-                        "entity {:?} hit points {} outside 0..={}",
-                        e.id, e.hp, e.hp_max
-                    ));
-                }
-                if (e.hp > 0) != e.alive {
-                    return Err(format!(
-                        "entity {:?} hit points {} disagree with alive = {}",
-                        e.id, e.hp, e.alive
-                    ));
-                }
-                if !(0..=ENERGY_MAX).contains(&e.energy) {
-                    return Err(format!(
-                        "entity {:?} energy {} out of range",
-                        e.id, e.energy
-                    ));
-                }
-                if (e.energy < ENERGY_MAX) != (e.energy_ticks > 0)
-                    || e.energy_ticks > MAX_STATE_TICKS
-                {
-                    return Err(format!(
-                        "entity {:?} energy timer {} inconsistent with energy {}",
-                        e.id, e.energy_ticks, e.energy
-                    ));
-                }
-            }
-            if (e.ai_state == AiState::Fighting) != e.foe.is_some() {
-                return Err(format!(
-                    "entity {:?} in the {:?} state with foe {:?}",
-                    e.id, e.ai_state, e.foe
-                ));
-            }
-            if (e.pose != FightPose::Idle) != (e.pose_ticks > 0)
-                || e.pose_ticks > MAX_STATE_TICKS
-                || (e.pose != FightPose::Idle && e.ai_state != AiState::Fighting)
-            {
-                return Err(format!(
-                    "entity {:?} pose {:?} with {} pose ticks in the {:?} state",
-                    e.id, e.pose, e.pose_ticks, e.ai_state
-                ));
-            }
-            if e.swing_ticks > MAX_STATE_TICKS
-                || (e.swing_ticks > 0 && e.ai_state != AiState::Fighting)
-            {
-                return Err(format!(
-                    "entity {:?} swing timer {} outside a fight",
-                    e.id, e.swing_ticks
-                ));
-            }
-            if e.figure.is_some()
-                && !(e.kind == EntityKind::Player
-                    && (e.attack_target.is_some() || e.ai_state == AiState::Fighting))
-            {
-                return Err(format!(
-                    "entity {:?} holds a figure without an attack order or a fight",
-                    e.id
-                ));
-            }
-            // The pick-up counters never go negative and stay bounded; a pick-up order belongs
-            // to a player character and names a pick-up item of the script's table.
-            if !(0..=MAX_PICKUP_COUNT).contains(&e.arrows)
-                || !(0..=MAX_PICKUP_COUNT).contains(&e.purses)
-            {
-                return Err(format!(
-                    "entity {:?} carries {} arrows and {} purses, outside 0..={MAX_PICKUP_COUNT}",
-                    e.id, e.arrows, e.purses
-                ));
-            }
-            if let Some(h) = e.pickup {
-                let known = self
-                    .vm
-                    .as_ref()
-                    .is_some_and(|vm| vm.item(h).is_some() || vm.scroll(h).is_some());
-                if e.kind != EntityKind::Player || !known {
-                    return Err(format!(
-                        "entity {:?} has a pick-up order on {h}, which is not a pick-up item \
-                         or scroll it can take",
-                        e.id
-                    ));
-                }
-            }
-            if e.pickup_ticks > MAX_PICKUP_TICKS || (e.pickup.is_none() && e.pickup_ticks != 0) {
-                return Err(format!(
-                    "entity {:?} has a pick-up pause of {} ticks with the order {:?}",
-                    e.id, e.pickup_ticks, e.pickup
-                ));
-            }
-            if e.ai_state == AiState::Fighting
-                && !(e.kind == EntityKind::Player
-                    || (e.kind == EntityKind::Guard && e.team == Team::Enemy))
-            {
-                return Err(format!(
-                    "entity {:?} fights but is neither a player character nor an enemy soldier",
-                    e.id
-                ));
-            }
-            if e.ai_state.timed() != (e.state_ticks > 0) {
-                return Err(format!(
-                    "entity {:?} state ticks {} inconsistent with the {} state {:?}",
-                    e.id,
-                    e.state_ticks,
-                    if e.ai_state.timed() {
-                        "timed"
-                    } else {
-                        "untimed"
-                    },
-                    e.ai_state
-                ));
-            }
-            if e.ai_state.alert() && !(e.kind == EntityKind::Guard && e.team == Team::Enemy) {
-                return Err(format!(
-                    "entity {:?} in the alert state {:?} is not an enemy soldier",
-                    e.id, e.ai_state
-                ));
-            }
-            if e.heard && !e.ai_state.alert() {
-                return Err(format!(
-                    "entity {:?} was heard but is in the {:?} state, not an alert state",
-                    e.id, e.ai_state
-                ));
-            }
-            if e.ai_state == AiState::Punching && e.kind != EntityKind::Player {
-                return Err(format!(
-                    "entity {:?} delivers the punch but is not a player character",
-                    e.id
-                ));
-            }
-            if matches!(e.ai_state, AiState::Returning | AiState::ReturnPending)
-                && e.alert_origin.is_none()
-            {
-                return Err(format!(
-                    "entity {:?} is returning without an alert origin",
-                    e.id
-                ));
-            }
-            if e.ai_state == AiState::Patrol && (e.last_seen.is_some() || e.alert_origin.is_some())
-            {
-                return Err(format!(
-                    "entity {:?} patrols with a last seen position or an alert origin",
-                    e.id
-                ));
-            }
-            if let Some(p) = e.pending_stimulus {
-                let bound = Fixed::from_int(MAX_ENTITY_COORD);
-                let soldier = e.kind == EntityKind::Guard && e.team == Team::Enemy && e.alive;
-                if !soldier || p.x.abs() > bound || p.y.abs() > bound {
-                    return Err(format!(
-                        "entity {:?} holds a pending stimulus {p:?} but is not a living enemy \
-                         soldier or the position is out of range",
-                        e.id
-                    ));
-                }
-            }
-        }
-        for e in &self.entities {
-            if let Some(t) = e.attack_target {
-                let victim = ids.get(&t);
-                let ok = e.kind == EntityKind::Player
-                    && t != e.id
-                    && victim.is_some_and(|&(kind, team, _)| {
-                        kind == EntityKind::Guard && team == Team::Enemy
-                    });
-                if !ok {
-                    return Err(format!(
-                        "entity {:?} attack target {t:?} is invalid: the order goes from a player character to an enemy soldier",
-                        e.id
-                    ));
-                }
-            }
-            if let Some(f) = e.foe {
-                let foe = ids.get(&f);
-                let ok = f != e.id
-                    && foe.is_some_and(|&(kind, team, _)| match e.kind {
-                        EntityKind::Player => kind == EntityKind::Guard && team == Team::Enemy,
-                        _ => kind == EntityKind::Player,
-                    });
-                if !ok {
-                    return Err(format!(
-                        "entity {:?} foe {f:?} is invalid: a fight is between a player character and an enemy soldier",
-                        e.id
-                    ));
-                }
-                // Reciprocity is an invariant (Codex review 10, finding 7; Codex review 11,
-                // finding 5): the opponent of every living, active fighter fights back with
-                // the reciprocal id while he lives. A dead opponent is the stale reference
-                // the next tick ends (`kill` detaches him on the tick of the blow); an
-                // inactive fighter (hidden by native 113 mid-fight) is left to the tick that
-                // ends his fight from the other side.
-                if let Some(&(_, _, fi)) = foe
-                    && e.alive
-                    && e.active
-                    && e.ai_state == AiState::Fighting
-                {
-                    let o = &self.entities[fi];
-                    if o.alive && (o.ai_state != AiState::Fighting || o.foe != Some(e.id)) {
-                        return Err(format!(
-                            "entity {:?} fights {f:?}, who is {:?} with foe {:?}: a fight between two living actors is reciprocal",
-                            e.id, o.ai_state, o.foe
-                        ));
-                    }
-                }
-            }
-        }
-        // The obstacle index the tick would build must be bounded (its rebuild is not charged
-        // to the budget; the cap keeps it at the size of a fraction of one tick's work).
-        let boxes: Vec<(Fixed, Fixed, Fixed, Fixed)> = self
-            .entities
-            .iter()
-            .filter(|e| e.kind == EntityKind::Obstacle)
-            .filter_map(|e| e.patrol.first().map(|&(hw, hh)| (e.x, e.y, hw, hh)))
-            .collect();
-        let entries = ObstacleIndex::entry_count(&boxes, self.map_size);
-        if entries > MAX_OBSTACLE_INDEX_ENTRIES {
-            return Err(format!(
-                "obstacle index would need {entries} entries (limit {MAX_OBSTACLE_INDEX_ENTRIES})"
-            ));
-        }
-        // No cell may hold more candidates than one movement query can test on its turn
-        // (`MAX_MOVEMENT_QUERY_WORK`).
-        let occupancy = ObstacleIndex::max_occupancy(&boxes, self.map_size);
-        if occupancy > MAX_OBSTACLE_CELL_OCCUPANCY {
-            return Err(format!(
-                "an obstacle index cell would hold {occupancy} obstacles (limit {MAX_OBSTACLE_CELL_OCCUPANCY})"
-            ));
-        }
-        if let Some((x, y)) = self.press {
-            let bound = Fixed::from_int(MAX_ENTITY_COORD);
-            if x.abs() > bound || y.abs() > bound {
-                return Err(format!("press position ({x:?}, {y:?}) out of range"));
-            }
-        }
-        if let Some(t) = self.figure_target {
-            let soldier = ids
-                .get(&t)
-                .is_some_and(|&(kind, team, _)| kind == EntityKind::Guard && team == Team::Enemy);
-            if self.press.is_none() || !soldier {
-                return Err(format!(
-                    "figure target {t:?} without a held left button or not an enemy soldier"
-                ));
-            }
-        }
-        if self.damage_numbers.len() > MAX_DAMAGE_NUMBERS {
-            return Err(format!(
-                "{} damage numbers exceed the limit",
-                self.damage_numbers.len()
-            ));
-        }
-        if let Some(d) = self
-            .damage_numbers
-            .iter()
-            .find(|d| d.age >= DAMAGE_NUMBER_TICKS)
-        {
-            return Err(format!("damage number {d:?} outlived its rise"));
-        }
-        for cursor in self.cursors.all() {
-            if !self.entities.is_empty() && cursor as usize >= self.entities.len() {
-                return Err(format!(
-                    "simulation cursor {cursor} beyond the {} entities",
-                    self.entities.len()
-                ));
-            }
-            if self.entities.is_empty() && cursor != 0 {
-                return Err("simulation cursor without entities".into());
-            }
-        }
-        if let Some(sel) = self.selected
-            && !ids.contains_key(&sel)
-        {
-            return Err(format!("selected entity {sel:?} does not exist"));
-        }
-        if let Some(c) = self.last_ground_click {
-            let bound = Fixed::from_int(MAX_ENTITY_COORD);
-            if c.tick > self.tick || c.x.abs() > bound || c.y.abs() > bound {
-                return Err(format!("last ground click {c:?} out of range"));
-            }
-        }
-        if let Some(vm) = &self.vm {
-            vm.validate(self.programs.len(), self.entities.len())?;
-            if vm.rng.seed != self.seed || vm.rng.stream != SCRIPT_RNG_STREAM {
-                return Err(format!(
-                    "script rng stream identity ({}, {}) does not derive from the world seed {} and stream {SCRIPT_RNG_STREAM}",
-                    vm.rng.seed, vm.rng.stream, self.seed
-                ));
-            }
-        }
-        // Every stream derives from the world seed with its assigned id: a snapshot cannot
-        // smuggle in another generator.
-        if self.rng.seed != self.seed || self.rng.stream != GAMEPLAY_RNG_STREAM {
-            return Err(format!(
-                "gameplay rng stream identity ({}, {}) does not derive from the world seed {} and stream {GAMEPLAY_RNG_STREAM}",
-                self.rng.seed, self.rng.stream, self.seed
-            ));
-        }
-        self.rng.validate()
+        Ok(())
     }
 
     /// Apply the events of one tick (in order) and advance the simulation by one tick: the
@@ -2386,82 +2548,96 @@ impl World {
             return;
         }
         for i in 0..self.entities.len() {
-            let Some(handle) = self.entities[i].pickup else {
-                continue;
-            };
-            let target = self.vm.as_ref().and_then(|vm| pickup_target(vm, handle));
-            let Some(target) = target else {
-                self.entities[i].clear_pickup();
-                continue;
-            };
-            let e = &self.entities[i];
-            let can_take = e.alive
-                && e.active
-                && e.kind == EntityKind::Player
-                && e.ai_state == AiState::Patrol;
-            if !can_take {
-                self.entities[i].clear_pickup();
-                continue;
-            }
-            if e.pickup_ticks == 0 {
-                if e.target.is_some() {
-                    // Still walking.
-                    continue;
-                }
-                let dx = i64::from(e.x.round()) - i64::from(target.x);
-                let dy = i64::from(e.y.round()) - i64::from(target.y);
-                let radius = i64::from(target.arrival_radius);
-                if dx * dx + dy * dy > radius * radius {
-                    // The walk ended short of the pick-up (unreachable, blocked, cancelled).
-                    self.entities[i].clear_pickup();
-                } else {
-                    // Arrived: the stoop or the pause starts.
-                    self.entities[i].pickup_ticks = target.pause_ticks.max(1);
-                }
-                continue;
-            }
-            self.entities[i].pickup_ticks -= 1;
-            if self.entities[i].pickup_ticks > 0 {
-                continue;
-            }
-            match target.kind {
-                PickupKind::Item(kind, stack) => {
-                    let Some(vm) = self.vm.as_mut() else { return };
-                    vm.taken_items.insert(handle);
-                    if vm.inactive_elements.len() < crate::vm::MAX_QUEUE * 16 {
-                        vm.inactive_elements.insert(handle);
-                    }
-                    match kind {
-                        ItemKind::Arrows => {
-                            let e = &mut self.entities[i];
-                            e.arrows = e
-                                .arrows
-                                .saturating_add(i32::from(stack))
-                                .min(MAX_PICKUP_COUNT);
-                        }
-                        ItemKind::Purse => {
-                            vm.assume(Assumption::ItemPickup);
-                            vm.money = vm.money.saturating_add(
-                                PURSE_MONEY_PER_STACK.saturating_mul(i32::from(stack)),
-                            );
-                            let e = &mut self.entities[i];
-                            e.purses = e.purses.saturating_add(1).min(MAX_PICKUP_COUNT);
-                        }
-                        // The pouch's effect (the purse counter?) and an unknown kind's are
-                        // not measured: the item only disappears, tainted.
-                        ItemKind::Pouch | ItemKind::Unknown(_) => {
-                            vm.assume(Assumption::ItemPickup);
-                        }
-                    }
-                    self.entities[i].clear_pickup();
-                }
-                PickupKind::Scroll => match self.vm_read_scroll(handle, i) {
-                    // The tick's budget was spent before the handler could start: next tick.
-                    None => self.entities[i].pickup_ticks = 1,
-                    Some(_) => self.entities[i].clear_pickup(),
-                },
+            if !self.resolve_pickup(i) {
+                return;
             }
         }
+    }
+
+    fn resolve_pickup(&mut self, i: usize) -> bool {
+        let Some(handle) = self.entities[i].pickup else {
+            return true;
+        };
+        let target = self.vm.as_ref().and_then(|vm| pickup_target(vm, handle));
+        let Some(target) = target else {
+            self.entities[i].clear_pickup();
+            return true;
+        };
+        let e = &self.entities[i];
+        let can_take =
+            e.alive && e.active && e.kind == EntityKind::Player && e.ai_state == AiState::Patrol;
+        if !can_take {
+            self.entities[i].clear_pickup();
+            return true;
+        }
+        if e.pickup_ticks == 0 {
+            if e.target.is_some() {
+                // Still walking.
+                return true;
+            }
+            let dx = i64::from(e.x.round()) - i64::from(target.x);
+            let dy = i64::from(e.y.round()) - i64::from(target.y);
+            let radius = i64::from(target.arrival_radius);
+            if dx * dx + dy * dy > radius * radius {
+                // The walk ended short of the pick-up (unreachable, blocked, cancelled).
+                self.entities[i].clear_pickup();
+            } else {
+                // Arrived: the stoop or the pause starts.
+                self.entities[i].pickup_ticks = target.pause_ticks.max(1);
+            }
+            return true;
+        }
+        self.entities[i].pickup_ticks -= 1;
+        if self.entities[i].pickup_ticks > 0 {
+            return true;
+        }
+        match target.kind {
+            PickupKind::Item(kind, stack) => {
+                if !self.take_pickup_item(i, handle, kind, stack) {
+                    return false;
+                }
+            }
+            PickupKind::Scroll => match self.vm_read_scroll(handle, i) {
+                // The tick's budget was spent before the handler could start: next tick.
+                None => self.entities[i].pickup_ticks = 1,
+                Some(_) => self.entities[i].clear_pickup(),
+            },
+        }
+        true
+    }
+
+    fn take_pickup_item(&mut self, i: usize, handle: i32, kind: ItemKind, stack: u16) -> bool {
+        let Some(vm) = self.vm.as_mut() else {
+            return false;
+        };
+        vm.taken_items.insert(handle);
+        if vm.inactive_elements.len() < crate::vm::MAX_QUEUE * 16 {
+            vm.inactive_elements.insert(handle);
+        }
+        match kind {
+            ItemKind::Arrows => {
+                let e = &mut self.entities[i];
+                e.arrows = e
+                    .arrows
+                    .saturating_add(i32::from(stack))
+                    .min(MAX_PICKUP_COUNT);
+            }
+            ItemKind::Purse => {
+                vm.assume(Assumption::ItemPickup);
+                vm.money = vm
+                    .money
+                    .saturating_add(PURSE_MONEY_PER_STACK.saturating_mul(i32::from(stack)));
+                let e = &mut self.entities[i];
+                e.purses = e.purses.saturating_add(1).min(MAX_PICKUP_COUNT);
+            }
+            // The pouch's effect (the purse counter?) and an unknown kind's are
+            // not measured: the item only disappears, tainted.
+            ItemKind::Pouch | ItemKind::Unknown(_) => {
+                vm.assume(Assumption::ItemPickup);
+            }
+        }
+        self.entities[i].clear_pickup();
+        true
     }
 
     /// Pointer position in map pixels (24.8).
@@ -2601,26 +2777,34 @@ impl World {
     fn left_click(&mut self) {
         if let Some(hit) = self.actor_at_pointer() {
             self.last_ground_click = None;
-            let enemy = self
-                .entities
-                .iter()
-                .position(|e| e.id == hit && e.kind == EntityKind::Guard && e.team == Team::Enemy);
-            match (enemy, self.commanded_player()) {
-                (Some(t), Some(i)) if self.entities[i].ai_state == AiState::Fighting => {
-                    // Already fighting him: the order stands; another soldier: leave this
-                    // fight and go for him.
-                    if self.entities[i].foe != Some(hit) {
-                        self.leave_fight(i);
-                        self.order_attack(i, t, None);
-                    }
-                }
-                (Some(t), Some(i)) if self.entities[i].ai_state == AiState::Patrol => {
-                    self.order_attack(i, t, None);
-                }
-                _ => self.selected = Some(hit),
-            }
+            self.left_click_actor(hit);
             return;
         }
+        self.left_click_ground();
+    }
+
+    fn left_click_actor(&mut self, hit: EntityId) {
+        let enemy = self
+            .entities
+            .iter()
+            .position(|e| e.id == hit && e.kind == EntityKind::Guard && e.team == Team::Enemy);
+        match (enemy, self.commanded_player()) {
+            (Some(t), Some(i)) if self.entities[i].ai_state == AiState::Fighting => {
+                // Already fighting him: the order stands; another soldier: leave this
+                // fight and go for him.
+                if self.entities[i].foe != Some(hit) {
+                    self.leave_fight(i);
+                    self.order_attack(i, t, None);
+                }
+            }
+            (Some(t), Some(i)) if self.entities[i].ai_state == AiState::Patrol => {
+                self.order_attack(i, t, None);
+            }
+            _ => self.selected = Some(hit),
+        }
+    }
+
+    fn left_click_ground(&mut self) {
         let Some(i) = self.commanded_player() else {
             self.last_ground_click = None;
             return;
@@ -2872,82 +3056,103 @@ impl World {
                 cursor = resume_at(&order, k, full);
                 break;
             }
-            let e = &self.entities[i];
-            if !e.alive || !e.active || e.kind == EntityKind::Obstacle {
-                continue;
-            }
-            let Some((fx, fy)) = e.target else { continue };
-            // Next waypoint (or the final target when the path is exhausted).
-            let (tx, ty) = e.path.first().copied().unwrap_or((fx, fy));
-            let dx = tx - e.x;
-            let dy = ty - e.y;
-            let dist = Fixed::length(dx, dy);
-            let speed = e.effective_speed(&self.catalog);
-            let (nx, ny) = if dist <= speed {
-                (tx, ty)
-            } else {
-                (e.x + dx * speed / dist, e.y + dy * speed / dist)
-            };
-            let size = e.size;
-            let Some(obstructed) = self
-                .obstacles
-                .as_ref()
-                .map_or(Some(false), |ix| ix.blocked(nx, ny, size, budget))
-            else {
+            if !self.move_entity(i, (w, h), budget) {
                 cursor = resume_at(&order, k, full);
                 break;
-            };
-            let walkable = if obstructed {
-                Some(false)
-            } else {
-                self.geometry
-                    .is_walkable_within(nx.round(), ny.round(), budget)
-            };
-            let Some(walkable) = walkable else {
-                cursor = resume_at(&order, k, full);
-                break;
-            };
-            let blocked = obstructed || !walkable;
-            let rng = &mut self.rng;
-            let e = &mut self.entities[i];
-            if dx.0 != 0 || dy.0 != 0 {
-                e.facing256 = facing_of(dx, dy);
             }
-            if blocked {
+        }
+        self.cursors.movement = cursor;
+    }
+
+    fn move_entity(&mut self, i: usize, (w, h): (Fixed, Fixed), budget: &mut u64) -> bool {
+        let e = &self.entities[i];
+        if !e.alive || !e.active || e.kind == EntityKind::Obstacle {
+            return true;
+        }
+        let Some((fx, fy)) = e.target else {
+            return true;
+        };
+        // Next waypoint (or the final target when the path is exhausted).
+        let (tx, ty) = e.path.first().copied().unwrap_or((fx, fy));
+        let dx = tx - e.x;
+        let dy = ty - e.y;
+        let dist = Fixed::length(dx, dy);
+        let speed = e.effective_speed(&self.catalog);
+        let (nx, ny) = if dist <= speed {
+            (tx, ty)
+        } else {
+            (e.x + dx * speed / dist, e.y + dy * speed / dist)
+        };
+        let size = e.size;
+        let Some(obstructed) = self
+            .obstacles
+            .as_ref()
+            .map_or(Some(false), |ix| ix.blocked(nx, ny, size, budget))
+        else {
+            return false;
+        };
+        let walkable = if obstructed {
+            Some(false)
+        } else {
+            self.geometry
+                .is_walkable_within(nx.round(), ny.round(), budget)
+        };
+        let Some(walkable) = walkable else {
+            return false;
+        };
+        let blocked = obstructed || !walkable;
+        let rng = &mut self.rng;
+        let e = &mut self.entities[i];
+        if dx.0 != 0 || dy.0 != 0 {
+            e.facing256 = facing_of(dx, dy);
+        }
+        if blocked {
+            Self::stop_blocked_entity(e);
+            return true;
+        }
+        e.x = nx.clamp(Fixed::ZERO, w);
+        e.y = ny.clamp(Fixed::ZERO, h);
+        Self::arrive_at_waypoint(e, rng, (tx, ty), (fx, fy));
+        true
+    }
+
+    fn stop_blocked_entity(e: &mut Entity) {
+        e.target = None;
+        e.path.clear();
+        e.gait = Gait::Walk;
+        if e.kind == EntityKind::Guard {
+            e.wait_ticks = 10;
+            if e.program.is_some() {
+                // The walk failed: the program moves on after the pause.
+                e.pc = e.pc.saturating_add(1);
+            }
+        }
+    }
+
+    fn arrive_at_waypoint(
+        e: &mut Entity,
+        rng: &mut Rng,
+        (tx, ty): (Fixed, Fixed),
+        (fx, fy): (Fixed, Fixed),
+    ) {
+        if (e.x, e.y) == (tx, ty) {
+            if !e.path.is_empty() {
+                e.path.remove(0);
+            }
+            if e.path.is_empty() && (e.x, e.y) == (fx, fy) {
                 e.target = None;
-                e.path.clear();
                 e.gait = Gait::Walk;
                 if e.kind == EntityKind::Guard {
-                    e.wait_ticks = 10;
                     if e.program.is_some() {
-                        // The walk failed: the program moves on after the pause.
+                        // Arrived: the `GoTo` is complete.
                         e.pc = e.pc.saturating_add(1);
-                    }
-                }
-                continue;
-            }
-            e.x = nx.clamp(Fixed::ZERO, w);
-            e.y = ny.clamp(Fixed::ZERO, h);
-            if (e.x, e.y) == (tx, ty) {
-                if !e.path.is_empty() {
-                    e.path.remove(0);
-                }
-                if e.path.is_empty() && (e.x, e.y) == (fx, fy) {
-                    e.target = None;
-                    e.gait = Gait::Walk;
-                    if e.kind == EntityKind::Guard {
-                        if e.program.is_some() {
-                            // Arrived: the `GoTo` is complete.
-                            e.pc = e.pc.saturating_add(1);
-                        } else {
-                            e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
-                            e.wait_ticks = 20 + rng.below(20);
-                        }
+                    } else {
+                        e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
+                        e.wait_ticks = 20 + rng.below(20);
                     }
                 }
             }
         }
-        self.cursors.movement = cursor;
     }
 
     /// The animation advance of every active entity with a sprite set (`active`, from
@@ -2989,34 +3194,8 @@ impl World {
     /// grant does not reach keeps its reported id and is compared again next tick, so no
     /// change is lost.
     fn action_changes(&mut self, index: &SimIndex, budget: &mut u64) {
-        // The class bound to each entity (the first element naming the entity, the first
-        // class bound to that element: `Program::element_of_entity`).
-        let classes: Option<BTreeMap<u32, u32>> = match self.vm.as_ref() {
-            Some(vm) => {
-                let tables = vm.program.elements.len() + vm.program.classes.len();
-                if !charge_budget(budget, tables as u64) {
-                    return;
-                }
-                let mut handle_of: BTreeMap<u32, u32> = BTreeMap::new();
-                for (h, el) in vm.program.elements.iter().enumerate() {
-                    if let crate::vm::Element::Actor(i) = el {
-                        handle_of.entry(*i).or_insert(h as u32);
-                    }
-                }
-                let mut class_of_handle: BTreeMap<u32, u32> = BTreeMap::new();
-                for (ci, c) in vm.program.classes.iter().enumerate() {
-                    if let Some(h) = c.element {
-                        class_of_handle.entry(h).or_insert(ci as u32);
-                    }
-                }
-                Some(
-                    handle_of
-                        .into_iter()
-                        .filter_map(|(entity, h)| class_of_handle.get(&h).map(|&c| (entity, c)))
-                        .collect(),
-                )
-            }
-            None => None,
+        let Ok(classes) = self.action_classes(budget) else {
+            return;
         };
         let mut changes: Vec<(u32, i32, i32)> = Vec::new();
         let mut cursor = 0u32;
@@ -3047,6 +3226,39 @@ impl World {
         self.vm_deliver_action_changes();
     }
 
+    fn action_classes(&self, budget: &mut u64) -> Result<Option<BTreeMap<u32, u32>>, ()> {
+        // The class bound to each entity (the first element naming the entity, the first
+        // class bound to that element: `Program::element_of_entity`).
+        let classes: Option<BTreeMap<u32, u32>> = match self.vm.as_ref() {
+            Some(vm) => {
+                let tables = vm.program.elements.len() + vm.program.classes.len();
+                if !charge_budget(budget, tables as u64) {
+                    return Err(());
+                }
+                let mut handle_of: BTreeMap<u32, u32> = BTreeMap::new();
+                for (h, el) in vm.program.elements.iter().enumerate() {
+                    if let crate::vm::Element::Actor(i) = el {
+                        handle_of.entry(*i).or_insert(h as u32);
+                    }
+                }
+                let mut class_of_handle: BTreeMap<u32, u32> = BTreeMap::new();
+                for (ci, c) in vm.program.classes.iter().enumerate() {
+                    if let Some(h) = c.element {
+                        class_of_handle.entry(h).or_insert(ci as u32);
+                    }
+                }
+                Some(
+                    handle_of
+                        .into_iter()
+                        .filter_map(|(entity, h)| class_of_handle.get(&h).map(|&c| (entity, c)))
+                        .collect(),
+                )
+            }
+            None => None,
+        };
+        Ok(classes)
+    }
+
     /// The waypoint programs and legacy patrols of the idle guards (`idle`, from the tick's
     /// pre-index), one unit per guard from `cursors.programs`, round robin: a guard whose
     /// program or patrol wants a walk gets a path search within what the grant has left,
@@ -3063,59 +3275,66 @@ impl World {
                 cursor = resume_at(&order, k, full);
                 break;
             }
-            let programs = &self.programs;
-            let rng = &mut self.rng;
-            let e = &mut self.entities[i];
-            if !(e.alive
-                && e.active
-                && e.kind == EntityKind::Guard
-                && e.target.is_none()
-                && e.ai_state == AiState::Patrol)
-            {
-                continue;
-            }
-            if e.wait_ticks > 0 {
-                e.wait_ticks -= 1;
-                continue;
-            }
-            // A locked AI (script natives 134 / 135) holds its program or patrol where it is.
-            if e.ai_locked {
-                continue;
-            }
-            let target = match e.program.and_then(|p| programs.get(p as usize)) {
-                Some(program) => run_program(e, program, rng),
-                None if !e.patrol.is_empty() => {
-                    Some(e.patrol[e.patrol_index as usize % e.patrol.len()])
-                }
-                None => None,
-            };
-            let Some(t) = target else {
-                continue;
-            };
-            let granted = (*left).min(SIM_SEARCH_WORK);
-            let mut search = granted;
-            let planned = self.plan_path_with(i, t, &mut search);
-            *left -= granted - search;
-            if planned == Err(NavError::WorkExhausted) && granted < SIM_SEARCH_WORK {
-                // Not unreachable, unpaid: the same walk is planned first next tick.
+            if !self.program_walk(i, left) {
                 cursor = resume_at(&order, k, full);
                 break;
             }
-            let e = &mut self.entities[i];
-            if e.target.is_some() {
-                // Program walks use the gait the script set (native 140).
-                e.gait = e.npc_gait;
-            } else {
-                // Unreachable point (or unreachable under the budget): skip it.
-                if e.program.is_some() {
-                    e.pc = e.pc.saturating_add(1);
-                } else {
-                    e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
-                }
-                e.wait_ticks = 10;
-            }
         }
         self.cursors.programs = cursor;
+    }
+
+    fn program_walk(&mut self, i: usize, left: &mut u64) -> bool {
+        let programs = &self.programs;
+        let rng = &mut self.rng;
+        let e = &mut self.entities[i];
+        if !(e.alive
+            && e.active
+            && e.kind == EntityKind::Guard
+            && e.target.is_none()
+            && e.ai_state == AiState::Patrol)
+        {
+            return true;
+        }
+        if e.wait_ticks > 0 {
+            e.wait_ticks -= 1;
+            return true;
+        }
+        // A locked AI (script natives 134 / 135) holds its program or patrol where it is.
+        if e.ai_locked {
+            return true;
+        }
+        let target = match e.program.and_then(|p| programs.get(p as usize)) {
+            Some(program) => run_program(e, program, rng),
+            None if !e.patrol.is_empty() => {
+                Some(e.patrol[e.patrol_index as usize % e.patrol.len()])
+            }
+            None => None,
+        };
+        let Some(t) = target else {
+            return true;
+        };
+        let granted = (*left).min(SIM_SEARCH_WORK);
+        let mut search = granted;
+        let planned = self.plan_path_with(i, t, &mut search);
+        *left -= granted - search;
+        if planned == Err(NavError::WorkExhausted) && granted < SIM_SEARCH_WORK {
+            // Not unreachable, unpaid: the same walk is planned first next tick.
+            return false;
+        }
+        let e = &mut self.entities[i];
+        if e.target.is_some() {
+            // Program walks use the gait the script set (native 140).
+            e.gait = e.npc_gait;
+        } else {
+            // Unreachable point (or unreachable under the budget): skip it.
+            if e.program.is_some() {
+                e.pc = e.pc.saturating_add(1);
+            } else {
+                e.patrol_index = (e.patrol_index + 1) % e.patrol.len().max(1) as u32;
+            }
+            e.wait_ticks = 10;
+        }
+        true
     }
 
     /// A blow of `amount` hit points landed on a victim whose feet are at `at`: a damage
@@ -3219,6 +3438,82 @@ impl World {
         let mut parts = BTreeMap::new();
 
         let mut w = Encoder::new("world");
+        self.encode_world_hash(&mut w);
+        parts.insert("world".into(), w.finish());
+
+        let mut a = Encoder::new("actors");
+        self.encode_actors_hash(&mut a);
+        parts.insert("actors".into(), a.finish());
+
+        let mut o = Encoder::new("orders");
+        match self.selected {
+            Some(id) => o.u8(1).u32(id.index).u32(id.generation),
+            None => o.u8(0),
+        };
+        o.u32(self.entities.len() as u32);
+        for e in &self.entities {
+            match e.target {
+                Some((x, y)) => o.u8(1).i32(x.raw()).i32(y.raw()),
+                None => o.u8(0),
+            };
+            o.u32(e.path.len() as u32);
+            for (x, y) in &e.path {
+                o.i32(x.raw()).i32(y.raw());
+            }
+        }
+        parts.insert("orders".into(), o.finish());
+
+        let mut r = Encoder::new("rng");
+        r.str(Rng::ALGORITHM)
+            .u64(self.rng.seed)
+            .u64(self.rng.stream)
+            .u64(self.rng.state())
+            .u64(self.rng.draws);
+        match &self.vm {
+            Some(vm) => r
+                .u8(1)
+                .str("script")
+                .u64(vm.rng.seed)
+                .u64(vm.rng.stream)
+                .u64(vm.rng.state())
+                .u64(vm.rng.draws),
+            None => r.u8(0),
+        };
+        parts.insert("rng".into(), r.finish());
+
+        let mut g = Encoder::new("pathfinding");
+        self.encode_geometry_hash(&mut g);
+        parts.insert("pathfinding".into(), g.finish());
+
+        // Script VM (ADR-0008): program identity and script-visible state under `scripts`, the
+        // queues, sequences and pending texts under `scheduler`; a world without a script
+        // encodes the absence.
+        let mut s = Encoder::new("scripts");
+        let mut q = Encoder::new("scheduler");
+        if let Some(vm) = &self.vm {
+            s.u8(1);
+            vm.encode_scripts(&mut s);
+            q.u8(1);
+            vm.encode_scheduler(&mut q);
+        } else {
+            s.u8(0);
+            q.u8(0);
+        }
+        parts.insert("scripts".into(), s.finish());
+        parts.insert("scheduler".into(), q.finish());
+
+        // The campaign subsystem does not exist yet: it hashes to a versioned constant so the
+        // set of parts is stable across milestones and its appearance is a visible ruleset change.
+        let mut e = Encoder::new("campaign");
+        e.u8(0);
+        parts.insert("campaign".into(), e.finish());
+
+        let t = total(&parts);
+        parts.insert("total".into(), t);
+        Hashes { parts }
+    }
+
+    fn encode_world_hash(&self, w: &mut Encoder) {
         w.u64(self.tick)
             .u32(self.viewport.0)
             .u32(self.viewport.1)
@@ -3264,81 +3559,85 @@ impl World {
         for cursor in self.cursors.all() {
             w.u32(cursor);
         }
-        parts.insert("world".into(), w.finish());
+    }
 
-        let mut a = Encoder::new("actors");
+    fn encode_entity_hash(e: &Entity, a: &mut Encoder) {
+        a.u32(e.id.index).u32(e.id.generation).u8(e.kind.tag());
+        a.i32(e.x.raw())
+            .i32(e.y.raw())
+            .i32(e.size.raw())
+            .i32(e.speed.raw())
+            .i32(e.facing256)
+            .u8(u8::from(e.alive))
+            .u8(u8::from(e.active))
+            .u8(u8::from(e.ai_locked))
+            .u8(e.gait.tag())
+            .u8(e.posture.tag())
+            .u8(e.team.tag())
+            .u8(e.ai_state.tag())
+            .u32(e.state_ticks)
+            .u32(e.action)
+            .i32(e.hp)
+            .i32(e.hp_max)
+            .i32(e.energy)
+            .u32(e.energy_ticks)
+            .u8(e.pose.tag())
+            .u32(e.pose_ticks)
+            .u32(e.swing_ticks)
+            .u8(e.figure.map_or(0, Figure::tag))
+            .i32(e.knockout_resistance)
+            .u8(e.npc_gait.tag())
+            .u8(u8::from(e.fell_backward))
+            .u8(u8::from(e.heard))
+            .i32(e.arrows)
+            .i32(e.purses)
+            .u32(e.pickup_ticks)
+            .u32(e.wait_ticks)
+            .u32(e.patrol_index)
+            .u32(e.patrol.len() as u32);
+        for (x, y) in &e.patrol {
+            a.i32(x.raw()).i32(y.raw());
+        }
+        match &e.anim {
+            Some(st) => a
+                .u8(1)
+                .str(&st.set)
+                .u32(st.animation)
+                .u32(st.frame)
+                .u32(st.elapsed),
+            None => a.u8(0),
+        };
+        match e.program {
+            Some(p) => a.u8(1).u32(p),
+            None => a.u8(0),
+        };
+        a.u32(e.pc);
+        for p in [e.last_seen, e.alert_origin] {
+            match p {
+                Some((x, y)) => a.u8(1).i32(x.raw()).i32(y.raw()),
+                None => a.u8(0),
+            };
+        }
+        for id in [e.attack_target, e.foe] {
+            match id {
+                Some(t) => a.u8(1).u32(t.index).u32(t.generation),
+                None => a.u8(0),
+            };
+        }
+        match e.pickup {
+            Some(h) => a.u8(1).i32(h),
+            None => a.u8(0),
+        };
+        match e.pending_stimulus {
+            Some(p) => a.u8(1).i32(p.x.raw()).i32(p.y.raw()).u8(p.channel.tag()),
+            None => a.u8(0),
+        };
+    }
+
+    fn encode_actors_hash(&self, a: &mut Encoder) {
         a.u32(self.entities.len() as u32);
         for e in &self.entities {
-            a.u32(e.id.index).u32(e.id.generation).u8(e.kind.tag());
-            a.i32(e.x.raw())
-                .i32(e.y.raw())
-                .i32(e.size.raw())
-                .i32(e.speed.raw())
-                .i32(e.facing256)
-                .u8(u8::from(e.alive))
-                .u8(u8::from(e.active))
-                .u8(u8::from(e.ai_locked))
-                .u8(e.gait.tag())
-                .u8(e.posture.tag())
-                .u8(e.team.tag())
-                .u8(e.ai_state.tag())
-                .u32(e.state_ticks)
-                .u32(e.action)
-                .i32(e.hp)
-                .i32(e.hp_max)
-                .i32(e.energy)
-                .u32(e.energy_ticks)
-                .u8(e.pose.tag())
-                .u32(e.pose_ticks)
-                .u32(e.swing_ticks)
-                .u8(e.figure.map_or(0, Figure::tag))
-                .i32(e.knockout_resistance)
-                .u8(e.npc_gait.tag())
-                .u8(u8::from(e.fell_backward))
-                .u8(u8::from(e.heard))
-                .i32(e.arrows)
-                .i32(e.purses)
-                .u32(e.pickup_ticks)
-                .u32(e.wait_ticks)
-                .u32(e.patrol_index)
-                .u32(e.patrol.len() as u32);
-            for (x, y) in &e.patrol {
-                a.i32(x.raw()).i32(y.raw());
-            }
-            match &e.anim {
-                Some(st) => a
-                    .u8(1)
-                    .str(&st.set)
-                    .u32(st.animation)
-                    .u32(st.frame)
-                    .u32(st.elapsed),
-                None => a.u8(0),
-            };
-            match e.program {
-                Some(p) => a.u8(1).u32(p),
-                None => a.u8(0),
-            };
-            a.u32(e.pc);
-            for p in [e.last_seen, e.alert_origin] {
-                match p {
-                    Some((x, y)) => a.u8(1).i32(x.raw()).i32(y.raw()),
-                    None => a.u8(0),
-                };
-            }
-            for id in [e.attack_target, e.foe] {
-                match id {
-                    Some(t) => a.u8(1).u32(t.index).u32(t.generation),
-                    None => a.u8(0),
-                };
-            }
-            match e.pickup {
-                Some(h) => a.u8(1).i32(h),
-                None => a.u8(0),
-            };
-            match e.pending_stimulus {
-                Some(p) => a.u8(1).i32(p.x.raw()).i32(p.y.raw()).u8(p.channel.tag()),
-                None => a.u8(0),
-            };
+            Self::encode_entity_hash(e, a);
         }
         a.u32(self.programs.len() as u32);
         for p in &self.programs {
@@ -3356,52 +3655,16 @@ impl World {
                         for &(percent, pc) in arms {
                             a.u8(percent).u32(pc);
                         }
-                        &mut a
+                        &mut *a
                     }
-                    Instruction::Stop => &mut a,
+                    Instruction::Stop => &mut *a,
                     Instruction::Nop { opcode } => a.u8(*opcode),
                 };
             }
         }
-        parts.insert("actors".into(), a.finish());
+    }
 
-        let mut o = Encoder::new("orders");
-        match self.selected {
-            Some(id) => o.u8(1).u32(id.index).u32(id.generation),
-            None => o.u8(0),
-        };
-        o.u32(self.entities.len() as u32);
-        for e in &self.entities {
-            match e.target {
-                Some((x, y)) => o.u8(1).i32(x.raw()).i32(y.raw()),
-                None => o.u8(0),
-            };
-            o.u32(e.path.len() as u32);
-            for (x, y) in &e.path {
-                o.i32(x.raw()).i32(y.raw());
-            }
-        }
-        parts.insert("orders".into(), o.finish());
-
-        let mut r = Encoder::new("rng");
-        r.str(Rng::ALGORITHM)
-            .u64(self.rng.seed)
-            .u64(self.rng.stream)
-            .u64(self.rng.state())
-            .u64(self.rng.draws);
-        match &self.vm {
-            Some(vm) => r
-                .u8(1)
-                .str("script")
-                .u64(vm.rng.seed)
-                .u64(vm.rng.stream)
-                .u64(vm.rng.state())
-                .u64(vm.rng.draws),
-            None => r.u8(0),
-        };
-        parts.insert("rng".into(), r.finish());
-
-        let mut g = Encoder::new("pathfinding");
+    fn encode_geometry_hash(&self, g: &mut Encoder) {
         g.u32(self.geometry.boundary.len() as u32);
         for (x, y) in &self.geometry.boundary {
             g.i32(*x).i32(*y);
@@ -3420,34 +3683,6 @@ impl World {
                 g.i32(*x).i32(*y);
             }
         }
-        parts.insert("pathfinding".into(), g.finish());
-
-        // Script VM (ADR-0008): program identity and script-visible state under `scripts`, the
-        // queues, sequences and pending texts under `scheduler`; a world without a script
-        // encodes the absence.
-        let mut s = Encoder::new("scripts");
-        let mut q = Encoder::new("scheduler");
-        if let Some(vm) = &self.vm {
-            s.u8(1);
-            vm.encode_scripts(&mut s);
-            q.u8(1);
-            vm.encode_scheduler(&mut q);
-        } else {
-            s.u8(0);
-            q.u8(0);
-        }
-        parts.insert("scripts".into(), s.finish());
-        parts.insert("scheduler".into(), q.finish());
-
-        // The campaign subsystem does not exist yet: it hashes to a versioned constant so the
-        // set of parts is stable across milestones and its appearance is a visible ruleset change.
-        let mut e = Encoder::new("campaign");
-        e.u8(0);
-        parts.insert("campaign".into(), e.finish());
-
-        let t = total(&parts);
-        parts.insert("total".into(), t);
-        Hashes { parts }
     }
 }
 

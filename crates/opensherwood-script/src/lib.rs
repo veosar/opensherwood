@@ -336,6 +336,36 @@ fn translate_class(
     c: &scb::Class,
     report: &mut TranslateReport,
 ) -> Result<Class, TranslateError> {
+    let variable_count = validate_variables(ci, c)?;
+    let functions = translate_functions(ci, c)?;
+    let mut code = Vec::with_capacity(c.quads.len());
+    let mut fi = 0usize;
+    for (pc, q) in c.quads.iter().enumerate() {
+        while fi + 1 < functions.len() && functions[fi + 1].address as usize <= pc {
+            fi += 1;
+        }
+        code.push(translate_quad(
+            ci,
+            c,
+            pc,
+            q,
+            &functions[fi],
+            variable_count,
+            report,
+        )?);
+    }
+    Ok(Class {
+        name: c.name.clone(),
+        variable_count,
+        functions,
+        code,
+        element: None,
+        zone: None,
+        rail_point: None,
+    })
+}
+
+fn validate_variables(ci: usize, c: &scb::Class) -> Result<u32, TranslateError> {
     if !c.size_of_variables.is_multiple_of(4) {
         return Err(class_err(
             ci,
@@ -356,6 +386,83 @@ fn translate_class(
     if c.functions.is_empty() {
         return Err(class_err(ci, c, "no functions"));
     }
+    Ok(variable_count)
+}
+
+fn translate_function(
+    ci: usize,
+    c: &scb::Class,
+    f: &scb::Function,
+    q: &Quad,
+) -> Result<Function, TranslateError> {
+    if q.opcode != 0x03
+        || u32::from(q.a) != f.size_of_volatile
+        || u32::from(q.b) != f.size_of_tempor
+    {
+        return Err(class_err(
+            ci,
+            c,
+            format!("function {} prologue does not match its sizes", f.name),
+        ));
+    }
+    if !matches!(f.unknown_1, 0 | 4) || f.unknown_2 < f.unknown_1 || !f.unknown_2.is_multiple_of(4)
+    {
+        return Err(class_err(
+            ci,
+            c,
+            format!("function {} has an unexpected parameter layout", f.name),
+        ));
+    }
+    if !f.size_of_volatile.is_multiple_of(4) || !f.size_of_tempor.is_multiple_of(4) {
+        return Err(class_err(ci, c, format!("function {} frame sizes", f.name)));
+    }
+    Ok(Function {
+        name: f.name.clone(),
+        address: f.address,
+        param_count: (f.unknown_2 - f.unknown_1) / 4,
+        has_result: f.unknown_1 == 4,
+        locals: f.size_of_volatile / 4,
+        temps: f.size_of_tempor / 4,
+    })
+}
+
+fn translate_slot(
+    ci: usize,
+    c: &scb::Class,
+    pc: usize,
+    v: u16,
+    f: &Function,
+    variable_count: u32,
+) -> Result<Slot, TranslateError> {
+    let (storage, offset) = scb::operand(v);
+    let space = match storage {
+        Storage::None => Space::Global,
+        Storage::ClassVar => Space::Class,
+        Storage::Local => Space::Local,
+        Storage::Temp => Space::Temp,
+    };
+    if !offset.is_multiple_of(4) {
+        return Err(quad_err(ci, c, pc, "operand offset is not a multiple of 4"));
+    }
+    let index = u32::from(offset / 4);
+    let limit = match space {
+        Space::Global => GLOBAL_CELLS as u32,
+        Space::Class => variable_count,
+        Space::Local => f.locals,
+        Space::Temp => f.temps,
+    };
+    if index >= limit {
+        return Err(quad_err(
+            ci,
+            c,
+            pc,
+            format!("slot {v:#06x} outside its block"),
+        ));
+    }
+    Ok(Slot { space, index })
+}
+
+fn translate_functions(ci: usize, c: &scb::Class) -> Result<Vec<Function>, TranslateError> {
     // Function table -> the calling convention (VM-003): the interpreter uses the name, the
     // address and `size_of_volatile`; the prologue `0x03` at the address allocates the blocks.
     let mut functions = Vec::with_capacity(c.functions.len());
@@ -376,192 +483,130 @@ fn translate_class(
             ));
         }
         last_address = f.address;
-        if q.opcode != 0x03
-            || u32::from(q.a) != f.size_of_volatile
-            || u32::from(q.b) != f.size_of_tempor
-        {
-            return Err(class_err(
-                ci,
-                c,
-                format!("function {} prologue does not match its sizes", f.name),
-            ));
-        }
-        if !matches!(f.unknown_1, 0 | 4)
-            || f.unknown_2 < f.unknown_1
-            || !f.unknown_2.is_multiple_of(4)
-        {
-            return Err(class_err(
-                ci,
-                c,
-                format!("function {} has an unexpected parameter layout", f.name),
-            ));
-        }
-        if !f.size_of_volatile.is_multiple_of(4) || !f.size_of_tempor.is_multiple_of(4) {
-            return Err(class_err(ci, c, format!("function {} frame sizes", f.name)));
-        }
-        functions.push(Function {
-            name: f.name.clone(),
-            address: f.address,
-            param_count: (f.unknown_2 - f.unknown_1) / 4,
-            has_result: f.unknown_1 == 4,
-            locals: f.size_of_volatile / 4,
-            temps: f.size_of_tempor / 4,
-        });
+        functions.push(translate_function(ci, c, f, q)?);
     }
-    let mut code = Vec::with_capacity(c.quads.len());
-    let mut fi = 0usize;
-    for (pc, q) in c.quads.iter().enumerate() {
-        while fi + 1 < functions.len() && functions[fi + 1].address as usize <= pc {
-            fi += 1;
+    Ok(functions)
+}
+
+fn translate_quad(
+    ci: usize,
+    c: &scb::Class,
+    pc: usize,
+    q: &Quad,
+    f: &Function,
+    variable_count: u32,
+    report: &mut TranslateReport,
+) -> Result<Instr, TranslateError> {
+    // A symbol operand (VM-011): two bits of storage class over a byte offset. The
+    // original checks nothing; the translator refuses what no retail file contains, so a
+    // mistranslation is an error here rather than an unchecked access at run time.
+    let slot = |v| translate_slot(ci, c, pc, v, f, variable_count);
+    // VM-002: the jump, call and native-call operand is `a | (b << 16)`.
+    let wide = u32::from(q.a) | (u32::from(q.b) << 16);
+    let target = |t: u32| -> Result<u32, TranslateError> {
+        if (t as usize) < c.quads.len() || t == END_OF_CALLBACK {
+            Ok(t)
+        } else {
+            Err(quad_err(
+                ci,
+                c,
+                pc,
+                format!("jump target {t} outside the class code"),
+            ))
         }
-        let f = &functions[fi];
-        // A symbol operand (VM-011): two bits of storage class over a byte offset. The
-        // original checks nothing; the translator refuses what no retail file contains, so a
-        // mistranslation is an error here rather than an unchecked access at run time.
-        let slot = |v: u16| -> Result<Slot, TranslateError> {
-            let (storage, offset) = scb::operand(v);
-            let space = match storage {
-                Storage::None => Space::Global,
-                Storage::ClassVar => Space::Class,
-                Storage::Local => Space::Local,
-                Storage::Temp => Space::Temp,
-            };
-            if !offset.is_multiple_of(4) {
-                return Err(quad_err(ci, c, pc, "operand offset is not a multiple of 4"));
-            }
-            let index = u32::from(offset / 4);
-            let limit = match space {
-                Space::Global => GLOBAL_CELLS as u32,
-                Space::Class => variable_count,
-                Space::Local => f.locals,
-                Space::Temp => f.temps,
-            };
-            if index >= limit {
+    };
+    let ins = match q.opcode {
+        // VM-040 / VM-044 / VM-069: the opcodes the interpreter reports as an error.
+        0x00 | 0x04 => Instr::Bad { opcode: q.opcode },
+        0x01 => Instr::Nop,
+        0x02 => Instr::PushParam { src: slot(q.a)? },
+        0x03 => Instr::Enter {
+            locals: u32::from(q.a) / 4,
+            temps: u32::from(q.b) / 4,
+        },
+        0x05 => Instr::Call {
+            target: target(wide)?,
+        },
+        0x06 => Instr::Return,
+        0x07 => Instr::ReturnValue { src: slot(q.a)? },
+        0x08 => Instr::LoadParam {
+            dst: slot(q.a)?,
+            offset: q.c,
+        },
+        0x09 => Instr::StoreParam {
+            src: slot(q.a)?,
+            offset: q.c,
+        },
+        0x0a => Instr::LoadResult { dst: slot(q.a)? },
+        0x0b => Instr::PushArg { src: slot(q.a)? },
+        0x0c => {
+            let id = wide;
+            if id as usize >= NATIVE_TABLE_SIZE {
                 return Err(quad_err(
                     ci,
                     c,
                     pc,
-                    format!("slot {v:#06x} outside its block"),
+                    format!("native {id} is beyond the call table of {NATIVE_TABLE_SIZE}"),
                 ));
             }
-            Ok(Slot { space, index })
-        };
-        // VM-002: the jump, call and native-call operand is `a | (b << 16)`.
-        let wide = u32::from(q.a) | (u32::from(q.b) << 16);
-        let target = |t: u32| -> Result<u32, TranslateError> {
-            if (t as usize) < c.quads.len() || t == END_OF_CALLBACK {
-                Ok(t)
-            } else {
-                Err(quad_err(
-                    ci,
-                    c,
-                    pc,
-                    format!("jump target {t} outside the class code"),
-                ))
+            *report.native_calls.entry(id).or_insert(0) += 1;
+            if id == 3
+                && let Some(imm) = element_immediate(&c.quads, pc)
+            {
+                report.max_element_immediate =
+                    Some(report.max_element_immediate.map_or(imm, |m| m.max(imm)));
             }
-        };
-        let ins = match q.opcode {
-            // VM-040 / VM-044 / VM-069: the opcodes the interpreter reports as an error.
-            0x00 | 0x04 => Instr::Bad { opcode: q.opcode },
-            0x01 => Instr::Nop,
-            0x02 => Instr::PushParam { src: slot(q.a)? },
-            0x03 => Instr::Enter {
-                locals: u32::from(q.a) / 4,
-                temps: u32::from(q.b) / 4,
-            },
-            0x05 => Instr::Call {
-                target: target(wide)?,
-            },
-            0x06 => Instr::Return,
-            0x07 => Instr::ReturnValue { src: slot(q.a)? },
-            0x08 => Instr::LoadParam {
-                dst: slot(q.a)?,
-                offset: q.c,
-            },
-            0x09 => Instr::StoreParam {
-                src: slot(q.a)?,
-                offset: q.c,
-            },
-            0x0a => Instr::LoadResult { dst: slot(q.a)? },
-            0x0b => Instr::PushArg { src: slot(q.a)? },
-            0x0c => {
-                let id = wide;
-                if id as usize >= NATIVE_TABLE_SIZE {
-                    return Err(quad_err(
-                        ci,
-                        c,
-                        pc,
-                        format!("native {id} is beyond the call table of {NATIVE_TABLE_SIZE}"),
-                    ));
-                }
-                *report.native_calls.entry(id).or_insert(0) += 1;
-                if id == 3
-                    && let Some(imm) = element_immediate(&c.quads, pc)
-                {
-                    report.max_element_immediate =
-                        Some(report.max_element_immediate.map_or(imm, |m| m.max(imm)));
-                }
-                Instr::Native { id }
-            }
-            0x0d => Instr::LoadNativeResult { dst: slot(q.a)? },
-            0x0e => Instr::Jump {
-                target: target(wide)?,
-            },
-            0x0f => Instr::JumpIfNonZero {
-                cond: slot(q.a)?,
-                target: target(q.c)?,
-            },
-            0x10 => Instr::JumpIfZero {
-                cond: slot(q.a)?,
-                target: target(q.c)?,
-            },
-            0x11 | 0x12 => Instr::Move {
-                dst: slot(q.a)?,
-                src: slot(q.b)?,
-            },
-            // VM-058: `0x13` and `0x14` are the same instruction; a float immediate's bits go
-            // into the cell verbatim (ints and floats share the 4-byte cell, VM-004).
-            0x13 | 0x14 => Instr::LoadImm {
-                dst: slot(q.a)?,
-                value: q.c as i32,
-            },
-            0x15 => Instr::NegInt {
-                dst: slot(q.a)?,
-                src: slot(q.b)?,
-            },
-            0x16 => Instr::NegFloat {
-                dst: slot(q.a)?,
-                src: slot(q.b)?,
-            },
-            0x17 => Instr::FloatToInt {
-                dst: slot(q.a)?,
-                src: slot(q.b)?,
-            },
-            0x18 => Instr::IntToFloat {
-                dst: slot(q.a)?,
-                src: slot(q.b)?,
-            },
-            // VM-063 - VM-068; the third symbol is the low 16 bits of `c` (VM-002).
-            0x19..=0x2f => Instr::Binary {
-                op: BinOp::of_opcode(q.opcode)
-                    .ok_or_else(|| quad_err(ci, c, pc, "unknown three-operand opcode"))?,
-                dst: slot(q.a)?,
-                a: slot(q.b)?,
-                b: slot((q.c & 0xffff) as u16)?,
-            },
-            other => Instr::Bad { opcode: other },
-        };
-        code.push(ins);
-    }
-    Ok(Class {
-        name: c.name.clone(),
-        variable_count,
-        functions,
-        code,
-        element: None,
-        zone: None,
-        rail_point: None,
-    })
+            Instr::Native { id }
+        }
+        0x0d => Instr::LoadNativeResult { dst: slot(q.a)? },
+        0x0e => Instr::Jump {
+            target: target(wide)?,
+        },
+        0x0f => Instr::JumpIfNonZero {
+            cond: slot(q.a)?,
+            target: target(q.c)?,
+        },
+        0x10 => Instr::JumpIfZero {
+            cond: slot(q.a)?,
+            target: target(q.c)?,
+        },
+        0x11 | 0x12 => Instr::Move {
+            dst: slot(q.a)?,
+            src: slot(q.b)?,
+        },
+        // VM-058: `0x13` and `0x14` are the same instruction; a float immediate's bits go
+        // into the cell verbatim (ints and floats share the 4-byte cell, VM-004).
+        0x13 | 0x14 => Instr::LoadImm {
+            dst: slot(q.a)?,
+            value: q.c as i32,
+        },
+        0x15 => Instr::NegInt {
+            dst: slot(q.a)?,
+            src: slot(q.b)?,
+        },
+        0x16 => Instr::NegFloat {
+            dst: slot(q.a)?,
+            src: slot(q.b)?,
+        },
+        0x17 => Instr::FloatToInt {
+            dst: slot(q.a)?,
+            src: slot(q.b)?,
+        },
+        0x18 => Instr::IntToFloat {
+            dst: slot(q.a)?,
+            src: slot(q.b)?,
+        },
+        // VM-063 - VM-068; the third symbol is the low 16 bits of `c` (VM-002).
+        0x19..=0x2f => Instr::Binary {
+            op: BinOp::of_opcode(q.opcode)
+                .ok_or_else(|| quad_err(ci, c, pc, "unknown three-operand opcode"))?,
+            dst: slot(q.a)?,
+            a: slot(q.b)?,
+            b: slot((q.c & 0xffff) as u16)?,
+        },
+        other => Instr::Bad { opcode: other },
+    };
+    Ok(ins)
 }
 
 /// The immediate loaded into the single argument of the native call at `pc`, when the argument
