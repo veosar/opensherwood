@@ -27,7 +27,8 @@ class ExporterTests(unittest.TestCase):
             target.write_text("import testfixture.MockTypes.*;\n" + body, encoding="utf-8", newline="\n")
             sources.append(target)
         compiled = subprocess.run(
-            ["javac", "-d", str(cls.build), *map(str, sources)],
+            # Java 17 is the oldest JDK on the CI runners; --release keeps newer APIs out of the fixtures.
+            ["javac", "--release", "17", "-d", str(cls.build), *map(str, sources)],
             capture_output=True,
             text=True,
         )

@@ -127,7 +127,7 @@ public final class ExporterChecks {
                 throw new AssertionError("expected synthetic exception");
             } catch (IllegalStateException error) {
                 assertValue(error.getMessage(), "synthetic exception");
-                assertValue(DecompInterface.events.getLast(), "dispose");
+                assertValue(DecompInterface.events.get(DecompInterface.events.size() - 1), "dispose");
             }
         }
     }
