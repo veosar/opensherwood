@@ -170,7 +170,7 @@ def check_path(rel: str) -> list[str]:
     parts = low.split("/")
     if low.startswith(FORBIDDEN_ROOTS) or "/harness/out/" in low or "/out/replays/" in low:
         problems.append(f"file under a local-only root: {rel}")
-    if any(p.endswith(".rep") or p.endswith(".gpr") for p in parts[:-1]):
+    if any(p.endswith((".rep", ".gpr")) for p in parts[:-1]):
         problems.append(f"file inside a Ghidra project directory: {rel}")
     if Path(rel).suffix.lower() in FORBIDDEN_EXT:
         problems.append(f"forbidden extension: {rel}")
