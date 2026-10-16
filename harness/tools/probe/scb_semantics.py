@@ -444,9 +444,7 @@ def pseudo(cls, start, end, fn_names):
             expr[a] = f"op{op:02x}({val(b)})"
             if storage(a)[0] != TV:
                 line = f"{var_name(cls, a)} = {expr[a]}"
-        elif op == 0x01:
-            pass
-        else:
+        elif op != 0x01:
             line = f"op{op:02x} a={a:#x} b={b:#x} c={c:#x}"
         if line is not None or label:
             out.append(f"{i:5d} {label:<8}{line or ''}")

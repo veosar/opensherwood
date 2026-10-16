@@ -51,8 +51,6 @@ def main():
                 s["c_vals"][cc] += 1
                 if op == 5:
                     call_targets["in_func_addrs" if cc in addrs else "other"] += 1
-                if op == 0x0C:
-                    pass
     print("InitFunction at function address matches (volatile,tempor):", init_ok, "bad:", init_bad)
     print("CALL targets:", dict(call_targets))
     for op in sorted(st):
