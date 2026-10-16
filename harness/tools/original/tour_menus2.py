@@ -11,8 +11,8 @@ import rhcap  # noqa: E402
 
 def main():
     rhcap.focus(T.H)
-    img = shot("t2_start")
-    ref = T.__dict__.get("ref")
+    _ = shot("t2_start")
+    _ = T.__dict__.get("ref")
     click(MENU_X, ROWS["options"], wait=1.5); options = shot("t2_options")
     for k in ("sounds", "shortcuts"):
         click(MENU_X, OPT_ROWS[k], wait=1.8); s = shot("options_" + k)

@@ -6,7 +6,7 @@ from probe_face_walk import walk
 
 def polylines_ok(hdr, j):
     kind = hdr[j]; pos = j + 1
-    for k in range(bin(kind & 3).count("1")):
+    for _ in range(bin(kind & 3).count("1")):
         if pos + 3 > len(hdr): return False
         n = struct.unpack_from("<H", hdr, pos + 1)[0]; pos += 3 + 4 * n + 1
     return pos + 4 == len(hdr)

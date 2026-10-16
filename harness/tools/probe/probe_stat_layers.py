@@ -44,9 +44,9 @@ def decoded_prefix(body):
     p = 0
     hdr = struct.unpack_from("<HHBI", body, 0)
     p = 9
-    bid, p = u8(body, p)
+    _, p = u8(body, p)
     boundary, p = point_list(body, p)
-    sid, p = u8(body, p)
+    _, p = u8(body, p)
     nseg, p = u16(body, p)
     p += 8 * nseg
     _, p = u32(body, p)
@@ -102,7 +102,7 @@ def main(argv):
     maps = argv or ["lincoln"]
     for name in maps:
         chunks = load_chunks(rhp_path(name))
-        ver, body = chunks["STAT"]
+        _, body = chunks["STAT"]
         w, h = map_size(name)
         hdr, boundary, obstacles, p = decoded_prefix(body)
         print(f"== {name} {w}x{h} STAT header {hdr}, boundary {len(boundary)} pts, {len(obstacles)} obstacles, decoded prefix ends at {p} of {len(body)}")

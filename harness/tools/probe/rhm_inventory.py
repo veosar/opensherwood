@@ -16,7 +16,7 @@ def main():
     classes = collections.defaultdict(list)
     for f in files:
         data = open(f, "rb").read()
-        root, ver, ch = children(data)
+        _, _, ch = children(data)
         parts = []
         for t, v, off, body in ch:
             cnt = struct.unpack_from("<H", body, 0)[0] if len(body) >= 2 else -1

@@ -8,7 +8,7 @@ from map_png import load_map
 def woaw_areas(b):
     nl = struct.unpack_from("<I", b, 0)[0]; pos = 4 + 2 * (nl - 1)
     na = struct.unpack_from("<H", b, pos)[0]; pos += 2; areas = []
-    for i in range(na):
+    for _ in range(na):
         npts = struct.unpack_from("<H", b, pos)[0]; pos += 2
         pts = [struct.unpack_from("<4f", b, pos + 16 * k) for k in range(npts)]; pos += 16 * npts
         bbox = struct.unpack_from("<6f", b, pos); pos += 24
@@ -23,7 +23,7 @@ def bonds(b):
 
 def pppp(b):
     n = struct.unpack_from("<H", b, 0)[0]; pos = 2; out = []
-    for i in range(n):
+    for _ in range(n):
         id_ = b[pos]; npts = struct.unpack_from("<H", b, pos + 1)[0]; pos += 3
         pts = [struct.unpack_from("<HH", b, pos + 4 * k) for k in range(npts)]; pos += 4 * npts
         tail = b[pos:pos + 6]; pos += 6; out.append((id_, pts, tail))
@@ -86,15 +86,15 @@ def stat_polys_scan(b, W, H):
     return out
 
 def pppp2(b):
-    polys, pos = pppp(b)
+    _, pos = pppp(b)
     n2 = struct.unpack_from("<H", b, pos)[0]; pos += 2; out = []
-    for i in range(n2):
+    for _ in range(n2):
         r = struct.unpack_from("<HHHHHHHHHHHHHHB", b, pos); pos += 29; out.append(r)
     return out
 
 def dark(b):
     n = struct.unpack_from("<H", b, 0)[0]; pos = 2; out = []
-    for i in range(n):
+    for _ in range(n):
         a = struct.unpack_from("<I", b, pos)[0]; npts = struct.unpack_from("<H", b, pos + 4)[0]; pos += 6
         pts = [struct.unpack_from("<HH", b, pos + 4 * k) for k in range(npts)]; pos += 4 * npts
         tail = struct.unpack_from("<I", b, pos)[0]; pos += 4; out.append((a, pts, tail))

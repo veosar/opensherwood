@@ -106,7 +106,7 @@ class Flow:
         self.writer = {}  # temp operand -> description of last writer ("imm:5", "nat:3", "cvar:Actor", ...)
 
     def describe_source(self, v):
-        s, off = storage(v)
+        s, _ = storage(v)
         if s == TV:
             return self.writer.get(v, "temp:?")
         if s == CV:
@@ -258,7 +258,7 @@ def cmd_ops(files):
                 params = set()
                 npush = 0
                 for i in range(start, end):
-                    op, a, b, c = decode(q, i)
+                    op, a, _, c = decode(q, i)
                     if i > start:
                         prev[op][decode(q, i - 1)[0]] += 1
                     if i + 1 < end:
@@ -354,7 +354,7 @@ def cmd_handlers(files):
         for cls in classes:
             for fname, start, end, fn in functions(cls):
                 for i in range(start, end):
-                    op, a, b, c = decode(cls["quads"], i)
+                    op, a, _, _ = decode(cls["quads"], i)
                     if op == OP_NATIVE:
                         by_fn[fname][a] += 1
     for fname in sorted(by_fn):
@@ -375,7 +375,7 @@ def pseudo(cls, start, end, fn_names):
     pending, pending_args = [], []
 
     def val(v):
-        s, off = storage(v)
+        s, _ = storage(v)
         if s == TV and v in expr:
             return expr[v]
         return var_name(cls, v)
@@ -545,7 +545,7 @@ def cmd_params(files):
                 sig[fname][(fn[2], fn[3], fn[4])] += 1
                 offs = set()
                 for i in range(start, end):
-                    op, a, b, c = decode(cls["quads"], i)
+                    op, _, b, c = decode(cls["quads"], i)
                     if op == OP_GETPARAM:
                         offs.add(c)
                 reads[fname][tuple(sorted(offs))] += 1

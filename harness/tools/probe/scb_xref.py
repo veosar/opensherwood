@@ -73,7 +73,7 @@ def main():
             continue
         counts = rhm_counts(tool, rhm) if os.path.exists(rhm) else {}
         red = os.path.join(textdir, f"RHLevel{RED_CODE[base]}.red")
-        ntext, list_id, short_id = red_text_count(red) if os.path.exists(red) else (None, None, None)
+        ntext, _, _ = red_text_count(red) if os.path.exists(red) else (None, None, None)
         maxes = collections.defaultdict(lambda: -1)
         distinct = collections.defaultdict(set)
         _, classes, _ = parse(open(scb, "rb").read())

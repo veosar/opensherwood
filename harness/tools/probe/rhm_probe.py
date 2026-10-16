@@ -155,7 +155,7 @@ def main():
         boyz = next(b for t, v, o, b in ch if t == "BOYZ")
         pos = 2
         while pos < len(boyz):
-            ct, cs, cv = struct.unpack_from("<4sII", boyz, pos)
+            ct, cs, _ = struct.unpack_from("<4sII", boyz, pos)
             ct = ct.decode("latin-1")
             gb = boyz[pos + 12 : pos + 8 + cs]
             pos += 8 + cs

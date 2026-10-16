@@ -26,7 +26,7 @@ def decode(s, w, h, count_minus_one):
     Returns (ok, words consumed)."""
     p = 0
     n = len(s)
-    for y in range(h):
+    for _ in range(h):
         x = 0
         while x < w:
             if p >= n:

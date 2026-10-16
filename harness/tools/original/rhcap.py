@@ -81,7 +81,7 @@ def need_window():
 
 
 def to_screen(h, x, y):
-    sx, sy, w, hh = client_rect(h)
+    sx, sy, _, _ = client_rect(h)
     return sx + int(x), sy + int(y)
 
 
@@ -170,7 +170,7 @@ MOUSE_SCALE = float(os.environ.get("RHCAP_MOUSE_SCALE", "0.775"))
 
 def rmove(h, x, y):
     """Put the in-game cursor at client (x, y): clamp to (0, 0), then move by (x, y)."""
-    sx, sy, w, hh = client_rect(h)
+    _, _, _, _ = client_rect(h)
     for _ in range(3):
         raw_rel(-4000, -4000)
         time.sleep(0.02)
@@ -188,7 +188,7 @@ def rmove(h, x, y):
 
 def amove(h, x, y):
     """Absolute move (SetCursorPos) plus a 1-pixel raw jiggle so the game notices."""
-    sx, sy, w, hh = client_rect(h)
+    sx, sy, _, _ = client_rect(h)
     ctypes.windll.user32.SetCursorPos(sx + int(x), sy + int(y))
     time.sleep(0.02)
     raw_rel(1, 1)
@@ -238,7 +238,7 @@ def grab(h):
 
 
 def shot(name):
-    h, t = need_window()
+    h, _ = need_window()
     os.makedirs(CAPDIR, exist_ok=True)
     img = grab(h)
     p = os.path.join(CAPDIR, name + ".png")

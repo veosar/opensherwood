@@ -20,7 +20,7 @@ def try_record(b, start, L):
     if w == 0 or h == 0 or packed == 0 or w > 4000 or h > 4000: return None
     pos = start + L + 6; rowbytes = (w + 7) // 8; rows = []
     if pos + packed > len(b): return None
-    for r in range(h):
+    for _ in range(h):
         d = decode_row(b, pos, rowbytes)
         if d is None: return None
         rows.append(d[0]); pos = d[1]
@@ -36,7 +36,7 @@ def walk(b, maxrec=None):
             if r: found = (L, r); break
         if not found:
             print("record", i, "not found at", hex(pos)); break
-        L, (w, h, packed, rows, end) = found
+        L, (w, h, _, rows, end) = found
         recs.append((pos, L, b[pos:pos + L], w, h, rows, b[end:end + 2]))
         pos = end + 2
         if maxrec and len(recs) >= maxrec: break

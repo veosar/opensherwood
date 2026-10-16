@@ -327,7 +327,7 @@ PARSERS = {"FOOT": parse_foot, "POUF": parse_pouf, "BOYZ": parse_boyz, "ZORG": p
 
 
 def parse_file(data):
-    root, ver, ch = children(data)
+    _, _, ch = children(data)
     out = {}
     for tag, v, off, body in ch:
         out[tag] = {"version": v, "data": PARSERS[tag](body)}

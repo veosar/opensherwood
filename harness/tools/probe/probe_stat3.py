@@ -4,9 +4,9 @@ from rhp_chunks import load_chunks, rhp_path, map_size, MAPS
 
 def parse_stat(b):
     ng = struct.unpack_from("<H", b, 0)[0]; pos = 2; groups = []
-    for g in range(ng):
+    for _ in range(ng):
         cnt = struct.unpack_from("<H", b, pos)[0]; pos += 2; polys = []
-        for i in range(cnt):
+        for _ in range(cnt):
             R = b[pos]; flags = struct.unpack_from("<I", b, pos + 1)[0]; tag = b[pos + 5]
             npts = struct.unpack_from("<H", b, pos + 6)[0]; pos += 8
             pts = [struct.unpack_from("<HH", b, pos + 4 * k) for k in range(npts)]; pos += 4 * npts

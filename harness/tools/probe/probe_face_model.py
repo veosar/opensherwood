@@ -20,7 +20,7 @@ def parse_face(b):
     count = struct.unpack_from("<I", b, 0)[0]; pos = 4; recs = []
     for i in range(count):
         kind = b[pos]; pos += 1; polys = []
-        for k in range(bin(kind & 3).count("1")):
+        for _ in range(bin(kind & 3).count("1")):
             id1 = b[pos]; n = struct.unpack_from("<H", b, pos + 1)[0]; pos += 3
             pts = [struct.unpack_from("<HH", b, pos + 4 * j) for j in range(n)]; pos += 4 * n
             id2 = b[pos]; pos += 1; polys.append((id1, pts, id2))

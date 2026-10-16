@@ -10,7 +10,7 @@ def parse(b):
     segs = [struct.unpack_from("<HHHH", b, pos + 8 * k) for k in range(nseg)]; pos += 8 * nseg
     z1 = struct.unpack_from("<I", b, pos)[0]; nob = struct.unpack_from("<H", b, pos + 4)[0]; z2 = struct.unpack_from("<I", b, pos + 6)[0]; pos += 10
     obst = []
-    for i in range(nob):
+    for _ in range(nob):
         tag = b[pos]; n = struct.unpack_from("<H", b, pos + 1)[0]; pos += 3
         pts = [struct.unpack_from("<HH", b, pos + 4 * k) for k in range(n)]; pos += 4 * n
         R = b[pos]; flags = struct.unpack_from("<I", b, pos + 1)[0]; pos += 5

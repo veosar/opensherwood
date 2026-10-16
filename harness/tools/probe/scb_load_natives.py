@@ -42,7 +42,7 @@ def call_graph(cls):
     for fname, start, end, fn in functions(cls):
         natives, callees = [], []
         for i in range(start, end):
-            op, a, b, c = decode(q, i)
+            op, a, _, _ = decode(q, i)
             if op == OP_NATIVE:
                 natives.append((i, a))
             elif op == OP_CALL:
@@ -116,7 +116,7 @@ def main():
         _, classes, _ = parse(open(f, "rb").read())
         for cls in classes:
             for i in range(cls["nquads"]):
-                op, a, b, c = decode(cls["quads"], i)
+                op, a, _, _ = decode(cls["quads"], i)
                 if op == OP_NATIVE:
                     all_counts[a] += 1
         order = load_natives(classes, callbacks)
