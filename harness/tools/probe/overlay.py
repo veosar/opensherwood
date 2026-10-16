@@ -62,7 +62,7 @@ def _main():
         img = img.crop(tuple(map(int, sys.argv[4:8])))
     img.save(out); print("wrote", out, img.size)
 
-def stat_polys_scan(b, W, H):
+def stat_polys_scan(b, w, h):
     """Heuristic polygon extraction from STAT (u16 npts + in-range points, followed by another within 40 bytes)."""
     def body_at(p):
         if p + 2 > len(b): return None
@@ -70,7 +70,7 @@ def stat_polys_scan(b, W, H):
         if n < 3 or n > 3000 or p + 2 + 4 * n > len(b): return None
         for k in range(n):
             x, y = struct.unpack_from("<HH", b, p + 2 + 4 * k)
-            if x > W + 2 or y > H + 2: return None
+            if x > w + 2 or y > h + 2: return None
         return n
     def nxt(p, lim):
         for q in range(p, min(p + lim, len(b))):
@@ -100,9 +100,9 @@ def dark(b):
         tail = struct.unpack_from("<I", b, pos)[0]; pos += 4; out.append((a, pts, tail))
     return out, pos
 
-def draw_extra(d, ch, layers, W, H):
+def draw_extra(d, ch, layers, w, h):
     if "statscan" in layers:
-        for i, pts in enumerate(stat_polys_scan(ch["STAT"][1], W, H)):
+        for i, pts in enumerate(stat_polys_scan(ch["STAT"][1], w, h)):
             d.line(pts + [pts[0]], fill=(255, 255, 0, 255) if i else (255, 0, 0, 255), width=2)
     if "jump" in layers:
         for r in pppp2(ch["PPPP"][1]):

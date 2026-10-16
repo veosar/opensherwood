@@ -14,17 +14,17 @@ def decode_row(b, pos, rowbytes):
     if p != end or len(out) != rowbytes: return None
     return bytes(out), end
 
-def try_record(b, start, L):
-    if start + L + 6 > len(b): return None
-    w, h, packed = struct.unpack_from("<HHH", b, start + L)
+def try_record(b, start, length):
+    if start + length + 6 > len(b): return None
+    w, h, packed = struct.unpack_from("<HHH", b, start + length)
     if w == 0 or h == 0 or packed == 0 or w > 4000 or h > 4000: return None
-    pos = start + L + 6; rowbytes = (w + 7) // 8; rows = []
+    pos = start + length + 6; rowbytes = (w + 7) // 8; rows = []
     if pos + packed > len(b): return None
     for _ in range(h):
         d = decode_row(b, pos, rowbytes)
         if d is None: return None
         rows.append(d[0]); pos = d[1]
-    if pos != start + L + 6 + packed: return None
+    if pos != start + length + 6 + packed: return None
     return w, h, packed, rows, pos
 
 def walk(b, maxrec=None):
