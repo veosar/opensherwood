@@ -69,7 +69,7 @@ def _rail_names(line, names):
 
 
 def _record_name(line, section, idx, names):
-    m = re.search(r"([A-Za-z0-9_]+_8[0-9a-f]{7})\s*$", line)
+    m = re.search(r"((?a:\w)+_8[0-9a-f]{7})\s*$", line)
     if m:
         names[m.group(1)] = (section, idx)
     if section in ("SCOT", "OILE", "TOTO", "BORG", "BOOM", "SKRO", "MEOW") or (

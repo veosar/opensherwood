@@ -27,6 +27,10 @@ files, drawing, window APIs and clocks; they need neither game data nor a runnin
 with `python -m pytest harness/tests/synthetic/test_probe_tools.py -q`. Their snapshots cover complete report
 text, return values, exception messages and the order of observable calls; path separators are normalized.
 
+Record-name parsing is also covered by `python -m unittest scripts.tests.test_record_names`.
+These synthetic cases preserve ASCII-only names, Unicode trailing whitespace, duplicate-name indexes
+and the absence of records for long unmatched names.
+
 ## Protocol
 
 JSON-RPC 2.0, one JSON object per line, request on stdin, response on stdout, logs on stderr.
