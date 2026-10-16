@@ -32,14 +32,15 @@ public class ExportStrings extends GhidraScript {
                 Data d = it.next();
                 if (!d.hasStringValue()) continue;
                 Object v = d.getValue();
-                if (v == null) continue;
-                String text = v.toString().replace('\t', ' ').replace('\n', ' ').replace('\r', ' ');
-                Set<String> funcs = new TreeSet<>();
-                for (Reference r : rm.getReferencesTo(d.getAddress())) {
-                    Function f = fm.getFunctionContaining(r.getFromAddress());
-                    if (f != null) funcs.add(f.getEntryPoint().toString());
+                if (v != null) {
+                    String text = v.toString().replace('\t', ' ').replace('\n', ' ').replace('\r', ' ');
+                    Set<String> funcs = new TreeSet<>();
+                    for (Reference r : rm.getReferencesTo(d.getAddress())) {
+                        Function f = fm.getFunctionContaining(r.getFromAddress());
+                        if (f != null) funcs.add(f.getEntryPoint().toString());
+                    }
+                    w.println(d.getAddress() + "\t" + text.length() + "\t" + String.join(",", funcs) + "\t" + text);
                 }
-                w.println(d.getAddress() + "\t" + text.length() + "\t" + String.join(",", funcs) + "\t" + text);
             }
         }
         if (monitor.isCancelled()) throw new IOException("cancelled: the output is incomplete");
