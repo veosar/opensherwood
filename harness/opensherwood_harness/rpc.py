@@ -166,7 +166,7 @@ class Engine:
         try:
             self.proc.stdin.write(json.dumps(req) + "\n")
             self.proc.stdin.flush()
-        except (BrokenPipeError, OSError) as e:
+        except OSError as e:
             raise EngineError(-1, f"engine pipe closed ({e}); stderr: {self.stderr_text[-2000:]}") from e
         try:
             line = self._out.pop(timeout or self.timeout)
