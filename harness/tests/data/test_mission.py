@@ -1044,7 +1044,11 @@ def test_first_mission_lists_its_items_and_the_tip_scrolls_are_active(binary, ga
         assert pile["kind"] == "item"
         assert pile["item_kind"] == "arrows"
         assert items[WALKWAY_PILE]["active"]
-        assert (pile["x"], pile["y"], pile["stack"]) == (items[WALKWAY_PILE]["x"], items[WALKWAY_PILE]["y"], items[WALKWAY_PILE]["stack"])
+        assert (pile["x"], pile["y"], pile["stack"]) == (
+            items[WALKWAY_PILE]["x"],
+            items[WALKWAY_PILE]["y"],
+            items[WALKWAY_PILE]["stack"],
+        )
         purse = _element(e, STEWARDS_PURSE)
         assert purse["kind"] == "item"
         assert purse["item_kind"] == "purse"
@@ -1093,7 +1097,9 @@ def test_clicking_an_arrow_pile_walks_robin_there_and_takes_it(binary, game_dir,
         from PIL import Image
 
         with Image.open(before) as im:
-            pile_before = im.convert("RGB").crop((x - cam[0] - 24, y - cam[1] - 40, x - cam[0] + 24, y - cam[1] + 8)).tobytes()
+            pile_before = (
+                im.convert("RGB").crop((x - cam[0] - 24, y - cam[1] - 40, x - cam[0] + 24, y - cam[1] + 8)).tobytes()
+            )
         # The counter under the bow icon reads 0 (`ui-flow.md` 9.3 element 4): remember its crop.
         with Image.open(before) as im:
             counter_before = im.convert("RGB").crop((90, 724, 130, 748)).tobytes()
@@ -1141,7 +1147,9 @@ def test_clicking_an_arrow_pile_walks_robin_there_and_takes_it(binary, game_dir,
         e.capture("item_after.png")
         after = tmp_path / "item_after.png"
         with Image.open(after) as im:
-            pile_after = im.convert("RGB").crop((x - cam[0] - 24, y - cam[1] - 40, x - cam[0] + 24, y - cam[1] + 8)).tobytes()
+            pile_after = (
+                im.convert("RGB").crop((x - cam[0] - 24, y - cam[1] - 40, x - cam[0] + 24, y - cam[1] + 8)).tobytes()
+            )
         assert pile_after != pile_before, "the pile's picture is gone"
         with Image.open(after) as im:
             counter_after = im.convert("RGB").crop((90, 724, 130, 748)).tobytes()
@@ -1214,10 +1222,16 @@ def test_robin_on_the_walkway_behind_the_archers_stays_unnoticed(binary, game_di
             for i, x in enumerate(obs["entities"])
             if x["kind"] == "guard" and x["team"] == "enemy" and x["alive"] and x["active"]
         ]
-        near = [i for i in soldiers if math.hypot(_pos(obs["entities"][i])[0] - rx, _pos(obs["entities"][i])[1] - ry) < 300]
+        near = [
+            i for i in soldiers if math.hypot(_pos(obs["entities"][i])[0] - rx, _pos(obs["entities"][i])[1] - ry) < 300
+        ]
         assert len(near) >= 5, "the archery yard is within 300 px of the walkway"
         # Somebody behind whom he stands: at least one soldier north of him facing away (north).
-        archers = [i for i in near if _pos(obs["entities"][i])[1] < ry and _facing_vector(obs["entities"][i]["facing256"])[1] < 0]
+        archers = [
+            i
+            for i in near
+            if _pos(obs["entities"][i])[1] < ry and _facing_vector(obs["entities"][i]["facing256"])[1] < 0
+        ]
         assert archers, "no archer faces north with Robin behind him"
         states = set()
         for _ in range(100):

@@ -23,18 +23,12 @@ class WorkflowTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True)
-        (self.root / ".gitignore").write_text(
-            ".local/\n.claude/handoffs/\ntarget/\n", encoding="utf-8"
-        )
+        (self.root / ".gitignore").write_text(".local/\n.claude/handoffs/\ntarget/\n", encoding="utf-8")
         for folder in (".agents/skills/example", ".claude/skills/example"):
             directory = self.root / folder
             directory.mkdir(parents=True)
-            (directory / "SKILL.md").write_text(
-                "synthetic procedure\n", encoding="utf-8"
-            )
-        (self.root / ".claude/skills" / sync_skills.MARKER).write_text(
-            sync_skills.MARKER_TEXT
-        )
+            (directory / "SKILL.md").write_text("synthetic procedure\n", encoding="utf-8")
+        (self.root / ".claude/skills" / sync_skills.MARKER).write_text(sync_skills.MARKER_TEXT)
         (self.root / "Cargo.toml").write_text(
             '[workspace]\nmembers = ["crates/toy"]\nresolver = "3"\n', encoding="utf-8"
         )
@@ -49,9 +43,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_start_resume_and_compaction_preserve_baseline_silently(self):
         self.assertEqual(agent_hooks.start(self.root, self.data), {})
-        baseline = agent_hooks.read_state(agent_hooks.state_path(self.root, self.data))[
-            "baseline"
-        ]
+        baseline = agent_hooks.read_state(agent_hooks.state_path(self.root, self.data))["baseline"]
         self.source.write_text("invalid rust")
         for source in ("resume", "compact"):
             agent_hooks.start(self.root, {**self.data, "source": source})
@@ -77,9 +69,7 @@ class WorkflowTests(unittest.TestCase):
     def test_stop_detects_skill_drift_and_does_not_loop(self):
         (self.root / ".claude/skills/example/SKILL.md").write_text("stale copy")
         self.assertEqual(agent_hooks.stop(self.root, self.data)["decision"], "block")
-        self.assertEqual(
-            agent_hooks.stop(self.root, {**self.data, "stop_hook_active": True}), {}
-        )
+        self.assertEqual(agent_hooks.stop(self.root, {**self.data, "stop_hook_active": True}), {})
 
     def test_timeout_and_edit_during_check_are_not_successes(self):
         with patch.object(
@@ -89,9 +79,7 @@ class WorkflowTests(unittest.TestCase):
         ):
             result = agent_hooks.stop(self.root, self.data)
         self.assertEqual(result["decision"], "block")
-        self.assertFalse(
-            agent_hooks.read_state(agent_hooks.state_path(self.root, self.data))["ok"]
-        )
+        self.assertFalse(agent_hooks.read_state(agent_hooks.state_path(self.root, self.data))["ok"])
         self.source.write_text("pub fn value() -> u32 { 3 }\n")
 
         def concurrent_edit(*args, **kwargs):
@@ -102,9 +90,7 @@ class WorkflowTests(unittest.TestCase):
             result = agent_hooks.stop(self.root, self.data)
         self.assertIn("changed during", result["reason"])
 
-    @unittest.skipUnless(
-        shutil.which("cargo"), "Rust fixture requires cargo; runs in build CI"
-    )
+    @unittest.skipUnless(shutil.which("cargo"), "Rust fixture requires cargo; runs in build CI")
     def test_real_failing_compile_then_fixed_compile_and_cached_stop(self):
         subprocess.run(
             ["cargo", "generate-lockfile", "--offline"],

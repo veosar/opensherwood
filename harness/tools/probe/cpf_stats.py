@@ -12,6 +12,7 @@ change from tier to tier and by how much, and which are constant across the fami
 `--tables` prints table A (27 blocks: a 14-word head and ten 16-word records) and table B (four
 41-word records) as integers.
 """
+
 import os
 import struct
 import sys
@@ -20,7 +21,22 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cpf_probe import parse  # noqa: E402
 
 SD_PRE = ["hp?", "p1", "p2", "p3", "p4", "pole", "ranged?", "q1", "q2", "rank?", "q4"]
-SD_POST = ["w0", "flags", "purse?", "apple?", "beer?", "whistle?", "class", "z0", "rkind", "z1", "z2", "u16", "weapon?", "armour?"]
+SD_POST = [
+    "w0",
+    "flags",
+    "purse?",
+    "apple?",
+    "beer?",
+    "whistle?",
+    "class",
+    "z0",
+    "rkind",
+    "z1",
+    "z2",
+    "u16",
+    "weapon?",
+    "armour?",
+]
 FAMILIES = ["halberdier", "swordsman", "archer", "officer", "knight-foot", "lancer", "crossbowman"]
 
 
@@ -63,7 +79,7 @@ def _tier_columns(fam, keys, part):
 def _print_tiers(rows):
     print("\n== per family: column deltas between consecutive tiers 00..04 (05 = the green repeat)")
     for f, name in enumerate(FAMILIES):
-        fam = rows[f * 6:f * 6 + 6]
+        fam = rows[f * 6 : f * 6 + 6]
         for label, keys, part in (("pre", SD_PRE, 0), ("post", SD_POST, 1)):
             out = _tier_columns(fam, keys, part)
             print(f"{name:12s} {label:4s} " + "  ".join(out))
@@ -88,10 +104,13 @@ def main(argv):
     for i, rec in enumerate(t["sd"]):
         pre, post, floats, centre = sd_fields(rec)
         rows.append((pre, post))
-        print(f"{i:2d} {rec['sprite']:14s} "
-              + " ".join(f"{pre[k]:3d}" for k in SD_PRE) + " | "
-              + " ".join((f"{post[k]:#04x}" if k == "flags" or k == "class" else f"{post[k]:3d}") for k in SD_POST)
-              + f"  f32={tuple(int(x) for x in floats)} centre={tuple(int(x) for x in centre)}")
+        print(
+            f"{i:2d} {rec['sprite']:14s} "
+            + " ".join(f"{pre[k]:3d}" for k in SD_PRE)
+            + " | "
+            + " ".join((f"{post[k]:#04x}" if k == "flags" or k == "class" else f"{post[k]:3d}") for k in SD_POST)
+            + f"  f32={tuple(int(x) for x in floats)} centre={tuple(int(x) for x in centre)}"
+        )
     if "--tiers" in argv:
         _print_tiers(rows)
     print("\n== PC records: pre = u16[4]; post as u16 words")
@@ -100,6 +119,7 @@ def main(argv):
         print(f"{i:2d} {rec['sprite']:14s} pre={pre} post={words[:24]} ... tail={words[-2:]}")
     if "--tables" in argv:
         _print_tables(t)
+
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")

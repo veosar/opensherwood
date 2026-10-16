@@ -89,4 +89,3 @@ def test_save_and_load_screens_round_trip(binary, game_dir, tmp_path):
         assert obs["scenario"] == {"mission": "H01_Lin_VL"}
         assert obs["tick"] == tick0
         assert obs["hashes"]["total"] == total0
-

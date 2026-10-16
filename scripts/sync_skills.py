@@ -8,6 +8,7 @@ Usage:
 The mirror copies every file of every skill directory, adds a GENERATED marker file, and fails --check on
 missing, extra or modified files.
 """
+
 from __future__ import annotations
 
 import argparse

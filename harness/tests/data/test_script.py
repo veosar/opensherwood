@@ -177,9 +177,18 @@ def test_first_mission_briefing_sequence_then_camera_on_the_hero(binary, game_di
         # spot). Neither perception nor a knock-out reached the script.
         assert sc["tainted"] is True
         assert sc["assumptions"] == [
-            {"stub_result": 49}, {"stub_result": 51},
-            {"policy": 4}, {"policy": 34}, {"policy": 48}, {"policy": 90}, {"policy": 117},
-            {"policy": 118}, {"policy": 134}, {"policy": 203}, {"policy": 211}, {"policy": 235},
+            {"stub_result": 49},
+            {"stub_result": 51},
+            {"policy": 4},
+            {"policy": 34},
+            {"policy": 48},
+            {"policy": 90},
+            {"policy": 117},
+            {"policy": 118},
+            {"policy": 134},
+            {"policy": 203},
+            {"policy": 211},
+            {"policy": 235},
             {"unresolved_effect": 59},
             "walk_completion",
         ], sc["assumptions"]
@@ -524,7 +533,12 @@ def test_clicking_a_scroll_stops_short_of_it_and_pauses_before_its_text(binary, 
                 o = e.observe()
                 p = o["entities"][robin_index]
                 # Bring the camera over: scroll towards the scroll from the hero's screen position.
-                for key, d in (("right", s["x"] - 512 - cam[0]), ("left", cam[0] - (s["x"] - 512)), ("down", s["y"] - 384 - cam[1]), ("up", cam[1] - (s["y"] - 384))):
+                for key, d in (
+                    ("right", s["x"] - 512 - cam[0]),
+                    ("left", cam[0] - (s["x"] - 512)),
+                    ("down", s["y"] - 384 - cam[1]),
+                    ("up", cam[1] - (s["y"] - 384)),
+                ):
                     n = d // 8
                     if n > 0:
                         e.step(n, [{"tick_offset": 0, "sequence": 0, "kind": "key_down", "key": key}])
@@ -551,7 +565,9 @@ def test_clicking_a_scroll_stops_short_of_it_and_pauses_before_its_text(binary, 
                 if arrived is None and p["target"] is None:
                     arrived = t + 1
                     short = math.hypot(p["x"] / 256 - s["x"], p["y"] / 256 - s["y"])
-                    assert (12 if was_far else 0) <= short <= 26, f"stopped {short:.1f} px short of scroll {s['element']}"
+                    assert (12 if was_far else 0) <= short <= 26, (
+                        f"stopped {short:.1f} px short of scroll {s['element']}"
+                    )
                     assert p["pickup_ticks"] == 15, p
                 if p["pickup"] is None:
                     assert arrived is not None, (t + 1, arrived)

@@ -2,6 +2,7 @@
 
 Usage: python scb_probe.py <dir-or-file> [--dump CLASS] [--hist]
 """
+
 import collections
 import glob
 import os
@@ -48,7 +49,18 @@ def parse(d):
         p += 4
         quads = d[p : p + QUAD * nquads]
         p += QUAD * nquads
-        classes.append({"path": path, "name": name, "nvars": nvars, "sizevars": sizevars, "vars": vars_, "funcs": funcs, "nquads": nquads, "quads": quads})
+        classes.append(
+            {
+                "path": path,
+                "name": name,
+                "nvars": nvars,
+                "sizevars": sizevars,
+                "vars": vars_,
+                "funcs": funcs,
+                "nquads": nquads,
+                "quads": quads,
+            }
+        )
     return ver, classes, p
 
 
@@ -71,7 +83,7 @@ def _dump_class(c):
     for fn in c["funcs"]:
         print("  ", fn)
     for i in range(0, len(q), QUAD):
-        print(f"  {i//QUAD:5d}: " + " ".join(f"{b:02x}" for b in q[i : i + QUAD]))
+        print(f"  {i // QUAD:5d}: " + " ".join(f"{b:02x}" for b in q[i : i + QUAD]))
 
 
 def main():
@@ -84,7 +96,7 @@ def main():
     for f in files:
         d = open(f, "rb").read()
         ver, classes, end = parse(d)
-        ok = "OK" if end == len(d) else f"LEFT {len(d)-end}"
+        ok = "OK" if end == len(d) else f"LEFT {len(d) - end}"
         print(f"{os.path.basename(f)}: v{ver} {len(classes)} classes, {sum(c['nquads'] for c in classes)} quads, {ok}")
         for c in classes:
             _count_class(c, vartypes, fields, hist, natives)

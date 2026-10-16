@@ -17,6 +17,7 @@ Layout (all little-endian, pstring = u16 length + Latin-1 bytes, code = char[4] 
 
 The script asserts that this grammar consumes the file exactly.
 """
+
 import json
 import os
 import struct
@@ -187,8 +188,10 @@ def main(argv):
     b = open(path, "rb").read()
     t = parse(b)
     show_hex = "--hex" in argv
-    print(f"{os.path.basename(path)}: {len(b)} bytes; table_a {len(t['table_a'])} blocks, table_b {len(t['table_b'])}, "
-          f"pc {len(t['pc'])}, sd {len(t['sd'])}, level {len(t['level'])}, cv {len(t['cv'])}")
+    print(
+        f"{os.path.basename(path)}: {len(b)} bytes; table_a {len(t['table_a'])} blocks, table_b {len(t['table_b'])}, "
+        f"pc {len(t['pc'])}, sd {len(t['sd'])}, level {len(t['level'])}, cv {len(t['cv'])}"
+    )
     rhs_dir = argv[argv.index("--rhs") + 1] if "--rhs" in argv else None
     _print_actors(t, rhs_dir, show_hex)
     print(f"== LEVEL ({len(t['level'])})")

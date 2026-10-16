@@ -19,6 +19,7 @@ Usage (python oracle_input.py ...):
   mmove x y / mclick x y [button] [n]  in-mission cursor control with screenshot feedback
   rec <prefix> <secs> <dt>  save every frame with its timestamp (no change detection) to captures/original/
 """
+
 import ctypes
 import ctypes.wintypes
 import os
@@ -321,12 +322,19 @@ def main(argv):
         return
     cmd, a = argv[0], argv[1:]
     h, _ = rhcap.find_window()
-    commands = {"probe": _probe_command, "move": _move_command, "click": _click_command,
-                "mmove": _mmove_command, "mclick": _mclick_command, "rec": _rec_command}
+    commands = {
+        "probe": _probe_command,
+        "move": _move_command,
+        "click": _click_command,
+        "mmove": _mmove_command,
+        "mclick": _mclick_command,
+        "rec": _rec_command,
+    }
     if cmd in commands:
         commands[cmd](a, h)
         return
     print("unknown command", cmd)
+
 
 if __name__ == "__main__":
     main(sys.argv[1:])

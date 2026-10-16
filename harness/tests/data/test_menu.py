@@ -284,7 +284,9 @@ def test_minimap_toggles_from_the_map_scroll_and_ignores_right_clicks(binary, ga
             far = next(
                 x
                 for x in full["entities"]
-                if x["kind"] == "guard" and x["alive"] and x["active"]
+                if x["kind"] == "guard"
+                and x["alive"]
+                and x["active"]
                 and abs(x["x"] // 256 - robin["x"] // 256) + abs(x["y"] // 256 - robin["y"] // 256) > 1200
             )
             fx, fy = to_map(far["x"] // 256, far["y"] // 256)
@@ -325,11 +327,34 @@ def test_profiles_persist_across_sessions_and_survive_a_fresh_or_corrupt_store(b
         assert [r["label"] for r in rows] == ["Player", "tuck"]
         assert rows[1]["selected"]
     # Clamping and a bad selection index.
-    (fresh / "profiles.json").write_text(json.dumps({
-        "format": 1, "selected": 99,
-        "profiles": [{"name": "  x" * 20, "difficulty": 9, "money": -5, "score": 1, "spared_lives": 300,
-                      "progress": 200, "game_length": "y" * 100}, {"name": "   ", "difficulty": 0, "money": 0,
-                      "score": 0, "spared_lives": 0, "progress": 0, "game_length": ""}]}))
+    (fresh / "profiles.json").write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "selected": 99,
+                "profiles": [
+                    {
+                        "name": "  x" * 20,
+                        "difficulty": 9,
+                        "money": -5,
+                        "score": 1,
+                        "spared_lives": 300,
+                        "progress": 200,
+                        "game_length": "y" * 100,
+                    },
+                    {
+                        "name": "   ",
+                        "difficulty": 0,
+                        "money": 0,
+                        "score": 0,
+                        "spared_lives": 0,
+                        "progress": 0,
+                        "game_length": "",
+                    },
+                ],
+            }
+        )
+    )
     with Engine(binary=binary, game_dir=game_dir, artifacts=fresh) as e:
         e.reset({"menu": "main"}, seed=0)
         e.step(1, pointer_click(748, 440, "left"))
@@ -338,9 +363,12 @@ def test_profiles_persist_across_sessions_and_survive_a_fresh_or_corrupt_store(b
         assert len(rows[0]["label"]) <= 16
         assert rows[0]["selected"]
     # Corrupt JSON, a missing version envelope, a string version and a future version are all ignored.
-    for bad in ("{ not json", json.dumps({"selected": 0, "profiles": [{"name": "ghost"}]}),
-                json.dumps({"format": "1", "selected": 0, "profiles": [{"name": "ghost"}]}),
-                json.dumps({"format": 2, "selected": 0, "profiles": [{"name": "ghost"}]})):
+    for bad in (
+        "{ not json",
+        json.dumps({"selected": 0, "profiles": [{"name": "ghost"}]}),
+        json.dumps({"format": "1", "selected": 0, "profiles": [{"name": "ghost"}]}),
+        json.dumps({"format": 2, "selected": 0, "profiles": [{"name": "ghost"}]}),
+    ):
         (fresh / "profiles.json").write_text(bad)
         with Engine(binary=binary, game_dir=game_dir, artifacts=fresh) as e:
             e.reset({"menu": "main"}, seed=0)
@@ -348,9 +376,19 @@ def test_profiles_persist_across_sessions_and_survive_a_fresh_or_corrupt_store(b
             rows = [it for it in e.observe(entities=False)["ui"]["items"] if it["action"].startswith("row:")]
             assert [r["label"] for r in rows] == ["Player"], bad
     # Settings: the same envelope rule.
-    (fresh / "settings.json").write_text(json.dumps({"aspect": 2, "effects": [False] * 4, "sound_mode": 0,
-                                                     "sound_quality": 0, "volumes": [1, 1, 1, 1],
-                                                     "comment_frequency": 0, "shortcut_set": 0}))
+    (fresh / "settings.json").write_text(
+        json.dumps(
+            {
+                "aspect": 2,
+                "effects": [False] * 4,
+                "sound_mode": 0,
+                "sound_quality": 0,
+                "volumes": [1, 1, 1, 1],
+                "comment_frequency": 0,
+                "shortcut_set": 0,
+            }
+        )
+    )
     with Engine(binary=binary, game_dir=game_dir, artifacts=fresh) as e:
         e.reset({"menu": "main"}, seed=0)
         e.step(1, pointer_click(748, 481, "left"))  # Options
@@ -418,8 +456,11 @@ def test_alt_over_a_soldier_draws_his_view_cone(binary, game_dir, tmp_path):
         guard = next(
             x
             for x in obs["entities"]
-            if x["kind"] == "guard" and x["alive"] and x["active"]
-            and 100 < x["x"] // 256 - cam[0] < 900 and 100 < x["y"] // 256 - cam[1] < 600
+            if x["kind"] == "guard"
+            and x["alive"]
+            and x["active"]
+            and 100 < x["x"] // 256 - cam[0] < 900
+            and 100 < x["y"] // 256 - cam[1] < 600
         )
         sx, sy = guard["x"] // 256 - cam[0], guard["y"] // 256 - cam[1]
         e.step(1, [pointer_move(sx, sy)])  # the hit test is a 12 px circle at the feet today

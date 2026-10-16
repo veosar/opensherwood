@@ -16,9 +16,11 @@ class CursorPositionTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("cursor_adapter", source)
         module = importlib.util.module_from_spec(spec)
         user32 = SimpleNamespace(GetCursorPos=callback)
-        with patch.dict(sys.modules, {"rhcap": SimpleNamespace(CAPDIR="unused")}), \
-                patch.object(sys, "path", list(sys.path)), \
-                patch.object(ctypes, "windll", SimpleNamespace(user32=user32), create=True):
+        with (
+            patch.dict(sys.modules, {"rhcap": SimpleNamespace(CAPDIR="unused")}),
+            patch.object(sys, "path", list(sys.path)),
+            patch.object(ctypes, "windll", SimpleNamespace(user32=user32), create=True),
+        ):
             spec.loader.exec_module(module)
             return module.phys()
 

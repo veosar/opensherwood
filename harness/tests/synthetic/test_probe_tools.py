@@ -31,43 +31,103 @@ def quad(op, a=0, b=0, c=0):
 
 def script_class(name="StartUp"):
     instructions = [
-        (3, 2, 3, 0), (0x13, 0xC000, 0, 7), (0xB, 0xC000, 0, 0),
-        (0xC, 3, 0, 0), (0xD, 0xC001, 0, 0), (0x11, 0x4000, 0xC001, 0),
-        (8, 0xC002, 0, 0), (0x29, 0xC003, 0xC002, 0xC000),
-        (0xF, 0xC003, 0, 11), (0xE, 6, 0, 0), (0xE, 12, 0, 0),
-        (2, 0xC001, 0, 0), (5, 19, 0, 0), (0xA, 0xC004, 0, 0),
-        (0x14, 0xC005, 0, 0x3FC00000), (0x15, 0xC006, 0xC005, 0),
-        (7, 0xC004, 0, 0), (6, 0, 0, 0), (4, 0, 0, 0),
-        (3, 1, 1, 0), (0x13, 0xC000, 0, 0xFFFFFFFF), (0xB, 0x4000, 0, 0),
-        (0xB, 0xC000, 0, 0), (0xC, 43, 0, 0), (0xC, 99, 0, 0),
-        (0x11, 0xC001, 0x8000, 0), (0x12, 0x4000, 0xC001, 0),
-        (0x13, 0x4000, 0, 4), (0x14, 0x4000, 0, 0x40000000),
-        (0x19, 0x4000, 0xC000, 0xC001), (0xFE, 0, 0, 0), (1, 0, 0, 0),
-        (0xF, 0xC000, 0, 19), (7, 0xC000, 0, 0),
+        (3, 2, 3, 0),
+        (0x13, 0xC000, 0, 7),
+        (0xB, 0xC000, 0, 0),
+        (0xC, 3, 0, 0),
+        (0xD, 0xC001, 0, 0),
+        (0x11, 0x4000, 0xC001, 0),
+        (8, 0xC002, 0, 0),
+        (0x29, 0xC003, 0xC002, 0xC000),
+        (0xF, 0xC003, 0, 11),
+        (0xE, 6, 0, 0),
+        (0xE, 12, 0, 0),
+        (2, 0xC001, 0, 0),
+        (5, 19, 0, 0),
+        (0xA, 0xC004, 0, 0),
+        (0x14, 0xC005, 0, 0x3FC00000),
+        (0x15, 0xC006, 0xC005, 0),
+        (7, 0xC004, 0, 0),
+        (6, 0, 0, 0),
+        (4, 0, 0, 0),
+        (3, 1, 1, 0),
+        (0x13, 0xC000, 0, 0xFFFFFFFF),
+        (0xB, 0x4000, 0, 0),
+        (0xB, 0xC000, 0, 0),
+        (0xC, 43, 0, 0),
+        (0xC, 99, 0, 0),
+        (0x11, 0xC001, 0x8000, 0),
+        (0x12, 0x4000, 0xC001, 0),
+        (0x13, 0x4000, 0, 4),
+        (0x14, 0x4000, 0, 0x40000000),
+        (0x19, 0x4000, 0xC000, 0xC001),
+        (0xFE, 0, 0, 0),
+        (1, 0, 0, 0),
+        (0xF, 0xC000, 0, 19),
+        (7, 0xC000, 0, 0),
     ]
-    return {"name": name, "path": "synthetic", "nvars": 1, "sizevars": 4,
-            "vars": [(2, "", "counter", 0)],
-            "funcs": [("ProcessMessage", 0, 1, 2, 2, 3, 0),
-                      ("Initialize", 19, 1, 2, 1, 1, 0)],
-            "nquads": len(instructions), "quads": b"".join(quad(*q) for q in instructions)}
+    return {
+        "name": name,
+        "path": "synthetic",
+        "nvars": 1,
+        "sizevars": 4,
+        "vars": [(2, "", "counter", 0)],
+        "funcs": [("ProcessMessage", 0, 1, 2, 2, 3, 0), ("Initialize", 19, 1, 2, 1, 1, 0)],
+        "nquads": len(instructions),
+        "quads": b"".join(quad(*q) for q in instructions),
+    }
 
 
 def mission():
-    actor = {"x": 10, "y": 20, "name": "unit1", "profile": 0, "dir": 2,
-             "B": 1, "flags10": "000100", "flags": 3, "trailer": 0}
+    actor = {
+        "x": 10,
+        "y": 20,
+        "name": "unit1",
+        "profile": 0,
+        "dir": 2,
+        "B": 1,
+        "flags10": "000100",
+        "flags": 3,
+        "trailer": 0,
+    }
     return {
-        "BOYZ": {"data": [{"tag": tag, "records": [dict(actor)]}
-                          for tag in ("SCOT", "BORG", "OILE", "TOTO", "BOOM")]},
-        "RAIL": {"data": [[], [{"x": 1, "y": 2, "name": "p", "program": None}],
-                          [{"x": 3, "y": 4, "name": "", "program": {"tables": [
-                              {"id": 4, "blocks": [(50, "", [(1, "ab"), (2, "abcdefghij")])]}]}},
-                           {"x": 5, "y": 6, "program": None}]]},
-        "GULP": {"data": {"polygons": [{"points": [], "name": ""},
-                                       {"points": [[1, 2], [3, 4]], "name": "area"}],
-                          "points": [{"x": 2, "y": 3}]}},
-        "TING": {"data": [{"x": 1, "y": 2, "poly": [0, [[1, 2], [3, 4]]],
-                          "u16a": 1, "u32b": 2, "u16c": 3, "u32d": 4, "i16e": -1,
-                          "woaw": {"count": 2}}]},
+        "BOYZ": {"data": [{"tag": tag, "records": [dict(actor)]} for tag in ("SCOT", "BORG", "OILE", "TOTO", "BOOM")]},
+        "RAIL": {
+            "data": [
+                [],
+                [{"x": 1, "y": 2, "name": "p", "program": None}],
+                [
+                    {
+                        "x": 3,
+                        "y": 4,
+                        "name": "",
+                        "program": {"tables": [{"id": 4, "blocks": [(50, "", [(1, "ab"), (2, "abcdefghij")])]}]},
+                    },
+                    {"x": 5, "y": 6, "program": None},
+                ],
+            ]
+        },
+        "GULP": {
+            "data": {
+                "polygons": [{"points": [], "name": ""}, {"points": [[1, 2], [3, 4]], "name": "area"}],
+                "points": [{"x": 2, "y": 3}],
+            }
+        },
+        "TING": {
+            "data": [
+                {
+                    "x": 1,
+                    "y": 2,
+                    "poly": [0, [[1, 2], [3, 4]]],
+                    "u16a": 1,
+                    "u32b": 2,
+                    "u16c": 3,
+                    "u32d": 4,
+                    "i16e": -1,
+                    "woaw": {"count": 2},
+                }
+            ]
+        },
         "ZORG": {"data": [{"x": 2, "y": 3, "a": 1, "b": 2, "flags": 3}]},
         "SKRO": {"data": [{"x": 3, "y": 4, "name": "scroll", "flags5": "00", "flags": 4}]},
         "CAVE": {"data": [{"flag": 1, "ids": [2, 3]}]},
@@ -212,9 +272,11 @@ class ProbeTests(unittest.TestCase):
         cls = script_class()
         events = []
         flow = mod.Flow(cls, 0, cls["nquads"])
-        self.snapshot("flow", lambda: flow.walk(
-            lambda *a: events.append(("native", a)), lambda *a: events.append(("use", a))),
-            lambda: (events, flow.writer))
+        self.snapshot(
+            "flow",
+            lambda: flow.walk(lambda *a: events.append(("native", a)), lambda *a: events.append(("use", a))),
+            lambda: (events, flow.writer),
+        )
         self.snapshot("pseudo", lambda: mod.pseudo(cls, 0, cls["nquads"], {19: "Initialize"}))
         self.snapshot("flow_without_callbacks", lambda: mod.Flow(cls, 0, cls["nquads"]).walk())
         bad = {**cls, "quads": quad(0x13), "nquads": 2}
@@ -243,12 +305,26 @@ class ProbeTests(unittest.TestCase):
         cls = script_class()
         other = script_class("Element")
         other["funcs"][0] = ("PostInitialize", *other["funcs"][0][1:])
-        self.snapshot("load_natives", lambda: mod.load_natives([cls, other],
-                      ("Initialize", "PostInitialize", "ProcessMessage", "missing")))
+        self.snapshot(
+            "load_natives",
+            lambda: mod.load_natives([cls, other], ("Initialize", "PostInitialize", "ProcessMessage", "missing")),
+        )
         self.snapshot("load_empty", lambda: mod.load_natives([], ()))
         stack = self.fake_files(mod, [cls, other])
         stack.enter_context(patch.object(mod, "files_of", return_value=["sample.scb"]))
-        options = ["--missions", "--ids", "--all-unknown", "--context", "--known", "3", "--limit", "1", "--id", "43", "99"]
+        options = [
+            "--missions",
+            "--ids",
+            "--all-unknown",
+            "--context",
+            "--known",
+            "3",
+            "--limit",
+            "1",
+            "--id",
+            "43",
+            "99",
+        ]
         with patch.object(sys, "argv", ["tool", "fake", *options]):
             self.snapshot("load_reports", mod.main)
         with patch.object(sys, "argv", ["tool"]):
@@ -274,7 +350,8 @@ class ProbeTests(unittest.TestCase):
             'RAIL: 1\n  rail 2: "point__1___80000004" "point__2___80000005"\n'
             "ZORG: 1\n  entry mark_80000006\nCAVE: 2\n"
             "HIRN: 1 waypoints, 2 bushes, 3 beam-me points\n  ignored_80000007\n"
-            "POUF: 4\nTING: 5\nMEOW v3: 1\n  thing final_80000008")
+            "POUF: 4\nTING: 5\nMEOW v3: 1\n  thing final_80000008"
+        )
         with patch.object(mod.subprocess, "run", return_value=Mock(stdout=text)) as run:
             self.snapshot("rhm_records", lambda: mod.rhm_records("tool", "fake.rhm"), lambda: run.call_args_list)
 
@@ -298,11 +375,15 @@ class ProbeTests(unittest.TestCase):
             self.snapshot("xref", mod.main)
 
     def test_cpf_reports(self):
-        rec = {"sprite": "synthetic", "sequence": "seq", "label": "label", "voice": "v",
-               "pre": "00", "post": "01"}
-        data = {"pc": [rec], "sd": [rec] * 6, "cv": [rec],
-                "level": [{"code": "ZZ", "map": "map", "mission": "mission", "title": "title", "music": 1, "mid": "00"}],
-                "table_a": [{"head": "00" * 28, "records": ["00" * 32]}], "table_b": ["00" * 81]}
+        rec = {"sprite": "synthetic", "sequence": "seq", "label": "label", "voice": "v", "pre": "00", "post": "01"}
+        data = {
+            "pc": [rec],
+            "sd": [rec] * 6,
+            "cv": [rec],
+            "level": [{"code": "ZZ", "map": "map", "mission": "mission", "title": "title", "music": 1, "mid": "00"}],
+            "table_a": [{"head": "00" * 28, "records": ["00" * 32]}],
+            "table_b": ["00" * 81],
+        }
         for name in ("cpf_probe", "cpf_stats"):
             mod = tool(name)
             with self.subTest(name=name), contextlib.ExitStack() as stack:
@@ -310,12 +391,20 @@ class ProbeTests(unittest.TestCase):
                 stack.enter_context(patch.object(mod, "parse", return_value=data))
                 if name == "cpf_stats":
                     stack.enter_context(patch.object(mod, "FAMILIES", ["family"]))
-                    rows = [(dict.fromkeys(mod.SD_PRE, i), dict.fromkeys(mod.SD_POST, 1), (1.0,), (2.0,)) for i in range(6)]
+                    rows = [
+                        (dict.fromkeys(mod.SD_PRE, i), dict.fromkeys(mod.SD_POST, 1), (1.0,), (2.0,)) for i in range(6)
+                    ]
                     stack.enter_context(patch.object(mod, "sd_fields", side_effect=rows))
                     stack.enter_context(patch.object(mod, "pc_fields", return_value=((1, 2), (3, 4))))
-                self.snapshot(name, lambda mod=mod: mod.main(["sample.cpf", "--hex", "--tiers", "--tables", "--json", "out.json"]))
+                self.snapshot(
+                    name, lambda mod=mod: mod.main(["sample.cpf", "--hex", "--tiers", "--tables", "--json", "out.json"])
+                )
         mod = tool("cpf_probe")
-        with patch("builtins.open", mock_open(read_data=b"synthetic")), patch.object(mod, "parse", return_value=data), patch.object(mod.os.path, "exists", return_value=False):
+        with (
+            patch("builtins.open", mock_open(read_data=b"synthetic")),
+            patch.object(mod, "parse", return_value=data),
+            patch.object(mod.os.path, "exists", return_value=False),
+        ):
             self.snapshot("cpf_missing_rhs", lambda: mod.main(["sample.cpf", "--rhs", "fake"]))
 
     def test_mission_reports(self):
@@ -323,8 +412,14 @@ class ProbeTests(unittest.TestCase):
             mod = tool(name)
             with self.subTest(name=name), contextlib.ExitStack() as stack:
                 stack.enter_context(patch("builtins.open", mock_open(read_data=b"synthetic")))
-                stack.enter_context(patch.object(mod, "parse_file", side_effect=[ValueError("bad container"), mission()]
-                                              if name == "rhm_full" else None, return_value=mission()))
+                stack.enter_context(
+                    patch.object(
+                        mod,
+                        "parse_file",
+                        side_effect=[ValueError("bad container"), mission()] if name == "rhm_full" else None,
+                        return_value=mission(),
+                    )
+                )
                 stack.enter_context(patch.object(mod.os.path, "isdir", return_value=True))
                 stack.enter_context(patch.object(mod.glob, "glob", return_value=["b.rhm", "a.rhm"]))
                 if name == "rhm_full":
@@ -334,7 +429,10 @@ class ProbeTests(unittest.TestCase):
                     cpf = {key: [{"sprite": "s", "label": "l", "voice": "v"}] for key in ("sd", "pc", "cv")}
                     stack.enter_context(patch.object(mod, "parse_cpf", return_value=cpf))
                     for option in ([], ["--scot"], ["--cast", "a", "b"]):
-                        self.snapshot("profiles" + (option[0] if option else ""), lambda mod=mod, option=option: mod.main(["fake", "cpf", *option]))
+                        self.snapshot(
+                            "profiles" + (option[0] if option else ""),
+                            lambda mod=mod, option=option: mod.main(["fake", "cpf", *option]),
+                        )
 
     def test_mission_group_reports(self):
         group = struct.pack("<4sIIH", b"BORG", 6, 1, 0)
@@ -343,11 +441,17 @@ class ProbeTests(unittest.TestCase):
             mod = tool(name)
             with self.subTest(name=name), contextlib.ExitStack() as stack:
                 stack.enter_context(patch("builtins.open", mock_open(read_data=b"synthetic")))
-                stack.enter_context(patch.object(mod, "children", return_value=(None, None, [("BOYZ", 1, 0, body), ("NONE", 2, 0, b"x")])))
+                stack.enter_context(
+                    patch.object(
+                        mod, "children", return_value=(None, None, [("BOYZ", 1, 0, body), ("NONE", 2, 0, b"x")])
+                    )
+                )
                 stack.enter_context(patch.object(mod.glob, "glob", return_value=["b.rhm", "a.rhm"]))
                 stack.enter_context(patch.object(mod.os.path, "isdir", return_value=True))
                 if name == "rhm_probe":
-                    stack.enter_context(patch.object(mod, "parse_group", return_value=([{"x": 1, "flag": 2}], "left bytes")))
+                    stack.enter_context(
+                        patch.object(mod, "parse_group", return_value=([{"x": 1, "flag": 2}], "left bytes"))
+                    )
                 stack.enter_context(patch.object(sys, "argv", ["tool", "fake", "--dump", "BORG"]))
                 self.snapshot(name, mod.main)
 
@@ -357,12 +461,18 @@ class ProbeTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch("builtins.open", mock_open(read_data=b"synthetic")))
             stack.enter_context(patch.object(mod.glob, "glob", return_value=["sample.rhm"]))
-            stack.enter_context(patch.object(mod, "children", return_value=(None, None, [(tag, 1, 0, b"\x00\x00xyz") for tag in tags])))
-            stack.enter_context(patch.object(mod, "parse_rail", return_value=[[(1, 2, b"abcde", b"x" * 22), (3, 4, b"abcde", b"")]]))
+            stack.enter_context(
+                patch.object(mod, "children", return_value=(None, None, [(tag, 1, 0, b"\x00\x00xyz") for tag in tags]))
+            )
+            stack.enter_context(
+                patch.object(mod, "parse_rail", return_value=[[(1, 2, b"abcde", b"x" * 22), (3, 4, b"abcde", b"")]])
+            )
             stack.enter_context(patch.object(mod, "parse_gulp", return_value=([(1, 2)], [(1, [1, 2], 3, "name")])))
             stack.enter_context(patch.object(mod, "parse_skro", side_effect=ValueError("bad skro")))
             stack.enter_context(patch.object(mod, "parse_zorg", return_value=[]))
-            stack.enter_context(patch.object(mod, "parse_hirn", return_value={"BUSH": (1, b"\x02\x00x"), "NLIP": (2, b"x")}))
+            stack.enter_context(
+                patch.object(mod, "parse_hirn", return_value={"BUSH": (1, b"\x02\x00x"), "NLIP": (2, b"x")})
+            )
             stack.enter_context(patch.object(sys, "argv", ["tool", "fake", *tags]))
             self.snapshot("chunks", mod.main)
 
@@ -370,7 +480,13 @@ class ProbeTests(unittest.TestCase):
         mod = tool("rhm_overlay")
         draw = Mock()
         image = Mock()
-        with patch("builtins.open", mock_open()), patch.object(mod.json, "load", return_value=mission()), patch.object(mod.Image, "open", return_value=Mock(convert=Mock(return_value=image))), patch.object(mod.ImageDraw, "Draw", return_value=draw), patch.object(sys, "argv", ["tool", "mission.json", "map.png", "out.png"]):
+        with (
+            patch("builtins.open", mock_open()),
+            patch.object(mod.json, "load", return_value=mission()),
+            patch.object(mod.Image, "open", return_value=Mock(convert=Mock(return_value=image))),
+            patch.object(mod.ImageDraw, "Draw", return_value=draw),
+            patch.object(sys, "argv", ["tool", "mission.json", "map.png", "out.png"]),
+        ):
             self.snapshot("mission_drawing", mod.main, lambda: (draw.mock_calls, image.mock_calls))
 
     def test_map_drawing_and_scan(self):
@@ -380,15 +496,25 @@ class ProbeTests(unittest.TestCase):
         image.crop.return_value = image
         poly = [(1, 1), (4, 1), (1, 4)]
         with contextlib.ExitStack() as stack:
-            stack.enter_context(patch.object(mod, "load_chunks", return_value={tag: (1, b"") for tag in ("STAT", "WOAW", "007 ", "PPPP")}))
+            stack.enter_context(
+                patch.object(
+                    mod, "load_chunks", return_value={tag: (1, b"") for tag in ("STAT", "WOAW", "007 ", "PPPP")}
+                )
+            )
             stack.enter_context(patch.object(mod, "load_map", return_value=Mock(convert=Mock(return_value=image))))
             stack.enter_context(patch.object(mod, "map_path", return_value="map.png"))
             stack.enter_context(patch.object(mod.ImageDraw, "Draw", return_value=draw))
-            stack.enter_context(patch.object(tool("probe_stat3"), "parse_stat", return_value=([[(0, 2, 1, poly)], [(0, 0, 0, [])]], 0)))
-            stack.enter_context(patch.object(mod, "woaw_areas", return_value=[([(x, y, 0, 0) for x, y in poly], (), (), (), 0, 0)]))
+            stack.enter_context(
+                patch.object(tool("probe_stat3"), "parse_stat", return_value=([[(0, 2, 1, poly)], [(0, 0, 0, [])]], 0))
+            )
+            stack.enter_context(
+                patch.object(mod, "woaw_areas", return_value=[([(x, y, 0, 0) for x, y in poly], (), (), (), 0, 0)])
+            )
             stack.enter_context(patch.object(mod, "bonds", return_value=[(1, 2, 3, 4, 5, 6, 7)]))
             stack.enter_context(patch.object(mod, "pppp", return_value=([(1, poly, b"")], 0)))
-            stack.enter_context(patch.object(sys, "argv", ["tool", "map", "out.png", "stat,woaw,bond,pppp", "0", "0", "10", "10"]))
+            stack.enter_context(
+                patch.object(sys, "argv", ["tool", "map", "out.png", "stat,woaw,bond,pppp", "0", "0", "10", "10"])
+            )
             self.snapshot("map_drawing", mod._main, lambda: (draw.mock_calls, image.mock_calls))
         polygon = struct.pack("<H6H", 3, 1, 1, 4, 1, 1, 4)
         self.snapshot("polygon_scan", lambda: mod.stat_polys_scan(b"\xff\xff" + polygon * 3, 20, 30))
@@ -398,7 +524,11 @@ class ProbeTests(unittest.TestCase):
         mod = tool("probe_stat_layers")
         poly = struct.pack("<BH6HB", 1, 3, 1, 1, 4, 1, 1, 4, 2)
         body = b"\x03" + poly + struct.pack("<HIHHHH", 0, 0, 0, 2, 0, 7) + b"bad!"
-        with patch.object(mod, "load_chunks", return_value={"STAT": (1, body)}), patch.object(mod, "map_size", return_value=(20, 30)), patch.object(mod, "decoded_prefix", return_value=((2,), [(0, 0)], [], 0)):
+        with (
+            patch.object(mod, "load_chunks", return_value={"STAT": (1, body)}),
+            patch.object(mod, "map_size", return_value=(20, 30)),
+            patch.object(mod, "decoded_prefix", return_value=((2,), [(0, 0)], [], 0)),
+        ):
             self.snapshot("stat_layers", lambda: mod.sequential("map", (2, 2)))
             self.snapshot("stat_layers_quiet", lambda: mod.sequential("map", verbose=False))
 
@@ -408,23 +538,38 @@ class ProbeTests(unittest.TestCase):
         anims = [{"frames": [frame] * (1 + i % 2), "u04": 1, "u08": 2, "u0c": 3} for i in range(32)]
         for args in ([], ["--strip", "0", "1"], ["--blocks", "0:2", "--dir", "1"]):
             with self.subTest(args=args), contextlib.ExitStack() as stack:
-                stack.enter_context(patch.object(mod, "parse_rhs", return_value=[{"anims": anims, "name": "synthetic"}]))
+                stack.enter_context(
+                    patch.object(mod, "parse_rhs", return_value=[{"anims": anims, "name": "synthetic"}])
+                )
                 stack.enter_context(patch.object(mod, "Bank", return_value="bank"))
                 stack.enter_context(patch.object(mod, "load_pages", return_value="pages"))
-                render = stack.enter_context(patch.object(mod, "render_cells", return_value=np.zeros((2, 3, 4), dtype=np.uint8)))
+                render = stack.enter_context(
+                    patch.object(mod, "render_cells", return_value=np.zeros((2, 3, 4), dtype=np.uint8))
+                )
                 write = stack.enter_context(patch.object(mod, "write_png"))
                 stack.enter_context(patch.object(mod.os, "makedirs"))
                 stack.enter_context(patch.object(sys, "argv", ["tool", "sample.rhs", "out", *args]))
-                self.snapshot("anim" + (args[0] if args else ""), mod.main, lambda render=render, write=write: (render.call_args_list, write.call_args_list))
+                self.snapshot(
+                    "anim" + (args[0] if args else ""),
+                    mod.main,
+                    lambda render=render, write=write: (render.call_args_list, write.call_args_list),
+                )
 
     def test_sprite_decode(self):
         bank = Mock(width=np.array([], dtype=int), height=np.array([], dtype=int))
         bank.frames_of_page.return_value = np.array([], dtype=int)
         with patch.object(tool("spritebank"), "Bank", return_value=bank), contextlib.redirect_stdout(io.StringIO()):
             mod = tool("sprite_stats6")
-        cases = [([], 2, 1, False), ([1], 2, 1, False), ([0, 0xFFFF], 5, 1, False),
-                 ([0, 2, 7, 8], 2, 1, False), ([0, 1, 7, 8], 2, 1, True),
-                 ([1, 3, 7, 8, 9], 2, 1, False), ([0, 0], 1, 1, False), ([1, 0], 1, 1, False)]
+        cases = [
+            ([], 2, 1, False),
+            ([1], 2, 1, False),
+            ([0, 0xFFFF], 5, 1, False),
+            ([0, 2, 7, 8], 2, 1, False),
+            ([0, 1, 7, 8], 2, 1, True),
+            ([1, 3, 7, 8, 9], 2, 1, False),
+            ([0, 0], 1, 1, False),
+            ([1, 0], 1, 1, False),
+        ]
         self.snapshot("sprite_decode", lambda: [mod.decode(*case) for case in cases])
 
 
@@ -435,47 +580,81 @@ class OriginalTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import ctypes
+
         sys.path.insert(0, str(PROBES.parent / "original"))
         modules = {name: Mock() for name in ("pyautogui", "win32con", "win32gui", "win32process")}
-        with patch.dict(sys.modules, modules), patch.object(ctypes, "windll", Mock(), create=True), patch.object(sys, "stdout", Mock()):
+        with (
+            patch.dict(sys.modules, modules),
+            patch.object(ctypes, "windll", Mock(), create=True),
+            patch.object(sys, "stdout", Mock()),
+        ):
             cls.rhcap = importlib.import_module("rhcap")
             cls.oracle = importlib.import_module("oracle_input")
             cls.frames = importlib.import_module("frame_rec")
 
     def test_frame_commands(self):
         mod = self.frames
-        commands = [[], ["rec", "out", "2"], ["rec", "out", "2", "10", "0", "1", "2", "3"],
-                    ["save", "in", "0", "out"], ["blobs", "in"],
-                    ["blobs", "in", "0", "1", "2", "3", "12", "4"],
-                    ["track", "in", "0", "1", "2", "3"], ["changes", "in", "0", "1", "2", "3", "5"],
-                    ["unknown", "in"], ["track", "in", "bad"]]
+        commands = [
+            [],
+            ["rec", "out", "2"],
+            ["rec", "out", "2", "10", "0", "1", "2", "3"],
+            ["save", "in", "0", "out"],
+            ["blobs", "in"],
+            ["blobs", "in", "0", "1", "2", "3", "12", "4"],
+            ["track", "in", "0", "1", "2", "3"],
+            ["changes", "in", "0", "1", "2", "3", "5"],
+            ["unknown", "in"],
+            ["track", "in", "bad"],
+        ]
         for i, args in enumerate(commands):
             with self.subTest(args=args), contextlib.ExitStack() as stack:
                 events = Mock()
-                for name, result in {"record": (np.array([0.0, 0.5, 1.0]), np.zeros((3, 2, 2))),
-                                     "load": (np.array([0.0]), np.zeros((1, 2, 2))),
-                                     "blobs": [(0.0, []), (1.0, [(1, 2, 3, 4, 2.0, 4, 8)])],
-                                     "track": [(0.0, None), (1.0, 2.0, 4, 1, 2, 3, 4, 8)],
-                                     "fit_speed": None, "changes": [(0.0, -1), (1.0, 3)]}.items():
+                for name, result in {
+                    "record": (np.array([0.0, 0.5, 1.0]), np.zeros((3, 2, 2))),
+                    "load": (np.array([0.0]), np.zeros((1, 2, 2))),
+                    "blobs": [(0.0, []), (1.0, [(1, 2, 3, 4, 2.0, 4, 8)])],
+                    "track": [(0.0, None), (1.0, 2.0, 4, 1, 2, 3, 4, 8)],
+                    "fit_speed": None,
+                    "changes": [(0.0, -1), (1.0, 3)],
+                }.items():
                     mocked = stack.enter_context(patch.object(mod, name, return_value=result))
                     events.attach_mock(mocked, name)
                 from PIL import Image
+
                 image = Mock()
                 mocked = stack.enter_context(patch.object(Image, "fromarray", return_value=image))
                 events.attach_mock(mocked, "image")
-                self.snapshot(f"frames{i}", lambda args=args: mod.main(args), lambda events=events, image=image: (events.mock_calls, image.mock_calls))
+                self.snapshot(
+                    f"frames{i}",
+                    lambda args=args: mod.main(args),
+                    lambda events=events, image=image: (events.mock_calls, image.mock_calls),
+                )
 
     def test_oracle_commands(self):
         mod = self.oracle
-        commands = [[], ["probe"], ["move", "1", "2"], ["click", "1", "2"],
-                    ["click", "1", "2", "right", "3"], ["mmove", "1", "2"],
-                    ["mclick", "1", "2", "right", "2"], ["rec", "out", "1", "2"], ["unknown"]]
+        commands = [
+            [],
+            ["probe"],
+            ["move", "1", "2"],
+            ["click", "1", "2"],
+            ["click", "1", "2", "right", "3"],
+            ["mmove", "1", "2"],
+            ["mclick", "1", "2", "right", "2"],
+            ["rec", "out", "1", "2"],
+            ["unknown"],
+        ]
         for i, args in enumerate(commands):
             with self.subTest(args=args), contextlib.ExitStack() as stack:
                 events = Mock()
-                for name, result in {"clamp_origin": None, "phys": (1, 2), "gmove": (2, 3), "gclick": None,
-                                     "mmove": ((1, 2), 0.9, 0.6), "mclick": ((1, 2), 0.9, 0.6),
-                                     "record": [(0.5, "frame.png")]}.items():
+                for name, result in {
+                    "clamp_origin": None,
+                    "phys": (1, 2),
+                    "gmove": (2, 3),
+                    "gclick": None,
+                    "mmove": ((1, 2), 0.9, 0.6),
+                    "mclick": ((1, 2), 0.9, 0.6),
+                    "record": [(0.5, "frame.png")],
+                }.items():
                     events.attach_mock(stack.enter_context(patch.object(mod, name, return_value=result)), name)
                 for name, result in {"find_window": (5, "window"), "focus": True, "raw_rel": None}.items():
                     events.attach_mock(stack.enter_context(patch.object(mod.rhcap, name, return_value=result)), name)
@@ -489,34 +668,67 @@ class OriginalTests(unittest.TestCase):
         readings = [((0, 0), 0.1), ((10, 10), 0.9), ((30, 30), 0.8), ((40, 50), 0.99)]
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(mod.rhcap, "CAPDIR", "captures"))
-            for target, name, result in [(mod.rhcap, "find_window", (5, "w")), (mod.rhcap, "grab", image),
-                                          (mod.rhcap, "raw_rel", None), (mod.time, "sleep", None), (mod.time, "time", 1.0)]:
+            for target, name, result in [
+                (mod.rhcap, "find_window", (5, "w")),
+                (mod.rhcap, "grab", image),
+                (mod.rhcap, "raw_rel", None),
+                (mod.time, "sleep", None),
+                (mod.time, "time", 1.0),
+            ]:
                 events.attach_mock(stack.enter_context(patch.object(target, name, return_value=result)), name)
             stack.enter_context(patch.object(mod, "find_cursor", side_effect=readings))
-            self.snapshot("mmove", lambda: mod.mmove(40, 50, verbose=True), lambda: (events.mock_calls, image.mock_calls))
+            self.snapshot(
+                "mmove", lambda: mod.mmove(40, 50, verbose=True), lambda: (events.mock_calls, image.mock_calls)
+            )
             self.snapshot("mmove_zero", lambda: mod.mmove(1, 2, h=5, iters=0))
 
     def test_capture_commands(self):
         mod = self.rhcap
-        commands = [[], ["seq", "; move 1 2; sleep 0.5; key escape;"], ["launch", "fake"], ["kill"],
-                    ["win"], ["shot", "name"], ["boot", "out", "1", "0.2"], ["move", "1", "2"],
-                    ["rclick", "1", "2"], ["click", "1", "2", "right", "3"], ["focus"],
-                    ["drag", "1", "2", "3", "4", "right"], ["key", "escape", "0.1"],
-                    ["key", "unknown", "0.2"], ["key", "unknown"], ["type", "abc"],
-                    ["hover", "1", "2", "name"], ["pix", "1", "2"], ["unknown"], ["move", "bad", "2"]]
+        commands = [
+            [],
+            ["seq", "; move 1 2; sleep 0.5; key escape;"],
+            ["launch", "fake"],
+            ["kill"],
+            ["win"],
+            ["shot", "name"],
+            ["boot", "out", "1", "0.2"],
+            ["move", "1", "2"],
+            ["rclick", "1", "2"],
+            ["click", "1", "2", "right", "3"],
+            ["focus"],
+            ["drag", "1", "2", "3", "4", "right"],
+            ["key", "escape", "0.1"],
+            ["key", "unknown", "0.2"],
+            ["key", "unknown"],
+            ["type", "abc"],
+            ["hover", "1", "2", "name"],
+            ["pix", "1", "2"],
+            ["unknown"],
+            ["move", "bad", "2"],
+        ]
         for i, args in enumerate(commands):
             with self.subTest(args=args), contextlib.ExitStack() as stack:
                 events = Mock()
                 image = Mock(size=(20, 30))
                 image.tobytes.return_value = b"synthetic"
                 image.getpixel.return_value = (1, 2, 3)
-                for name, result in {"need_window": (5, "window"), "find_window": (5, "window"),
-                                     "client_rect": (1, 2, 20, 30), "shot": "out.png", "grab": image,
-                                     "focus": True, "rmove": None, "rclick": None, "skey": None}.items():
+                for name, result in {
+                    "need_window": (5, "window"),
+                    "find_window": (5, "window"),
+                    "client_rect": (1, 2, 20, 30),
+                    "shot": "out.png",
+                    "grab": image,
+                    "focus": True,
+                    "rmove": None,
+                    "rclick": None,
+                    "skey": None,
+                }.items():
                     events.attach_mock(stack.enter_context(patch.object(mod, name, return_value=result)), name)
                 gui = Mock()
                 stack.enter_context(patch.object(mod, "pyautogui", gui))
-                stack.enter_context(patch.object(mod, "win32process", Mock(GetWindowThreadProcessId=Mock(return_value=(1, 42)))))
+                stack.enter_context(
+                    patch.object(mod, "win32process", Mock(GetWindowThreadProcessId=Mock(return_value=(1, 42))))
+                )
                 stack.enter_context(patch.object(mod, "win32gui", Mock(GetForegroundWindow=Mock(return_value=5))))
                 stack.enter_context(patch.object(mod.subprocess, "Popen", return_value=Mock(pid=42)))
                 events.attach_mock(stack.enter_context(patch.object(mod.subprocess, "call", return_value=0)), "process")
@@ -526,7 +738,11 @@ class OriginalTests(unittest.TestCase):
                 stack.enter_context(patch.object(mod, "CAPDIR", "captures"))
                 events.attach_mock(stack.enter_context(patch.object(mod.time, "sleep")), "sleep")
                 stack.enter_context(patch.object(mod.time, "time", side_effect=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 1.1]))
-                self.snapshot(f"capture{i}", lambda args=args: mod.main(args), lambda events=events, gui=gui, image=image: (events.mock_calls, gui.mock_calls, image.mock_calls))
+                self.snapshot(
+                    f"capture{i}",
+                    lambda args=args: mod.main(args),
+                    lambda events=events, gui=gui, image=image: (events.mock_calls, gui.mock_calls, image.mock_calls),
+                )
 
 
 if __name__ == "__main__":

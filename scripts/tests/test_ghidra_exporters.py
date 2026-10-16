@@ -27,15 +27,19 @@ class ExporterTests(unittest.TestCase):
             target.write_text("import testfixture.MockTypes.*;\n" + body, encoding="utf-8", newline="\n")
             sources.append(target)
         compiled = subprocess.run(
-            ["javac", "-d", str(cls.build), *map(str, sources)], capture_output=True, text=True,
+            ["javac", "-d", str(cls.build), *map(str, sources)],
+            capture_output=True,
+            text=True,
         )
         if compiled.returncode:
             raise RuntimeError(compiled.stdout + compiled.stderr)
 
     def check_exporter(self, scenario):
         result = subprocess.run(
-            ["java", "-ea", "-cp", str(self.build), "testfixture.ExporterChecks", scenario,
-             str(self.build / scenario)], capture_output=True, text=True, timeout=30,
+            ["java", "-ea", "-cp", str(self.build), "testfixture.ExporterChecks", scenario, str(self.build / scenario)],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

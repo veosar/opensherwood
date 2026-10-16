@@ -19,6 +19,7 @@ Usage (run from anywhere):
   python rhcap.py kill                      terminate the game process
   python rhcap.py seq "cmd a b; sleep 1; cmd" run several commands in one process
 """
+
 import ctypes
 import hashlib
 import os
@@ -116,13 +117,24 @@ def focus(h):
 # (pyautogui.moveTo) does not move the in-game cursor. We clamp the in-game cursor to
 # the client's top-left corner with a huge negative delta, then move by (x, y).
 class _MI(ctypes.Structure):
-    _fields_ = [("dx", ctypes.c_long), ("dy", ctypes.c_long), ("mouseData", ctypes.c_ulong),
-                ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.c_void_p)]
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
 
 
 class _KI(ctypes.Structure):
-    _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort), ("dwFlags", ctypes.c_ulong),
-                ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.c_void_p)]
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
 
 
 class _IU(ctypes.Union):
@@ -142,10 +154,39 @@ def raw_rel(dx, dy, flags=0x0001):
         print("SendInput failed", ctypes.GetLastError(), file=sys.stderr)
 
 
-SCAN = {"1": 0x02, "2": 0x03, "3": 0x04, "4": 0x05, "5": 0x06, "q": 0x10, "d": 0x20, "c": 0x2E, "s": 0x1F,
-        "g": 0x22, "h": 0x23, "j": 0x24, "a": 0x1E, "space": 0x39, "backspace": 0x0E, "escape": 0x01, "enter": 0x1C,
-        "tab": 0x0F, "capslock": 0x3A, "f1": 0x3B, "f5": 0x3F, "f11": 0x57, "add": 0x4E, "subtract": 0x4A,
-        "up": 0xC8, "down": 0xD0, "left": 0xCB, "right": 0xCD, "lshift": 0x2A, "lctrl": 0x1D, "lalt": 0x38}
+SCAN = {
+    "1": 0x02,
+    "2": 0x03,
+    "3": 0x04,
+    "4": 0x05,
+    "5": 0x06,
+    "q": 0x10,
+    "d": 0x20,
+    "c": 0x2E,
+    "s": 0x1F,
+    "g": 0x22,
+    "h": 0x23,
+    "j": 0x24,
+    "a": 0x1E,
+    "space": 0x39,
+    "backspace": 0x0E,
+    "escape": 0x01,
+    "enter": 0x1C,
+    "tab": 0x0F,
+    "capslock": 0x3A,
+    "f1": 0x3B,
+    "f5": 0x3F,
+    "f11": 0x57,
+    "add": 0x4E,
+    "subtract": 0x4A,
+    "up": 0xC8,
+    "down": 0xD0,
+    "left": 0xCB,
+    "right": 0xCD,
+    "lshift": 0x2A,
+    "lctrl": 0x1D,
+    "lalt": 0x38,
+}
 
 
 def skey(name, hold=0.0):
@@ -275,7 +316,10 @@ def _win_command(args):
     h, t = need_window()
     sx, sy, w, hh = client_rect(h)
     _, pid = win32process.GetWindowThreadProcessId(h)
-    print("title=%r hwnd=%d pid=%d client_origin=(%d,%d) size=%dx%d fg=%s" % (t, h, pid, sx, sy, w, hh, win32gui.GetForegroundWindow() == h))
+    print(
+        "title=%r hwnd=%d pid=%d client_origin=(%d,%d) size=%dx%d fg=%s"
+        % (t, h, pid, sx, sy, w, hh, win32gui.GetForegroundWindow() == h)
+    )
 
 
 def _shot_command(args):
@@ -414,13 +458,20 @@ def main(argv):
         print(__doc__)
         return
     cmd, args = argv[0], argv[1:]
-    commands = {"seq": _seq_command, "launch": _launch_command, "kill": _kill_command,
-                "win": _win_command, "shot": _shot_command, "boot": _boot_command}
+    commands = {
+        "seq": _seq_command,
+        "launch": _launch_command,
+        "kill": _kill_command,
+        "win": _win_command,
+        "shot": _shot_command,
+        "boot": _boot_command,
+    }
     if cmd in commands:
         commands[cmd](args)
         return
     h, _t = need_window()
     _window_command(cmd, args, h)
+
 
 if __name__ == "__main__":
     main(sys.argv[1:])

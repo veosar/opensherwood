@@ -3,6 +3,7 @@
 Runs against a game already showing its main menu. Every step: input, wait, screenshot.
 Falls back to a 'Back' button click when Escape does not leave a sub-screen.
 """
+
 import os
 import sys
 import time
@@ -61,16 +62,23 @@ def back_to(reference, name, back_xy=(MENU_X, OPT_ROWS["back"])):
 def main():
     rhcap.focus(H)
     main_menu = shot("menu_main")
-    rhcap.rmove(H, MENU_X, ROWS["play"]); time.sleep(0.5); shot("menu_hover_play")
-    click(MENU_X, ROWS["options"]); options = shot("options_main")
+    rhcap.rmove(H, MENU_X, ROWS["play"])
+    time.sleep(0.5)
+    shot("menu_hover_play")
+    click(MENU_X, ROWS["options"])
+    options = shot("options_main")
     for k in ("graphics", "sounds", "shortcuts"):
-        click(MENU_X, OPT_ROWS[k]); shot("options_" + k)
+        click(MENU_X, OPT_ROWS[k])
+        shot("options_" + k)
         back_to(options, "options_" + k)
-    click(MENU_X, OPT_ROWS["back"]); shot("menu_after_options_back")
+    click(MENU_X, OPT_ROWS["back"])
+    shot("menu_after_options_back")
     for k in ("load", "select", "credits", "movies"):
-        click(MENU_X, ROWS[k], wait=2.0); shot("menu_" + k)
+        click(MENU_X, ROWS[k], wait=2.0)
+        shot("menu_" + k)
         if k in ("credits", "movies"):
-            time.sleep(4.0); shot("menu_" + k + "_later")
+            time.sleep(4.0)
+            shot("menu_" + k + "_later")
         back_to(main_menu, "menu_" + k)
     shot("menu_end")
 

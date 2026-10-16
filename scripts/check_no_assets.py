@@ -15,6 +15,7 @@ Ghidra project directories (`*.rep/`, `*.gpr`), the private roots (`re/`, golden
 game's formats, retail content fingerprints in replays / snapshots, large binaries, and text (UTF-8 or UTF-16)
 carrying decompiler idioms or exporter signatures. A file too large to inspect is reported, never skipped.
 """
+
 from __future__ import annotations
 
 import re
@@ -25,20 +26,70 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 FORBIDDEN_EXT = {
-    ".rhs", ".rhp", ".rhm", ".scb", ".bks", ".dic", ".res", ".red", ".pak", ".sxt", ".map", ".min",
-    ".bfn", ".tfn", ".fnt", ".ttc", ".sfk", ".fxg", ".cpf", ".bck", ".vid", ".bik", ".wav", ".ogg", ".mp3",
-    ".bmp", ".exe", ".dll",
+    ".rhs",
+    ".rhp",
+    ".rhm",
+    ".scb",
+    ".bks",
+    ".dic",
+    ".res",
+    ".red",
+    ".pak",
+    ".sxt",
+    ".map",
+    ".min",
+    ".bfn",
+    ".tfn",
+    ".fnt",
+    ".ttc",
+    ".sfk",
+    ".fxg",
+    ".cpf",
+    ".bck",
+    ".vid",
+    ".bik",
+    ".wav",
+    ".ogg",
+    ".mp3",
+    ".bmp",
+    ".exe",
+    ".dll",
     # derived images: screenshots and decoded sheets of game data stay local
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".tif",
+    ".tiff",
     # Ghidra projects, archives, exports and type libraries (ADR-0009: analysis stays in the ignored `re/`)
-    ".gpr", ".gzf", ".gar", ".gdt", ".fidb", ".prp", ".rep",
+    ".gpr",
+    ".gzf",
+    ".gar",
+    ".gdt",
+    ".fidb",
+    ".prp",
+    ".rep",
 }
 FORBIDDEN_ROOTS = ("re/", "harness/goldens/", "harness/captures/", "goldens/", "harness/out/", "harness/harness/")
 # Replays and snapshots produced from a retail run carry the content fingerprint of the player's data.
 RETAIL_MARKERS = (b'"content_fingerprint":"opensherwood', b'"content":"opensherwood')
 FORBIDDEN_NAMES = {"continue", "continue_t", "restart", "restart_t", "profiles", "campaign.bck"}
-MAGICS = [b"SRES", b"MEUH", b"DUTY", b"SBSCRIPT", b"SBFONT", b"SBTTFT", b"FXBK", b"SFPK", b"NEUF", b"GSHR",
-          b"FORP", b"BIKi", bytes.fromhex("c9eb0300")]
+MAGICS = [
+    b"SRES",
+    b"MEUH",
+    b"DUTY",
+    b"SBSCRIPT",
+    b"SBFONT",
+    b"SBTTFT",
+    b"FXBK",
+    b"SFPK",
+    b"NEUF",
+    b"GSHR",
+    b"FORP",
+    b"BIKi",
+    bytes.fromhex("c9eb0300"),
+]
 MAX_BINARY_BYTES = 512 * 1024
 MAX_INSPECT_BYTES = 32 * 1024 * 1024
 
@@ -46,9 +97,7 @@ MAX_INSPECT_BYTES = 32 * 1024 * 1024
 # is refused; one family alone is reported as a warning in the output but does not fail (ordinary prose can
 # mention one token). Files that describe the rule itself are listed by exact path.
 IDIOM_FAMILIES = {
-    "auto-named function / data / label": (
-        re.compile(r"\b(?:FUN|DAT|LAB|PTR|thunk_FUN|switchD)_[0-9a-fA-F]{6,8}\b"),
-    ),
+    "auto-named function / data / label": (re.compile(r"\b(?:FUN|DAT|LAB|PTR|thunk_FUN|switchD)_[0-9a-fA-F]{6,8}\b"),),
     "auto-named parameter / local": (
         re.compile(r"\b(?:param_\d+|local_[0-9a-f]{1,4})\b"),
         re.compile(r"\b(?:[a-z]{1,2}Var\d+|[a-z]{1,2}Stack\d*|auStack_?\w*)\b"),
@@ -56,11 +105,11 @@ IDIOM_FAMILIES = {
     ),
     "undefined types": (re.compile(r"\bundefined(?:[1248])?\b"),),
     "calling conventions": (re.compile(r"\b__(?:thiscall|fastcall|cdecl|stdcall|regparm)\b"),),
-    "p-code helper macros": (
-        re.compile(r"\b(?:CONCAT\d\d|SUB\d\d|ZEXT\d\d|SEXT\d\d|SBORROW\d|CARRY\d|SCARRY\d)\("),
-    ),
+    "p-code helper macros": (re.compile(r"\b(?:CONCAT\d\d|SUB\d\d|ZEXT\d\d|SEXT\d\d|SBORROW\d|CARRY\d|SCARRY\d)\("),),
     "exporter signatures": (
-        re.compile(r"(?:^|\n)(?:// callers: |// callees: |address\tsize\tname\tcallers|address\tlength\tfunctions\ttext)"),
+        re.compile(
+            r"(?:^|\n)(?:// callers: |// callees: |address\tsize\tname\tcallers|address\tlength\tfunctions\ttext)"
+        ),
     ),
 }
 IDIOM_ALLOWED = {
@@ -70,7 +119,10 @@ IDIOM_ALLOWED = {
     "docs/decisions/ADR-0009-decompilation-driven-reimplementation.md",
 }
 # The exporters' own source names their output columns; they are generic tooling, listed exactly.
-IDIOM_ALLOWED |= {f"scripts/ghidra/{n}" for n in ("ExportInventory.java", "ExportStrings.java", "DecompileList.java", "DecompileAll.java")}
+IDIOM_ALLOWED |= {
+    f"scripts/ghidra/{n}"
+    for n in ("ExportInventory.java", "ExportStrings.java", "DecompileList.java", "DecompileAll.java")
+}
 
 
 def git(*args: str) -> bytes:
@@ -138,7 +190,9 @@ def is_binary(data: bytes) -> bool:
 
 
 def looks_utf16(data: bytes) -> bool:
-    return data[:2] in (b"\xff\xfe", b"\xfe\xff") or (len(data) >= 8 and data[1] == 0 and data[3] == 0 and data[0] != 0 and data[2] != 0)
+    return data[:2] in (b"\xff\xfe", b"\xfe\xff") or (
+        len(data) >= 8 and data[1] == 0 and data[3] == 0 and data[0] != 0 and data[2] != 0
+    )
 
 
 def as_text(data: bytes) -> str:
@@ -155,8 +209,11 @@ def check_content(rel: str, data: bytes, size: int) -> list[str]:
     for magic in MAGICS:
         if data.startswith(magic):
             problems.append(f"game format magic {magic!r}: {rel}")
-    if Path(rel).suffix.lower() in {".jsonl", ".json"} and any(m in data[:4096] for m in RETAIL_MARKERS) \
-            and not rel.startswith("harness/fixtures/"):
+    if (
+        Path(rel).suffix.lower() in {".jsonl", ".json"}
+        and any(m in data[:4096] for m in RETAIL_MARKERS)
+        and not rel.startswith("harness/fixtures/")
+    ):
         problems.append(f"replay or snapshot with a retail content fingerprint: {rel}")
     if size > MAX_INSPECT_BYTES:
         problems.append(f"too large to inspect ({size} bytes), review by hand: {rel}")
@@ -254,8 +311,10 @@ def main() -> int:
         print(p)
     if problems:
         return 1
-    print(f"policy check passed on {what}: no forbidden extensions, magics, roots, large binaries or decompiler "
-          "idioms (copied prose and non-literal copying are not detected by this script)")
+    print(
+        f"policy check passed on {what}: no forbidden extensions, magics, roots, large binaries or decompiler "
+        "idioms (copied prose and non-literal copying are not detected by this script)"
+    )
     return 0
 
 

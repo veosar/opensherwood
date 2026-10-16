@@ -53,11 +53,10 @@ def test_loader_visits_all_missions_in_sorted_order(mission_checks):
 
 def test_loader_collects_invalid_sizes_and_engine_errors(mission_checks):
     module, game_dir, visits, outcomes = mission_checks
-    outcomes.update(mission01=0, mission03=-1, mission05=RuntimeError("load failed"),
-                    mission07=AssertionError("engine assertion"))
+    outcomes.update(
+        mission01=0, mission03=-1, mission05=RuntimeError("load failed"), mission07=AssertionError("engine assertion")
+    )
     with pytest.raises(AssertionError) as caught:
         module.test_every_mission_file_loads("unused", game_dir)
-    assert str(caught.value) == (
-        "mission01: \nmission03: \nmission05: load failed\nmission07: engine assertion"
-    )
+    assert str(caught.value) == ("mission01: \nmission03: \nmission05: load failed\nmission07: engine assertion")
     assert len(visits) == 39

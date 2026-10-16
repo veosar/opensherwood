@@ -17,19 +17,29 @@ class LocalNameDetectorTests(unittest.TestCase):
         problems = POLICY.check_content("example.txt", data, len(data))
         self.assertEqual(bool(problems), expected, text)
         if expected:
-            self.assertEqual(problems, [
-                "looks like decompiler output (auto-named parameter / local, "
-                "undefined types): example.txt"
-            ])
+            self.assertEqual(
+                problems, ["looks like decompiler output (auto-named parameter / local, undefined types): example.txt"]
+            )
 
     def test_all_alternatives_and_word_boundaries(self):
         words = [
-            "param_" + "1", "param_" + "１２", "local_" + "a",
-            "local_" + "abcd", "x" + "Var2", "ab" + "Var12",
-            "x" + "Stack", "ab" + "Stack012", "au" + "Stack",
-            "au" + "Stack_", "au" + "Stack_name", "au" + "Stacké",
-            "in_stack_" + "a", "unaff_" + "a", "extraout_" + "é",
-            "in_" + "AB", "in_" + "ABC",
+            "param_" + "1",
+            "param_" + "１２",
+            "local_" + "a",
+            "local_" + "abcd",
+            "x" + "Var2",
+            "ab" + "Var12",
+            "x" + "Stack",
+            "ab" + "Stack012",
+            "au" + "Stack",
+            "au" + "Stack_",
+            "au" + "Stack_name",
+            "au" + "Stacké",
+            "in_stack_" + "a",
+            "unaff_" + "a",
+            "extraout_" + "é",
+            "in_" + "AB",
+            "in_" + "ABC",
         ]
         for word in words:
             for prefix, suffix in (("", ""), ("(", ")"), (" ", "\n")):
@@ -39,9 +49,20 @@ class LocalNameDetectorTests(unittest.TestCase):
                 self.check_local("é" + word, False)
 
     def test_rejected_names(self):
-        for word in ("param_", "local_", "local_" + "abcde", "local_" + "AB",
-                     "abc" + "Var1", "Var1", "abc" + "Stack1", "in_stack_",
-                     "unaff_", "extraout_", "in_A", "in_ABCD"):
+        for word in (
+            "param_",
+            "local_",
+            "local_" + "abcde",
+            "local_" + "AB",
+            "abc" + "Var1",
+            "Var1",
+            "abc" + "Stack1",
+            "in_stack_",
+            "unaff_",
+            "extraout_",
+            "in_A",
+            "in_ABCD",
+        ):
             with self.subTest(word=word):
                 self.check_local(word, False)
 

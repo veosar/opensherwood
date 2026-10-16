@@ -2,6 +2,7 @@
 
 Usage: python rhm_probe.py <dir-or-file> [--dump TAG] [--verbose]
 """
+
 import collections
 import glob
 import os
@@ -107,7 +108,17 @@ def polygon(r):
 
 
 def rec_boom(r):
-    d = {"x": r.u16(), "y": r.u16(), "i16a": r.i16(), "u16b": r.u16(), "u32c": r.u32(), "u16d": r.u16(), "P": r.i16(), "Q": r.u16(), "R": r.u16()}
+    d = {
+        "x": r.u16(),
+        "y": r.u16(),
+        "i16a": r.i16(),
+        "u16b": r.u16(),
+        "u32c": r.u32(),
+        "u16d": r.u16(),
+        "P": r.i16(),
+        "Q": r.u16(),
+        "R": r.u16(),
+    }
     d["sprite"] = r.pstr()
     d["label"] = r.pstr()
     d["X"] = r.u32()
@@ -137,9 +148,9 @@ def parse_group(tag, body, verbose):
             if verbose:
                 print("   ", tag, i, d)
     except Exception as e:  # noqa: BLE001
-        return recs, f"error {e} after {len(recs)} records at {r.p:#x}: {body[r.p:r.p+48].hex()}"
+        return recs, f"error {e} after {len(recs)} records at {r.p:#x}: {body[r.p : r.p + 48].hex()}"
     if r.p != len(body):
-        return recs, f"left {len(body)-r.p} bytes after {n} records at {r.p:#x}: {body[r.p:r.p+64].hex()}"
+        return recs, f"left {len(body) - r.p} bytes after {n} records at {r.p:#x}: {body[r.p : r.p + 64].hex()}"
     return recs, "OK"
 
 

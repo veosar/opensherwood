@@ -7,6 +7,7 @@ obstacles), then walks the remainder looking for records framed like polylines: 
 u16 y), u8 id2, with every point inside the map. Prints the records, the bytes between them, and whether a
 given map point lies inside each polygon. Generic, no game bytes embedded.
 """
+
 import os
 import struct
 import sys
@@ -98,22 +99,31 @@ def main(argv):
     if "--point" in argv:
         i = argv.index("--point")
         pt = (int(argv[i + 1]), int(argv[i + 2]))
-        argv = argv[:i] + argv[i + 3:]
+        argv = argv[:i] + argv[i + 3 :]
     maps = argv or ["lincoln"]
     for name in maps:
         chunks = load_chunks(rhp_path(name))
         _, body = chunks["STAT"]
         w, h = map_size(name)
         hdr, boundary, obstacles, p = decoded_prefix(body)
-        print(f"== {name} {w}x{h} STAT header {hdr}, boundary {len(boundary)} pts, {len(obstacles)} obstacles, decoded prefix ends at {p} of {len(body)}")
+        print(
+            f"== {name} {w}x{h} STAT header {hdr}, boundary {len(boundary)} pts, {len(obstacles)} obstacles, decoded prefix ends at {p} of {len(body)}"
+        )
         if pt:
-            print("  point in boundary:", inside(boundary, *pt), " in obstacle:", [i for i, (poly, _) in enumerate(obstacles) if inside(poly[1], *pt)])
+            print(
+                "  point in boundary:",
+                inside(boundary, *pt),
+                " in obstacle:",
+                [i for i, (poly, _) in enumerate(obstacles) if inside(poly[1], *pt)],
+            )
         records, tail = scan(body, p, w, h)
         for off, _id, n, id2, pts, gap in records[:80]:
             xs = [x for x, _ in pts]
             ys = [y for _, y in pts]
             hit = " contains point" if pt and inside(pts, *pt) else ""
-            print(f"  @{off:6d} id=0x{_id:02x} n={n:4d} id2=0x{id2:02x} bbox=({min(xs)},{min(ys)})-({max(xs)},{max(ys)}) gap={len(gap)}B {gap[:24].hex()}{hit}")
+            print(
+                f"  @{off:6d} id=0x{_id:02x} n={n:4d} id2=0x{id2:02x} bbox=({min(xs)},{min(ys)})-({max(xs)},{max(ys)}) gap={len(gap)}B {gap[:24].hex()}{hit}"
+            )
         print(f"  {len(records)} records, tail {len(tail)} bytes: {tail[:32].hex()}")
 
 
@@ -164,12 +174,17 @@ def sequential(name, pt=None, verbose=True):
             tag, poly, obs, nseg, z1, z2, nobst, q = _read_layer(body, p, w, h)
             layers.append((tag, poly, poly[1], obs))
             if verbose:
-                xs = [x for x, _ in poly[1]]; ys = [y for _, y in poly[1]]
+                xs = [x for x, _ in poly[1]]
+                ys = [y for _, y in poly[1]]
                 hit = " <- contains point" if pt and inside(poly[1], *pt) else ""
-                print(f"  layer {len(layers)-1}: tag=0x{tag:02x} id=0x{poly[0]:02x}/0x{poly[2]:02x} n={len(poly[1])} nseg={nseg} z1={z1} abc={z2} nobst={nobst} bbox=({min(xs)},{min(ys)})-({max(xs)},{max(ys)}) @{start}..{q}{hit}")
+                print(
+                    f"  layer {len(layers) - 1}: tag=0x{tag:02x} id=0x{poly[0]:02x}/0x{poly[2]:02x} n={len(poly[1])} nseg={nseg} z1={z1} abc={z2} nobst={nobst} bbox=({min(xs)},{min(ys)})-({max(xs)},{max(ys)}) @{start}..{q}{hit}"
+                )
             p = q
         except Exception as ex:  # noqa: BLE001
-            print(f"  stop at {start} ({ex}); {len(layers)} layers parsed, header layer count {hdr[0]}; next bytes {body[start:start+24].hex()}")
+            print(
+                f"  stop at {start} ({ex}); {len(layers)} layers parsed, header layer count {hdr[0]}; next bytes {body[start : start + 24].hex()}"
+            )
             ok = False
     return layers, p, len(body)
 
@@ -178,7 +193,9 @@ if __name__ == "__main__" and "--seq" in sys.argv:
     args = [a for a in sys.argv[1:] if a != "--seq"]
     pt = None
     if "--point" in args:
-        i = args.index("--point"); pt = (int(args[i+1]), int(args[i+2])); args = args[:i] + args[i+3:]
+        i = args.index("--point")
+        pt = (int(args[i + 1]), int(args[i + 2]))
+        args = args[:i] + args[i + 3 :]
     for name in args or ["lincoln"]:
         print("==", name)
         layers, p, n = sequential(name, pt)

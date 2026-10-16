@@ -7,6 +7,7 @@ chunk counts so the layout hypothesis (which chunks precede which) can be tested
 
 Usage: python scb_elements.py <levels-dir> <opensherwood-tools.exe> [mission-base ...]
 """
+
 import collections
 import os
 import re

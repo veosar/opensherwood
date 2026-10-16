@@ -15,6 +15,7 @@ Usage (python frame_rec.py ...):
 
 Positions are client pixels at the game's resolution (1024x768 with the maintainer's profile).
 """
+
 import os
 import sys
 import time
@@ -52,7 +53,7 @@ def record(path, secs, fps=30.0, h=None, t0=None, on_frame=None, region=None):
             img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
             g = np.asarray(img.convert("L"), dtype=np.uint8)
             if region:
-                g = g[region[1]:region[3], region[0]:region[2]]
+                g = g[region[1] : region[3], region[0] : region[2]]
             frames.append(g)
             times.append(time.time() - t0)
             if on_frame:
@@ -93,7 +94,17 @@ def blobs(frames, times, region=None, thresh=40, minpx=40, bg=None):
                 continue
             ys, xs = np.nonzero(lab == i)
             low = ys >= ys.max() - 4
-            bl.append((bx + x0, by + y0, bx + bw + x0, by + bh + y0, float(np.median(xs[low])) + x0, int(ys.max()) + y0, int(area)))
+            bl.append(
+                (
+                    bx + x0,
+                    by + y0,
+                    bx + bw + x0,
+                    by + bh + y0,
+                    float(np.median(xs[low])) + x0,
+                    int(ys.max()) + y0,
+                    int(area),
+                )
+            )
         out.append((t, bl))
     return out
 
@@ -183,12 +194,12 @@ def main(argv):
         _rec_command(a)
         return
     t, f = load(a[0])
-    commands = {"save": _save_command, "blobs": _blobs_command,
-                "track": _track_command, "changes": _changes_command}
+    commands = {"save": _save_command, "blobs": _blobs_command, "track": _track_command, "changes": _changes_command}
     if cmd in commands:
         commands[cmd](a, t, f)
         return
     print("unknown command", cmd)
+
 
 if __name__ == "__main__":
     main(sys.argv[1:])

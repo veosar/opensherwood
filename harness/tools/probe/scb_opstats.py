@@ -4,6 +4,7 @@ Usage: python scb_opstats.py <dir>
 Prints, for each opcode: count; for the u16 at +1 and +3: top-2-bit flag histogram and distinct low values;
 for the u32 at +5: zero fraction, max, whether it fits as a quad index of the class, float plausibility.
 """
+
 import collections
 import glob
 import os
@@ -54,7 +55,20 @@ def _class_stats(c, st, call_targets):
 
 def main():
     files = sorted(glob.glob(os.path.join(sys.argv[1], "*.scb")))
-    st = collections.defaultdict(lambda: {"n": 0, "a": collections.Counter(), "b": collections.Counter(), "c0": 0, "cmax": 0, "cfit": 0, "cfloat": 0, "a_low": set(), "b_low": set(), "c_vals": collections.Counter()})
+    st = collections.defaultdict(
+        lambda: {
+            "n": 0,
+            "a": collections.Counter(),
+            "b": collections.Counter(),
+            "c0": 0,
+            "cmax": 0,
+            "cfit": 0,
+            "cfloat": 0,
+            "a_low": set(),
+            "b_low": set(),
+            "c_vals": collections.Counter(),
+        }
+    )
     init_ok = init_bad = 0
     call_targets = collections.Counter()
     for f in files:
