@@ -21,6 +21,12 @@ stored in the tests. The CLI test removes its temporary overlay PNG after checki
 Synthetic tests cover the minimap pixels and profile edits; a Windows-only hidden-window test checks
 input ordering and releases held input on focus loss.
 
+The synthetic suite also exercises probe reports and capture-helper commands in
+`harness/tests/synthetic/test_probe_tools.py`. These characterization tests use invented records and mocked
+files, drawing, window APIs and clocks; they need neither game data nor a running engine. Run them separately
+with `python -m pytest harness/tests/synthetic/test_probe_tools.py -q`. Their snapshots cover complete report
+text, return values, exception messages and the order of observable calls; path separators are normalized.
+
 ## Protocol
 
 JSON-RPC 2.0, one JSON object per line, request on stdin, response on stdout, logs on stderr.

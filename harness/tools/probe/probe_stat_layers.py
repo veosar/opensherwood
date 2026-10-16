@@ -121,6 +121,33 @@ if __name__ == "__main__" and "--seq" not in sys.argv:
     main(sys.argv[1:])
 
 
+def _read_layer(body, p, w, h):
+    tag, q = u8(body, p)
+    poly, q = polyline(body, q)
+    if not all(x <= w and y <= h for x, y in poly[1]) or len(poly[1]) < 3:
+        raise ValueError("polygon outside map")
+    nseg, q = u16(body, q)
+    q += 8 * nseg
+    z1, q = u32(body, q)
+    nobst, q = u16(body, q)
+    a, q = u16(body, q)
+    b, q = u16(body, q)
+    obs = []
+    for _ in range(nobst):
+        op, q = polyline(body, q)
+        if not all(x <= w and y <= h for x, y in op[1]):
+            raise ValueError("obstacle outside map")
+        flags, q = u32(body, q)
+        obs.append((op, flags))
+    # Tail observed: u16 a, u16 b before the obstacles? No: they precede them in the first layer
+    # framing (u32 0). Here `a`/`b` are read before the obstacles; extra u16 when a >= 2 (observed).
+    c = None
+    if a >= 2:
+        c, q = u16(body, q)
+    z2 = (a, b, c)
+    return tag, poly, obs, nseg, z1, z2, nobst, q
+
+
 def sequential(name, pt=None, verbose=True):
     """Hypothesis: after the obstacles, `layer_count - 1` records shaped like the first layer:
     u8 tag, polyline(id, n, pts, id2), u16 nseg, nseg x 8 bytes, u32 0, u16 nobst, u32 0,
@@ -134,29 +161,7 @@ def sequential(name, pt=None, verbose=True):
     while p + 4 <= len(body) and ok:
         start = p
         try:
-            tag, q = u8(body, p)
-            poly, q = polyline(body, q)
-            if not all(x <= w and y <= h for x, y in poly[1]) or len(poly[1]) < 3:
-                raise ValueError("polygon outside map")
-            nseg, q = u16(body, q)
-            q += 8 * nseg
-            z1, q = u32(body, q)
-            nobst, q = u16(body, q)
-            a, q = u16(body, q)
-            b, q = u16(body, q)
-            obs = []
-            for _ in range(nobst):
-                op, q = polyline(body, q)
-                if not all(x <= w and y <= h for x, y in op[1]):
-                    raise ValueError("obstacle outside map")
-                flags, q = u32(body, q)
-                obs.append((op, flags))
-            # Tail observed: u16 a, u16 b before the obstacles? No: they precede them in the first layer
-            # framing (u32 0). Here `a`/`b` are read before the obstacles; extra u16 when a >= 2 (observed).
-            c = None
-            if a >= 2:
-                c, q = u16(body, q)
-            z2 = (a, b, c)
+            tag, poly, obs, nseg, z1, z2, nobst, q = _read_layer(body, p, w, h)
             layers.append((tag, poly, poly[1], obs))
             if verbose:
                 xs = [x for x, _ in poly[1]]; ys = [y for _, y in poly[1]]

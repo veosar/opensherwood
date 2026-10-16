@@ -46,6 +46,41 @@ def pc_fields(rec):
     return pre, words
 
 
+def _tier_columns(fam, keys, part):
+    out = []
+    for k in keys:
+        vals = [r[part][k] for r in fam[:5]]
+        deltas = {vals[j + 1] - vals[j] for j in range(4)}
+        if deltas == {0}:
+            out.append(f"{k}={vals[0]}")
+        elif len(deltas) == 1:
+            out.append(f"{k}={vals[0]}..{vals[4]}({'+' if vals[4] > vals[0] else ''}{deltas.pop()}/tier)")
+        else:
+            out.append(f"{k}={vals}")
+    return out
+
+
+def _print_tiers(rows):
+    print("\n== per family: column deltas between consecutive tiers 00..04 (05 = the green repeat)")
+    for f, name in enumerate(FAMILIES):
+        fam = rows[f * 6:f * 6 + 6]
+        for label, keys, part in (("pre", SD_PRE, 0), ("post", SD_POST, 1)):
+            out = _tier_columns(fam, keys, part)
+            print(f"{name:12s} {label:4s} " + "  ".join(out))
+
+
+def _print_tables(t):
+    print("\n== table A (block k = combat class id k+1: PC ids 1..10, soldier class ids 0x0b..0x1b)")
+    for i, blk in enumerate(t["table_a"]):
+        print(i, struct.unpack("<14H", bytes.fromhex(blk["head"])))
+        for rec in blk["records"]:
+            print("   ", struct.unpack("<16H", bytes.fromhex(rec)))
+    print("\n== table B")
+    for rec in t["table_b"]:
+        b = bytes.fromhex(rec)
+        print(struct.unpack("<20H", b[:40]), b[40], struct.unpack("<20H", b[41:81]))
+
+
 def main(argv):
     t = parse(open(argv[0], "rb").read())
     print("== SD records: pre = " + " ".join(SD_PRE) + " | post = " + " ".join(SD_POST))
@@ -58,36 +93,13 @@ def main(argv):
               + " ".join((f"{post[k]:#04x}" if k == "flags" or k == "class" else f"{post[k]:3d}") for k in SD_POST)
               + f"  f32={tuple(int(x) for x in floats)} centre={tuple(int(x) for x in centre)}")
     if "--tiers" in argv:
-        print("\n== per family: column deltas between consecutive tiers 00..04 (05 = the green repeat)")
-        for f, name in enumerate(FAMILIES):
-            fam = rows[f * 6:f * 6 + 6]
-            for label, keys, part in (("pre", SD_PRE, 0), ("post", SD_POST, 1)):
-                out = []
-                for k in keys:
-                    vals = [r[part][k] for r in fam[:5]]
-                    deltas = {vals[j + 1] - vals[j] for j in range(4)}
-                    if deltas == {0}:
-                        out.append(f"{k}={vals[0]}")
-                    elif len(deltas) == 1:
-                        out.append(f"{k}={vals[0]}..{vals[4]}({'+' if vals[4] > vals[0] else ''}{deltas.pop()}/tier)")
-                    else:
-                        out.append(f"{k}={vals}")
-                print(f"{name:12s} {label:4s} " + "  ".join(out))
+        _print_tiers(rows)
     print("\n== PC records: pre = u16[4]; post as u16 words")
     for i, rec in enumerate(t["pc"]):
         pre, words = pc_fields(rec)
         print(f"{i:2d} {rec['sprite']:14s} pre={pre} post={words[:24]} ... tail={words[-2:]}")
     if "--tables" in argv:
-        print("\n== table A (block k = combat class id k+1: PC ids 1..10, soldier class ids 0x0b..0x1b)")
-        for i, blk in enumerate(t["table_a"]):
-            print(i, struct.unpack("<14H", bytes.fromhex(blk["head"])))
-            for rec in blk["records"]:
-                print("   ", struct.unpack("<16H", bytes.fromhex(rec)))
-        print("\n== table B")
-        for rec in t["table_b"]:
-            b = bytes.fromhex(rec)
-            print(struct.unpack("<20H", b[:40]), b[40], struct.unpack("<20H", b[41:81]))
-
+        _print_tables(t)
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")

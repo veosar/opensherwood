@@ -143,6 +143,27 @@ def parse_group(tag, body, verbose):
     return recs, "OK"
 
 
+def _count_records(ct, recs, stats):
+    for d in recs or []:
+        for k, v in d.items():
+            if k in ("x", "y", "_off", "name", "list", "extra32", "sprite", "label", "x2", "y2", "poly"):
+                continue
+            stats[(ct, k)][v] += 1
+
+
+def _probe_boyz(boyz, f, verbose, dump, stats):
+    pos = 2
+    while pos < len(boyz):
+        ct, cs, _ = struct.unpack_from("<4sII", boyz, pos)
+        ct = ct.decode("latin-1")
+        gb = boyz[pos + 12 : pos + 8 + cs]
+        pos += 8 + cs
+        recs, status = parse_group(ct, gb, verbose or dump == ct)
+        if status != "OK" and recs is not None:
+            print(os.path.basename(f), ct, status)
+        _count_records(ct, recs, stats)
+
+
 def main():
     target = sys.argv[1]
     files = sorted(glob.glob(os.path.join(target, "*.rhm"))) if os.path.isdir(target) else [target]
@@ -153,20 +174,7 @@ def main():
         data = open(f, "rb").read()
         _, _, ch = children(data)
         boyz = next(b for t, v, o, b in ch if t == "BOYZ")
-        pos = 2
-        while pos < len(boyz):
-            ct, cs, _ = struct.unpack_from("<4sII", boyz, pos)
-            ct = ct.decode("latin-1")
-            gb = boyz[pos + 12 : pos + 8 + cs]
-            pos += 8 + cs
-            recs, status = parse_group(ct, gb, verbose or dump == ct)
-            if status != "OK" and recs is not None:
-                print(os.path.basename(f), ct, status)
-            for d in recs or []:
-                for k, v in d.items():
-                    if k in ("x", "y", "_off", "name", "list", "extra32", "sprite", "label", "x2", "y2", "poly"):
-                        continue
-                    stats[(ct, k)][v] += 1
+        _probe_boyz(boyz, f, verbose, dump, stats)
     for k in sorted(stats):
         vals = stats[k]
         print(k, len(vals), "distinct:", sorted(vals.items(), key=lambda kv: -kv[1])[:12])

@@ -29,25 +29,47 @@ def pppp(b):
         tail = b[pos:pos + 6]; pos += 6; out.append((id_, pts, tail))
     return out, pos
 
+def _draw_stat(d, ch):
+    from probe_stat3 import parse_stat
+    groups, _ = parse_stat(ch["STAT"][1])
+    cols = [(255, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255), (0, 255, 0), (255, 128, 0), (128, 128, 255), (255, 255, 255), (0, 128, 0), (128, 0, 0), (0, 0, 128), (128, 128, 0), (255, 0, 128), (0, 255, 128)]
+    for gi, polys in enumerate(groups):
+        c = cols[gi % len(cols)]
+        for R, f, tag, pts in polys:
+            if len(pts) >= 2: d.line(pts + [pts[0]], fill=c + (255,), width=2 if gi else 3)
+            if f: d.text(pts[0], f"f{f}", fill=c)
+
+
+def _draw_woaw(d, ch):
+    for i, (pts, bbox, lst, f4, x, y) in enumerate(woaw_areas(ch["WOAW"][1])):
+        poly = [(p[0], p[1]) for p in pts]
+        d.polygon(poly, fill=(0, 255, 0, 40), outline=(0, 255, 0, 255))
+        cx = sum(p[0] for p in poly) / len(poly); cy = sum(p[1] for p in poly) / len(poly)
+        d.text((cx, cy), f"{i}", fill=(255, 255, 255, 255))
+
+
+def _stat_body_at(b, w, h, p):
+    if p + 2 > len(b): return None
+    n = struct.unpack_from("<H", b, p)[0]
+    if n < 3 or n > 3000 or p + 2 + 4 * n > len(b): return None
+    for k in range(n):
+        x, y = struct.unpack_from("<HH", b, p + 2 + 4 * k)
+        if x > w + 2 or y > h + 2: return None
+    return n
+def _stat_next(b, w, h, p, lim):
+    for q in range(p, min(p + lim, len(b))):
+        if _stat_body_at(b, w, h, q): return q
+    return None
+
+
 def _main():
     m, out, layers = sys.argv[1], sys.argv[2], sys.argv[3].split(",")
     ch = load_chunks(rhp_path(m)); img = load_map(map_path(m)).convert("RGBA")
     d = ImageDraw.Draw(img, "RGBA")
     if "stat" in layers:
-        from probe_stat3 import parse_stat
-        groups, _ = parse_stat(ch["STAT"][1])
-        cols = [(255, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255), (0, 255, 0), (255, 128, 0), (128, 128, 255), (255, 255, 255), (0, 128, 0), (128, 0, 0), (0, 0, 128), (128, 128, 0), (255, 0, 128), (0, 255, 128)]
-        for gi, polys in enumerate(groups):
-            c = cols[gi % len(cols)]
-            for R, f, tag, pts in polys:
-                if len(pts) >= 2: d.line(pts + [pts[0]], fill=c + (255,), width=2 if gi else 3)
-                if f: d.text(pts[0], f"f{f}", fill=c)
+        _draw_stat(d, ch)
     if "woaw" in layers:
-        for i, (pts, bbox, lst, f4, x, y) in enumerate(woaw_areas(ch["WOAW"][1])):
-            poly = [(p[0], p[1]) for p in pts]
-            d.polygon(poly, fill=(0, 255, 0, 40), outline=(0, 255, 0, 255))
-            cx = sum(p[0] for p in poly) / len(poly); cy = sum(p[1] for p in poly) / len(poly)
-            d.text((cx, cy), f"{i}", fill=(255, 255, 255, 255))
+        _draw_woaw(d, ch)
     if "bond" in layers:
         for (x1, y1, x2, y2, a, bb, c) in bonds(ch["007 "][1]):
             d.line([(x1, y1), (x2, y2)], fill=(255, 0, 0, 255), width=3)
@@ -64,22 +86,10 @@ def _main():
 
 def stat_polys_scan(b, w, h):
     """Heuristic polygon extraction from STAT (u16 npts + in-range points, followed by another within 40 bytes)."""
-    def body_at(p):
-        if p + 2 > len(b): return None
-        n = struct.unpack_from("<H", b, p)[0]
-        if n < 3 or n > 3000 or p + 2 + 4 * n > len(b): return None
-        for k in range(n):
-            x, y = struct.unpack_from("<HH", b, p + 2 + 4 * k)
-            if x > w + 2 or y > h + 2: return None
-        return n
-    def nxt(p, lim):
-        for q in range(p, min(p + lim, len(b))):
-            if body_at(q): return q
-        return None
     pos = 2; out = []
     while pos < len(b):
-        n = body_at(pos)
-        if n and nxt(pos + 2 + 4 * n, 40) is not None:
+        n = _stat_body_at(b, w, h, pos)
+        if n and _stat_next(b, w, h, pos + 2 + 4 * n, 40) is not None:
             out.append([struct.unpack_from("<HH", b, pos + 2 + 4 * k) for k in range(n)]); pos += 2 + 4 * n
         else:
             pos += 1

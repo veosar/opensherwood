@@ -134,49 +134,61 @@ def fit_speed(rows):
     return vx, vy, float(np.hypot(vx, vy)), len(pts), t[0], t[-1]
 
 
+def _rec_command(a):
+    fps = float(a[2]) if len(a) > 2 else 30.0
+    region = tuple(int(v) for v in a[3:7]) if len(a) >= 7 else None
+    t, _f = record(a[0], float(a[1]), fps, region=region)
+    print("frames", len(t), "span %.2f s" % (t[-1] - t[0]), "mean dt %.4f s" % np.diff(t).mean())
+
+
+def _save_command(a, t, f):
+    from PIL import Image
+
+    Image.fromarray(f[int(a[1])]).save(a[2])
+
+
+def _blobs_command(a, t, f):
+    region = tuple(int(v) for v in a[1:5]) if len(a) >= 5 else None
+    thresh = int(a[5]) if len(a) > 5 else 40
+    minpx = int(a[6]) if len(a) > 6 else 40
+    for tt, bl in blobs(f, t, region, thresh, minpx):
+        print("%6.3f " % tt + " | ".join("(%d,%d)-(%d,%d) feet (%.1f,%d) n=%d" % b for b in bl))
+
+
+def _track_command(a, t, f):
+    region = tuple(int(v) for v in a[1:5])
+    thresh = int(a[5]) if len(a) > 5 else 40
+    rows = track(f, t, region, thresh)
+    for r in rows:
+        if r[1] is None:
+            print("%6.3f -" % r[0])
+        else:
+            print("%6.3f feet (%.1f,%d) bbox (%d,%d)-(%d,%d) n=%d" % r)
+    print("fit", fit_speed(rows))
+
+
+def _changes_command(a, t, f):
+    region = tuple(int(v) for v in a[1:5])
+    thresh = int(a[5]) if len(a) > 5 else 40
+    for tt, n in changes(f, t, region, thresh):
+        print("%6.3f %d" % (tt, n))
+
+
 def main(argv):
     if not argv:
         print(__doc__)
         return
     cmd, a = argv[0], argv[1:]
     if cmd == "rec":
-        fps = float(a[2]) if len(a) > 2 else 30.0
-        region = tuple(int(v) for v in a[3:7]) if len(a) >= 7 else None
-        t, f = record(a[0], float(a[1]), fps, region=region)
-        print("frames", len(t), "span %.2f s" % (t[-1] - t[0]), "mean dt %.4f s" % np.diff(t).mean())
+        _rec_command(a)
         return
     t, f = load(a[0])
-    if cmd == "save":
-        from PIL import Image
-
-        Image.fromarray(f[int(a[1])]).save(a[2])
-        return
-    if cmd == "blobs":
-        region = tuple(int(v) for v in a[1:5]) if len(a) >= 5 else None
-        thresh = int(a[5]) if len(a) > 5 else 40
-        minpx = int(a[6]) if len(a) > 6 else 40
-        for tt, bl in blobs(f, t, region, thresh, minpx):
-            print("%6.3f " % tt + " | ".join("(%d,%d)-(%d,%d) feet (%.1f,%d) n=%d" % b for b in bl))
-        return
-    if cmd == "track":
-        region = tuple(int(v) for v in a[1:5])
-        thresh = int(a[5]) if len(a) > 5 else 40
-        rows = track(f, t, region, thresh)
-        for r in rows:
-            if r[1] is None:
-                print("%6.3f -" % r[0])
-            else:
-                print("%6.3f feet (%.1f,%d) bbox (%d,%d)-(%d,%d) n=%d" % r)
-        print("fit", fit_speed(rows))
-        return
-    if cmd == "changes":
-        region = tuple(int(v) for v in a[1:5])
-        thresh = int(a[5]) if len(a) > 5 else 40
-        for tt, n in changes(f, t, region, thresh):
-            print("%6.3f %d" % (tt, n))
+    commands = {"save": _save_command, "blobs": _blobs_command,
+                "track": _track_command, "changes": _changes_command}
+    if cmd in commands:
+        commands[cmd](a, t, f)
         return
     print("unknown command", cmd)
-
 
 if __name__ == "__main__":
     main(sys.argv[1:])

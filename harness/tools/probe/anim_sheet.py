@@ -144,6 +144,21 @@ def render_cells(bank, pages, cells, cols, scale, labels):
     return img
 
 
+def _block_cells(anims, b0, b1, direction):
+    rows = [anims[b * 16 + direction] for b in range(b0, b1)]
+    cols = max(len(r["frames"]) for r in rows)
+    cells, labels = [], []
+    for b, an in zip(range(b0, b1), rows):
+        for i in range(cols):
+            if i < len(an["frames"]):
+                cells.append(an["frames"][i])
+                labels.append(f"{b}:{an['u0c']}" if i == 0 else f"{i}:{an['frames'][i]['duration'] & 0xFFFF}")
+            else:
+                cells.append({"frame": 0, "anchor": (ORIGIN, ORIGIN), "duration": 0})
+                labels.append("")
+    return cells, labels, cols
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("rhs")
@@ -178,17 +193,7 @@ def main():
     if a.blocks:
         b0, b1 = (int(x) for x in a.blocks.split(":"))
         b1 = min(b1, len(anims) // 16)
-        rows = [anims[b * 16 + a.dir] for b in range(b0, b1)]
-        cols = max(len(r["frames"]) for r in rows)
-        cells, labels = [], []
-        for b, an in zip(range(b0, b1), rows):
-            for i in range(cols):
-                if i < len(an["frames"]):
-                    cells.append(an["frames"][i])
-                    labels.append(f"{b}:{an['u0c']}" if i == 0 else f"{i}:{an['frames'][i]['duration'] & 0xFFFF}")
-                else:
-                    cells.append({"frame": 0, "anchor": (ORIGIN, ORIGIN), "duration": 0})
-                    labels.append("")
+        cells, labels, cols = _block_cells(anims, b0, b1, a.dir)
         img = render_cells(bank, pages, cells, cols, a.scale, labels)
         p = os.path.join(a.out_dir, f"{stem}_blocks_{b0}_{b1}_dir{a.dir}.png")
         write_png(p, img)

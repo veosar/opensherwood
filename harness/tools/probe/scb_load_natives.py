@@ -68,19 +68,126 @@ def reachable(graph, start, seen=None):
     return out
 
 
+def _class_load_natives(cls, ci, callbacks, order):
+    graph = call_graph(cls)
+    by_name = {g[0]: addr for addr, g in graph.items()}
+    for cb in callbacks:
+        if cb == "PostInitialize":
+            continue
+        if cb in by_name:
+            for nid, fname in reachable(graph, by_name[cb]):
+                order.append((nid, ci, cls["name"], cb, fname))
+
+
+def _options(args):
+    known = set()
+    if "--known-rs" in args:
+        known |= known_from_rs(args[args.index("--known-rs") + 1])
+    if "--known" in args:
+        known |= {int(x) for x in args[args.index("--known") + 1].split(",") if x}
+    callbacks = DEFAULT_CALLBACKS
+    if "--callbacks" in args:
+        callbacks = tuple(args[args.index("--callbacks") + 1].split(","))
+    limit = int(args[args.index("--limit") + 1]) if "--limit" in args else 12
+    only = {int(x) for x in args[args.index("--id") + 1 :] if x.isdigit()} if "--id" in args else set()
+    return known, callbacks, limit, only
+
+
+def _count_all_natives(classes, all_counts):
+    for cls in classes:
+        for i in range(cls["nquads"]):
+            op, a, _, _ = decode(cls["quads"], i)
+            if op == OP_NATIVE:
+                all_counts[a] += 1
+
+
+def _count_load_order(order, base, known, per_id):
+    unknown_order = []
+    for nid, ci, cname, cb, fname in order:
+        p = per_id[nid]
+        p["files"].add(base)
+        p["cbs"][cb] += 1
+        p["fns"][fname] += 1
+        p["n"] += 1
+        p["level" if ci == 0 else "element"] += 1
+        if nid not in known and nid not in unknown_order:
+            unknown_order.append(nid)
+    return unknown_order
+
+
+def _collect_load_natives(files, known, callbacks):
+    per_file = {}
+    per_id = collections.defaultdict(lambda: {"files": set(), "cbs": collections.Counter(), "fns": collections.Counter(),
+                                                  "level": 0, "element": 0, "n": 0})
+    all_counts = collections.Counter()
+    for f in files:
+        base = os.path.basename(f)[:-4]
+        _, classes, _ = parse(open(f, "rb").read())
+        _count_all_natives(classes, all_counts)
+        order = load_natives(classes, callbacks)
+        unknown_order = _count_load_order(order, base, known, per_id)
+        per_file[base] = (unknown_order, {nid for nid, *_ in order})
+    return per_file, per_id, all_counts
+
+
+def _print_missions(per_file):
+    for base in sorted(per_file):
+        unknown_order, allset = per_file[base]
+        print(f"{base}: load natives={len(allset)} unknown at load={unknown_order or 'none'}")
+    blocked = sum(1 for v in per_file.values() if v[0])
+    print(f"{blocked} of {len(per_file)} files reach an unknown native at load")
+
+
+def _print_ids(per_id, known, only, all_counts):
+    for nid in sorted(per_id, key=lambda k: (-len(per_id[k]["files"]), k)):
+        if nid in known and not only:
+            continue
+        if only and nid not in only:
+            continue
+        p = per_id[nid]
+        print(f"native {nid}: files={len(p['files'])} calls_at_load={p['n']} level={p['level']} element={p['element']} "
+              f"callbacks={dict(p['cbs'])} corpus_calls={all_counts[nid]}")
+        print(f"   via functions: {p['fns'].most_common(8)}")
+        print(f"   files: {sorted(p['files'])}")
+
+
+def _print_unknown(per_id, all_counts, known):
+    load_ids = set(per_id)
+    print("unknown ids not reached at load, by corpus frequency:")
+    for nid, n in sorted(all_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        if nid not in known and nid not in load_ids:
+            print(f"   native {nid}: {n} calls")
+
+
+def _print_function_context(f, cls, fname, start, end, fn_names, only, limit, seen):
+    lines = pseudo(cls, start, end, fn_names)
+    for k, line in enumerate(lines):
+        for nid in only:
+            tag = f"n{nid}("
+            if tag in line and seen[nid] < limit:
+                seen[nid] += 1
+                kind = "level" if cls["name"] == "StartUp" else "element"
+                print(f"[n{nid}] {os.path.basename(f)} {kind}.{fname}")
+                for m in range(max(0, k - 2), min(len(lines), k + 3)):
+                    print("      " + lines[m])
+
+
+def _print_context(files, only, limit):
+    seen = collections.Counter()
+    for f in files:
+        _, classes, _ = parse(open(f, "rb").read())
+        for cls in classes:
+            fn_names = {fn[1]: fn[0] for fn in cls["funcs"]}
+            for fname, start, end, fn in functions(cls):
+                _print_function_context(f, cls, fname, start, end, fn_names, only, limit, seen)
+
+
 def load_natives(classes, callbacks):
     """Yield (native id, class index, class name, root callback, function name) in engine load order."""
     order = []
     level = classes[0]
     for ci, cls in enumerate(classes):
-        graph = call_graph(cls)
-        by_name = {g[0]: addr for addr, g in graph.items()}
-        for cb in callbacks:
-            if cb == "PostInitialize":
-                continue
-            if cb in by_name:
-                for nid, fname in reachable(graph, by_name[cb]):
-                    order.append((nid, ci, cls["name"], cb, fname))
+        _class_load_natives(cls, ci, callbacks, order)
     if "PostInitialize" in callbacks:
         graph = call_graph(level)
         by_name = {g[0]: addr for addr, g in graph.items()}
@@ -96,82 +203,16 @@ def main():
         print(__doc__)
         return
     files = files_of(args[0])
-    known = set()
-    if "--known-rs" in args:
-        known |= known_from_rs(args[args.index("--known-rs") + 1])
-    if "--known" in args:
-        known |= {int(x) for x in args[args.index("--known") + 1].split(",") if x}
-    callbacks = DEFAULT_CALLBACKS
-    if "--callbacks" in args:
-        callbacks = tuple(args[args.index("--callbacks") + 1].split(","))
-    limit = int(args[args.index("--limit") + 1]) if "--limit" in args else 12
-    only = {int(x) for x in args[args.index("--id") + 1 :] if x.isdigit()} if "--id" in args else set()
-
-    per_file = {}
-    per_id = collections.defaultdict(lambda: {"files": set(), "cbs": collections.Counter(), "fns": collections.Counter(),
-                                                  "level": 0, "element": 0, "n": 0})
-    all_counts = collections.Counter()
-    for f in files:
-        base = os.path.basename(f)[:-4]
-        _, classes, _ = parse(open(f, "rb").read())
-        for cls in classes:
-            for i in range(cls["nquads"]):
-                op, a, _, _ = decode(cls["quads"], i)
-                if op == OP_NATIVE:
-                    all_counts[a] += 1
-        order = load_natives(classes, callbacks)
-        unknown_order = []
-        for nid, ci, cname, cb, fname in order:
-            p = per_id[nid]
-            p["files"].add(base)
-            p["cbs"][cb] += 1
-            p["fns"][fname] += 1
-            p["n"] += 1
-            p["level" if ci == 0 else "element"] += 1
-            if nid not in known and nid not in unknown_order:
-                unknown_order.append(nid)
-        per_file[base] = (unknown_order, {nid for nid, *_ in order})
-
+    known, callbacks, limit, only = _options(args)
+    per_file, per_id, all_counts = _collect_load_natives(files, known, callbacks)
     if "--missions" in args:
-        for base in sorted(per_file):
-            unknown_order, allset = per_file[base]
-            print(f"{base}: load natives={len(allset)} unknown at load={unknown_order or 'none'}")
-        blocked = sum(1 for v in per_file.values() if v[0])
-        print(f"{blocked} of {len(per_file)} files reach an unknown native at load")
+        _print_missions(per_file)
     if "--ids" in args:
-        for nid in sorted(per_id, key=lambda k: (-len(per_id[k]["files"]), k)):
-            if nid in known and not only:
-                continue
-            if only and nid not in only:
-                continue
-            p = per_id[nid]
-            print(f"native {nid}: files={len(p['files'])} calls_at_load={p['n']} level={p['level']} element={p['element']} "
-                  f"callbacks={dict(p['cbs'])} corpus_calls={all_counts[nid]}")
-            print(f"   via functions: {p['fns'].most_common(8)}")
-            print(f"   files: {sorted(p['files'])}")
+        _print_ids(per_id, known, only, all_counts)
     if "--all-unknown" in args:
-        load_ids = set(per_id)
-        print("unknown ids not reached at load, by corpus frequency:")
-        for nid, n in sorted(all_counts.items(), key=lambda kv: (-kv[1], kv[0])):
-            if nid not in known and nid not in load_ids:
-                print(f"   native {nid}: {n} calls")
+        _print_unknown(per_id, all_counts, known)
     if "--context" in args:
-        seen = collections.Counter()
-        for f in files:
-            _, classes, _ = parse(open(f, "rb").read())
-            for cls in classes:
-                fn_names = {fn[1]: fn[0] for fn in cls["funcs"]}
-                for fname, start, end, fn in functions(cls):
-                    lines = pseudo(cls, start, end, fn_names)
-                    for k, line in enumerate(lines):
-                        for nid in only:
-                            tag = f"n{nid}("
-                            if tag in line and seen[nid] < limit:
-                                seen[nid] += 1
-                                kind = "level" if cls["name"] == "StartUp" else "element"
-                                print(f"[n{nid}] {os.path.basename(f)} {kind}.{fname}")
-                                for m in range(max(0, k - 2), min(len(lines), k + 3)):
-                                    print("      " + lines[m])
+        _print_context(files, only, limit)
     if not any(x in args for x in ("--missions", "--ids", "--context", "--all-unknown")):
         print(__doc__)
 

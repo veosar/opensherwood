@@ -63,6 +63,21 @@ def rhm_counts(tool, path):
     return c
 
 
+def _native_indices(cls, natives, maxes, distinct):
+    for fname, start, end, fn in functions(cls):
+        flow = Flow(cls, start, end)
+
+        def on_native(i, nid, args, ret):
+            if nid in natives:
+                for k, src in enumerate(args):
+                    if src.startswith("imm:"):
+                        v = int(src[4:])
+                        maxes[(nid, k)] = max(maxes[(nid, k)], v)
+                        distinct[(nid, k)].add(v)
+
+        flow.walk(on_native, None)
+
+
 def main():
     levels, textdir, tool = sys.argv[1:4]
     natives = [int(x) for x in sys.argv[4:]] or [3, 6, 9, 4, 5, 202, 203, 26, 27, 195]
@@ -79,18 +94,7 @@ def main():
         _, classes, _ = parse(open(scb, "rb").read())
         nclasses = len(classes) - 1
         for cls in classes:
-            for fname, start, end, fn in functions(cls):
-                flow = Flow(cls, start, end)
-
-                def on_native(i, nid, args, ret):
-                    if nid in natives:
-                        for k, src in enumerate(args):
-                            if src.startswith("imm:"):
-                                v = int(src[4:])
-                                maxes[(nid, k)] = max(maxes[(nid, k)], v)
-                                distinct[(nid, k)].add(v)
-
-                flow.walk(on_native, None)
+            _native_indices(cls, natives, maxes, distinct)
         print(f"{base} ({RED_CODE[base]}): classes={nclasses} actors={counts.get('actors')} (scot {counts.get('scot')} oile {counts.get('oile')} "
               f"toto {counts.get('toto')} borg {counts.get('borg')}) boom={counts.get('boom')} skro={counts.get('skro')} "
               f"gulp={counts.get('gulp_pts')}/{counts.get('gulp_poly')} rail={counts.get('rail')} named_pts={counts.get('named_rail_pts')} "

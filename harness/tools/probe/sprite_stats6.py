@@ -21,28 +21,35 @@ for k in order:
         break
 
 
+def _decode_row(s, w, count_minus_one, p, n):
+    x = 0
+    while x < w:
+        if p >= n:
+            return False, p
+        skip = int(s[p]); p += 1
+        x += skip
+        if p >= n:
+            return False, p
+        c = int(s[p]); p += 1
+        if c == 0xFFFF:
+            break
+        c = c + 1 if count_minus_one else c
+        x += c
+        p += c
+        if x > w:
+            return False, p
+    return True, p
+
+
 def decode(s, w, h, count_minus_one):
     """Row = runs of [skip u16][count u16][pixels]; 0xFFFF in count position ends the row early.
     Returns (ok, words consumed)."""
     p = 0
     n = len(s)
     for _ in range(h):
-        x = 0
-        while x < w:
-            if p >= n:
-                return False, p
-            skip = int(s[p]); p += 1
-            x += skip
-            if p >= n:
-                return False, p
-            c = int(s[p]); p += 1
-            if c == 0xFFFF:
-                break
-            c = c + 1 if count_minus_one else c
-            x += c
-            p += c
-            if x > w:
-                return False, p
+        ok, p = _decode_row(s, w, count_minus_one, p, n)
+        if not ok:
+            return False, p
     return p == n, p
 
 

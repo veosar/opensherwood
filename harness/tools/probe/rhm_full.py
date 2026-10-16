@@ -334,6 +334,56 @@ def parse_file(data):
     return out
 
 
+def _count_commands(t, cmds):
+    for pct, blk, cl in t["blocks"]:
+        for c, a in cl:
+            cmds[(c, a if len(a) <= 8 else len(a))] += 1
+
+
+def _count_rail_point(p, stats, cmds):
+    if p.get("program"):
+        stats[("RAIL", "ntab")][len(p["program"]["tables"])] += 1
+        for t in p["program"]["tables"]:
+            stats[("RAIL", "tab id")][t["id"]] += 1
+            stats[("RAIL", "pcts")][tuple(b[0] for b in t["blocks"])] += 1
+            _count_commands(t, cmds)
+
+
+def _count_rails(m, stats, cmds):
+    for pts in m["RAIL"]["data"]:
+        for p in pts:
+            _count_rail_point(p, stats, cmds)
+
+
+def _count_boyz(m, stats):
+    for g in m["BOYZ"]["data"]:
+        for rec in g["records"]:
+            for k, v in rec.items():
+                if isinstance(v, (int, str)) and k not in ("x", "y", "name", "sprite", "label", "flags10", "x2", "y2"):
+                    stats[(g["tag"], k)][v] += 1
+
+
+def _count_mission(m, stats, cmds):
+    _count_rails(m, stats, cmds)
+    _count_boyz(m, stats)
+    for e in m["TING"]["data"]:
+        for k in ("u16a", "u32b", "u16c", "u32d", "i16e"):
+            stats[("TING", k)][e[k]] += 1
+        stats[("TING", "woaw")][e["woaw"]["count"]] += 1
+    for z in m["ZORG"]["data"]:
+        stats[("ZORG", "a")][z["a"]] += 1
+        stats[("ZORG", "b-flags")][(z["b"], z["flags"])] += 1
+    for s in m["SKRO"]["data"]:
+        stats[("SKRO", "flags5")][s["flags5"]] += 1
+        stats[("SKRO", "flags")][s["flags"]] += 1
+    for c in m["CAVE"]["data"]:
+        stats[("CAVE", "flag")][c["flag"]] += 1
+        stats[("CAVE", "len")][len(c["ids"])] += 1
+    for tag, sub in m["HIRN"]["data"].items():
+        stats[("HIRN", tag)][len(sub["records"])] += 1
+    stats[("FOOT", "variant")][m["FOOT"]["data"]["variant"]] += 1
+
+
 def main():
     target = sys.argv[1]
     files = sorted(glob.glob(os.path.join(target, "*.rhm"))) if os.path.isdir(target) else [target]
@@ -350,37 +400,7 @@ def main():
             continue
         if "--json" in sys.argv:
             json.dump(m, open(sys.argv[sys.argv.index("--json") + 1], "w"), indent=1)
-        for pts in m["RAIL"]["data"]:
-            for p in pts:
-                if p.get("program"):
-                    stats[("RAIL", "ntab")][len(p["program"]["tables"])] += 1
-                    for t in p["program"]["tables"]:
-                        stats[("RAIL", "tab id")][t["id"]] += 1
-                        stats[("RAIL", "pcts")][tuple(b[0] for b in t["blocks"])] += 1
-                        for pct, blk, cl in t["blocks"]:
-                            for c, a in cl:
-                                cmds[(c, a if len(a) <= 8 else len(a))] += 1
-        for g in m["BOYZ"]["data"]:
-            for rec in g["records"]:
-                for k, v in rec.items():
-                    if isinstance(v, (int, str)) and k not in ("x", "y", "name", "sprite", "label", "flags10", "x2", "y2"):
-                        stats[(g["tag"], k)][v] += 1
-        for e in m["TING"]["data"]:
-            for k in ("u16a", "u32b", "u16c", "u32d", "i16e"):
-                stats[("TING", k)][e[k]] += 1
-            stats[("TING", "woaw")][e["woaw"]["count"]] += 1
-        for z in m["ZORG"]["data"]:
-            stats[("ZORG", "a")][z["a"]] += 1
-            stats[("ZORG", "b-flags")][(z["b"], z["flags"])] += 1
-        for s in m["SKRO"]["data"]:
-            stats[("SKRO", "flags5")][s["flags5"]] += 1
-            stats[("SKRO", "flags")][s["flags"]] += 1
-        for c in m["CAVE"]["data"]:
-            stats[("CAVE", "flag")][c["flag"]] += 1
-            stats[("CAVE", "len")][len(c["ids"])] += 1
-        for tag, sub in m["HIRN"]["data"].items():
-            stats[("HIRN", tag)][len(sub["records"])] += 1
-        stats[("FOOT", "variant")][m["FOOT"]["data"]["variant"]] += 1
+        _count_mission(m, stats, cmds)
     print(f"{ok}/{len(files)} files parsed")
     if "--stats" in sys.argv:
         for k in sorted(stats, key=str):

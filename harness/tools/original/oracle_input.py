@@ -137,6 +137,42 @@ def find_cursor(img, template=None):
     return best
 
 
+def _nudge_cursor(img, pos, score, verbose):
+    img.save(os.path.join(rhcap.CAPDIR, "_cursor_unknown_%d.png" % int(time.time() * 10 % 100000)))
+    # the pointer changes shape over characters and HUD widgets: nudge it upwards and
+    # towards the middle of the screen (raw 60 px) and look again
+    if verbose:
+        print("cursor not found (score %.2f), nudging" % score)
+    for _ in range(20):
+        rhcap.raw_rel(3 if pos[0] < 512 else -3, -3)
+        time.sleep(0.002)
+
+
+def _cursor_step(dx, dy, gain):
+    # bounded step, sent as 1..3 px raw events (no pointer acceleration at that speed)
+    sx, sy = max(-300, min(300, dx)), max(-300, min(300, dy))
+    rx, ry = int(round(sx * gain)), int(round(sy * gain))
+    n = max(1, max(abs(rx), abs(ry)) // 3)
+    ax = ay = 0
+    for i in range(1, n + 1):
+        nx, ny = rx * i // n, ry * i // n
+        rhcap.raw_rel(nx - ax, ny - ay)
+        ax, ay = nx, ny
+        time.sleep(0.002)
+    return rx, ry
+
+
+def _adjust_gain(h, pos, rx, ry, gain):
+    time.sleep(0.1)
+    npos, nscore = find_cursor(rhcap.grab(h))
+    if nscore >= 0.5:
+        moved = max(abs(npos[0] - pos[0]), abs(npos[1] - pos[1]))
+        sent = max(abs(rx), abs(ry))
+        if moved >= 8 and sent >= 8:
+            gain = max(0.2, min(5.0, gain * sent / moved))
+    return gain
+
+
 def mmove(x, y, h=None, gain=0.6, tol=2, iters=16, verbose=False):
     """Move the in-game cursor to client (x, y) using screenshot feedback; returns (pos, score, gain)."""
     if h is None:
@@ -148,37 +184,15 @@ def mmove(x, y, h=None, gain=0.6, tol=2, iters=16, verbose=False):
         img = rhcap.grab(h)
         pos, score = find_cursor(img)
         if score < 0.5:
-            img.save(os.path.join(rhcap.CAPDIR, "_cursor_unknown_%d.png" % int(time.time() * 10 % 100000)))
-            # the pointer changes shape over characters and HUD widgets: nudge it upwards and
-            # towards the middle of the screen (raw 60 px) and look again
-            if verbose:
-                print("cursor not found (score %.2f), nudging" % score)
-            for _ in range(20):
-                rhcap.raw_rel(3 if pos[0] < 512 else -3, -3)
-                time.sleep(0.002)
+            _nudge_cursor(img, pos, score, verbose)
             continue
         dx, dy = x - pos[0], y - pos[1]
         if verbose:
             print("cursor at", pos, "score %.2f" % score, "delta", (dx, dy), "gain %.2f" % gain)
         if abs(dx) <= tol and abs(dy) <= tol:
             break
-        # bounded step, sent as 1..3 px raw events (no pointer acceleration at that speed)
-        sx, sy = max(-300, min(300, dx)), max(-300, min(300, dy))
-        rx, ry = int(round(sx * gain)), int(round(sy * gain))
-        n = max(1, max(abs(rx), abs(ry)) // 3)
-        ax = ay = 0
-        for i in range(1, n + 1):
-            nx, ny = rx * i // n, ry * i // n
-            rhcap.raw_rel(nx - ax, ny - ay)
-            ax, ay = nx, ny
-            time.sleep(0.002)
-        time.sleep(0.1)
-        npos, nscore = find_cursor(rhcap.grab(h))
-        if nscore >= 0.5:
-            moved = max(abs(npos[0] - pos[0]), abs(npos[1] - pos[1]))
-            sent = max(abs(rx), abs(ry))
-            if moved >= 8 and sent >= 8:
-                gain = max(0.2, min(5.0, gain * sent / moved))
+        rx, ry = _cursor_step(dx, dy, gain)
+        gain = _adjust_gain(h, pos, rx, ry, gain)
     return pos, score, gain
 
 
@@ -265,44 +279,54 @@ def track_crops(crops, thresh=40, min_pixels=30):
     return rows
 
 
+def _probe_command(a, h):
+    rhcap.focus(h)
+    clamp_origin()
+    for step in (1, 5, 50):
+        clamp_origin()
+        for _ in range(200 // step):
+            rhcap.raw_rel(step, step)
+            time.sleep(0.002)
+        print("raw 200 in steps of %d -> physical %s" % (step, phys()))
+
+
+def _move_command(a, h):
+    rhcap.focus(h)
+    print("physical", gmove(int(a[0]), int(a[1])))
+
+
+def _click_command(a, h):
+    rhcap.focus(h)
+    gclick(int(a[0]), int(a[1]), a[2] if len(a) > 2 else "left", int(a[3]) if len(a) > 3 else 1)
+
+
+def _mmove_command(a, h):
+    rhcap.focus(h)
+    print(mmove(int(a[0]), int(a[1]), h, verbose=True))
+
+
+def _mclick_command(a, h):
+    rhcap.focus(h)
+    print(mclick(int(a[0]), int(a[1]), a[2] if len(a) > 2 else "left", int(a[3]) if len(a) > 3 else 1, h=h))
+
+
+def _rec_command(a, h):
+    for t, p in record(a[0], float(a[1]), float(a[2]), h):
+        print("%.2f %s" % (t, os.path.basename(p)))
+
+
 def main(argv):
     if not argv:
         print(__doc__)
         return
     cmd, a = argv[0], argv[1:]
     h, _ = rhcap.find_window()
-    if cmd == "probe":
-        rhcap.focus(h)
-        clamp_origin()
-        for step in (1, 5, 50):
-            clamp_origin()
-            for _ in range(200 // step):
-                rhcap.raw_rel(step, step)
-                time.sleep(0.002)
-            print("raw 200 in steps of %d -> physical %s" % (step, phys()))
-        return
-    if cmd == "move":
-        rhcap.focus(h)
-        print("physical", gmove(int(a[0]), int(a[1])))
-        return
-    if cmd == "click":
-        rhcap.focus(h)
-        gclick(int(a[0]), int(a[1]), a[2] if len(a) > 2 else "left", int(a[3]) if len(a) > 3 else 1)
-        return
-    if cmd == "mmove":
-        rhcap.focus(h)
-        print(mmove(int(a[0]), int(a[1]), h, verbose=True))
-        return
-    if cmd == "mclick":
-        rhcap.focus(h)
-        print(mclick(int(a[0]), int(a[1]), a[2] if len(a) > 2 else "left", int(a[3]) if len(a) > 3 else 1, h=h))
-        return
-    if cmd == "rec":
-        for t, p in record(a[0], float(a[1]), float(a[2]), h):
-            print("%.2f %s" % (t, os.path.basename(p)))
+    commands = {"probe": _probe_command, "move": _move_command, "click": _click_command,
+                "mmove": _mmove_command, "mclick": _mclick_command, "rec": _rec_command}
+    if cmd in commands:
+        commands[cmd](a, h)
         return
     print("unknown command", cmd)
-
 
 if __name__ == "__main__":
     main(sys.argv[1:])
