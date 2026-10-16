@@ -46,12 +46,22 @@ MAX_INSPECT_BYTES = 32 * 1024 * 1024
 # is refused; one family alone is reported as a warning in the output but does not fail (ordinary prose can
 # mention one token). Files that describe the rule itself are listed by exact path.
 IDIOM_FAMILIES = {
-    "auto-named function / data / label": re.compile(r"\b(?:FUN|DAT|LAB|PTR|thunk_FUN|switchD)_[0-9a-fA-F]{6,8}\b"),
-    "auto-named parameter / local": re.compile(r"\b(?:param_\d+|local_[0-9a-f]{1,4}|[a-z]{1,2}Var\d+|[a-z]{1,2}Stack\d*|auStack_?\w*|in_stack_\w+|unaff_\w+|extraout_\w+|in_[A-Z]{2,3})\b"),
-    "undefined types": re.compile(r"\bundefined(?:[1248])?\b"),
-    "calling conventions": re.compile(r"\b__(?:thiscall|fastcall|cdecl|stdcall|regparm)\b"),
-    "p-code helper macros": re.compile(r"\b(?:CONCAT\d\d|SUB\d\d|ZEXT\d\d|SEXT\d\d|SBORROW\d|CARRY\d|SCARRY\d)\("),
-    "exporter signatures": re.compile(r"(?:^|\n)(?:// callers: |// callees: |address\tsize\tname\tcallers|address\tlength\tfunctions\ttext)"),
+    "auto-named function / data / label": (
+        re.compile(r"\b(?:FUN|DAT|LAB|PTR|thunk_FUN|switchD)_[0-9a-fA-F]{6,8}\b"),
+    ),
+    "auto-named parameter / local": (
+        re.compile(r"\b(?:param_\d+|local_[0-9a-f]{1,4})\b"),
+        re.compile(r"\b(?:[a-z]{1,2}Var\d+|[a-z]{1,2}Stack\d*|auStack_?\w*)\b"),
+        re.compile(r"\b(?:in_stack_\w+|unaff_\w+|extraout_\w+|in_[A-Z]{2,3})\b"),
+    ),
+    "undefined types": (re.compile(r"\bundefined(?:[1248])?\b"),),
+    "calling conventions": (re.compile(r"\b__(?:thiscall|fastcall|cdecl|stdcall|regparm)\b"),),
+    "p-code helper macros": (
+        re.compile(r"\b(?:CONCAT\d\d|SUB\d\d|ZEXT\d\d|SEXT\d\d|SBORROW\d|CARRY\d|SCARRY\d)\("),
+    ),
+    "exporter signatures": (
+        re.compile(r"(?:^|\n)(?:// callers: |// callees: |address\tsize\tname\tcallers|address\tlength\tfunctions\ttext)"),
+    ),
 }
 IDIOM_ALLOWED = {
     "scripts/check_no_assets.py",
@@ -158,7 +168,7 @@ def check_content(rel: str, data: bytes, size: int) -> list[str]:
     if rel in IDIOM_ALLOWED:
         return problems
     text = as_text(data)
-    hits = [name for name, rx in IDIOM_FAMILIES.items() if rx.search(text)]
+    hits = [name for name, patterns in IDIOM_FAMILIES.items() if any(rx.search(text) for rx in patterns)]
     if len(hits) >= 2 or "exporter signatures" in hits:
         problems.append(f"looks like decompiler output ({', '.join(hits)}): {rel}")
     return problems
@@ -218,7 +228,7 @@ def selftest() -> int:
         if bool(problems) != expect:
             bad += 1
             print(f"selftest FAILED for {rel}: expected {'a problem' if expect else 'no problem'}, got {problems}")
-    for rx in IDIOM_FAMILIES.values():
+    for rx in (rx for patterns in IDIOM_FAMILIES.values() for rx in patterns):
         if any(ord(ch) < 32 and ch not in "\t\n" for ch in rx.pattern):
             bad += 1
             print("selftest FAILED: a control character in an idiom pattern")
