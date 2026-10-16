@@ -21,6 +21,10 @@ def test_tutorial_loads_with_its_actors(binary, game_dir):
         assert 0 <= robin["y"] // 256 < 960
 
 
+def _assert_loaded_map_size(obs):
+    assert obs["map_size"][0] > 0
+
+
 def test_every_mission_file_loads(binary, game_dir):
     names = [p.stem for p in (game_dir / "DATA" / "Levels").glob("*.rhm")]
     assert len(names) == 39
@@ -30,7 +34,7 @@ def test_every_mission_file_loads(binary, game_dir):
             try:
                 e.reset({"mission": name}, seed=1)
                 obs = e.observe(entities=False)
-                assert obs["map_size"][0] > 0
+                _assert_loaded_map_size(obs)
             except Exception as ex:  # noqa: BLE001 - collect everything, report once
                 failures.append(f"{name}: {ex}")
     # All 39 load strictly, the Sherwood hub and its outro included (`docs/formats/sherwood-hub.md`).
