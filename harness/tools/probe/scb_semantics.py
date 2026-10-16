@@ -274,9 +274,8 @@ def cmd_ops(files):
                                 loop_shapes["jz_forward_target_after_forward_jmp(if/else)"] += 1
                             else:
                                 loop_shapes["jz_forward_plain(if)"] += 1
-                    if op == OP_JMP:
-                        if storage(a)[0] == NONE:
-                            jmp_dir["forward" if a > i else "backward"] += 1
+                    if op == OP_JMP and storage(a)[0] == NONE:
+                        jmp_dir["forward" if a > i else "backward"] += 1
                     if op == OP_PUSH_ARG:
                         npush += 1
                     if op == OP_CALL:
