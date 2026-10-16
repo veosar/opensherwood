@@ -11,7 +11,7 @@ This file describes what the original program does, in the analyst's own words, 
 never seen the program can build it. It contains no decompiler output, no transcribed pseudocode, none of the
 binary's identifiers or strings, no tables copied from its data, no game text, and no prescribed internal
 structure (ADR-0009, "expression filter"). It describes required results and orderings; the implementer chooses
-the organisation. Chunk tags (`STAT`, `WOAW`, `007 `, `FARM`, ` AZ `, `TEXT`, `TUPO`, `PPPP`) appear because
+the organisation. Chunk tags (`STAT`, `WOAW`, `007 `, `FARM`, `AZ`, `TEXT`, `TUPO`, `PPPP`) appear because
 they are file-format compatibility tokens.
 
 Claim ids are `NAV-nnn`, inline; every statement an implementer relies on carries one. Status: `observed` (read in
@@ -66,8 +66,8 @@ logic frame; every count in frames transfers one to one.
     admission, native state changes and passage action ordering; building semantics; stairs; waypoint
     delivery, approach tests and crossing state; the integration items waiting on findings 1, 2, 3, 4 and 6);
     answered by this revision. The ids of the cleared claims are unchanged in this revision.
-  The reviewer's exposure: the decompilation in `re/` and the analyst's navigation notes, the inspected revision
-  of this file; its output is corrections to this file only.
+    The reviewer's exposure: the decompilation in `re/` and the analyst's navigation notes, the inspected revision
+    of this file; its output is corrections to this file only.
 - **Implementation reviewer**: pending, must be a session that has never read `re/`.
 - **Publication approval**: pending, separate from factual approval.
 - **Edition**: GOG English edition, the maintainer's lawfully acquired copy; the executable hash above.
@@ -184,8 +184,8 @@ Graph (2.3)
   polygon is a floor or an obstacle, so that, with the maps' authored winding, the normal points to the free
   side of the wall). A sector outline is additionally a floor (its interior is walkable); an obstacle's interior
   is not.
-- NAV-013 (observed, `0x004eb120`, `0x004ebbd0`). A kind-1 sector is a lift sector; the ` AZ ` chunk attaches
-  its ends (2.6). An ` AZ ` record naming a sector that is not kind 1 is a load error.
+- NAV-013 (observed, `0x004eb120`, `0x004ebbd0`). A kind-1 sector is a lift sector; the `AZ` chunk attaches
+  its ends (2.6). An `AZ` record naming a sector that is not kind 1 is a load error.
 - NAV-014 (observed, `0x00558670`, `0x00559660`). Path requests name a sector by polygon number; the program
   converts it to the sector's position within its layer. Converting a number that is not a sector (an obstacle,
   or an unknown number) reports an error and yields position 0, which the original then uses (it searches the
@@ -228,7 +228,7 @@ Record {
   encoded independently of the polygon lists and must be kept as read. On five maps the region count of every
   sector equals 1 + its obstacle count and every node is a vertex of the sector's polygons; on Croisement02,
   Croisement03, Nottingham and York four sectors have one region fewer and some nodes are not polygon vertices
-  (7.1). Regions are therefore *usually* the sector's polygons (inferred, medium); an implementer reads the
+  (7.1). Regions are therefore _usually_ the sector's polygons (inferred, medium); an implementer reads the
   graph and never derives it.
 - NAV-021 (observed, `0x00553d20`, `0x00553e60`). `offset_bits` says which of the four **candidate
   waypoints** of the corner are usable for the size class `(w, h)`: bit 1 = `(x - w, y - h)`, bit 2 =
@@ -281,7 +281,7 @@ area_count x Area {
   coordinates; the bond lives on `layer` (its cells and the layer's bond list). Crossing it swaps the character's
   area between the two (3.7).
 
-### 2.6 Doors, buildings `FARM` (version 4) and lifts ` AZ ` (version 2)
+### 2.6 Doors, buildings `FARM` (version 4) and lifts `AZ` (version 2)
 
 ```
 FARM: u16 n; n x { u8 kind; u16 door_count; door_count x Door }      kind 0 = passage record, else a building
@@ -315,7 +315,7 @@ Door {
 - NAV-042 (observed, `0x0057e060`, `0x004ebbd0`, `0x005716a0`). A lift record refers to a kind-1 sector by
   number; `lift_type` 1 = stairs, 2 = ladder, 3 = climb; 0 is corrected to 1 with a warning. The lift's door with
   the largest `ay` is its lower end, the one with the smallest `ay` its upper end. Lift doors are appended to the
-  same flat door list as the `FARM` doors (chunk order `FARM` then ` AZ ` on every retail map), so native 4
+  same flat door list as the `FARM` doors (chunk order `FARM` then `AZ` on every retail map), so native 4
   addresses them after the `FARM` doors (Lincoln: 59 + 20 = 79 entries). The list also receives the jump lines
   of `PPPP` as non-door entries (section 9).
 - NAV-043 (observed, `0x0057e710`, `0x0057e4d0`). A building record is only its doors. A building's capacity
@@ -386,19 +386,19 @@ Door {
     keeps its place, and an edge that is unavailable at that moment is moved then. (The search never reads
     the edges of an unavailable node, so the frozen sequences are observable only through this history:
     test 7.2-14, fixture F4.)
-  Example (nodes, file order `A, B, C`, `A` and `B` unavailable at the initial state, `C` available): after the
-  initial recomputation, available `C`, unavailable `B, A`; enabling both: available `C, A, B`; disabling both
-  again: unavailable `B, A` (the moves are `B` then `A` in reverse available order); enabling again: `C, A, B`.
-  Repeated toggles of one field are therefore stable after the first re-enablement; two fields toggled in
-  succession compose these moves in the order of the toggles.
-  A **load** applies the initial state to the file-order sequences and then the saved state words: the result
-  is the file order of the objects available under the initial state, less those the saved state makes
-  unavailable (moved to the unavailable sequence in reverse order), followed by the objects the saved state
-  re-enables in the order the rule above yields (for nodes: the reverse of their unavailable order, that is, the
-  file order of the initially unavailable nodes that the saved state enables). The original does not preserve an
-  in-session order across a save and a load when the two rules produce different sequences (e.g. after a field
-  was toggled twice). OpenSherwood's choice is 8.3; test 7.2-14 fixes the original's outcomes and the chosen one,
-  for node orders and for the edge-order history of a node that was unavailable while its edges were toggled.
+    Example (nodes, file order `A, B, C`, `A` and `B` unavailable at the initial state, `C` available): after the
+    initial recomputation, available `C`, unavailable `B, A`; enabling both: available `C, A, B`; disabling both
+    again: unavailable `B, A` (the moves are `B` then `A` in reverse available order); enabling again: `C, A, B`.
+    Repeated toggles of one field are therefore stable after the first re-enablement; two fields toggled in
+    succession compose these moves in the order of the toggles.
+    A **load** applies the initial state to the file-order sequences and then the saved state words: the result
+    is the file order of the objects available under the initial state, less those the saved state makes
+    unavailable (moved to the unavailable sequence in reverse order), followed by the objects the saved state
+    re-enables in the order the rule above yields (for nodes: the reverse of their unavailable order, that is, the
+    file order of the initially unavailable nodes that the saved state enables). The original does not preserve an
+    in-session order across a save and a load when the two rules produce different sequences (e.g. after a field
+    was toggled twice). OpenSherwood's choice is 8.3; test 7.2-14 fixes the original's outcomes and the chosen one,
+    for node orders and for the edge-order history of a node that was unavailable while its edges were toggled.
 
 ## 3. Behaviour
 
@@ -407,7 +407,7 @@ Door {
 - NAV-090 (observed, `0x004c6ef0` via ANIM-101, `0x004d23d0`, `0x005532a0`, `0x005546e0`, `0x00554750`).
   A path request is in exactly one state: **queued**, **executing**, **completed** (result not yet consumed),
   **consumed** (it no longer exists) or **failed-pending** (an empty result, NAV-146). In the original, one
-  point of the level tick (the *consumer slot*, before the element updates of ANIM-101) does, in this order:
+  point of the level tick (the _consumer slot_, before the element updates of ANIM-101) does, in this order:
   (1) if a request is completed, its result is consumed (NAV-146) and the request removed; (2) if no request is
   executing and the queue is not empty, the queue is ordered (NAV-147) and its head becomes executing. The
   search itself runs off the game thread and completes at an unspecified wall-clock moment; a request can
@@ -518,7 +518,7 @@ Door {
      - if it is a building: (unless `D` is the first element) a wait of 50 frames, then a wait of
        `(r1 & 15) + (r2 & 15)` frames with `r1`, `r2` two consecutive draws of the random stream (AI-005, drawn
        while the sequence is built, in that order), then an **enter** at `near` facing the door;
-     - if `D` is a door from `FARM` / ` AZ `: when the character is a player character, `lock_pc` is set and it
+     - if `D` is a door from `FARM` / `AZ`: when the character is a player character, `lock_pc` is set and it
        has the lock-picking ability, a **lock-pick** at `far` and a **pick lock of D**, and the sequence
        **ends here** (the rest of the route is dropped); otherwise, when the far side is a ladder lift, a
        **ladder** element for `D`; then a **pass door D** (NAV-171) and a door-approach test with tolerance
@@ -536,20 +536,19 @@ Door {
   one move action to `T` (ANIM-208) and the element is done; (3) otherwise a **path request** is submitted:
   layer, sector number, size class 0, start = the character's position, goal `T`, gait, priority 0 for player
   characters and 1 for others. At submission the walker box at the start is checked again for clearance: if
-  clear the request's *unstuck flag* is 0; otherwise the box is unstuck, the request's start becomes the box
+  clear the request's _unstuck flag_ is 0; otherwise the box is unstuck, the request's start becomes the box
   centre and the flag is 1; if unsticking fails the request is dropped and the element fails. The element then
   waits for the result (NAV-146).
 - NAV-141 (observed, `0x005547c0`, `0x00557e70`, `0x00553e60`, `0x00556490`, `0x00554360`, `0x005581a0`;
   `0x00558210` tail and `0x005557c0` unread, fallback 8.7). **Search** for `(layer, sector, start, goal,
   flag)` with half-size `(w, h)` of size class 0, over the sector's regions, seeing only available nodes and
-  edges (NAV-056), in their list order (NAV-058). Required results:
-  0. **Goal check**: the enabled wall segments of the layer meeting the box of half-size `(w - 1, h - 1)` around
-     `goal` are collected and decide whether the goal is admissible; the decision's tail is unread; the fallback
-     (8.7) is: the goal is inadmissible iff that collection is non-empty. An inadmissible goal is "no path".
+  edges (NAV-056), in their list order (NAV-058). Required results: 0. **Goal check**: the enabled wall segments of the layer meeting the box of half-size `(w - 1, h - 1)` around
+  `goal` are collected and decide whether the goal is admissible; the decision's tail is unread; the fallback
+  (8.7) is: the goal is inadmissible iff that collection is non-empty. An inadmissible goal is "no path".
   1. **Direct leg**, only when the request's unstuck flag is 1: if `start -> goal` crosses none of the sector's
      barrier segments (2.2) and the corridor (NAV-112) is free, the path is `[goal]`.
   2. **Opening**: the search window is the bounding box of `start` and `goal` grown by 400 px on every side. An
-     available node is *openable* when its corner is in the window, its walker box (half-size `(w, h)`) does not
+     available node is _openable_ when its corner is in the window, its walker box (half-size `(w, h)`) does not
      contain `start`, its corner is not separated from `start` by a barrier segment, and at least one of its
      candidates (NAV-021) both satisfies the quadrant rule NAV-143 with respect to `start` and has a free
      corridor `start -> candidate`. Every openable node, taken in list order, is opened with `g = |start -
@@ -560,7 +559,7 @@ Door {
      the quadrant rule with respect to `goal` and has a free corridor `candidate -> goal` is the **answer**, its
      passing candidates remembered. "No path" when nothing remains to examine or the request was abandoned.
   4. **Reaching neighbours**: when an examined node (byte not 5 or 10) is not the answer, every available edge
-     that enters it and has a record for the size class *reaches* the far node `A` at cost `g + edge cost`. A
+     that enters it and has a record for the size class _reaches_ the far node `A` at cost `g + edge cost`. A
      node's `g` is the least cost of all reachings it has received so far (or its opening cost); its `h` is
      `|A - goal|` from the first time it was reached or opened; the edge by which the path arrives at `A` is the
      edge of the reaching that established its current `g`. A reaching that lowers a node's `g` places it in the
@@ -586,8 +585,8 @@ Door {
   `Q` lies on the candidate's outer side (or exactly on its line) in one axis and strictly on its inner side in
   the other. Per bit, with `v = (v_x, v_y)`:
 
-  | bit | first form | second form |
-  |---|---|---|
+  | bit         | first form             | second form            |
+  | ----------- | ---------------------- | ---------------------- |
   | 1 `(-w,-h)` | `v_x <= 0 and v_y > 0` | `v_y <= 0 and v_x > 0` |
   | 2 `(+w,-h)` | `v_x >= 0 and v_y > 0` | `v_y <= 0 and v_x < 0` |
   | 4 `(+w,+h)` | `v_x >= 0 and v_y < 0` | `v_y >= 0 and v_x < 0` |
@@ -596,6 +595,7 @@ Door {
   Review 20 finding 9 states the opposite ownership of the axis boundaries; the analyst re-read the call site
   and the routine and maintains this table (`v` is `Q - o`, the first form is tested first, the second only
   when the first fails). Test 7.2-4 encodes it so that either reading is falsifiable by an implementer.
+
 - NAV-144 (observed, `0x00554b80`, `0x005553d0`, `0x005568f0`, `0x00556920`). **Corner walk.** At a graph node
   `N` of the path let `U` be `N`'s usable candidates (`offset_bits`), `G` the candidates of `N` from which the
   leg towards the goal departs (for the answer node: the candidates that passed the goal test; for any other
@@ -612,8 +612,8 @@ Door {
   - else: over every `g` in `G` in increasing bit order, both runs as above, counting the candidates passed
     strictly between `g` and the member of `S`; the run with the fewest such candidates is taken; ties go to the
     smaller `g` and, for one `g`, to the run whose travel order goes 8 -> 4 -> 2 -> 1 (counter-clockwise).
-  The candidate chosen at `N` for the leg towards the start (the member of `S` reached) determines `G` at the
-  previous node through the record's pairs (NAV-023). There is no corner walk at `start` itself.
+    The candidate chosen at `N` for the leg towards the start (the member of `S` reached) determines `G` at the
+    previous node through the record's pairs (NAV-023). There is no corner walk at `start` itself.
 - NAV-145 (observed, `0x005547c0`, `0x004d23d0`). The path list is `start` first and `goal` last; the consumer
   of NAV-146 skips `start` when the request's unstuck flag is 0 and keeps it (the corrected start) when the flag
   is 1.
@@ -636,11 +636,11 @@ Door {
   collision-aware move ANIM-204 (the latter is the movement specification's section 3.9: ANIM-240/241/242),
   move-action arrival ANIM-208, layer changes inside action lists ANIM-311. Two facts belong here:
   (a) the **door-approach test** element of NAV-130 (ANIM section 3.4, kind 2) is an immediate two-way
-  branch: in its point form it is *done* when `max(|dx|, |dy|) < tolerance + 5` px between the character and its
-  point and otherwise *cancels the rest of the sequence*; in its sector form it is done when the character's
+  branch: in its point form it is _done_ when `max(|dx|, |dy|) < tolerance + 5` px between the character and its
+  point and otherwise _cancels the rest of the sequence_; in its sector form it is done when the character's
   sector is the named sector and cancels otherwise;
   (b) inside the collision-aware move, the mover's **proximity query** is the axis-aligned square centred on
-  the mover's *proposed next position* (its position plus this frame's displacement) with half-extent `r` on
+  the mover's _proposed next position_ (its position plus this frame's displacement) with half-extent `r` on
   each axis, `r` = the element's proximity radius field plus 60 px (the field's source is unread, fallback 8.7:
   0). Every candidate element must be displayed, must not be the mover nor the element the mover carries, and
   must be on the mover's layer and sector (the common exclusions; ANIM-240 at the pinned revision states the
@@ -681,7 +681,7 @@ Door {
 
 - NAV-170 (observed, `0x0051abe0`, disassembled; the type dispatch at `0x0051ae0c`). **Admission.** A character
   `C` may pass door `D` from side `s` (`s = A` when coming from `D`'s side A, `s = B` otherwise) in the
-  *planning* form (route search) or the *crossing* form (NAV-171) iff all of the following hold. Classes are
+  _planning_ form (route search) or the _crossing_ form (NAV-171) iff all of the following hold. Classes are
   those of AI section 2.3: "player" = a player character, "soldier family" = the family that contains soldiers,
   player characters and civilians, "plain soldier" and "civilian" its subclasses; "class-0 family" = the
   remaining family.
@@ -705,8 +705,7 @@ Door {
   the door and side; then, in order: a move to the threshold, a marker, a move to the far point, a marker; the
   character's layer and sector change at the marker between the two moves (ANIM-311). A player entering a
   sector whose `unknown_flag` is set gets a different pair of actions there (the flag is 0 on all retail
-  sectors; fallback 8.7: as the plain pair). Building doors (1, 2) run the building entry (3.9); lift ends (4, 5,
-  6) run the lift sequence (3.10).
+  sectors; fallback 8.7: as the plain pair). Building doors (1, 2) run the building entry (3.9); lift ends (4, 5, 6) run the lift sequence (3.10).
 - NAV-172 (observed, `0x00579850`, `0x00579880`, `0x005798a0`, `0x005787f0`, `0x0051b660`). **State
   changes.** The natives of section 6 set the lock bytes; clearing `lock_pc`, `lock_soldier` or `lock_civilian`
   also **opens** the door. Native 191 enables or disables the leaf's click target. Applying a patch swaps the
@@ -753,7 +752,7 @@ Door {
     their playback requirements, end points and completion conditions are not established, and the pinned
     movement revision leaves the animation-field identification open; these two crossings are **withheld** from
     clearance with the fallback of 8.7 (they are executed as stairs).
-  The flight is an ordinary kind-1 sector (walking on it is ordinary movement).
+    The flight is an ordinary kind-1 sector (walking on it is ordinary movement).
 
 ### 3.11 Sight volumes
 
@@ -768,29 +767,29 @@ confidence. Claims with an unread part and their fallbacks are collected in 8.7.
 
 ## 5. Constants
 
-| Name (ours) | Value | Unit | Source | Confidence |
-|---|---|---|---|---|
-| grid cell | 64 | px | `0x004ed690`, `0x004e8bd0`, `0x004ed070` | high |
-| walker half-size, size class 0 | (6, 4) | px | `STAT` graph header, all nine maps | high |
-| corridor and goal box half-size | (w - 1, h - 1) | px | `0x00556990`, `0x00558210` | high |
-| search window margin | 400 | px | `0x00553e60` | high |
-| walk-order clearance box growth | 0.5 per side | px | `0x00467a50` | high |
-| unstick rounds | 50 | - | `0x004f5890` | high |
-| unstick corner target distance | 1; corners below 0.1 are moved | px | `0x004f5890` | high |
-| door crossing cost | `|B - A| + 50` (types 0, 3-7), `+ 100` (types 1, 2) | px | `0x0051b2a0` | high |
-| threshold push | 60 (types 2, 4-on-climb), 65 (type 6) | px | `0x0051b110` | high |
-| route length limit | 102 | doors | `0x004f9a80` | high |
-| door-approach test | `max(|dx|, |dy|) < tolerance + 5` | px | `0x00467a50`, `0x005fc700` | high |
-| door approach tolerance | 10 | px | `0x00582640` | high |
-| building entry waits | 50; then `(r1 & 15) + (r2 & 15)` | frames | `0x00582640` | high |
-| proximity query half-extent | element radius field + 60, on each coordinate axis, around the proposed next position | px | `0x00561040` | high |
-| proximity partner threshold | dot product >= 5 | px | `0x00561040` | high |
-| path failure window | 100 | ticks | `0x004d23d0` | high |
-| smoothing endpoint shrink | 0.00005 of the leg | - | `0x005547c0` | high |
-| building door search radius (native 64) | squared distance, truncated to integer, strictly below 90000 | px^2 | `0x00574860` | high |
-| answers collected before stopping | 1 | nodes | `0x00552290` | high |
-| initial sector state | `0x55555555` | - | `0x00556470` | high |
-| building capacity | 65535 | - | `0x0057e4d0` | high |
+| Name (ours)                             | Value                                                                                 | Unit   | Source                                   | Confidence |
+| --------------------------------------- | ------------------------------------------------------------------------------------- | ------ | ---------------------------------------- | ---------- |
+| grid cell                               | 64                                                                                    | px     | `0x004ed690`, `0x004e8bd0`, `0x004ed070` | high       |
+| walker half-size, size class 0          | (6, 4)                                                                                | px     | `STAT` graph header, all nine maps       | high       |
+| corridor and goal box half-size         | (w - 1, h - 1)                                                                        | px     | `0x00556990`, `0x00558210`               | high       |
+| search window margin                    | 400                                                                                   | px     | `0x00553e60`                             | high       |
+| walk-order clearance box growth         | 0.5 per side                                                                          | px     | `0x00467a50`                             | high       |
+| unstick rounds                          | 50                                                                                    | -      | `0x004f5890`                             | high       |
+| unstick corner target distance          | 1; corners below 0.1 are moved                                                        | px     | `0x004f5890`                             | high       |
+| door crossing cost                      | `                                                                                     | B - A  | + 50`(types 0, 3-7),`+ 100` (types 1, 2) | px         | `0x0051b2a0`       | high |
+| threshold push                          | 60 (types 2, 4-on-climb), 65 (type 6)                                                 | px     | `0x0051b110`                             | high       |
+| route length limit                      | 102                                                                                   | doors  | `0x004f9a80`                             | high       |
+| door-approach test                      | `max(                                                                                 | dx     | ,                                        | dy         | ) < tolerance + 5` | px   | `0x00467a50`, `0x005fc700` | high |
+| door approach tolerance                 | 10                                                                                    | px     | `0x00582640`                             | high       |
+| building entry waits                    | 50; then `(r1 & 15) + (r2 & 15)`                                                      | frames | `0x00582640`                             | high       |
+| proximity query half-extent             | element radius field + 60, on each coordinate axis, around the proposed next position | px     | `0x00561040`                             | high       |
+| proximity partner threshold             | dot product >= 5                                                                      | px     | `0x00561040`                             | high       |
+| path failure window                     | 100                                                                                   | ticks  | `0x004d23d0`                             | high       |
+| smoothing endpoint shrink               | 0.00005 of the leg                                                                    | -      | `0x005547c0`                             | high       |
+| building door search radius (native 64) | squared distance, truncated to integer, strictly below 90000                          | px^2   | `0x00574860`                             | high       |
+| answers collected before stopping       | 1                                                                                     | nodes  | `0x00552290`                             | high       |
+| initial sector state                    | `0x55555555`                                                                          | -      | `0x00556470`                             | high       |
+| building capacity                       | 65535                                                                                 | -      | `0x0057e4d0`                             | high       |
 
 ## 6. Interfaces to the script VM
 
@@ -805,20 +804,20 @@ supersede the older `scb.md` rows). The program registers 265 argument adapters 
   handle (null: logged error, nothing) but not the leaf: a door without a leaf is undefined in the original.
   Native 8 indexes without a bounds check for any value. OpenSherwood's behaviour for these cases is 8.4.
 
-| Id | Arity | Meaning | Original failure / edge cases | Where |
-|---|---|---|---|---|
-| 4 | (i) -> door | door `i` of the flat door list: `FARM` doors in file order, then the lift doors (NAV-042) | `i = -1` -> none; `i` out of range -> logged error, none | `0x005716a0` |
-| 8 | (i) -> building | building `i` (kind != 0 `FARM` records in order) | no bounds check: any invalid `i` reads outside the list (undefined) | `0x00571760` |
-| 64 | (actor, location, flag) -> bool | walk into a building: among the entries of the flat door list that are door objects (jump lines excluded by the original), the one whose **adjusted threshold** (NAV-041) is nearest to the location's point by squared distance truncated to an integer, strictly below 90000, an earlier entry winning equal scores; issues the walk sequence (NAV-130) to that door's B point on its side-B sector and layer; returns whether it was issued | location not a point, or no door qualifies: logged error, 0 | `0x00574860` |
-| 98 | (actor, building) -> bool | `building` none: 1 iff the actor's sector is **a building** (the actor is inside one); else 1 iff the actor's sector is that building | - | `0x00577cf0` |
-| 152 | (actor) | take the actor out of its building (NAV-191) | actor not human or not inside: logged error, nothing | `0x00577150` |
-| 156 | (actor, building) | put the actor inside (NAV-190) | actor none or not human: logged error, then proceeds | `0x005781f0` |
-| 182 | (door) -> int | the door's `lock_pc` byte, zero-extended | null handle: undefined (NAV-300) | `0x00579810` |
-| 186 | (door, v) -> 0 | `lock_pc := (v != 0)`; when clearing, the door opens | null: undefined | `0x00579850` |
-| 187 | (door, v) -> 0 | `lock_x := (v != 0)` (the byte tested with ability 0x1c) | null: undefined | `0x00579870` |
-| 188 | (door, v) -> 0 | `lock_soldier := (v != 0)`; when clearing, opens | null: undefined | `0x00579880` |
-| 189 | (door, v) -> 0 | `lock_civilian := (v != 0)`; when clearing, opens | null: undefined | `0x005798a0` |
-| 191 | (state, door) -> 0 | the door's leaf click target becomes enabled iff `state != 0` | door none: logged error, nothing; door without a leaf: undefined | `0x005787f0` |
+| Id  | Arity                           | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                        | Original failure / edge cases                                       | Where        |
+| --- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------ |
+| 4   | (i) -> door                     | door `i` of the flat door list: `FARM` doors in file order, then the lift doors (NAV-042)                                                                                                                                                                                                                                                                                                                                                      | `i = -1` -> none; `i` out of range -> logged error, none            | `0x005716a0` |
+| 8   | (i) -> building                 | building `i` (kind != 0 `FARM` records in order)                                                                                                                                                                                                                                                                                                                                                                                               | no bounds check: any invalid `i` reads outside the list (undefined) | `0x00571760` |
+| 64  | (actor, location, flag) -> bool | walk into a building: among the entries of the flat door list that are door objects (jump lines excluded by the original), the one whose **adjusted threshold** (NAV-041) is nearest to the location's point by squared distance truncated to an integer, strictly below 90000, an earlier entry winning equal scores; issues the walk sequence (NAV-130) to that door's B point on its side-B sector and layer; returns whether it was issued | location not a point, or no door qualifies: logged error, 0         | `0x00574860` |
+| 98  | (actor, building) -> bool       | `building` none: 1 iff the actor's sector is **a building** (the actor is inside one); else 1 iff the actor's sector is that building                                                                                                                                                                                                                                                                                                          | -                                                                   | `0x00577cf0` |
+| 152 | (actor)                         | take the actor out of its building (NAV-191)                                                                                                                                                                                                                                                                                                                                                                                                   | actor not human or not inside: logged error, nothing                | `0x00577150` |
+| 156 | (actor, building)               | put the actor inside (NAV-190)                                                                                                                                                                                                                                                                                                                                                                                                                 | actor none or not human: logged error, then proceeds                | `0x005781f0` |
+| 182 | (door) -> int                   | the door's `lock_pc` byte, zero-extended                                                                                                                                                                                                                                                                                                                                                                                                       | null handle: undefined (NAV-300)                                    | `0x00579810` |
+| 186 | (door, v) -> 0                  | `lock_pc := (v != 0)`; when clearing, the door opens                                                                                                                                                                                                                                                                                                                                                                                           | null: undefined                                                     | `0x00579850` |
+| 187 | (door, v) -> 0                  | `lock_x := (v != 0)` (the byte tested with ability 0x1c)                                                                                                                                                                                                                                                                                                                                                                                       | null: undefined                                                     | `0x00579870` |
+| 188 | (door, v) -> 0                  | `lock_soldier := (v != 0)`; when clearing, opens                                                                                                                                                                                                                                                                                                                                                                                               | null: undefined                                                     | `0x00579880` |
+| 189 | (door, v) -> 0                  | `lock_civilian := (v != 0)`; when clearing, opens                                                                                                                                                                                                                                                                                                                                                                                              | null: undefined                                                     | `0x005798a0` |
+| 191 | (state, door) -> 0              | the door's leaf click target becomes enabled iff `state != 0`                                                                                                                                                                                                                                                                                                                                                                                  | door none: logged error, nothing; door without a leaf: undefined    | `0x005787f0` |
 
 All of them act immediately, none yields.
 
@@ -829,19 +828,19 @@ All of them act immediately, none yields.
 The layouts of 2.2 and 2.3 read each `STAT` body to its last byte. Graph header = the size-class count word;
 spans are half-open; "end" equals the body length.
 
-| Map | header | first node | edge count | first edge | record count | first record | end |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Croisement01 | 2122 | 2140-2171 | 13607 | 13609-13637 | 87473 | 87475-87483 | 108915 |
-| Croisement02 | 2179 | 2197-2238 | 13829 | 13831-13859 | 82935 | 82937-82945 | 102805 |
-| Croisement03 | 2017 | 2035-2056 | 9733 | 9735-9763 | 45127 | 45129-45137 | 55309 |
-| Derby | 4266 | 4284-4313 | 14792 | 14794-14822 | 53210 | 53212-53220 | 64256 |
-| Leicester | 6467 | 6485-6512 | 26317 | 26319-26347 | 110151 | 110153-110161 | 134321 |
-| Lincoln | 6770 | 6788-6809 | 26309 | 26311-26339 | 109135 | 109137-109145 | 133005 |
-| Nottingham | 9600 | 9618-9653 | 37371 | 37373-37401 | 157661 | 157663-157671 | 192199 |
-| Sherwood | 2379 | 2397-2420 | 11385 | 11387-11415 | 56859 | 56861-56869 | 70125 |
-| York | 10593 | 10611-10634 | 38378 | 38380-38408 | 157100 | 157102-157110 | 191310 |
+| Map          | header |  first node | edge count |  first edge | record count |  first record |    end |
+| ------------ | -----: | ----------: | ---------: | ----------: | -----------: | ------------: | -----: |
+| Croisement01 |   2122 |   2140-2171 |      13607 | 13609-13637 |        87473 |   87475-87483 | 108915 |
+| Croisement02 |   2179 |   2197-2238 |      13829 | 13831-13859 |        82935 |   82937-82945 | 102805 |
+| Croisement03 |   2017 |   2035-2056 |       9733 |   9735-9763 |        45127 |   45129-45137 |  55309 |
+| Derby        |   4266 |   4284-4313 |      14792 | 14794-14822 |        53210 |   53212-53220 |  64256 |
+| Leicester    |   6467 |   6485-6512 |      26317 | 26319-26347 |       110151 | 110153-110161 | 134321 |
+| Lincoln      |   6770 |   6788-6809 |      26309 | 26311-26339 |       109135 | 109137-109145 | 133005 |
+| Nottingham   |   9600 |   9618-9653 |      37371 | 37373-37401 |       157661 | 157663-157671 | 192199 |
+| Sherwood     |   2379 |   2397-2420 |      11385 | 11387-11415 |        56859 |   56861-56869 |  70125 |
+| York         |  10593 | 10611-10634 |      38378 | 38380-38408 |       157100 | 157102-157110 | 191310 |
 
-Further checks: `FARM` and ` AZ ` consumed exactly (doors 3, 1, 5, 42, 59, 59, 100, 5, 123; lifts 0, 0, 0, 12,
+Further checks: `FARM` and `AZ` consumed exactly (doors 3, 1, 5, 42, 59, 59, 100, 5, 123; lifts 0, 0, 0, 12,
 10, 10, 12, 4, 21 in the map order above); every lift sector is kind 1 and the skipped word equals its layer;
 edge costs within 1.5 px of the corner distance; every edge appears in exactly its node B's list and has a
 reverse; region counts equal 1 + obstacle count except for Croisement03 (layer 0, sector 0), Nottingham (0, 0)
@@ -931,21 +930,21 @@ of N4 with {8,1} of N1); no other edges. Start `(100,100)`, goal `(300,100)`, un
     `t + 2`, `Q`'s after `t + 3`, both along the lower path. Cases (c), (g), (h) and (i) test the **future patch
     contract** (toggles enabled, 8.7 `NavPatches` lifted); under the active `NavPatches` fallback a patch changes
     nothing and those cases reduce to the unpatched expectations stated with them.
-    (a) *Snapshot before dispatch* taken at the end of tick `t`: after restore the same dispatch ticks and paths
-    result. (b) *Snapshot before delivery* taken at the end of tick `t + 1`: it carries `P`'s completed lower
+    (a) _Snapshot before dispatch_ taken at the end of tick `t`: after restore the same dispatch ticks and paths
+    result. (b) _Snapshot before delivery_ taken at the end of tick `t + 1`: it carries `P`'s completed lower
     path with delivery tick `t + 2` and `Q` queued; after restore `P`'s actions appear at `t + 2` without
-    recomputation. (c) *Patch*: with no snapshot, a patch toggling field 0 applied during the updates of `t + 1`
+    recomputation. (c) _Patch_: with no snapshot, a patch toggling field 0 applied during the updates of `t + 1`
     (after `P`'s dispatch) returns `P`'s completed result to the queue head and dispatches it again at once
     against the new availability; `P`'s actions exist after the slot of `t + 2` and follow the "upper path" of
     test 6 (canonical order, 8.3); `Q` is dispatched at the slot of `t + 2` and also gets the upper path at
-    `t + 3` (under `NavPatches`: both lower). (d) *Cancellation*: `Q`'s element cancelled during tick `t + 1`
+    `t + 3` (under `NavPatches`: both lower). (d) _Cancellation_: `Q`'s element cancelled during tick `t + 1`
     removes its queued request; no search for `Q` runs and `P`'s timing is unchanged; `P`'s element cancelled
     during `t + 1` after its dispatch discards its completed result and nothing is delivered at `t + 2`.
-    (e) *Budget*: with the budget forced to 1 unit, `P`'s dispatch at `t + 1` produces an empty result delivered
-    at `t + 2` as failed-pending. (f) *Failure boundary*: a failed-pending result with arrival tick `a = t + 2`
+    (e) _Budget_: with the budget forced to 1 unit, `P`'s dispatch at `t + 1` produces an empty result delivered
+    at `t + 2` as failed-pending. (f) _Failure boundary_: a failed-pending result with arrival tick `a = t + 2`
     is still pending at the slot of `a + 100` and fails at the slot of `a + 101`, when `P` plays its refusal
-    reaction; a snapshot taken at `a + 50` and restored reproduces that failure tick. (g) *Restore of a
-    completed result, then a patch*: the snapshot of (b) is restored (end of `t + 1`: `P` completed with the
+    reaction; a snapshot taken at `a + 50` and restored reproduces that failure tick. (g) _Restore of a
+    completed result, then a patch_: the snapshot of (b) is restored (end of `t + 1`: `P` completed with the
     lower path and delivery tick `t + 2`, `Q` queued). At P1 of `t + 2` `P`'s restored result is consumed
     unchanged: its three lower-path move actions exist after the slot of `t + 2` and no search runs for it (a
     restored completed result is always consumed at the first P1 after the restore; patches run in P3, so none
@@ -955,9 +954,9 @@ of N4 with {8,1} of N1); no other edges. Start `(100,100)`, goal `(300,100)`, un
     unchanged: `Q` gets the upper path at `t + 3` (under `NavPatches`: lower). A patch meant to revise a result
     that a snapshot holds as completed must have run before the snapshot was taken (case (c)); after a restore
     a patch can only revise requests dispatched after the restore.
-    (h) *Repeated patches*: two toggles of field 0 in the same updates of `t + 1`: the state ends as it began;
+    (h) _Repeated patches_: two toggles of field 0 in the same updates of `t + 1`: the state ends as it began;
     `P`'s result is recomputed twice, the second time against the initial availability; `P` gets the lower path
-    at `t + 2` (under `NavPatches`: lower). (i) *Cancellation, submission, patch* in one updates phase of
+    at `t + 2` (under `NavPatches`: lower). (i) _Cancellation, submission, patch_ in one updates phase of
     `t + 1`, in this order: `P`'s element is cancelled (its completed result discarded), `P` submits a new walk
     to `(300,100)` (the queue orders by priority, so `P`'s new request precedes `Q`'s), then the patch of (c)
     is applied: the head (`P`'s new request) is dispatched at once with delivery
@@ -972,30 +971,30 @@ of N4 with {8,1} of N1); no other edges. Start `(100,100)`, goal `(300,100)`, un
       equal-score candidate and answers: the lower path;
     - OpenSherwood's canonical file order (8.3): N1 precedes N4, so N4 is examined first and places N3, then N1
       places N2 later; N2 answers: the upper path of test 6.
-    A snapshot taken after the toggle restores state `0x55555556` (field 0 = `10`) for the sector and, under 8.3,
-    the upper path. **Simultaneous re-enablement**: F1 with N1 and N2 masks 2: after the initial recomputation
-    the available node order is `N3, N4` and the unavailable order `N2, N1`; toggling field 0 yields the
-    available order `N3, N4, N1, N2` (the reverse of the unavailable order appended); disabling again yields
-    unavailable `N2, N1` and enabling again `N3, N4, N1, N2` (stable). The search on that order: N4 opened, N1
-    opened later (N2 and N3 are not openable): the lower path as above; under 8.3: the upper path. When 8.3 is
-    rejected, a snapshot taken between the two toggles must restore both sequences (`N3, N4` / `N2, N1`) so that
-    the second toggle yields `N3, N4, N1, N2`.
-    **Edge-order history of an unavailable node** (NAV-058, second rule), **fixture F4**: as F1 but the
-    obstacle is the triangle `T0 (160,100)`, `T1 (180,80)`, `T2 (180,120)` (one region, nodes in that order;
-    `offset_bits` 9 for T0, 7 for T1, 14 for T2; T0 `node_mask` 2, T1 and T2 mask 0), with edges in both
-    directions between T0-T1 (record pairs joining {1} of T0 with {1,2} of T1), T0-T2 (pairs joining {8} of T0
-    with {8,4} of T2) and T1-T2 (pairs joining {2,4} of T1 with {2,4} of T2), cost = corner distance; the edge
-    T1 -> T0 (entering T0 from T1) has `edge_mask` 4, every other edge mask 0; the edges entering T0 are listed
-    T1 -> T0 then T2 -> T0. Two barrier segments `(140,50)-(140,92)` and `(140,108)-(140,150)` (search
-    barriers, 2.2; they are not walls and block no corridor) separate the start `(100,100)` from the corners
-    of T1 and T2 but not from T0's corner, so T1 and T2 are never openable and are reached only through T0.
-    Start `(100,100)`, goal `(300,100)`. When T0 is available it is the only opened node (`g = 60`, `h = 140`),
-    is not goal-visible, and reaches T1 and T2 with equal `f` (about 209.94) **in the order of its entering
-    edges**; the node reached second is examined first and is goal-visible (T1 through bit 2 at `(186,76)`, T2
-    through bit 4 at `(186,124)`): entering order `T1 -> T0, T2 -> T0` gives the **lower path**
-    `(100,100), (154,104), (186,124), (300,100)`; the order `T2 -> T0, T1 -> T0` gives the **upper path**
-    `(100,100), (154,96), (186,76), (300,100)` (smoothing removes nothing: either three-point corridor meets
-    the triangle). Sequences, each starting from the load state (T0 unavailable: the search finds no path):
+      A snapshot taken after the toggle restores state `0x55555556` (field 0 = `10`) for the sector and, under 8.3,
+      the upper path. **Simultaneous re-enablement**: F1 with N1 and N2 masks 2: after the initial recomputation
+      the available node order is `N3, N4` and the unavailable order `N2, N1`; toggling field 0 yields the
+      available order `N3, N4, N1, N2` (the reverse of the unavailable order appended); disabling again yields
+      unavailable `N2, N1` and enabling again `N3, N4, N1, N2` (stable). The search on that order: N4 opened, N1
+      opened later (N2 and N3 are not openable): the lower path as above; under 8.3: the upper path. When 8.3 is
+      rejected, a snapshot taken between the two toggles must restore both sequences (`N3, N4` / `N2, N1`) so that
+      the second toggle yields `N3, N4, N1, N2`.
+      **Edge-order history of an unavailable node** (NAV-058, second rule), **fixture F4**: as F1 but the
+      obstacle is the triangle `T0 (160,100)`, `T1 (180,80)`, `T2 (180,120)` (one region, nodes in that order;
+      `offset_bits` 9 for T0, 7 for T1, 14 for T2; T0 `node_mask` 2, T1 and T2 mask 0), with edges in both
+      directions between T0-T1 (record pairs joining {1} of T0 with {1,2} of T1), T0-T2 (pairs joining {8} of T0
+      with {8,4} of T2) and T1-T2 (pairs joining {2,4} of T1 with {2,4} of T2), cost = corner distance; the edge
+      T1 -> T0 (entering T0 from T1) has `edge_mask` 4, every other edge mask 0; the edges entering T0 are listed
+      T1 -> T0 then T2 -> T0. Two barrier segments `(140,50)-(140,92)` and `(140,108)-(140,150)` (search
+      barriers, 2.2; they are not walls and block no corridor) separate the start `(100,100)` from the corners
+      of T1 and T2 but not from T0's corner, so T1 and T2 are never openable and are reached only through T0.
+      Start `(100,100)`, goal `(300,100)`. When T0 is available it is the only opened node (`g = 60`, `h = 140`),
+      is not goal-visible, and reaches T1 and T2 with equal `f` (about 209.94) **in the order of its entering
+      edges**; the node reached second is examined first and is goal-visible (T1 through bit 2 at `(186,76)`, T2
+      through bit 4 at `(186,124)`): entering order `T1 -> T0, T2 -> T0` gives the **lower path**
+      `(100,100), (154,104), (186,124), (300,100)`; the order `T2 -> T0, T1 -> T0` gives the **upper path**
+      `(100,100), (154,96), (186,76), (300,100)` (smoothing removes nothing: either three-point corridor meets
+      the triangle). Sequences, each starting from the load state (T0 unavailable: the search finds no path):
     - toggle field 1 (the edge T1 -> T0 becomes unavailable while T0 is unavailable), toggle field 1 again,
       then toggle field 0 (T0 becomes available): the original leaves T0's edge sequences untouched by the first
       two recomputations and transforms them at the third against a state under which every edge is available,
@@ -1056,8 +1055,8 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
 ## 8. Implementation choices, determinism, departures
 
 1. **Scheduling policy (proposed deterministic replacement of the worker; a deviation pending the
-   maintainer's approval).** Per tick, in this order: (P1) *consumer slot*: a completed request whose delivery
-   tick is at most the current tick is consumed (NAV-146); (P2) *dispatch*: if no request is completed-pending
+   maintainer's approval).** Per tick, in this order: (P1) _consumer slot_: a completed request whose delivery
+   tick is at most the current tick is consumed (NAV-146); (P2) _dispatch_: if no request is completed-pending
    and the queue is not empty, order it (NAV-147), take the head, run the search to completion synchronously
    under the work budget, and mark it completed with delivery tick = current tick + 1; (P3) element updates,
    which submit requests (they join the queue and are dispatched at P2 of the next tick at the earliest) and may
@@ -1231,9 +1230,9 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
    - `NavSliding` (ANIM-241's unread resolution): when the corridor test of a move fails, the mover does not
      move this frame and its failed-move counter is incremented per ANIM-241's counting rule; no position is
      rolled back or slid. This takes precedence over the movement specification's `CollisionSlide` entry.
-   Line of sight is **AI-065** of the pinned AI revision (observed there, with its own clearance boundary and
-   its cache quirk); this specification adds nothing to it and the earlier `NavLineOfSight` variant is
-   withdrawn.
+     Line of sight is **AI-065** of the pinned AI revision (observed there, with its own clearance boundary and
+     its cache quirk); this specification adds nothing to it and the earlier `NavLineOfSight` variant is
+     withdrawn.
 
 ## 9. Open questions
 
@@ -1251,16 +1250,16 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
 6. The building tenants' trailing byte (`0x004c1f90`).
 7. The player's door interaction on a leaf click (the player-character method called from `0x004d7880`) and
    what closes a door.
-8. `STAT` `sector_mask` use, `unknown_flag`, the second `WOAW` plane, the ` AZ ` trailer word, the node
+8. `STAT` `sector_mask` use, `unknown_flag`, the second `WOAW` plane, the `AZ` trailer word, the node
    vectors' purpose (NAV-025).
 9. The request reference box (NAV-147) and re-runs within the failure window (NAV-146).
-12. The ladder and climb crossings (NAV-200): playback requirements, end points and completion of the mount,
+10. The ladder and climb crossings (NAV-200): playback requirements, end points and completion of the mount,
     loop and dismount actions (`0x00469770`, `0x0046a000`, the animation table's second field per ANIM-013).
-13. The mover's "engaged" field consulted by the proximity scan (NAV-150b, `0x00561040`) and the meaning of
+11. The mover's "engaged" field consulted by the proximity scan (NAV-150b, `0x00561040`) and the meaning of
     the excluded action ids 3, 7, 12, 17 in that scan.
-10. Which level flag selects the alternate click resolution (NAV-101); which input reaches the gait-6 and the
+12. Which level flag selects the alternate click resolution (NAV-101); which input reaches the gait-6 and the
     gait-10 click handlers (`0x004ccad0`, `0x004cd600`).
-11. Lift and door action ids as animation names (`0x005bddb0` table; `sprite-animations.md`).
+13. Lift and door action ids as animation names (`0x005bddb0` table; `sprite-animations.md`).
 
 ## 10. Provenance
 
@@ -1302,7 +1301,7 @@ procedure with a click on a door leaf (the hall door's leaf) measures the door i
 ## 11. Precedence and differences from the current engine
 
 **Precedence.** This specification supersedes: `docs/formats/rhp.md` sections `STAT`, `WOAW`, `007 `, `TEXT`,
-`FARM`, ` AZ ` and "Walkable ground"; `docs/formats/layers-and-doors.md` 1.2 (`unknown_list` = materials,
+`FARM`, `AZ` and "Walkable ground"; `docs/formats/layers-and-doors.md` 1.2 (`unknown_list` = materials,
 `unknown_a` = ground kind, `unknown_0x08` = second height, `unknown_flags` = the four flag bytes), 1.3 and 5.2
 (walkability from `WOAW`: wrong, NAV-012/030), 1.5 (bonds as sector portals: wrong, NAV-160), 2.1-2.2 (door
 bytes and point roles: NAV-040 and 2.6), 2.4 (native 4 also holds the lift doors, NAV-042), 2.5 (natives 182,

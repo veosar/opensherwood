@@ -145,16 +145,16 @@ An optional loopback socket can support an interactive game later.
 
 The minimal surface should be:
 
-| Method | Purpose |
-|---|---|
-| `hello` | Protocol version, capabilities, build/ruleset version, content fingerprint |
-| `reset` | Load a synthetic scenario or mission with seed/configuration |
-| `step` | Atomically enqueue canonical input events and advance exactly N ticks |
-| `observe` | Return filtered structured state/UI/objectives and component hashes |
-| `snapshot` | Create an authoritative internal checkpoint |
-| `restore` | Restore a checkpoint or supplied snapshot |
-| `capture` | Return framebuffer hash and optionally write under a fixed artifact directory |
-| `shutdown` | Clean termination |
+| Method     | Purpose                                                                       |
+| ---------- | ----------------------------------------------------------------------------- |
+| `hello`    | Protocol version, capabilities, build/ruleset version, content fingerprint    |
+| `reset`    | Load a synthetic scenario or mission with seed/configuration                  |
+| `step`     | Atomically enqueue canonical input events and advance exactly N ticks         |
+| `observe`  | Return filtered structured state/UI/objectives and component hashes           |
+| `snapshot` | Create an authoritative internal checkpoint                                   |
+| `restore`  | Restore a checkpoint or supplied snapshot                                     |
+| `capture`  | Return framebuffer hash and optionally write under a fixed artifact directory |
+| `shutdown` | Clean termination                                                             |
 
 `step` is the key primitive:
 
@@ -162,9 +162,9 @@ The minimal surface should be:
 {
   "ticks": 12,
   "events": [
-    {"tick_offset": 0, "sequence": 1, "kind": "pointer_move", "x256": 82240, "y256": 46080},
-    {"tick_offset": 1, "sequence": 0, "kind": "pointer_down", "button": "right"},
-    {"tick_offset": 1, "sequence": 1, "kind": "pointer_up", "button": "right"}
+    { "tick_offset": 0, "sequence": 1, "kind": "pointer_move", "x256": 82240, "y256": 46080 },
+    { "tick_offset": 1, "sequence": 0, "kind": "pointer_down", "button": "right" },
+    { "tick_offset": 1, "sequence": 1, "kind": "pointer_up", "button": "right" }
   ]
 }
 ```
@@ -433,16 +433,16 @@ The public README should use the original game title only in a compatibility sta
 
 Replace the horizontal roadmap with this:
 
-| Milestone | Exit criterion |
-|---|---|
-| M0: Governance and deterministic kernel | Clean-room roles documented; asset audit active; synthetic world can replay, snapshot, restore, hash, and render identically in CI |
-| M1: Feasibility gates | Exact MAP/MIN decode; one verified sprite frame; SCB disassembler consumes the tutorial script with explicit unknowns; first controlled oracle trace |
-| M2: Scene vertical slice | VFS resolves base/language overlays; tutorial map, static entities, camera, picking, selection, and one actor render correctly |
-| M3: Movement slice | Motion geometry/path graph parsed; player reaches a target using canonical pointer input; replay and restore remain deterministic |
-| M4: Tutorial slice | Required SCB instructions, objectives, stimuli, AI, interactions, win/lose, and input-only automation complete `EmbTut_FoC_EC` |
-| M5: Representative campaign | At least one mission of each major archetype passes; campaign graph, internal saves, menus, audio state, and regression traces work |
-| M6: Full campaign | Every reachable campaign mission has deterministic scripted coverage; campaign can be completed using player-level input |
-| M7+: Compatibility/features | Original-save import/export, editor, Lua mods, high resolution, QoL, Android, co-op experiments |
+| Milestone                               | Exit criterion                                                                                                                                       |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M0: Governance and deterministic kernel | Clean-room roles documented; asset audit active; synthetic world can replay, snapshot, restore, hash, and render identically in CI                   |
+| M1: Feasibility gates                   | Exact MAP/MIN decode; one verified sprite frame; SCB disassembler consumes the tutorial script with explicit unknowns; first controlled oracle trace |
+| M2: Scene vertical slice                | VFS resolves base/language overlays; tutorial map, static entities, camera, picking, selection, and one actor render correctly                       |
+| M3: Movement slice                      | Motion geometry/path graph parsed; player reaches a target using canonical pointer input; replay and restore remain deterministic                    |
+| M4: Tutorial slice                      | Required SCB instructions, objectives, stimuli, AI, interactions, win/lose, and input-only automation complete `EmbTut_FoC_EC`                       |
+| M5: Representative campaign             | At least one mission of each major archetype passes; campaign graph, internal saves, menus, audio state, and regression traces work                  |
+| M6: Full campaign                       | Every reachable campaign mission has deterministic scripted coverage; campaign can be completed using player-level input                             |
+| M7+: Compatibility/features             | Original-save import/export, editor, Lua mods, high resolution, QoL, Android, co-op experiments                                                      |
 
 Changes embedded in this ordering:
 

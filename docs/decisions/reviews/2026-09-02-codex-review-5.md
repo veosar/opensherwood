@@ -48,22 +48,22 @@ Commit `512bf16` is not mergeable. The clean-room violation is release-blocking,
 
 Review-4 “Done” audit:
 
-| Row | Result |
-|---|---|
-| 1 clean-room sweep | **Fail** — finding 1 |
-| 2 `active`/`ai_locked` state | Core state/hash/filtering present; follow-on behavior incomplete — finding 10 |
-| 3 ReplayRecorder accounting | **Fail** — finding 9 |
-| 4 fingerprint cache removal | Implementation matches the disposition; load-bound identity remains explicitly open |
-| 5 navigation budgets | Build scan budget present; total navigation and allocation transactionality incomplete — findings 4, 11 |
-| 6 `unsigned_abs` | Pass |
-| 8 mission-independent HUD/restart | Wiring present; text semantics remain wrong — finding 3 |
-| 9 strict retail assets | Pass only under the disposition’s explicit SCB exclusion; that exclusion is finding 8 |
-| 10 RGBA budgets | Conversion/UI budgets present; renderer copy bypass remains — finding 12 |
-| 13 renderer totality | Extreme-coordinate work present; public invalid framebuffer still panics — finding 12 |
-| 14 window-flow safety | Pass by static inspection |
-| 15 walkthrough confidence labels | Pass by static inspection |
-| 16 unknown-native trap | Pass; strict trap and hashed lenient log are present |
-| 17 documentation drift | **Fail** — finding 14 |
+| Row                               | Result                                                                                                  |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| 1 clean-room sweep                | **Fail** — finding 1                                                                                    |
+| 2 `active`/`ai_locked` state      | Core state/hash/filtering present; follow-on behavior incomplete — finding 10                           |
+| 3 ReplayRecorder accounting       | **Fail** — finding 9                                                                                    |
+| 4 fingerprint cache removal       | Implementation matches the disposition; load-bound identity remains explicitly open                     |
+| 5 navigation budgets              | Build scan budget present; total navigation and allocation transactionality incomplete — findings 4, 11 |
+| 6 `unsigned_abs`                  | Pass                                                                                                    |
+| 8 mission-independent HUD/restart | Wiring present; text semantics remain wrong — finding 3                                                 |
+| 9 strict retail assets            | Pass only under the disposition’s explicit SCB exclusion; that exclusion is finding 8                   |
+| 10 RGBA budgets                   | Conversion/UI budgets present; renderer copy bypass remains — finding 12                                |
+| 13 renderer totality              | Extreme-coordinate work present; public invalid framebuffer still panics — finding 12                   |
+| 14 window-flow safety             | Pass by static inspection                                                                               |
+| 15 walkthrough confidence labels  | Pass by static inspection                                                                               |
+| 16 unknown-native trap            | Pass; strict trap and hashed lenient log are present                                                    |
+| 17 documentation drift            | **Fail** — finding 14                                                                                   |
 
 `git diff --check 512bf16^ 512bf16` passed. The policy checker, skill-sync check and formatter check passed, but the policy checker itself warns that copied text is outside its coverage. I reviewed the commit objects with `git show` because the working tree contains overlapping uncommitted edits. I did not run a write-producing exact-commit build/test in the read-only sandbox.
 

@@ -24,18 +24,18 @@ The expression filter **passes**: the revision describes behavioral rules and ob
 
 The header’s Assumption handoff is right **for unresolved behavior the next batch uses**. Keep all exclusions visible, record assumptions where a fallback is taken, and do not equate that with clearance. An omitted feature—such as slow motion—does not require inventing a runtime assumption.
 
-| Component | Updated clearance | Remaining boundary |
-|---|---|---|
-| Frame timer | Core arithmetic, resets and entry rules cleared for supplied values; mode-7 read confirmed | Finding 4; marker mapping, initial state, overrides and out-of-range consequences |
-| Idle chain | Next-update start and wait-element RNG exclusion cleared | Other substitutions remain excluded |
-| Movement modes 0–3 and 6 | Per-call displacement arithmetic and conditional extra steps cleared | Execution accounting; mode-3 caller, arrival and collision dependencies |
-| Turning | Turn variants and ordering cleared | Findings 2–3; unresolved initial counters |
-| Collision | Failure-region accounting and established comparisons cleared | Sliding, rollback and remaining arrival geometry |
-| Proximity | Layer/sector guards, inclusive containment and character-only directional product cleared | Eligibility, query geometry and reactions |
-| Camera | Conversion, native writes, clipped-zero fall-through and zoom completion preserving scroll cleared | Findings 6–7; ramp, edge scrolling and full follow behavior |
-| Zoom | Request/refusal rules and established transition facts cleared | Accepted-request completion timing |
-| Drawing order | Established pass order, actor comparison and ground-mark ageing cleared | Scenery boundaries, family coverage and mask integration |
-| Carts | Previously cleared facts retained | Initial state, program and sub-sprite exclusions |
+| Component                | Updated clearance                                                                                  | Remaining boundary                                                                |
+| ------------------------ | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Frame timer              | Core arithmetic, resets and entry rules cleared for supplied values; mode-7 read confirmed         | Finding 4; marker mapping, initial state, overrides and out-of-range consequences |
+| Idle chain               | Next-update start and wait-element RNG exclusion cleared                                           | Other substitutions remain excluded                                               |
+| Movement modes 0–3 and 6 | Per-call displacement arithmetic and conditional extra steps cleared                               | Execution accounting; mode-3 caller, arrival and collision dependencies           |
+| Turning                  | Turn variants and ordering cleared                                                                 | Findings 2–3; unresolved initial counters                                         |
+| Collision                | Failure-region accounting and established comparisons cleared                                      | Sliding, rollback and remaining arrival geometry                                  |
+| Proximity                | Layer/sector guards, inclusive containment and character-only directional product cleared          | Eligibility, query geometry and reactions                                         |
+| Camera                   | Conversion, native writes, clipped-zero fall-through and zoom completion preserving scroll cleared | Findings 6–7; ramp, edge scrolling and full follow behavior                       |
+| Zoom                     | Request/refusal rules and established transition facts cleared                                     | Accepted-request completion timing                                                |
+| Drawing order            | Established pass order, actor comparison and ground-mark ageing cleared                            | Scenery boundaries, family coverage and mask integration                          |
+| Carts                    | Previously cleared facts retained                                                                  | Initial state, program and sub-sprite exclusions                                  |
 
 These components are **not yet cleared as an implementable whole**. Individual cleared rules can be implemented within the stated boundaries.
 

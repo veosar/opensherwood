@@ -45,12 +45,12 @@ Review 20 findings **4, 10, 11, 12, 14, 15, 17 and 20 are resolved**. The remain
 
 8. **High — NAV-046/057/100/130/170/172/210; §8.7 — fallbacks are contradictory or incomplete.**
    **Addresses:** `0x0051ac2f–0x0051ac34`, `0x004d7880`, `0x0054eea0`, `0x004e8fc0`, `0x00583630`.
-   Opening a closed door requires admission, while NAV-170 requires the door already to be open. Failing jump *elements* does not define unresolved jump-zone loading and targeting. Disabling patch toggles does not define unread patch-target resolution. “Owned by the AI specification’s assumption” identifies neither the claim nor an executable fallback.
+   Opening a closed door requires admission, while NAV-170 requires the door already to be open. Failing jump _elements_ does not define unresolved jump-zone loading and targeting. Disabling patch toggles does not define unread patch-target resolution. “Owned by the AI specification’s assumption” identifies neither the claim nor an executable fallback.
    **Correction:** supply reachable, unambiguous fallback outcomes and named assumption mappings. Distinguish disabled patch geometry from any retained door-lock effects, and reconcile section 11’s unconditional implementation requirements with the narrowed scope.
 
 9. **High — NAV-110/141/058; §7.2 tests 2, 6 and 14 — fixtures contain false statements.**
    **Addresses:** `0x004f5750`, `0x004ed070`, `0x00553e60`, `0x00554360`.
-   Test 2’s box spans `(194,96)` to `(206,104)` and touches none of F1’s obstacle walls. Under NAV-110 it is clear, despite lying inside the obstacle. Test 6’s annotation “`g = h`” is false. Test 14 says N3 wins because it was opened *before* N2; in the stated traversal it opens **after** N2 and wins as the newer equal-score candidate.
+   Test 2’s box spans `(194,96)` to `(206,104)` and touches none of F1’s obstacle walls. Under NAV-110 it is clear, despite lying inside the obstacle. Test 6’s annotation “`g = h`” is false. Test 14 says N3 wins because it was opened _before_ N2; in the stated traversal it opens **after** N2 and wins as the newer equal-score candidate.
    **Correction:** fix these expectations and explanations. Use a genuinely wall-intersecting box for the negative clearance case. Retain the distinction between clearance and polygon membership.
 
 10. **High — NAV-090/110/111/143/144/146; §7 — required acceptance coverage remains missing.**

@@ -66,7 +66,7 @@ Reviewed [spec-script-vm.md](../../original/spec-script-vm.md), blob `92aedbf44c
 
 16. **High — VM-100, VM-101, VM-104, VM-222: clock and pause claims overreach their evidence.**
     **Addresses:** `0050f710`, `005105d0`, `004c8380`, `004cdfc0`.
-    The 40/400 ms waits have guards; they are not unconditional frame guarantees. `PostInitialize` follows the *attempted* first tick call, which can be skipped. Camera completion occurs in the rendering/update path and can advance sequences outside the listed level-tick phases. Specify these separate execution opportunities and their guards before asserting “no script activity” whenever the level tick is skipped.
+    The 40/400 ms waits have guards; they are not unconditional frame guarantees. `PostInitialize` follows the _attempted_ first tick call, which can be skipped. Camera completion occurs in the rendering/update path and can advance sequences outside the listed level-tick phases. Specify these separate execution opportunities and their guards before asserting “no script activity” whenever the level tick is skipped.
 
 17. **Medium — VM-103, VM-221: timer phase and overflow behaviour need correction.**
     **Addresses:** `004c6ef0`, `00575350`, `00586f10`, `00587160`.
@@ -109,17 +109,19 @@ Reviewed [spec-script-vm.md](../../original/spec-script-vm.md), blob `92aedbf44c
 25. **High — VM-002, VM-031, VM-204/VM-230: expression filter fails on unjustified internal structure.**
     **Addresses:** `0063a940`, `00639370`, `00570a70`–`00570cb0`, `005866a0`, `00585b70`.
     Offending text includes:
+
     > “is stored in a 12-byte slot: the opcode at byte 0, the 8 operand bytes at bytes 4..11”
 
     > “Element kinds are read from a type word of the element; the natives test it with masks.”
 
-    > “Elements are created with a *kind* code … and typed parameter slots”
+    > “Elements are created with a _kind_ code … and typed parameter slots”
 
     The SCB’s nine-byte encoding and native ids are interoperability interfaces. The recovered heap layout, internal type representation and comprehensive internal element-kind organisation are not justified as required interfaces. Keep those details in analyst notes; express required categories, effects and ordering independently.
 
 26. **High — §5 natives 91/126: internal translation tables substitute for behaviour.**
     **Addresses:** `005762d0`, `00575e20`.
     Offending text includes:
+
     > “internal states 1..6 map to 1, 2, 3, 6, 4, 5; else 0.”
 
     Native 91 similarly enumerates internal movement states and their output translations. These reproduce internal case mappings while leaving the implementer without the corresponding observable conditions. Replace them with externally meaningful state descriptions. The opcode and native-id interface tables themselves are not objectionable merely because they are tables.
@@ -131,6 +133,7 @@ Reviewed [spec-script-vm.md](../../original/spec-script-vm.md), blob `92aedbf44c
 28. **High — identity block and necessity record: present in part, but insufficient for handoff.**
     **Claim/address:** document-level; no executable address.
     The build hash matches, `draft` honestly records pending review, and the absence of oracle recordings is disclosed. However, there is no unique analyst-session identifier, reviewer identity, exposure record, separate publication-approval status, or explicit analyst-authorisation statement. The stopping assertion—
+
     > “Reading stopped when every opcode, every native id and the scheduling rules were settled”
 
     —contradicts both the open questions and the findings above. Replace it with the actual completed scope and unresolved dependencies; record factual review and publication approval separately.

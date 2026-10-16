@@ -78,11 +78,11 @@ the slow powerful blow), release; the start point on open mud 50..100 px left-be
 While the button is held the target soldier is drawn with a **yellow outline** (twice a blue one -
 meaning unknown), so the engine locks the figure onto the nearest enemy.
 
-| stroke | recording | stroke end -> bar drop | result |
-|---|---|---|---|
-| forward 1 | e6 | 1.03 s | 50 hp, bar 20 -> 7 |
-| forward 1 | e7 | 0.87 s | 50 hp, bar 20 -> 7 |
-| forward 2..5 | e7 | - (energy spent each time) | no damage; the halberdier answered with his own hit within 1.5 s three times |
+| stroke       | recording | stroke end -> bar drop     | result                                                                       |
+| ------------ | --------- | -------------------------- | ---------------------------------------------------------------------------- |
+| forward 1    | e6        | 1.03 s                     | 50 hp, bar 20 -> 7                                                           |
+| forward 1    | e7        | 0.87 s                     | 50 hp, bar 20 -> 7                                                           |
+| forward 2..5 | e7        | - (energy spent each time) | no damage; the halberdier answered with his own hit within 1.5 s three times |
 
 So the powerful blow **does 50 damage when it lands** (a figure-eight, backward stroke and circle were
 drawn in e6 only after Robin's death, on the page: untested) and landed 2 of 6 times against a
@@ -130,7 +130,7 @@ range: **not measured** (no arrows in the start area).
   post-bound (`observed`).
 - No other soldier joined a 5 min fight at the arch (the gate guards and a swordsman patrolling
   beyond the north wall stayed put), so a lone fight is possible in the tutorial courtyard; the mission-
-  wide response of stealth-and-combat.md 8.6 was to a *running* hero in the open.
+  wide response of stealth-and-combat.md 8.6 was to a _running_ hero in the open.
 - Attack cadence: section 1.5 (median 7.7 s between landed hits, a swing every ~5 s). Simultaneous
   attacks by several guards: `not measured` here (8.6 saw five soldiers around Robin).
 - Closing speed: `not measured` (nobody ran in these scenes; 8.4 / 8.8 give the run speeds).

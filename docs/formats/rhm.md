@@ -1,7 +1,7 @@
 # RHM mission file (`.rhm`, magic `DUTY`)
 
 Status: **decoded** (container, every chunk consumed exactly by `crates/opensherwood-formats/src/rhm.rs` on all
-39 retail files). Field *semantics* are established where stated; everything else is `unknown_*` with its observed
+39 retail files). Field _semantics_ are established where stated; everything else is `unknown_*` with its observed
 value set. The actor `profile` indices resolve through `Configuration/profile.cpf` (see "Actor profile
 mapping"). Open questions are listed at the end.
 
@@ -22,20 +22,20 @@ Same as [RHP](rhp.md): `DUTY size version=2` then child chunks `tag size version
 ten children below, in this order, with these versions. The loader is tag driven and skips unknown chunks with a
 warning (executable strings), so the reader keeps unknown tags in `unknown_chunks`.
 
-| Tag | Version | Content | Executable name (inferred) |
-|---|---|---|---|
-| `FOOT` | 4 | header: map id, variant, map name, mission id | Header |
-| `POUF` | 3 | animated map elements used by the mission (traps, hiding places) | Tenant? / Animation? |
-| `BOYZ` | 3 | six actor class groups `MEOW SCOT OILE TOTO BORG BOOM` | Actor |
-| `ZORG` | 2 | pick-up items: a kind and a stack size per record | Bonus (hypothesis) |
-| `HIRN` | 2 | AI data: `HOLE` waypoints, `BUSH` points, `POW ` beam-me points, `NLIP` zones | Tactic |
-| `RAIL` | 3 | patrol paths with per-waypoint command programs | Path |
-| `SKRO` | 4 | scrolls (parchments) | Scroll |
-| `TING` | 3 | mobile elements (carts) | Mobile |
-| `GULP` | 2 | script sectors (polygons named in scripts) plus a point list | Script |
-| `CAVE` | 3 | per-map table of id lists | Jump? / Building? |
+| Tag    | Version | Content                                                                       | Executable name (inferred) |
+| ------ | ------- | ----------------------------------------------------------------------------- | -------------------------- |
+| `FOOT` | 4       | header: map id, variant, map name, mission id                                 | Header                     |
+| `POUF` | 3       | animated map elements used by the mission (traps, hiding places)              | Tenant? / Animation?       |
+| `BOYZ` | 3       | six actor class groups `MEOW SCOT OILE TOTO BORG BOOM`                        | Actor                      |
+| `ZORG` | 2       | pick-up items: a kind and a stack size per record                             | Bonus (hypothesis)         |
+| `HIRN` | 2       | AI data: `HOLE` waypoints, `BUSH` points, `POW ` beam-me points, `NLIP` zones | Tactic                     |
+| `RAIL` | 3       | patrol paths with per-waypoint command programs                               | Path                       |
+| `SKRO` | 4       | scrolls (parchments)                                                          | Scroll                     |
+| `TING` | 3       | mobile elements (carts)                                                       | Mobile                     |
+| `GULP` | 2       | script sectors (polygons named in scripts) plus a point list                  | Script                     |
+| `CAVE` | 3       | per-map table of id lists                                                     | Jump? / Building?          |
 
-Common conventions: all integers little-endian; `pstring16` = `u16 length` + Latin-1 bytes; an *optional name* is
+Common conventions: all integers little-endian; `pstring16` = `u16 length` + Latin-1 bytes; an _optional name_ is
 `u8 has_name` (0/1) followed by a `pstring16` when 1. Names of scriptable elements end in `_8XXXXXXX` (a hex id,
 unique in the file); **every** such name has a script class of the same name in the mission's `.scb`
 (1409 of 1409 classes over the 39 files resolve; see [scb.md](scb.md)). Coordinates are background-image pixels
@@ -45,15 +45,15 @@ unique in the file); **every** such name has a script class of the same name in 
 
 Shared by actors, beam-me points, scrolls and `ZORG` entries.
 
-| Offset | Type | Field | Observed |
-|---|---|---|---|
-| 0x00 | u16 | x | inside the map |
-| 0x02 | u16 | y | inside the map |
-| 0x04 | u32 | direction | 0..=15 (16 facings; overlays are consistent with 0 = east, counter-clockwise) |
-| 0x08 | u32 | unknown_0x08 | actors: 3 (most), 0x88 = 136 (hidden PCs), 0x86, 0x0e, 0x9f, 0x10e, 0x2f, 0xa2, 0x2d, 0x30, 0; scrolls: always 190; `ZORG`: 189 + `unknown_b` |
-| 0x0c | i16 | unknown_0x0c | -1 or an id (0..=~800). Together with the next two words this is the "placement qualifier" |
-| 0x0e | u16 | unknown_0x0e | 0 or 6..=154 |
-| 0x10 | u16 | unknown_0x10 | 0..=11 |
+| Offset | Type | Field        | Observed                                                                                                                                      |
+| ------ | ---- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0x00   | u16  | x            | inside the map                                                                                                                                |
+| 0x02   | u16  | y            | inside the map                                                                                                                                |
+| 0x04   | u32  | direction    | 0..=15 (16 facings; overlays are consistent with 0 = east, counter-clockwise)                                                                 |
+| 0x08   | u32  | unknown_0x08 | actors: 3 (most), 0x88 = 136 (hidden PCs), 0x86, 0x0e, 0x9f, 0x10e, 0x2f, 0xa2, 0x2d, 0x30, 0; scrolls: always 190; `ZORG`: 189 + `unknown_b` |
+| 0x0c   | i16  | unknown_0x0c | -1 or an id (0..=~800). Together with the next two words this is the "placement qualifier"                                                    |
+| 0x0e   | u16  | unknown_0x0e | 0 or 6..=154                                                                                                                                  |
+| 0x10   | u16  | unknown_0x10 | 0..=11                                                                                                                                        |
 
 The qualifier triple (also found on waypoints, bushes, `GULP` points and polygons, rail points, objects) is
 hypothesised to be (projection-area / sector index, its height or layer, layer index): the loader asserts
@@ -91,52 +91,52 @@ an entry by repeating its two strings.
 
 `u16 count (6)` then six sub-chunks (`tag size version body`) in fixed order. Every body starts with `u16 count`.
 
-| Tag | Version | Records | Meaning |
-|---|---|---|---|
-| `MEOW` | 2 | 0 in all files | unknown (animals?) |
-| `SCOT` | 4 | 1..=5 per mission (50 in `Sherwood.rhm`) | player-character start slots (no profile: the team comes from the campaign state); in the script element table they sit at the tail, after `ZORG`, `SKRO` and `TING` (`scb.md`, Index spaces) |
-| `OILE` | 3 | 0..=77 | civilians (`profile.cpf` CV table) |
-| `TOTO` | 2 | 0..=11 | player-character sprites used as NPCs: prisoners, bride, guests (`profile.cpf` PC table) |
-| `BORG` | 4 | 3..=184 (2463 total) | armed humans: soldiers, guards, knights, officers, VIPs, merry men, the trainer (`profile.cpf` SD table) |
-| `BOOM` | 5 | 1..=35 (478 total) | objects: targets, traps, cart parts, mechanisms |
+| Tag    | Version | Records                                  | Meaning                                                                                                                                                                                       |
+| ------ | ------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEOW` | 2       | 0 in all files                           | unknown (animals?)                                                                                                                                                                            |
+| `SCOT` | 4       | 1..=5 per mission (50 in `Sherwood.rhm`) | player-character start slots (no profile: the team comes from the campaign state); in the script element table they sit at the tail, after `ZORG`, `SKRO` and `TING` (`scb.md`, Index spaces) |
+| `OILE` | 3       | 0..=77                                   | civilians (`profile.cpf` CV table)                                                                                                                                                            |
+| `TOTO` | 2       | 0..=11                                   | player-character sprites used as NPCs: prisoners, bride, guests (`profile.cpf` PC table)                                                                                                      |
+| `BORG` | 4       | 3..=184 (2463 total)                     | armed humans: soldiers, guards, knights, officers, VIPs, merry men, the trainer (`profile.cpf` SD table)                                                                                      |
+| `BOOM` | 5       | 1..=35 (478 total)                       | objects: targets, traps, cart parts, mechanisms                                                                                                                                               |
 
 ### `SCOT` record
 
-| Offset | Type | Field | Observed |
-|---|---|---|---|
-| 0x00 | Placement | placement | `unknown_0x08` = 3 (visible PC), 136 = `0x88` (hidden PC to be activated by script: all 81 named `hidden_pc*` records and nothing else), 134 = `0x86` (the visible lone hero of the town missions, 16 records), 14, 0 |
-| 0x12 | u32 | unknown_0x12 | 0..=4 |
-| 0x16 | u8[10] | unknown_0x16 | zero except single `01` bytes at offsets 2, 4, 5, 6, 8 or 9 in 30 records. Ten bytes = the ten entries of the `profile.cpf` PC table, so "slot reserved for that character" (2 Little John, 4 Stuteley, 5 Will, 6 Marian, 8/9 merry men) is the hypothesis; e.g. `H05` and `H12` flag byte 2, `Tac21` flags 6, 4, 5 on three records. Unverified |
-| 0x20 | opt name | name | `<label>_<8 hex digits>` on the hidden / beam-in / hero slots that scripts address; ordinary PCs have none |
-| | u8 | unknown_trailer | 0; 4 in exactly one record of 12 story missions; 2 (H09); 5 (outro) |
+| Offset | Type      | Field           | Observed                                                                                                                                                                                                                                                                                                                                         |
+| ------ | --------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0x00   | Placement | placement       | `unknown_0x08` = 3 (visible PC), 136 = `0x88` (hidden PC to be activated by script: all 81 named `hidden_pc*` records and nothing else), 134 = `0x86` (the visible lone hero of the town missions, 16 records), 14, 0                                                                                                                            |
+| 0x12   | u32       | unknown_0x12    | 0..=4                                                                                                                                                                                                                                                                                                                                            |
+| 0x16   | u8[10]    | unknown_0x16    | zero except single `01` bytes at offsets 2, 4, 5, 6, 8 or 9 in 30 records. Ten bytes = the ten entries of the `profile.cpf` PC table, so "slot reserved for that character" (2 Little John, 4 Stuteley, 5 Will, 6 Marian, 8/9 merry men) is the hypothesis; e.g. `H05` and `H12` flag byte 2, `Tac21` flags 6, 4, 5 on three records. Unverified |
+| 0x20   | opt name  | name            | `<label>_<8 hex digits>` on the hidden / beam-in / hero slots that scripts address; ordinary PCs have none                                                                                                                                                                                                                                       |
+|        | u8        | unknown_trailer | 0; 4 in exactly one record of 12 story missions; 2 (H09); 5 (outro)                                                                                                                                                                                                                                                                              |
 
 ### `BORG` record
 
-| Offset | Type | Field | Observed |
-|---|---|---|---|
-| 0x00 | Placement | placement | |
-| 0x12 | u32 | unknown_0x12 | 0 (1279), 2 (662), 3 (404), 1 (85), 4 (33) |
-| 0x16 | u32 | profile | 0-based index into the **SD table of `Configuration/profile.cpf`** (68 entries: sprite, voice set, stats; see [profile.md](profile.md) and "Actor profile mapping" below). 62 distinct values 0..=67; the six unused indices are exactly the table's six "do not use" entries. Tutorial: 30 = blue lancer, 6 = blue swordsman, 18 = blue officer, 42 / 43 = merry men with bow / staff |
-| 0x1a | u8 | unknown_0x1a | 0 or 1 (127 records); "patrol chief" is the hypothesis |
-| 0x1b | u32 | unknown_0x1b | 0 (2073), 1..=20, 50, 99, 100 |
-| 0x1f | u32 | unknown_0x1f | always 0 |
-| 0x23 | u32 | money | 0 (2293) or 10..=100; the unit's purse: property 1 of native 118 and the loot threshold AI-043 reads (`spec-script-vm.md` revision 10) |
-| 0x27 | u16 + u16[] | members | list of `BORG` indices (0..=count-1); 63 records have one, 1..=7 entries |
-| | i16 | rail | index into `RAIL` (patrol path) or -1 (1748 of 2463) |
-| | i16 | unknown_i16 | -1 (2152) or 7..=22 |
-| | opt name | name | `<label>_<8 hex digits>`; the label is a French or English unit word, often with a squad prefix and a serial |
+| Offset | Type        | Field        | Observed                                                                                                                                                                                                                                                                                                                                                                               |
+| ------ | ----------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0x00   | Placement   | placement    |                                                                                                                                                                                                                                                                                                                                                                                        |
+| 0x12   | u32         | unknown_0x12 | 0 (1279), 2 (662), 3 (404), 1 (85), 4 (33)                                                                                                                                                                                                                                                                                                                                             |
+| 0x16   | u32         | profile      | 0-based index into the **SD table of `Configuration/profile.cpf`** (68 entries: sprite, voice set, stats; see [profile.md](profile.md) and "Actor profile mapping" below). 62 distinct values 0..=67; the six unused indices are exactly the table's six "do not use" entries. Tutorial: 30 = blue lancer, 6 = blue swordsman, 18 = blue officer, 42 / 43 = merry men with bow / staff |
+| 0x1a   | u8          | unknown_0x1a | 0 or 1 (127 records); "patrol chief" is the hypothesis                                                                                                                                                                                                                                                                                                                                 |
+| 0x1b   | u32         | unknown_0x1b | 0 (2073), 1..=20, 50, 99, 100                                                                                                                                                                                                                                                                                                                                                          |
+| 0x1f   | u32         | unknown_0x1f | always 0                                                                                                                                                                                                                                                                                                                                                                               |
+| 0x23   | u32         | money        | 0 (2293) or 10..=100; the unit's purse: property 1 of native 118 and the loot threshold AI-043 reads (`spec-script-vm.md` revision 10)                                                                                                                                                                                                                                                 |
+| 0x27   | u16 + u16[] | members      | list of `BORG` indices (0..=count-1); 63 records have one, 1..=7 entries                                                                                                                                                                                                                                                                                                               |
+|        | i16         | rail         | index into `RAIL` (patrol path) or -1 (1748 of 2463)                                                                                                                                                                                                                                                                                                                                   |
+|        | i16         | unknown_i16  | -1 (2152) or 7..=22                                                                                                                                                                                                                                                                                                                                                                    |
+|        | opt name    | name         | `<label>_<8 hex digits>`; the label is a French or English unit word, often with a squad prefix and a serial                                                                                                                                                                                                                                                                           |
 
 ### `OILE` record
 
-| Offset | Type | Field | Observed |
-|---|---|---|---|
-| 0x00 | Placement | placement | `unknown_0x08` 3, 159, 270, 47, 45, or 0 |
-| 0x12 | u32 | unknown_0x12 | 0..=3 |
-| 0x16 | u32 | profile | 0-based index into the **CV table of `profile.cpf`** (24 entries; all used; index roles in [profile.md](profile.md): tax collector, beggar, child, six generic townspeople, the story notables, unarmed versions of heroes and antagonists, a corpse, a soldier sprite reused as a civilian in `H12`) |
-| 0x1a | u16 | unknown_u16_a | 0xffff (322 of 427) or 0..=63 |
-| 0x1c | u32 | money | 0, 25, 1500, 2000, 3000, 4000, 4500; the civilian's purse, property 1 of native 118 (`spec-script-vm.md` revision 10; earlier revisions of this table split the field into two i16 and left the parser two bytes short) |
-| 0x20 | lists | lists | **only when `profile == 1`** (the beggar; 28 records, all with `unknown_0x08 == 0`): ten lists, each `u16 n` + `n x u16` (ids up to 0x2c; 0..=3 per list). Beggars sell information for a purse (tutorial popup), so the lists are hypothesised to be the information / dialogue ids per topic |
-| | opt name | name | `<label>_<8 hex digits>` |
+| Offset | Type      | Field         | Observed                                                                                                                                                                                                                                                                                              |
+| ------ | --------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0x00   | Placement | placement     | `unknown_0x08` 3, 159, 270, 47, 45, or 0                                                                                                                                                                                                                                                              |
+| 0x12   | u32       | unknown_0x12  | 0..=3                                                                                                                                                                                                                                                                                                 |
+| 0x16   | u32       | profile       | 0-based index into the **CV table of `profile.cpf`** (24 entries; all used; index roles in [profile.md](profile.md): tax collector, beggar, child, six generic townspeople, the story notables, unarmed versions of heroes and antagonists, a corpse, a soldier sprite reused as a civilian in `H12`) |
+| 0x1a   | u16       | unknown_u16_a | 0xffff (322 of 427) or 0..=63                                                                                                                                                                                                                                                                         |
+| 0x1c   | u32       | money         | 0, 25, 1500, 2000, 3000, 4000, 4500; the civilian's purse, property 1 of native 118 (`spec-script-vm.md` revision 10; earlier revisions of this table split the field into two i16 and left the parser two bytes short)                                                                               |
+| 0x20   | lists     | lists         | **only when `profile == 1`** (the beggar; 28 records, all with `unknown_0x08 == 0`): ten lists, each `u16 n` + `n x u16` (ids up to 0x2c; 0..=3 per list). Beggars sell information for a purse (tutorial popup), so the lists are hypothesised to be the information / dialogue ids per topic        |
+|        | opt name  | name          | `<label>_<8 hex digits>`                                                                                                                                                                                                                                                                              |
 
 ### `TOTO` record
 
@@ -148,23 +148,23 @@ never used here.
 
 ### `BOOM` record (objects)
 
-| Offset | Type | Field | Observed |
-|---|---|---|---|
-| 0x00 | u16, u16 | x, y | |
-| 0x04 | i16 | unknown_0x04 | -1 (370 of 478) or 75..=300 (bow targets: 80, 150, 170, 180 ...) |
-| 0x06 | u16 | unknown_0x06 | 0 |
-| 0x08 | u16 | unknown_0x08 | 0 |
-| 0x0a | u16 | unknown_0x0a | 0 or 148..=195 |
-| 0x0c | u16 | unknown_0x0c | 0 |
-| 0x0e | i16, u16, u16 | placement qualifier | as in Placement |
-| 0x14 | pstring16 | sprite | a `Characters/TG_*.rhs` target sprite or an `Animations/<Variant>/*.rhs` bank (trap, cart, map patch) |
-| | pstring16 | label | a designer label (target kind and serial) or the `POUF` label of the referenced entry |
-| | u32 | unknown_flags | 0 (292), 1 (115), 16 (31), 2, 4, 97, 128, 68 |
-| | u16, u16 | x2, y2 | anchor position, shared by the parts of one element (a cart's four parts named `<base>_b1..b4`) |
-| | u16, u16 | unknown_q2, unknown_r2 | qualifier b, c of the anchor |
-| | Polygon | polygon | 0..=8 points |
-| | u8 | unknown_u8 | always 1 |
-| | opt name | name | every retail object is named (`<label>_<8 hex digits>`) |
+| Offset | Type          | Field                  | Observed                                                                                              |
+| ------ | ------------- | ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| 0x00   | u16, u16      | x, y                   |                                                                                                       |
+| 0x04   | i16           | unknown_0x04           | -1 (370 of 478) or 75..=300 (bow targets: 80, 150, 170, 180 ...)                                      |
+| 0x06   | u16           | unknown_0x06           | 0                                                                                                     |
+| 0x08   | u16           | unknown_0x08           | 0                                                                                                     |
+| 0x0a   | u16           | unknown_0x0a           | 0 or 148..=195                                                                                        |
+| 0x0c   | u16           | unknown_0x0c           | 0                                                                                                     |
+| 0x0e   | i16, u16, u16 | placement qualifier    | as in Placement                                                                                       |
+| 0x14   | pstring16     | sprite                 | a `Characters/TG_*.rhs` target sprite or an `Animations/<Variant>/*.rhs` bank (trap, cart, map patch) |
+|        | pstring16     | label                  | a designer label (target kind and serial) or the `POUF` label of the referenced entry                 |
+|        | u32           | unknown_flags          | 0 (292), 1 (115), 16 (31), 2, 4, 97, 128, 68                                                          |
+|        | u16, u16      | x2, y2                 | anchor position, shared by the parts of one element (a cart's four parts named `<base>_b1..b4`)       |
+|        | u16, u16      | unknown_q2, unknown_r2 | qualifier b, c of the anchor                                                                          |
+|        | Polygon       | polygon                | 0..=8 points                                                                                          |
+|        | u8            | unknown_u8             | always 1                                                                                              |
+|        | opt name      | name                   | every retail object is named (`<label>_<8 hex digits>`)                                               |
 
 ## `ZORG` (version 2): pick-up items
 
@@ -178,10 +178,10 @@ that hands it out, and the scripts address the block with natives 113 / 114 / 23
 Reading of the two words (2026-09-05, data files and the first mission's tutorial texts, paraphrased;
 `unknown_b` confirmed against the running original on 2026-09-05, `docs/original/h01-measurements-2.md` 1):
 
-| Field | Reading | Confidence | Evidence |
-|---|---|---|---|
-| `unknown_a` | the item's **kind** | medium | the outro's seven entries carry seven distinct values 12..=18 with `unknown_b` = 1 (seven different camp items in one place); in H01 the four entries with value 0 are the arrow piles (one lies at the archery yard next to the training-start scroll, one is activated by the arrows tutorial scroll, the manual's bow needs arrows; observed picture: a bundle of arrows, and the arrows counter receives the pile), the two with value 9 are purses with money (the steward's purse of objective 3, polled with native 235; the item the money tutorial scroll activates), the four with value 8 sit where the pick-up tutorial scroll sends the player (hypothesis: an empty purse, the throwable object; observed picture: a small pouch, the badge counting 1), and the single value 10 is the item the rescued civilian's scroll activates (hypothesis: the charm the clover counter shows) |
-| `unknown_b` | the **stack size** (1..=5), observed | high | the hand pointer over an item carries a badge with the digit `unknown_b` (three items, three distinct values), and the arrows counter rose by `unknown_b` when a pile was taken (`h01-measurements-2.md` 1.1 / 1.3); `unknown_0x08 = 189 + unknown_b` selects one of the five bonus animation blocks 190..=194 of the item's sprite bank (`sprite-animations.md`: the `BONUS_*` banks carry five such blocks; sixteen frames each on the banks read for the engine, below), the picture of the pile |
+| Field       | Reading                              | Confidence | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------- | ------------------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unknown_a` | the item's **kind**                  | medium     | the outro's seven entries carry seven distinct values 12..=18 with `unknown_b` = 1 (seven different camp items in one place); in H01 the four entries with value 0 are the arrow piles (one lies at the archery yard next to the training-start scroll, one is activated by the arrows tutorial scroll, the manual's bow needs arrows; observed picture: a bundle of arrows, and the arrows counter receives the pile), the two with value 9 are purses with money (the steward's purse of objective 3, polled with native 235; the item the money tutorial scroll activates), the four with value 8 sit where the pick-up tutorial scroll sends the player (hypothesis: an empty purse, the throwable object; observed picture: a small pouch, the badge counting 1), and the single value 10 is the item the rescued civilian's scroll activates (hypothesis: the charm the clover counter shows) |
+| `unknown_b` | the **stack size** (1..=5), observed | high       | the hand pointer over an item carries a badge with the digit `unknown_b` (three items, three distinct values), and the arrows counter rose by `unknown_b` when a pile was taken (`h01-measurements-2.md` 1.1 / 1.3); `unknown_0x08 = 189 + unknown_b` selects one of the five bonus animation blocks 190..=194 of the item's sprite bank (`sprite-animations.md`: the `BONUS_*` banks carry five such blocks; sixteen frames each on the banks read for the engine, below), the picture of the pile                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 The engine (`crates/opensherwood-script`, `MissionBinding::from_mission`; ruleset 15, the measured take since
 ruleset 17, the pouch kind since ruleset 18) binds every record as `Element::Item { x, y, kind, stack }` with kind
@@ -210,23 +210,23 @@ profile without it) while the reported action id stays the idle one (not measure
 
 `u16 count (4)` then four sub-chunks, each starting with `u16 count`:
 
-| Tag | Version | Record | Meaning |
-|---|---|---|---|
-| `HOLE` | 2 | `u16 x, u16 y, u16 q_b, u16 q_c, u16 direction` (10 bytes) | waypoints; the same position repeats with different directions (turn-in-place targets). 0..=674 per file |
-| `BUSH` | 2 | `u16 x, u16 y, u16 q_b, u16 q_c` (8 bytes) | positions; 0..=607 per file, only in town maps and a few forests. Hiding places is the hypothesis |
-| `POW ` | 2 | Placement (18 bytes) | "beam-me" points: all lie on the map border with the direction pointing inwards (tutorial: 10 points at x <= 50 or y <= 20 or y >= 944); used to bring PCs / reinforcements in. `unknown_0x08` is 0 |
-| `NLIP` | 2 | `u32 unknown (0)`, Polygon, `u16 n`, `n x (u16 x, u16 y, u16 q_b, u16 q_c, u8 flag, u16 value)` | tactical zone with points inside; only Emb04 / Tac18 (2 entries) |
+| Tag    | Version | Record                                                                                          | Meaning                                                                                                                                                                                             |
+| ------ | ------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HOLE` | 2       | `u16 x, u16 y, u16 q_b, u16 q_c, u16 direction` (10 bytes)                                      | waypoints; the same position repeats with different directions (turn-in-place targets). 0..=674 per file                                                                                            |
+| `BUSH` | 2       | `u16 x, u16 y, u16 q_b, u16 q_c` (8 bytes)                                                      | positions; 0..=607 per file, only in town maps and a few forests. Hiding places is the hypothesis                                                                                                   |
+| `POW ` | 2       | Placement (18 bytes)                                                                            | "beam-me" points: all lie on the map border with the direction pointing inwards (tutorial: 10 points at x <= 50 or y <= 20 or y >= 944); used to bring PCs / reinforcements in. `unknown_0x08` is 0 |
+| `NLIP` | 2       | `u32 unknown (0)`, Polygon, `u16 n`, `n x (u16 x, u16 y, u16 q_b, u16 q_c, u8 flag, u16 value)` | tactical zone with points inside; only Emb04 / Tac18 (2 entries)                                                                                                                                    |
 
 ## `RAIL` (version 3): patrol paths
 
 `u16 count`, then paths: `u16 n` points. Point:
 
-| Field | Type | Meaning |
-|---|---|---|
-| x, y | u16, u16 | position (may be off-map for cart entry / exit paths: the first two paths of every ambush have 4 points ending outside the map; those points hold negative coordinates in two's complement, e.g. `65338` = -198 in `EmbTut_FoC_EC` rail 0, so the engine reads rail points as `i16`) |
-| q_b, q_c | u16, u16 | placement qualifier b, c |
-| kind | u8 | 0 = command program, 1 = named point |
-| payload | `u16 length` + bytes | kind 1: the name (`<label>__<n>___<8 hex digits>`, referenced by scripts); kind 0: a program (may be empty) |
+| Field    | Type                 | Meaning                                                                                                                                                                                                                                                                              |
+| -------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| x, y     | u16, u16             | position (may be off-map for cart entry / exit paths: the first two paths of every ambush have 4 points ending outside the map; those points hold negative coordinates in two's complement, e.g. `65338` = -198 in `EmbTut_FoC_EC` rail 0, so the engine reads rail points as `i16`) |
+| q_b, q_c | u16, u16             | placement qualifier b, c                                                                                                                                                                                                                                                             |
+| kind     | u8                   | 0 = command program, 1 = named point                                                                                                                                                                                                                                                 |
+| payload  | `u16 length` + bytes | kind 1: the name (`<label>__<n>___<8 hex digits>`, referenced by scripts); kind 0: a program (may be empty)                                                                                                                                                                          |
 
 A program (length > 0) is a small offset-addressed structure; all offsets are relative to the program start and,
 in every retail file, equal to the position of the next byte, so it reads sequentially:
@@ -245,27 +245,27 @@ handful of tables (`100`; `50 50`; `25 50 25`; `25 25 25 25`; `60 40`; `70 30`; 
 Commands are `u8 opcode` + fixed-size operands (sizes established by exhaustive parse of all 2879 programs;
 meanings are not: the engine's interpretation of six of them is an inference, see "Rail programs" below):
 
-| Opcode | Operands | Count | Observed operand values |
-|---|---|---|---|
-| 0x00 | none | 159 | |
-| 0x01 | none | 35 | |
-| 0x02 | u16 | 122 | 0..=0x2f |
-| 0x03 | u16 | 2203 | 0..=15 (a direction) |
-| 0x04 | u16 | 3450 | 10, 12, 25, 50, 75, 100, 150, 200, 250, 300, 500 (a duration) |
-| 0x05 | u16, u16 | 104 | e.g. (38, 125) |
-| 0x06 | u16, u16, u16 | 12 | e.g. (9, 1250, 5), (11, 300, 0) |
-| 0x07 | none | 370 | |
-| 0x08 | u16 | 12 | 0x13..=0xb1 |
-| 0x09 | none | 111 | |
-| 0x0a | none | 76 | |
-| 0x0b | none | 364 | |
-| 0x0c | none | 364 | |
-| 0x0d | u16 | 101 | 25..=1000 |
-| 0x0e | none | 3 | |
-| 0x0f | u16 | 2 | 10, 12 |
-| 0x10 | none | 2 | |
-| 0x81 | f32 | 52 | 0.0, 5.0, 6.0 |
-| 0x82 | f32, u16 | 26 | (8.0, 1), (8.0, 2) |
+| Opcode | Operands      | Count | Observed operand values                                       |
+| ------ | ------------- | ----- | ------------------------------------------------------------- |
+| 0x00   | none          | 159   |                                                               |
+| 0x01   | none          | 35    |                                                               |
+| 0x02   | u16           | 122   | 0..=0x2f                                                      |
+| 0x03   | u16           | 2203  | 0..=15 (a direction)                                          |
+| 0x04   | u16           | 3450  | 10, 12, 25, 50, 75, 100, 150, 200, 250, 300, 500 (a duration) |
+| 0x05   | u16, u16      | 104   | e.g. (38, 125)                                                |
+| 0x06   | u16, u16, u16 | 12    | e.g. (9, 1250, 5), (11, 300, 0)                               |
+| 0x07   | none          | 370   |                                                               |
+| 0x08   | u16           | 12    | 0x13..=0xb1                                                   |
+| 0x09   | none          | 111   |                                                               |
+| 0x0a   | none          | 76    |                                                               |
+| 0x0b   | none          | 364   |                                                               |
+| 0x0c   | none          | 364   |                                                               |
+| 0x0d   | u16           | 101   | 25..=1000                                                     |
+| 0x0e   | none          | 3     |                                                               |
+| 0x0f   | u16           | 2     | 10, 12                                                        |
+| 0x10   | none          | 2     |                                                               |
+| 0x81   | f32           | 52    | 0.0, 5.0, 6.0                                                 |
+| 0x82   | f32, u16      | 26    | (8.0, 1), (8.0, 2)                                            |
 
 The executable names eight waypoint commands (a bend, a glance to each side, a check-for and its synchronised
 variant, patrol start / direction / stop; see `docs/original/executable-notes.md`) and a separate set of
@@ -276,7 +276,7 @@ mobile-element waypoint commands; 0x81/0x82 with floats appear only on the cart 
 Counts below are over all 1638 rails (542 of them assigned to a `BORG` actor through `rail`; the rest are
 referenced by scripts). Status: **inferred from data layout only**, not verified against the original's behaviour.
 
-*Table ids select the travel direction.* Where a point has a single table its id is 0 on 2361 points; ids 1 and 2
+_Table ids select the travel direction._ Where a point has a single table its id is 0 on 2361 points; ids 1 and 2
 are placed asymmetrically: id 2 alone on 137 first points, 155 middle points and 1 last point; id 1 alone on 146
 last points, 67 middle points and 1 first point; both ids on 11 points (3 first, 7 middle, 1 last). Single-point
 rails (802) only ever carry table 0. A rail is therefore walked back and forth (`0, 1, .., n-1, n-2, .., 1, 0, ...`):
@@ -284,21 +284,21 @@ you can only reach the last point travelling forward and the first point travell
 run when arriving forward, id 2 = when arriving backward, id 0 = either direction**. A point that only has the
 table of the other direction runs nothing on that arrival.
 
-*Command pairs.* The most frequent block shapes are `03 04` (721 blocks), `04` (696), `03 07` (289), `03 04 03 04`
+_Command pairs._ The most frequent block shapes are `03 04` (721 blocks), `04` (696), `03 07` (289), `03 04 03 04`
 (129) and `03 04 0b 04 0c 04` (27, plus longer repetitions of the same triple). The bigram `03 -> 04` occurs 1816
 times; `0b` and `0c` (364 each) are almost always followed by `04` (291 and 298 times) and appear as a pair in one
 block, in either order, after a `03 04`.
 
-*0x02 operand is a point index.* In all 122 occurrences the operand is smaller than the rail's point count (rails
+_0x02 operand is a point index._ In all 122 occurrences the operand is smaller than the rail's point count (rails
 with 3, 5, 7 ... points included); it is 0 on 79 last points (72 times as the last command of the block) and a
 larger index in the remaining cases, e.g. `H04_Lei_VL` rail 9 (36 points): point 0 has `02(12)` and point 35 has
 `02(22)`; `H12_Not_MP` rail 1 (7 points): point 2 jumps to 4 and point 4 to 2.
 
-*0x07 ends a program.* It is always the last command of its block (370 of 370), on single-point rails (284), last
+_0x07 ends a program._ It is always the last command of its block (370 of 370), on single-point rails (284), last
 points (62) or first points (23), never on a middle point; 343 of the 370 are on rails that no actor is assigned
 to (script-driven walks that end at the point).
 
-*0x00 / 0x01 / 0x09 / 0x0a and the operand opcodes 0x05, 0x06, 0x08, 0x0d* have no positional pattern that suggests
+_0x00 / 0x01 / 0x09 / 0x0a and the operand opcodes 0x05, 0x06, 0x08, 0x0d_ have no positional pattern that suggests
 a meaning; `0x00` is a whole block by itself 113 times, `0x09` ends blocks (`03 04 09`, 43 middle points).
 
 ### Rail programs: engine interpretation
@@ -307,14 +307,14 @@ a meaning; `0x00` is a whole block by itself 113 times, `0x09` ends blocks (`03 
 waypoint program that walks the points back and forth as above, running the arrival table as a probabilistic
 choice over its blocks (a roll no block covers runs nothing). The per-opcode mapping, with its status:
 
-| Opcode | Engine behaviour | Status |
-|---|---|---|
-| 0x03 `dir` | face the 16-way direction (same convention as Placement) | inferred (operand range 0..=15, precedes waits) |
-| 0x04 `n` | stand for `n` hundredths of a second (`n * tick rate / 100` ticks) | inferred: the value set 10, 12, 25, 50, 75, 100 ... 500 reads as 1/100 s; unit **not verified** |
-| 0x02 `p` | continue the patrol at point `p` of the same rail, walking forward if `p` is a later point and backward if earlier (`02(0)` on the last point turns the back-and-forth walk into a loop) | inferred (operand always a point index) |
-| 0x07 | stop: stand here for good | inferred (always terminal) |
-| 0x0b / 0x0c | glance 45 degrees to one side / the other of the block's last 0x03 facing (relative to the current facing if there is none) | inferred; which one is left is **not** established, the choice only mirrors the glance order |
-| all others (0x00, 0x01, 0x05, 0x06, 0x08, 0x09, 0x0a, 0x0d, 0x0e, 0x0f, 0x10, 0x81, 0x82) | no-op, counted and logged at load (`opensherwood: mission ...: N translated, M unknown`) | unknown |
+| Opcode                                                                                    | Engine behaviour                                                                                                                                                                         | Status                                                                                          |
+| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| 0x03 `dir`                                                                                | face the 16-way direction (same convention as Placement)                                                                                                                                 | inferred (operand range 0..=15, precedes waits)                                                 |
+| 0x04 `n`                                                                                  | stand for `n` hundredths of a second (`n * tick rate / 100` ticks)                                                                                                                       | inferred: the value set 10, 12, 25, 50, 75, 100 ... 500 reads as 1/100 s; unit **not verified** |
+| 0x02 `p`                                                                                  | continue the patrol at point `p` of the same rail, walking forward if `p` is a later point and backward if earlier (`02(0)` on the last point turns the back-and-forth walk into a loop) | inferred (operand always a point index)                                                         |
+| 0x07                                                                                      | stop: stand here for good                                                                                                                                                                | inferred (always terminal)                                                                      |
+| 0x0b / 0x0c                                                                               | glance 45 degrees to one side / the other of the block's last 0x03 facing (relative to the current facing if there is none)                                                              | inferred; which one is left is **not** established, the choice only mirrors the glance order    |
+| all others (0x00, 0x01, 0x05, 0x06, 0x08, 0x09, 0x0a, 0x0d, 0x0e, 0x0f, 0x10, 0x81, 0x82) | no-op, counted and logged at load (`opensherwood: mission ...: N translated, M unknown`)                                                                                                 | unknown                                                                                         |
 
 Coverage at load of `H01_Lin_VL` (18 rails assigned to actors): 113 commands, 102 translated, 11 unknown
 (`0x00` x1, `0x01` x2, `0x05` x4, `0x0d` x4); the tutorial `EmbTut_FoC_EC`: 3 rails, 3 commands, all translated.
@@ -375,18 +375,18 @@ in `H01_Lin_VL` and `S01_Not_VL` there is a single slot and the manual says Robi
 
 Evidence (all 39 missions, `harness/tools/probe/rhm_profiles.py`):
 
-| Check | Result |
-|---|---|
-| Range | `BORG.profile` 0..=67 vs 68 SD entries; `OILE.profile` 0..=23 vs 24 CV entries (all used); `TOTO.profile` 1..=9 vs 10 PC entries |
-| Gaps | the 6 unused `BORG` indices (52, 56, 57, 58, 63, 64) are exactly the 6 SD entries labelled "do not use" |
-| Designer names vs table kind (`BORG`) | the ~130 named records carry a unit word (lancer, sword, archer, officer, knight, crossbow, halberd, trainer, rider, sheriff, special officer; French or English, often with a squad prefix) and every one sits on a table index of that kind: lancer words only on 30-34, sword words on 6-9, archer words on 12-16, officer words on 18-21, knight words on 25-28, crossbow words on 38 / 40, a halberd word on 5, the trainer word on 44 (only in `Sherwood.rhm`), the rider word on 54 (mounted knight), the sheriff word on 62 (armed Sheriff), squad-officer words on 67 (special officer). Counter-examples, 7 of ~130: three knights (27) with a sword word, two lancers (30) with a knight word, one officer each on 19 and 21 with a knight word -- generic names on a unit of another kind, never a name that would fit a *different* table position better |
-| Designer names (`OILE`) | the tax-collector label on 0, the prince's name on 11, Gisborne's on 16, the Sheriff's on 19, the Derby lord's on 20, the York lord's on 21, an officer's-wife label on 7 (rich woman), a weeping-wife label on 8 (woman), peasant labels on 3 (poor man) |
-| Designer names (`TOTO`) | the labels for Little John, Will Scarlet and Lady Marian sit on 2, 5, 6 = their PC table positions |
-| Tutorial (`EmbTut`) | 30 lancer x9, 6 swordsman x3, 18 officer x1 (matches the earlier note), 42 / 43 merry men with bow / staff next to the bow targets and staff targets (staff-target objects) |
-| `H01_Lin_VL` vs the observed first mission | civilians: 1 beggar (the mendicant right of the start), 1 poor man (the persecuted civilian of the script), rich man, "friend" man, 2 poor women, old man; soldiers: 11 blue halberdiers (the wall guards), 8 blue swordsmen (three labelled as targets), 4 blue archers plus an officer labelled as their sergeant (the archery training), 1 blue knight (the bribed knight), 12 blue lancers, 1 crossbowman. No hero profile in the file (Robin alone) |
-| Colour tiers | early missions use variants 00 / 01 (blue / yellow), `H12_Not_MP` uses 03 / 04 (red / black) plus the armed Sheriff (62) and Prince John (`OILE` 11); the green "hostile" variants 45-51 appear only in `H04_Lei_VL` |
-| `OILE` beggar lists | the ten-list block exists only for `profile == 1`, which the table's label and sprite identify as the beggar |
-| Sprite existence | every `sprite` of the three tables exists in `Characters/` and its `.rhs` sequence name equals the table's `sequence` string |
+| Check                                      | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Range                                      | `BORG.profile` 0..=67 vs 68 SD entries; `OILE.profile` 0..=23 vs 24 CV entries (all used); `TOTO.profile` 1..=9 vs 10 PC entries                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Gaps                                       | the 6 unused `BORG` indices (52, 56, 57, 58, 63, 64) are exactly the 6 SD entries labelled "do not use"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Designer names vs table kind (`BORG`)      | the ~130 named records carry a unit word (lancer, sword, archer, officer, knight, crossbow, halberd, trainer, rider, sheriff, special officer; French or English, often with a squad prefix) and every one sits on a table index of that kind: lancer words only on 30-34, sword words on 6-9, archer words on 12-16, officer words on 18-21, knight words on 25-28, crossbow words on 38 / 40, a halberd word on 5, the trainer word on 44 (only in `Sherwood.rhm`), the rider word on 54 (mounted knight), the sheriff word on 62 (armed Sheriff), squad-officer words on 67 (special officer). Counter-examples, 7 of ~130: three knights (27) with a sword word, two lancers (30) with a knight word, one officer each on 19 and 21 with a knight word -- generic names on a unit of another kind, never a name that would fit a _different_ table position better |
+| Designer names (`OILE`)                    | the tax-collector label on 0, the prince's name on 11, Gisborne's on 16, the Sheriff's on 19, the Derby lord's on 20, the York lord's on 21, an officer's-wife label on 7 (rich woman), a weeping-wife label on 8 (woman), peasant labels on 3 (poor man)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Designer names (`TOTO`)                    | the labels for Little John, Will Scarlet and Lady Marian sit on 2, 5, 6 = their PC table positions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Tutorial (`EmbTut`)                        | 30 lancer x9, 6 swordsman x3, 18 officer x1 (matches the earlier note), 42 / 43 merry men with bow / staff next to the bow targets and staff targets (staff-target objects)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `H01_Lin_VL` vs the observed first mission | civilians: 1 beggar (the mendicant right of the start), 1 poor man (the persecuted civilian of the script), rich man, "friend" man, 2 poor women, old man; soldiers: 11 blue halberdiers (the wall guards), 8 blue swordsmen (three labelled as targets), 4 blue archers plus an officer labelled as their sergeant (the archery training), 1 blue knight (the bribed knight), 12 blue lancers, 1 crossbowman. No hero profile in the file (Robin alone)                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Colour tiers                               | early missions use variants 00 / 01 (blue / yellow), `H12_Not_MP` uses 03 / 04 (red / black) plus the armed Sheriff (62) and Prince John (`OILE` 11); the green "hostile" variants 45-51 appear only in `H04_Lei_VL`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `OILE` beggar lists                        | the ten-list block exists only for `profile == 1`, which the table's label and sprite identify as the beggar                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Sprite existence                           | every `sprite` of the three tables exists in `Characters/` and its `.rhs` sequence name equals the table's `sequence` string                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 Confidence: high for the three index -> table mappings (every one of the ~130 designer-named records
 agrees, the unused-index set matches the "do not use" entries, and no alternative table has 68 / 24 / 10

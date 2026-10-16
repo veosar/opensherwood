@@ -7,7 +7,7 @@ ordinary `DUTY` missions on the `sherwood` map; nothing in their container, acto
 sprites differs from the 37 loadable missions. The single reason the strict loader refuses them is the script
 binding: `map_element_count("sherwood")` is `None`, so `docs/formats/scb.md` "Index spaces" cannot place the
 script's element indices. This document establishes that index space, and in doing so corrects the model for
-every map (the player-character slots sit at the *end* of the element table, not at its start, and the
+every map (the player-character slots sit at the _end_ of the element table, not at its start, and the
 per-map prefix is the `.rhp` `FLIM` count plus its `TUPO` count). Confidence is given per claim.
 
 Vocabulary: `nNN(...)` is native id NN of `docs/formats/scb.md`; element indices are the immediates passed to
@@ -16,10 +16,10 @@ game text are never reproduced: elements are named by chunk, index and role.
 
 ## 1. Files
 
-| Level | Mission file | Script | Map | Background | Text index | Level record |
-|---|---|---|---|---|---|---|
-| Camp (hub) | `Data/Levels/Sherwood.rhm` (`FOOT`: map id 92, variant 1, mission id 0) | `Data/Levels/sherwood.scb` (lower-case base name, the only such pair; the engine's VFS is case-insensitive, `crates/opensherwood-assets`) | `sherwood.rhp` (1920x1088) | `Levels/Day/Sherwood.map`, `Night/sherwood.map`; `.min` in Day / Night / Fog | `Text/RHLevelHQ.red` (192 bytes: a 37-entry text list, 1 won, 1 lost, 7 short briefings) | `HQ` in `profile.cpf` (kind 4 = Sherwood, location 8) |
-| Outro | `Data/Levels/SherwoodOutro.rhm` (map id 92, **variant 4**, mission id 0) | `Data/Levels/SherwoodOutro.scb` | same | variant 4 has no `Fog/sherwood.map` (only a `.min`); which background the original uses is **open** (since 2026-09-05 the engine selects the ambiance directory by variant, `rhm.md` `FOOT`, and, this picture being absent, falls back to `Day` with a log line) | `RHLevelVO.red` (148 bytes, 4 texts) is the campaign-flow mapping; the level record whose map is Sherwood and whose code is not `HQ` is `EY` (`profile.md`). The outro script shows no text, so the choice does not matter for loading | `EY` (or `VO`), `unknown_h` = 0, `unknown_i` = 0 |
+| Level      | Mission file                                                             | Script                                                                                                                                    | Map                        | Background                                                                                                                                                                                                                                                        | Text index                                                                                                                                                                                                                             | Level record                                          |
+| ---------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Camp (hub) | `Data/Levels/Sherwood.rhm` (`FOOT`: map id 92, variant 1, mission id 0)  | `Data/Levels/sherwood.scb` (lower-case base name, the only such pair; the engine's VFS is case-insensitive, `crates/opensherwood-assets`) | `sherwood.rhp` (1920x1088) | `Levels/Day/Sherwood.map`, `Night/sherwood.map`; `.min` in Day / Night / Fog                                                                                                                                                                                      | `Text/RHLevelHQ.red` (192 bytes: a 37-entry text list, 1 won, 1 lost, 7 short briefings)                                                                                                                                               | `HQ` in `profile.cpf` (kind 4 = Sherwood, location 8) |
+| Outro      | `Data/Levels/SherwoodOutro.rhm` (map id 92, **variant 4**, mission id 0) | `Data/Levels/SherwoodOutro.scb`                                                                                                           | same                       | variant 4 has no `Fog/sherwood.map` (only a `.min`); which background the original uses is **open** (since 2026-09-05 the engine selects the ambiance directory by variant, `rhm.md` `FOOT`, and, this picture being absent, falls back to `Day` with a log line) | `RHLevelVO.red` (148 bytes, 4 texts) is the campaign-flow mapping; the level record whose map is Sherwood and whose code is not `HQ` is `EY` (`profile.md`). The outro script shows no text, so the choice does not matter for loading | `EY` (or `VO`), `unknown_h` = 0, `unknown_i` = 0      |
 
 Confidence: high (file listing, `FOOT` chunks, `.red` sizes, `profile.md`).
 
@@ -42,49 +42,49 @@ script. Confidence: high (run on the current `target/release/opensherwood.exe`).
 So "profile / sprite indices beyond the other missions' ranges" is **not** what is special about the hub: its
 profile indices are 44 (the camp trainer), 28 x2 (knight family) and `TOTO` 9 (a generic merry man); the outro's
 are `OILE` 2, 3, 5, 6, 8, 15, `TOTO` 2, 3, 5, 6, 7, 8, 9 and `BORG` 8, 14, 21, 27, 32. All inside the tables
-(`rhm_profiles.py`). The "unknown index space" is the *script element* space of native 3.
+(`rhm_profiles.py`). The "unknown index space" is the _script element_ space of native 3.
 
 ## 3. What the two mission files contain
 
 Counts (`harness/tools/probe/rhm_inventory.py`, `opensherwood-tools rhm`):
 
-| Chunk | Hub | Outro | Typical mission (for contrast) |
-|---|---|---|---|
-| `POUF` | 0 | 0 | 0..=26 |
-| `SCOT` | **50**, all unnamed, `unknown_0x08` = 3 (46) or 0 (3) or 14 (1); 2 with a non-trivial placement qualifier `(86, 31, 4)` | 2: #0 named (the hero), `unknown_0x08` = 0, qualifier `(59, 27, 1)`; #1 unnamed, trailer 5 | 1..=5 |
-| `OILE` | 0 | 18 (profiles 2 x5, 3 x4, 5, 6 x3, 8 x3, 15 x2) | 0..=77 |
-| `TOTO` | 1 (profile 9, a generic merry man) | 11 (profiles 3, 5, 2, 6, 7 x3, 8 x2, 9 x2; three named: the big man, the swordsman, the lady) | 0..=11 |
-| `BORG` | 3: #0 the trainer (profile 44, named), #1 / #2 profile 28, unnamed | 5, all named, profiles 21, 27, 8, 14, 32 (an officer and four soldiers) | 3..=184 |
-| `BOOM` | 4: three archery targets (`TG_` sprites, flags 1, named; one with `unknown_0x04` = 90) and one arrow object (`TG_` sprite, `unknown_0x0a` = 190, named) | 9 unnamed marker objects (empty polygon, flags 0), one per outro actor role | 1..=35 |
-| `ZORG` | 0 | 7 (`unknown_a` 12..=18, `unknown_b` 1) | 0..=70 |
-| `HIRN` | empty | empty | waypoints, bushes, beam-me points |
-| `RAIL` | 0 | 1 (5 points, 3 named) | 0..=73 |
-| `SKRO` | **23**, all named: 12 with flags `01 01 01 01 01`, 1 with `01 01 01 01 00`, 7 with `01 01 01 00 00`, 1 with `01 01 01 00 01`, 2 at the same position with `01 01 01 01 00` / `01 01 01 00 01` | 0 | 0..=29 |
-| `TING` | 0 | 0 | 0 / 1 |
-| `GULP` | **213 points**, 15 polygons (2 named) | 56 points, 1 polygon (named) | 0..=213 points |
-| `CAVE` | 5 (the per-map constant) | 5 | per map |
+| Chunk  | Hub                                                                                                                                                                                           | Outro                                                                                         | Typical mission (for contrast)    |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------- |
+| `POUF` | 0                                                                                                                                                                                             | 0                                                                                             | 0..=26                            |
+| `SCOT` | **50**, all unnamed, `unknown_0x08` = 3 (46) or 0 (3) or 14 (1); 2 with a non-trivial placement qualifier `(86, 31, 4)`                                                                       | 2: #0 named (the hero), `unknown_0x08` = 0, qualifier `(59, 27, 1)`; #1 unnamed, trailer 5    | 1..=5                             |
+| `OILE` | 0                                                                                                                                                                                             | 18 (profiles 2 x5, 3 x4, 5, 6 x3, 8 x3, 15 x2)                                                | 0..=77                            |
+| `TOTO` | 1 (profile 9, a generic merry man)                                                                                                                                                            | 11 (profiles 3, 5, 2, 6, 7 x3, 8 x2, 9 x2; three named: the big man, the swordsman, the lady) | 0..=11                            |
+| `BORG` | 3: #0 the trainer (profile 44, named), #1 / #2 profile 28, unnamed                                                                                                                            | 5, all named, profiles 21, 27, 8, 14, 32 (an officer and four soldiers)                       | 3..=184                           |
+| `BOOM` | 4: three archery targets (`TG_` sprites, flags 1, named; one with `unknown_0x04` = 90) and one arrow object (`TG_` sprite, `unknown_0x0a` = 190, named)                                       | 9 unnamed marker objects (empty polygon, flags 0), one per outro actor role                   | 1..=35                            |
+| `ZORG` | 0                                                                                                                                                                                             | 7 (`unknown_a` 12..=18, `unknown_b` 1)                                                        | 0..=70                            |
+| `HIRN` | empty                                                                                                                                                                                         | empty                                                                                         | waypoints, bushes, beam-me points |
+| `RAIL` | 0                                                                                                                                                                                             | 1 (5 points, 3 named)                                                                         | 0..=73                            |
+| `SKRO` | **23**, all named: 12 with flags `01 01 01 01 01`, 1 with `01 01 01 01 00`, 7 with `01 01 01 00 00`, 1 with `01 01 01 00 01`, 2 at the same position with `01 01 01 01 00` / `01 01 01 00 01` | 0                                                                                             | 0..=29                            |
+| `TING` | 0                                                                                                                                                                                             | 0                                                                                             | 0 / 1                             |
+| `GULP` | **213 points**, 15 polygons (2 named)                                                                                                                                                         | 56 points, 1 polygon (named)                                                                  | 0..=213 points                    |
+| `CAVE` | 5 (the per-map constant)                                                                                                                                                                      | 5                                                                                             | per map                           |
 
 Confidence: high (parsed by the retail-exact reader).
 
 Roles of the hub's elements (own words, from the script's use of them; see section 5):
 
-| Role | Chunk / index | Count |
-|---|---|---|
-| Player-character slots (the gang; the campaign fills them) | `SCOT` 0..=49 | 50 |
-| A merry man who joins as a recruit (deactivated and put off-map at load, brought in by `Hourglass`) | `TOTO` 0 | 1 |
-| The trainer (AI locked / unlocked by the level, shoots at trainees in the sword-training zone) | `BORG` 0 | 1 |
-| Two knight-family actors, AI-locked and teleported off-map at load (never used afterwards) | `BORG` 1, 2 | 2 |
-| Archery targets (each reports an arrow hit to the level with message 0) | `BOOM` 0..=2 | 3 |
-| An arrow object with empty handlers | `BOOM` 3 | 1 |
-| Information scrolls, one per camp activity (drink, roast, arrows, herbs, purses, buffet, apples, nets, stones, bow training, sword training, wasps); taking one shows text 2..=13 and sets a bit of campaign word 0 | `SKRO` 0..=11 | 12 |
-| Information scroll of the deployment zone (text 23) | `SKRO` 12 | 1 |
-| Seven scrolls attached to the seven campaign roster slots (`n215(0..6)`); taking one shows text 16..=22 and sets a bit of campaign word 11 | `SKRO` 13..=18, 20 | 7 |
-| The silver-arrow scroll (text 31, bit 14 of word 0) | `SKRO` 19 | 1 |
-| The production report and its information scroll (same position) | `SKRO` 21, 22 | 2 |
-| Sword-training zone (empty handlers; its location is 222) | `GULP` polygon 9 | 1 |
-| Deployment zone (the team assembles here; location 227) | `GULP` polygon 14 | 1 |
-| Unnamed polygons: work areas and camera / walk targets (locations 213..=226) | `GULP` polygons 0..=8, 10..=13 | 13 |
-| Work spots, walk targets, camera targets (locations 0..=212) | `GULP` points | 213 |
+| Role                                                                                                                                                                                                                | Chunk / index                  | Count |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ----- |
+| Player-character slots (the gang; the campaign fills them)                                                                                                                                                          | `SCOT` 0..=49                  | 50    |
+| A merry man who joins as a recruit (deactivated and put off-map at load, brought in by `Hourglass`)                                                                                                                 | `TOTO` 0                       | 1     |
+| The trainer (AI locked / unlocked by the level, shoots at trainees in the sword-training zone)                                                                                                                      | `BORG` 0                       | 1     |
+| Two knight-family actors, AI-locked and teleported off-map at load (never used afterwards)                                                                                                                          | `BORG` 1, 2                    | 2     |
+| Archery targets (each reports an arrow hit to the level with message 0)                                                                                                                                             | `BOOM` 0..=2                   | 3     |
+| An arrow object with empty handlers                                                                                                                                                                                 | `BOOM` 3                       | 1     |
+| Information scrolls, one per camp activity (drink, roast, arrows, herbs, purses, buffet, apples, nets, stones, bow training, sword training, wasps); taking one shows text 2..=13 and sets a bit of campaign word 0 | `SKRO` 0..=11                  | 12    |
+| Information scroll of the deployment zone (text 23)                                                                                                                                                                 | `SKRO` 12                      | 1     |
+| Seven scrolls attached to the seven campaign roster slots (`n215(0..6)`); taking one shows text 16..=22 and sets a bit of campaign word 11                                                                          | `SKRO` 13..=18, 20             | 7     |
+| The silver-arrow scroll (text 31, bit 14 of word 0)                                                                                                                                                                 | `SKRO` 19                      | 1     |
+| The production report and its information scroll (same position)                                                                                                                                                    | `SKRO` 21, 22                  | 2     |
+| Sword-training zone (empty handlers; its location is 222)                                                                                                                                                           | `GULP` polygon 9               | 1     |
+| Deployment zone (the team assembles here; location 227)                                                                                                                                                             | `GULP` polygon 14              | 1     |
+| Unnamed polygons: work areas and camera / walk targets (locations 213..=226)                                                                                                                                        | `GULP` polygons 0..=8, 10..=13 | 13    |
+| Work spots, walk targets, camera targets (locations 0..=212)                                                                                                                                                        | `GULP` points                  | 213   |
 
 The manual (pp. 12-14, paraphrased) describes the camp as: new recruits appear after missions; workshops
 produce items between missions and a parchment near the central tree reports the output; the feast, archery
@@ -106,7 +106,7 @@ The flat table addressed by native 3 is, for **every** level:
 
 with `F` = the `FLIM` count and `T` = the `TUPO` count of the map's `.rhp`. The relative order of the three
 per-map / per-mission prefix parts (`FLIM`, `TUPO`, `POUF`) is not observable (their counts are constant per
-map or per mission); their *sum* is what places the mission's records. The position of the script polygons is
+map or per mission); their _sum_ is what places the mission's records. The position of the script polygons is
 not observable either (no polygon class references itself by index in any file); the hub's script never
 addresses an index beyond its scrolls, so it does not matter for loading.
 
@@ -114,44 +114,44 @@ Per-map prefix `K = F + T` (since 2026-09-05 computed from the `.rhp` by `map_el
 `known_map_element_count`, a cross-check asserted by `crates/opensherwood-script/tests/gamedata.rs`; "current value"
 below is the value the engine used before):
 
-| Map | `FLIM` | `TUPO` | `K` (new) | current value | change |
-|---|---|---|---|---|---|
-| Croisement01 | 13 | 6 | **19** | 14 | +5 |
-| Croisement02 | 15 | 9 | **24** | 19 | +5 |
-| Croisement03 | 15 | 9 | **24** | 19 | +5 |
-| Derby | 13 | 7 | **20** | 19 | +1 |
-| Nottingham | 48 | 11 | **59** | 58 | +1 |
-| Leicester | 47 | 16 | **63** | 59 | +4 |
-| Lincoln | 38 | 12 | **50** | 49 | +1 |
-| York | 60 | 10 | **70** | ~67 | +3 |
-| Sherwood | 20 | 0 | **20** | none | new |
+| Map          | `FLIM` | `TUPO` | `K` (new) | current value | change |
+| ------------ | ------ | ------ | --------- | ------------- | ------ |
+| Croisement01 | 13     | 6      | **19**    | 14            | +5     |
+| Croisement02 | 15     | 9      | **24**    | 19            | +5     |
+| Croisement03 | 15     | 9      | **24**    | 19            | +5     |
+| Derby        | 13     | 7      | **20**    | 19            | +1     |
+| Nottingham   | 48     | 11     | **59**    | 58            | +1     |
+| Leicester    | 47     | 16     | **63**    | 59            | +4     |
+| Lincoln      | 38     | 12     | **50**    | 49            | +1     |
+| York         | 60     | 10     | **70**    | ~67           | +3     |
+| Sherwood     | 20     | 0      | **20**    | none          | new    |
 
 The `TUPO` count is the `u16` at the head of the raw chunk (`rhp::Map::tupo`). `TUPO` records are the map
 patches ("pixel_vert" / "notpatch" strings in the spec) and native 5 (patch by index) has per-map ranges that
 match these counts (Lincoln `<= 11` vs 12, Leicester `<= 15` vs 16): the element table contains the patches
 right after the animated elements. Confidence: **high** for `K` (nine maps, derived below), **medium** for the
 identification of the second block as `TUPO` (the counts match in all nine maps and native 5's ranges agree;
-no script addresses a patch through native 3, so the block is only ever *skipped*).
+no script addresses a patch through native 3, so the block is only ever _skipped_).
 
 ### 4.2 Evidence: the mission records
 
 `harness/tools/probe/scb_elements.py` compares, for every class whose name is a mission record, the native-3
 immediates used inside that class with the record's index in its chunk; the most frequent difference is the
 chunk's base. The scratch probe `scot_place.py` (a copy of it in the analyst scratchpad) converts each base into
-"index of the first `OILE` record minus the `POUF` count", i.e. `K` if the `SCOT` records are *not* in front,
+"index of the first `OILE` record minus the `POUF` count", i.e. `K` if the `SCOT` records are _not_ in front,
 or `K + SCOT count` if they are. Results (hits = self-references agreeing):
 
-| Map | Missions (SCOT count): implied `K` from `BORG` / `BOOM` self-references | Consistent only if |
-|---|---|---|
-| Nottingham | H02 (5): 59 (2 hits); H07 (1): 59 (6); H09 (4): 59 (2); S01 (1): 59 (4) | `SCOT` not in front: with `SCOT` first the four would need `K` = 54, 58, 55, 58 |
-| Lincoln | H01 (1): 50 (3 + 5); H05 (5): 50 (2) | same argument (49 vs 45) |
-| Derby | H03 (4): 20 (2); S04 (4): 20 (2); Str02 (5): 20 (2) | same (16 vs 15) |
-| Leicester | H04 (4): 63 (3); S02 (4): 63 (5 + 3) | either (both have 4 slots) |
-| York | Str03 (5): 70 (2); H10, S05: no `BOOM` / `BORG` self-reference | `K` = 70 = 60 + 10 |
-| Croisement01 | Emb01, Emb04, Emb08, Tac01 (all 5): 19 (5, 6, 4, 8) | either; 19 = 13 + 6 |
-| Croisement02 | Emb05, Emb07, Emb09, S03 (4), Tac02: 24 (12, 5, 7, 2, 11) | S03 has 4 slots, the others 5: `SCOT` not in front |
-| Croisement03 | Emb02, Emb03, Emb06, EmbTut, Tac03: 24 (5, 9, 8, 5, 9) | either; 24 = 15 + 9 |
-| Sherwood | Outro (2): `TOTO` 20 (3 hits), `BORG` 20 (5 hits) | 20 = 20 + 0 |
+| Map          | Missions (SCOT count): implied `K` from `BORG` / `BOOM` self-references | Consistent only if                                                              |
+| ------------ | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Nottingham   | H02 (5): 59 (2 hits); H07 (1): 59 (6); H09 (4): 59 (2); S01 (1): 59 (4) | `SCOT` not in front: with `SCOT` first the four would need `K` = 54, 58, 55, 58 |
+| Lincoln      | H01 (1): 50 (3 + 5); H05 (5): 50 (2)                                    | same argument (49 vs 45)                                                        |
+| Derby        | H03 (4): 20 (2); S04 (4): 20 (2); Str02 (5): 20 (2)                     | same (16 vs 15)                                                                 |
+| Leicester    | H04 (4): 63 (3); S02 (4): 63 (5 + 3)                                    | either (both have 4 slots)                                                      |
+| York         | Str03 (5): 70 (2); H10, S05: no `BOOM` / `BORG` self-reference          | `K` = 70 = 60 + 10                                                              |
+| Croisement01 | Emb01, Emb04, Emb08, Tac01 (all 5): 19 (5, 6, 4, 8)                     | either; 19 = 13 + 6                                                             |
+| Croisement02 | Emb05, Emb07, Emb09, S03 (4), Tac02: 24 (12, 5, 7, 2, 11)               | S03 has 4 slots, the others 5: `SCOT` not in front                              |
+| Croisement03 | Emb02, Emb03, Emb06, EmbTut, Tac03: 24 (5, 9, 8, 5, 9)                  | either; 24 = 15 + 9                                                             |
+| Sherwood     | Outro (2): `TOTO` 20 (3 hits), `BORG` 20 (5 hits)                       | 20 = 20 + 0                                                                     |
 
 Every map gives one value regardless of the mission's `SCOT` count, and that value is `FLIM + TUPO` in all nine
 maps. Under the current model (`SCOT` first, `K` derived from one mission per map) eleven of the 37 loadable
@@ -164,12 +164,12 @@ their `K` came from), which is why the first mission's walkthrough still matched
 
 Four files have a named `SCOT` class (a hidden player character, or the hero) that references itself by index:
 
-| Mission | `SCOT` self-reference (index of slot 0, hits) | `K + POUF + OILE + TOTO + BORG + BOOM + SKRO` | `+ ZORG` | `+ TING` | Match |
-|---|---|---|---|---|---|
-| Tac01_FoA_MP | 107 (5 hits, five hidden PCs) | 19 + 23 + 45 + 18 = 105 | +2 = 107 | +0 | exact |
-| Emb03_FoC_MP | 107 (4) | 24 + 18 + 34 + 24 = 100 | +6 = 106 | +1 = 107 | exact |
-| Emb04_FoA_MP | 93 (5) | 19 + 17 + 30 + 16 = 82 | +10 = 92 | +1 = 93 | exact |
-| SherwoodOutro | 70 (1; the hero's class also references its own marker object at 54 = `BOOM` 0) | 20 + 18 + 11 + 5 + 9 = 63 | +7 = 70 | +0 | exact |
+| Mission       | `SCOT` self-reference (index of slot 0, hits)                                   | `K + POUF + OILE + TOTO + BORG + BOOM + SKRO` | `+ ZORG` | `+ TING` | Match |
+| ------------- | ------------------------------------------------------------------------------- | --------------------------------------------- | -------- | -------- | ----- |
+| Tac01_FoA_MP  | 107 (5 hits, five hidden PCs)                                                   | 19 + 23 + 45 + 18 = 105                       | +2 = 107 | +0       | exact |
+| Emb03_FoC_MP  | 107 (4)                                                                         | 24 + 18 + 34 + 24 = 100                       | +6 = 106 | +1 = 107 | exact |
+| Emb04_FoA_MP  | 93 (5)                                                                          | 19 + 17 + 30 + 16 = 82                        | +10 = 92 | +1 = 93  | exact |
+| SherwoodOutro | 70 (1; the hero's class also references its own marker object at 54 = `BOOM` 0) | 20 + 18 + 11 + 5 + 9 = 63                     | +7 = 70  | +0       | exact |
 
 The outro's level class confirms it independently: its `Initialize` flags elements 70 and 71 with `n180(x, 1)`
 (the "initialise player characters" idiom of every mission) and its cutscene moves, animates and messages
@@ -177,7 +177,7 @@ element 70 as the hero (messages 2000..=2002, handled by the hero's class), 71 a
 new tail puts the single `SCOT` slot at 126, which is the element whose two attributes the level's `Initialize`
 zeroes (`n117(126, ..)`, previously read as "a polygon or the CAVE list"), and the block 115..=125 is exactly
 its 11 `ZORG` entries. Confidence: **high** for `SCOT` after both `SKRO` and `ZORG` and after `TING` (four
-exact matches over counts 2 / 6 / 10 / 7 and 0 / 1 / 1 / 0); the order *between* `SKRO` and `ZORG` is not
+exact matches over counts 2 / 6 / 10 / 7 and 0 / 1 / 1 / 0); the order _between_ `SKRO` and `ZORG` is not
 observable here (only their sum places `SCOT`) and is fixed by `docs/original/h01-win-path.md` section 2 as
 `.. BOOM, ZORG, SKRO, TING, SCOT` (the file's chunk order; the corpus-wide scroll-state calls and the oracle
 agree), so in H01 the block 100..=110 is the `ZORG` items and 111..=125 the scrolls; the `ZORG` and `TING`
@@ -311,7 +311,7 @@ get / set pair of campaign bit words here, which refines the "availability of pl
    Still open: 195 / 196 (campaign word get / set), the `scb.md` rows for the six ids.
 5. **The loading part is done** (2026-09-05: the hub and the outro load strictly with their scripts, the
    300-tick harness check applies to 39 of 39, and none of the six natives without a row is reached in it). The camp
-   *gameplay* (campaign screen, team selection through the deployment zone, sending the team = message 1000,
+   _gameplay_ (campaign screen, team selection through the deployment zone, sending the team = message 1000,
    production between missions = message 1001 and natives 199 / 200, recruits, the report scroll) is campaign
    work beyond the loader; the outro's background variant (4) is open until the original is captured.
 

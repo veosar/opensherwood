@@ -18,33 +18,33 @@ the hypotheses have been removed rather than left to rot.
 The original toolchain compiled a text script (`script.scs`, not shipped) into this bytecode. The executable's
 version-check message for `.scb` files formats the expected and found versions as floats (paraphrased), which
 confirms a float version field. The same VM family
-(Spellbound "SBLib") is used by *Desperados: Wanted Dead or Alive*, whose `.scb` version 1.0 is a *text* container
+(Spellbound "SBLib") is used by _Desperados: Wanted Dead or Alive_, whose `.scb` version 1.0 is a _text_ container
 with 10-byte instructions; ours is a binary container, version 1.5, with 9-byte instructions.
 
 ## Layout
 
 All integers little-endian; `pstring32` = `u32 length` + Latin-1 bytes.
 
-| Offset | Type | Value |
-|---|---|---|
-| 0 | char[8] | `SBSCRIPT` |
-| 8 | f32 | version `1.5` (`00 00 C0 3F`) |
-| 12 | u32 | class count (6..=70; 42 in the tutorial) |
-| 16 | class[] | classes, back to back; the file ends after the last one |
+| Offset | Type    | Value                                                   |
+| ------ | ------- | ------------------------------------------------------- |
+| 0      | char[8] | `SBSCRIPT`                                              |
+| 8      | f32     | version `1.5` (`00 00 C0 3F`)                           |
+| 12     | u32     | class count (6..=70; 42 in the tutorial)                |
+| 16     | class[] | classes, back to back; the file ends after the last one |
 
 ### Class
 
-| Field | Type | Notes |
-|---|---|---|
-| source_path | pstring32 | the source script's path on the designer's machine (a temporary-directory path ending in `script.scs`; the same string in every class of a file; not reproduced) |
-| name | pstring32 | `StartUp` for the first (level) class (the engine looks the level class up by this name, see Cross-references); otherwise the name of a mission element: `<designer label>_<8 hex digits>` for actors, objects, scrolls and script polygons, `<label>__<n>___<8 hex digits>` for named rail points (see [rhm.md](rhm.md)) |
-| variable_count | u32 | 0..=8 |
-| size_of_variables | u32 | 4 x variable_count in every file |
-| variables | variable[] | see below |
-| function_count | u32 | 1..=17 |
-| functions | function[] | see below |
-| quad_count | u32 | 20..=2336 |
-| quads | 9 x quad_count bytes | instructions |
+| Field             | Type                 | Notes                                                                                                                                                                                                                                                                                                                     |
+| ----------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| source_path       | pstring32            | the source script's path on the designer's machine (a temporary-directory path ending in `script.scs`; the same string in every class of a file; not reproduced)                                                                                                                                                          |
+| name              | pstring32            | `StartUp` for the first (level) class (the engine looks the level class up by this name, see Cross-references); otherwise the name of a mission element: `<designer label>_<8 hex digits>` for actors, objects, scrolls and script polygons, `<label>__<n>___<8 hex digits>` for named rail points (see [rhm.md](rhm.md)) |
+| variable_count    | u32                  | 0..=8                                                                                                                                                                                                                                                                                                                     |
+| size_of_variables | u32                  | 4 x variable_count in every file                                                                                                                                                                                                                                                                                          |
+| variables         | variable[]           | see below                                                                                                                                                                                                                                                                                                                 |
+| function_count    | u32                  | 1..=17                                                                                                                                                                                                                                                                                                                    |
+| functions         | function[]           | see below                                                                                                                                                                                                                                                                                                                 |
+| quad_count        | u32                  | 20..=2336                                                                                                                                                                                                                                                                                                                 |
+| quads             | 9 x quad_count bytes | instructions                                                                                                                                                                                                                                                                                                              |
 
 Variable: `u8 type_tag` (2 = plain 4-byte value: designer-named counters, flags and timers; 7 = object
 reference), `u8 type_name_length` + type name (`Actor`, `Location` for tag 7; empty for tag 2), `pstring32 name`,
@@ -79,35 +79,35 @@ Opcodes present in retail data (208 679 instructions), operand layout establishe
 Every role below is the one `docs/original/spec-script-vm.md` section 3.1 states; the counts are this
 corpus's.
 
-| Opcode | Count | Operand layout (observed) | Role (`spec-script-vm.md` 3.1) | Desperados 1.0 name |
-|---|---|---|---|---|
-| 0x01 | 9171 | none | filler after 0x07 | NOP |
-| 0x02 | 1653 | a = var | push argument of a script call | PARAM |
-| 0x03 | 8176 | a, b = sizes | function prologue: `(size_of_volatile, size_of_tempor)` | InitFunction |
-| 0x04 | 8176 | none | reported as an error, then the next instruction (VM-044); the compiler emits it as the last instruction of every function, after the `0x06` that actually returns | EndFunction |
-| 0x05 | 951 | a, b = code address | call; the target is `a \| (b << 16)` (VM-002) | CALL |
-| 0x06 | 11296 | none | return | RETURN |
-| 0x07 | 5160 | a = var (temp) | return with value: control does **not** continue (VM-047) | RETURN value |
-| 0x08 | 2595 | a = var (temp), c = 0/4/8/12/16 | read parameter at byte offset c | GETPARAM |
-| 0x0a | 62 | a = var | read the frame's result slot (VM-050); in all 62 uses it directly follows a `0x05` | GETRETURN |
-| 0x0b | 43965 | a = var | push native argument | NATIVEPARAM |
-| 0x0c | 42734 | a, b = native id (0..=264, 192 distinct) | native call, id `a \| (b << 16)` | NATIVECALL |
-| 0x0d | 20079 | a = var (temp) | read the native result register (always directly after `0x0c` here) | NATIVEGETRETURN |
-| 0x0e | 5510 | a, b = quad index | unconditional jump; the two `a = b = 0xffff` occurrences are the sentinel of VM-070 | GOTO (Desperados keeps the target in `c`) |
-| 0x0f | 4601 | a = var (temp), c = quad index | jump if a is non-zero | IF a != 0 GOTO |
-| 0x11 | 983 | a, b = vars | move | MOV |
-| 0x12 | 10 | a (local), b = vars | move (float) | - |
-| 0x13 | 37060 | a = var, c = integer immediate (0..=100000) | load int immediate | MOV int immediate |
-| 0x14 | 110 | a = var, c = f32 immediate (1.0, 2.0, 0.01 ...) | load float immediate | MOV float immediate |
-| 0x15 | 626 | a, b = vars (temp) | unary minus | NEG int |
-| 0x18 | 327 | a, b = vars (temp) | int to float | - |
-| 0x19 - 0x1b | 238 / 247 / 212 | a, b, c16 = vars | int add, subtract, multiply | +I -I *I |
-| 0x1d, 0x1e | 117 / 17 | a, b, c16 = vars | bitwise or, and | +F -F |
-| 0x22, 0x24 | 9 / 8 | a, b, c16 | float multiply; signed int `<=` | <I >=I |
-| 0x25, 0x26 | 169 / 100 | a, b, c16 | int `<`, `>=` | !=I ==I |
-| 0x27, 0x28 | 42 / 30 | a, b, c16 | int `>`, `!=` | <=F <F |
-| 0x29 | 4244 | a, b, c16 | int / handle `==` | !=F |
-| 0x2b | 1 | a, b, c16 | float `<`, answering a float | ==F |
+| Opcode      | Count           | Operand layout (observed)                       | Role (`spec-script-vm.md` 3.1)                                                                                                                                    | Desperados 1.0 name                       |
+| ----------- | --------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| 0x01        | 9171            | none                                            | filler after 0x07                                                                                                                                                 | NOP                                       |
+| 0x02        | 1653            | a = var                                         | push argument of a script call                                                                                                                                    | PARAM                                     |
+| 0x03        | 8176            | a, b = sizes                                    | function prologue: `(size_of_volatile, size_of_tempor)`                                                                                                           | InitFunction                              |
+| 0x04        | 8176            | none                                            | reported as an error, then the next instruction (VM-044); the compiler emits it as the last instruction of every function, after the `0x06` that actually returns | EndFunction                               |
+| 0x05        | 951             | a, b = code address                             | call; the target is `a \| (b << 16)` (VM-002)                                                                                                                     | CALL                                      |
+| 0x06        | 11296           | none                                            | return                                                                                                                                                            | RETURN                                    |
+| 0x07        | 5160            | a = var (temp)                                  | return with value: control does **not** continue (VM-047)                                                                                                         | RETURN value                              |
+| 0x08        | 2595            | a = var (temp), c = 0/4/8/12/16                 | read parameter at byte offset c                                                                                                                                   | GETPARAM                                  |
+| 0x0a        | 62              | a = var                                         | read the frame's result slot (VM-050); in all 62 uses it directly follows a `0x05`                                                                                | GETRETURN                                 |
+| 0x0b        | 43965           | a = var                                         | push native argument                                                                                                                                              | NATIVEPARAM                               |
+| 0x0c        | 42734           | a, b = native id (0..=264, 192 distinct)        | native call, id `a \| (b << 16)`                                                                                                                                  | NATIVECALL                                |
+| 0x0d        | 20079           | a = var (temp)                                  | read the native result register (always directly after `0x0c` here)                                                                                               | NATIVEGETRETURN                           |
+| 0x0e        | 5510            | a, b = quad index                               | unconditional jump; the two `a = b = 0xffff` occurrences are the sentinel of VM-070                                                                               | GOTO (Desperados keeps the target in `c`) |
+| 0x0f        | 4601            | a = var (temp), c = quad index                  | jump if a is non-zero                                                                                                                                             | IF a != 0 GOTO                            |
+| 0x11        | 983             | a, b = vars                                     | move                                                                                                                                                              | MOV                                       |
+| 0x12        | 10              | a (local), b = vars                             | move (float)                                                                                                                                                      | -                                         |
+| 0x13        | 37060           | a = var, c = integer immediate (0..=100000)     | load int immediate                                                                                                                                                | MOV int immediate                         |
+| 0x14        | 110             | a = var, c = f32 immediate (1.0, 2.0, 0.01 ...) | load float immediate                                                                                                                                              | MOV float immediate                       |
+| 0x15        | 626             | a, b = vars (temp)                              | unary minus                                                                                                                                                       | NEG int                                   |
+| 0x18        | 327             | a, b = vars (temp)                              | int to float                                                                                                                                                      | -                                         |
+| 0x19 - 0x1b | 238 / 247 / 212 | a, b, c16 = vars                                | int add, subtract, multiply                                                                                                                                       | +I -I *I                                  |
+| 0x1d, 0x1e  | 117 / 17        | a, b, c16 = vars                                | bitwise or, and                                                                                                                                                   | +F -F                                     |
+| 0x22, 0x24  | 9 / 8           | a, b, c16                                       | float multiply; signed int `<=`                                                                                                                                   | <I >=I                                    |
+| 0x25, 0x26  | 169 / 100       | a, b, c16                                       | int `<`, `>=`                                                                                                                                                     | !=I ==I                                   |
+| 0x27, 0x28  | 42 / 30         | a, b, c16                                       | int `>`, `!=`                                                                                                                                                     | <=F <F                                    |
+| 0x29        | 4244            | a, b, c16                                       | int / handle `==`                                                                                                                                                 | !=F                                       |
+| 0x2b        | 1               | a, b, c16                                       | float `<`, answering a float                                                                                                                                      | ==F                                       |
 
 Opcodes 0x00, 0x09, 0x10, 0x16, 0x17, 0x1c, 0x1f-0x21, 0x23, 0x2a, 0x2c do not occur. The Desperados column comes
 from the GPL-3 OpenDeathValley disassembler (see Provenance); the numbering clearly changed between 1.0 and 1.5
@@ -122,7 +122,7 @@ See `docs/original/spec-script-vm.md`:
   low 16 bits of `c` for the third symbol of a three-operand instruction), the signed integer comparisons, the
   float comparisons with their unordered outcomes, the division traps and the float-to-int conversion;
 - **section 3.2** - the calling convention (`0x02` pushes, `0x05` calls, `0x08` reads a parameter by byte
-  offset, `0x07` returns a value *at once*, `0x0A` reads the frame's persistent result slot);
+  offset, `0x07` returns a value _at once_, `0x0A` reads the frame's persistent result slot);
 - **section 3.3** - the native call protocol: the 265-entry table, the per-id arity, which arguments the
   wrapper converts to a bool, and the three result conventions (void, the low 8 bits, the full word);
 - **section 6** - every native id with its arguments, result convention, behaviour and failure class;
@@ -157,7 +157,7 @@ pushed before one call, and the opcodes that never occur (`0x00`, `0x09`, `0x10`
   order: `docs/original/h01-win-path.md` section 2, high: all 102 scroll-state calls 193 / 194 of the 18
   missions with both blocks land in the scroll range only with `ZORG` first, 27 otherwise, and the oracle
   shows two tutorial scrolls active at H01's start that the other order deactivated); the player-character
-  slots (`SCOT`) sit at the *tail*, after the inert `TING` entries: four named `SCOT` classes address their own slot (Tac01 107, Emb03 107, Emb04 93,
+  slots (`SCOT`) sit at the _tail_, after the inert `TING` entries: four named `SCOT` classes address their own slot (Tac01 107, Emb03 107, Emb04 93,
   the outro 70, exact) and no mission's self-references fit `SCOT` in front (high). The position of the
   script polygons is not observable (no polygon class references itself by index); the engine puts them
   last. Under the earlier model (`SCOT` first, `K` read off one mission per map) eleven missions were bound
@@ -165,6 +165,7 @@ pushed before one call, and the opcodes that never occur (`0x00`, `0x09`, `0x10`
   map elements 0..=49 (38 animated, 12 patches), civilians 50..=56, soldiers 57..=94, objects 95..=99, `ZORG`
   items 100..=110 (pick-up items, `Element::Item`: `rhm.md` "`ZORG`"), scrolls 111..=125, the hero's slot 126 (the element whose two attributes the level's
   `Initialize` zeroes), polygons 127..=138.
+
 - **Locations (native 6)**: `GULP` points then polygons (exact bound in 11 files).
 - **Paths (native 9)**: `RAIL` index.
 - **Doors (native 4) and patches (native 5)**: per-map tables of the proto-level (index ranges are consistent
@@ -178,20 +179,20 @@ pushed before one call, and the opcodes that never occur (`0x00`, `0x09`, `0x10`
 
 ## First mission script walkthrough (`H01_Lin_VL.scb`, 47 classes)
 
-Read with `scb_semantics.py <file> --pseudo`. Element indices are given with the *roles* of the `.rhm` records
+Read with `scb_semantics.py <file> --pseudo`. Element indices are given with the _roles_ of the `.rhm` records
 they resolve to under the element table above; texts are referred to by their index in TEXT 1000105 (see
 `docs/original/campaign-flow.md` for what each says) and objectives by their index in TEXT 1000283. Mission
 element classes are referred to by role, never by their designer names (those are game data).
 
-**Confidence marks.** Every statement carries the *minimum* confidence of the opcode, native and index-space
+**Confidence marks.** Every statement carries the _minimum_ confidence of the opcode, native and index-space
 hypotheses it depends on: **[H]** all high, **[M]** at least one medium, **[L]** at least one low. The
 element-index resolution (index -> `.rhm` record) is **high** for the mission part of the table since
 2026-09-05 (Index spaces: placed by the self-references of all 39 files) and **medium** for the map part
 (the `FLIM` light check and the `TUPO` count fit),
 so no statement that names a specific actor, scroll or zone by index is better than [M]. Only the statements
-marked *observed* were checked against the original (`docs/original/campaign-flow.md`: the three briefing
-pages, the initial objective, the camera on Robin afterwards). Everything else is *consistent with the
-observed flow* at best; nothing in this section is "exact" until an oracle trace confirms it.
+marked _observed_ were checked against the original (`docs/original/campaign-flow.md`: the three briefing
+pages, the initial objective, the camera on Robin afterwards). Everything else is _consistent with the
+observed flow_ at best; nothing in this section is "exact" until an oracle trace confirms it.
 
 **Level class** (8 variables: a shooting timer, a run-once flag, two "sub-goal done" flags, a loop counter
 and bound, an `Actor` scratch variable, a "going away" flag).
@@ -206,8 +207,8 @@ and bound, an `Actor` scratch variable, a "going away" flag).
   soldier) that are activated by later events [L: 113 high, 134 medium, 197 / 198 low]; sets two attributes
   of element 126, the hero's own slot (Index spaces), to 0 [M: 117]; returns 0 [H].
 - `PostInitialize` [M]: adds the primary objective 0 [H], then one sequence [H: 30 / 32 / 31]: text pages 0, 1,
-  2 [H: 203; *observed*: the three briefing pages], then the camera goes to the main PC (`n34(n95(n211()))`)
-  [M: 34, 211; *observed*: camera on Robin after the parchment]. This is consistent with the observed
+  2 [H: 203; _observed_: the three briefing pages], then the camera goes to the main PC (`n34(n95(n211()))`)
+  [M: 34, 211; _observed_: camera on Robin after the parchment]. This is consistent with the observed
   Play! -> briefing -> camera-on-Robin flow; the tick at which the camera move completes and whether the
   sequence blocks input are not verified.
 - `Hourglass(time)` [M overall]: every 15 ticks [M: the tick unit of the time parameter is a hypothesis]

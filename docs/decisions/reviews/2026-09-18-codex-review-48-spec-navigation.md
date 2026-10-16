@@ -40,31 +40,31 @@ The asset check passes. I found no remaining expression-filter violation in revi
 
 For **rebuild batch 2**, these are the precise revision-5-to-6 changes to check:
 
-| Claim or contract | Meaning change |
-|---|---|
-| NAV-058; §8.2–8.3 | Edge-order transformations now depend on the owner being available after recomputation. Frozen sequences of unavailable owners must survive snapshots when canonical ordering is rejected. The availability predicate is unchanged. |
-| NAV-150(b) | “Nonzero mover displacement” becomes “candidate and mover positions differ.” Inclusive query bounds are now explicit. Unit direction was already navigation’s rule; the new movement pin resolves the sibling contradiction. |
-| Movement dependency pin | Revision 3 becomes revision 5. This imports relevant corrections beyond proximity, notably ANIM-241’s progress-region validity and reset behavior. It does not clear the sibling’s excluded execution contracts. |
-| NAV-121; §8.5 | Initial doors are explicitly queued in sector door-list order. The proposed `f32` score evaluation changes from `(cost + g) + h` to `(cost + h) + g`. This can change route selection. |
-| NAV-046/057/172; `NavPatches` | Named inert records become **nameless slots created from the count**, with the remaining chunk skipped by its length. Name-based binding resolves to none; index and flag behavior remains. |
-| NAV-090/146; §8.1–8.2 | The specified P1/P2/P3 order is unchanged. Test 13(g) now restores the completed-result snapshot and preserves P’s delivered path. Its broader phase conclusion needs finding 1 fixed. |
-| NAV-111; test 15(e) | Expression-only replacement; no intended geometric behavior change. |
-| NAV-141; numeric fixtures | N, M, N, A corrects the fixture’s expectation, not the search rule. Predecessor chains become the asserted observation. Unsupported geometric-equivalence claims are withdrawn. |
+| Claim or contract             | Meaning change                                                                                                                                                                                                                      |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| NAV-058; §8.2–8.3             | Edge-order transformations now depend on the owner being available after recomputation. Frozen sequences of unavailable owners must survive snapshots when canonical ordering is rejected. The availability predicate is unchanged. |
+| NAV-150(b)                    | “Nonzero mover displacement” becomes “candidate and mover positions differ.” Inclusive query bounds are now explicit. Unit direction was already navigation’s rule; the new movement pin resolves the sibling contradiction.        |
+| Movement dependency pin       | Revision 3 becomes revision 5. This imports relevant corrections beyond proximity, notably ANIM-241’s progress-region validity and reset behavior. It does not clear the sibling’s excluded execution contracts.                    |
+| NAV-121; §8.5                 | Initial doors are explicitly queued in sector door-list order. The proposed `f32` score evaluation changes from `(cost + g) + h` to `(cost + h) + g`. This can change route selection.                                              |
+| NAV-046/057/172; `NavPatches` | Named inert records become **nameless slots created from the count**, with the remaining chunk skipped by its length. Name-based binding resolves to none; index and flag behavior remains.                                         |
+| NAV-090/146; §8.1–8.2         | The specified P1/P2/P3 order is unchanged. Test 13(g) now restores the completed-result snapshot and preserves P’s delivered path. Its broader phase conclusion needs finding 1 fixed.                                              |
+| NAV-111; test 15(e)           | Expression-only replacement; no intended geometric behavior change.                                                                                                                                                                 |
+| NAV-141; numeric fixtures     | N, M, N, A corrects the fixture’s expectation, not the search rule. Predecessor chains become the asserted observation. Unsupported geometric-equivalence claims are withdrawn.                                                     |
 
 The updated component clearance is:
 
-| Component | Clearance |
-|---|---|
-| Formats and sector polygons | Established layouts cleared. Count-framed inert `TUPO` slots cleared; variable patch records and name binding remain withheld. |
-| Corner graph | Decoding, candidates, quadrant rules, edge records, corner walks and reconstruction cleared. NAV-111’s expression blocker is removed. |
-| Search | Established search rules remain cleared. Numeric documentation and acceptance details need findings 2 and 4; scheduling integration needs finding 1. |
-| Cross-sector routing over doors | Admission, link exclusion, initial queue order and score summation order cleared. Fixture 5 needs finding 3. |
-| Availability masks | Predicate and historical node/edge/obstacle ordering cleared, including F4. Dynamic patch-to-mask bindings remain unread. |
-| Click resolution | Established resolution and cursor rules cleared. Patch, jump and alternate-resolution behavior remains bounded by the recorded fallbacks. |
-| Layers and bonds | Established identities, projection, bond transitions and navigation-owned crossing state remain cleared. |
-| Lifts | Stairs’ action order, gaits, endpoints and run flag cleared. Faithful ladder/climb execution remains withheld; stairs substitution is a fallback. |
-| Buildings | Established admission, placement, occupancy and removal semantics cleared. Full traversal inherits movement execution limits. |
-| Movement hand-off | Waypoint delivery, approach tests, crossing state and corrected proximity eligibility cleared. Full movement execution remains subject to the sibling’s arrival/mode-5 gaps and the reaction/sliding fallbacks. |
+| Component                       | Clearance                                                                                                                                                                                                       |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Formats and sector polygons     | Established layouts cleared. Count-framed inert `TUPO` slots cleared; variable patch records and name binding remain withheld.                                                                                  |
+| Corner graph                    | Decoding, candidates, quadrant rules, edge records, corner walks and reconstruction cleared. NAV-111’s expression blocker is removed.                                                                           |
+| Search                          | Established search rules remain cleared. Numeric documentation and acceptance details need findings 2 and 4; scheduling integration needs finding 1.                                                            |
+| Cross-sector routing over doors | Admission, link exclusion, initial queue order and score summation order cleared. Fixture 5 needs finding 3.                                                                                                    |
+| Availability masks              | Predicate and historical node/edge/obstacle ordering cleared, including F4. Dynamic patch-to-mask bindings remain unread.                                                                                       |
+| Click resolution                | Established resolution and cursor rules cleared. Patch, jump and alternate-resolution behavior remains bounded by the recorded fallbacks.                                                                       |
+| Layers and bonds                | Established identities, projection, bond transitions and navigation-owned crossing state remain cleared.                                                                                                        |
+| Lifts                           | Stairs’ action order, gaits, endpoints and run flag cleared. Faithful ladder/climb execution remains withheld; stairs substitution is a fallback.                                                               |
+| Buildings                       | Established admission, placement, occupancy and removal semantics cleared. Full traversal inherits movement execution limits.                                                                                   |
+| Movement hand-off               | Waypoint delivery, approach tests, crossing state and corrected proximity eligibility cleared. Full movement execution remains subject to the sibling’s arrival/mode-5 gaps and the reaction/sliding fallbacks. |
 
 **These components are not yet cleared as a complete, faithful mission A-to-Z walking implementation.** The implementer has substantial cleared machinery and concrete fallback behavior, but still lacks patch-driven geometry and bindings, faithful jumps and ladder/climb playback, original leaf interaction, complete movement arrival/record completion, and proximity/sliding behavior. Goal-check and node-reset tails also remain assumptions. Inert patches and stop-only proximity can prevent progress; an implementable fallback does not establish mission completion.
 

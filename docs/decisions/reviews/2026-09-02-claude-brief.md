@@ -4,13 +4,14 @@ You are Codex, acting as co-architect and adversarial reviewer. Claude (Claude C
 Both agents will work in the same public GitHub repo. The human owner wants: a legal, asset-free, clean-room, cross-platform
 (Windows first; Linux/macOS/Android later) open engine in the spirit of OpenMW / OpenJK / Julius / OpenRCT2, that plays the
 full original campaign from the player's own GOG/Steam copy, then adds modern features (map/mission editor, mods, custom
-campaigns, QoL, hi-res, later co-op / custom modes). The engine must be developed *test-first with an autonomous
-harness*: agents must be able to build, run headless, drive the game programmatically (everything a player can do),
+campaigns, QoL, hi-res, later co-op / custom modes). The engine must be developed _test-first with an autonomous
+harness_: agents must be able to build, run headless, drive the game programmatically (everything a player can do),
 screenshot, dump state, compare against the original game (oracle), and iterate without a human.
 
 The game install (read-only for you) is at: `C:\GOG Games\Robin Hood - The Legend of Sherwood`. You may inspect it.
 
 ## Hard legal rules (non-negotiable)
+
 - Zero game assets in the repo. Engine reads from the player's install (detect GOG/Steam path).
 - Clean room: decompiler output never enters the repo. Only behaviour specs / format docs derived from analysis.
 - GPLv3. Project name must not contain the trademark "Robin Hood – The Legend of Sherwood" / avoid "Sherwood" in the name.
@@ -19,6 +20,7 @@ The game install (read-only for you) is at: `C:\GOG Games\Robin Hood - The Legen
 ## Facts established so far (verified on disk today)
 
 ### Binaries
+
 - `Robin Hood.exe` (2,899,968 B): real game. PE32 i386, **MSVC 6.0 linker (6.0)**, timestamp 2003-01-15. 4 sections, .text 0x275e39.
   Imports: DDRAW.dll, D3D8.DLL, DINPUT.dll, AVIFIL32, MSACM32, WINMM, binkw32.dll, fmod.dll (FMOD 3.x, UPX packed), ole32, VERSION.
   Source path strings inside: `P:\Robin Hood\RHScript.cpp`, `RHartificialmalignity.cpp`, `RHBow.cpp`, `RHCampaign.cpp`.
@@ -45,6 +47,7 @@ The game install (read-only for you) is at: `C:\GOG Games\Robin Hood - The Legen
   (can install via winget + Temurin JDK). No C++ compiler until Build Tools finish.
 
 ### Data layout (`DATA/`, 1 GB)
+
 - `robinhood.bks` (565 MB) + `robinhood.dic` (9.3 MB): sprite bank + dictionary. `.dic` and every `.rhs` start with magic `C9 EB 03 00`.
   `.bks` starts with a table of u16 values (lots of `6d06`), i.e. probably an index/palette-ish or offsets table.
 - `Characters/*.rhs` (117 files, 15 MB) and `Animations/{Day,Fog,Night}/*.rhs` (116): sprite/animation descriptors
@@ -65,6 +68,7 @@ The game install (read-only for you) is at: `C:\GOG Games\Robin Hood - The Legen
 - `Campaign.bck`, `Manual.pdf` (game manual, useful mechanics reference).
 
 ### Community resources
+
 - rhmods.com: Spellforge Editor (dinput.dll hook, LuaJIT 2.1 mission scripting, `api.lua`, Blender .rhp importer), Developer Console (patched exe + PDF),
   Rhuce (campaign editor), Asset Editor (.RES, also works for Desperados 1 .RES), Profile Tool, Ready2Play launcher. Discord discord.gg/SWPCCgvmFP.
   Downloads are hosted on ModDB (403 for bots). None of these tools are open source as far as we know.
@@ -74,6 +78,7 @@ The game install (read-only for you) is at: `C:\GOG Games\Robin Hood - The Legen
 ## Claude's proposed plan (please attack it)
 
 ### Language / stack
+
 **Rust (edition 2024), cargo workspace.** Rationale: agents are the primary developers; cargo gives one build+test+deps system on
 Win/Linux/macOS/Android/wasm; memory safety cuts a whole class of debugging; egui for editor tooling; wgpu for presentation.
 The human's research draft suggested C++20 + SDL3. Counter-arguments welcome, but be concrete about agent iteration speed and cross-platform.
@@ -83,6 +88,7 @@ Android and wasm), `softbuffer` fallback, `cpal`/`kira` audio, `mlua` (LuaJIT on
 Bink video: port a decoder (FFmpeg's bink.c is LGPL → compatible) or use NihAV's Rust Bink decoder; low priority (intro/outro only).
 
 ### Workspace layout
+
 ```
 opensherwood/                     (working name; neutral, "the opensherwood" of the public-domain ballads)
   AGENTS.md                    canonical agent instructions (Codex reads it)
@@ -104,6 +110,7 @@ opensherwood/                     (working name; neutral, "the opensherwood" of 
 ```
 
 ### Test/verification loop (the core requirement)
+
 1. `opensherwood-app --headless --rpc 4711 --game-dir <path>`; JSON-RPC methods: load_mission, tick(n), input events (mouse/keys at engine-level),
    select_unit, order (move/attack/queue action), dump_state (JSON), screenshot(png path), checksum_state, save/load, console(cmd).
 2. Determinism: fixed timestep, seeded RNG, replay files (.gwr) with input log; test = same replay → same state hash; save/load mid-replay
@@ -115,6 +122,7 @@ opensherwood/                     (working name; neutral, "the opensherwood" of 
 5. Smoke gates in CI: boots headless 100 ticks; loads mission 1 (with game data on a self-hosted runner or locally); unit moves; mission completable by scripted bot.
 
 ### Roadmap (milestones with exit criteria)
+
 - M0 (now): repo, legal docs, AGENTS/CLAUDE, skills, workspace skeleton, opensherwood-app stub with RPC + headless + screenshot, harness test_boots green in CI.
 - M1: formats. SRES, PAK/SXT, RED, fonts, RHP/RHM chunk maps, SCB disassembler, MAP/MIN images, sprite bank (RHS/DIC/BKS: the hard one, custom compression).
   Exit: `opensherwood-cli` extracts every file type; round-trip tests; docs/formats/*.md written.
@@ -125,10 +133,11 @@ opensherwood/                     (working name; neutral, "the opensherwood" of 
 - M6+: editor, mod loader (Lua, override dirs), hi-res/widescreen, QoL, co-op experiments, Desperados support.
 
 ## Questions for you (answer all, be adversarial and concrete)
+
 1. Rust vs C++20 for this project given agent-driven development and the cross-platform targets. Decide and justify.
 2. Presentation stack: winit+wgpu (software compositor uploaded as texture) vs SDL3. Consider Android/wasm, and input fidelity for a click-heavy RTT.
 3. Is the workspace split right? What would you merge/split? What is missing (e.g. a `opensherwood-oracle` crate, a tick-hash design, an ECS or not)?
-4. Harness design: what JSON-RPC surface is *minimal but sufficient* for an agent to play the game? How should replays, state hashing and
+4. Harness design: what JSON-RPC surface is _minimal but sufficient_ for an agent to play the game? How should replays, state hashing and
    savestate fuzzing be structured so they work from M0 and don't need rewrites at M4?
 5. Oracle strategy: Frida hooks on MSVC6 thiscall methods vs memory-scanning known structs vs using the game's own console output.
    What is the cheapest path to a trustworthy tick-by-tick comparison? Propose a concrete first oracle experiment.

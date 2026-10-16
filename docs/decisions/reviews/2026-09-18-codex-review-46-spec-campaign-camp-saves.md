@@ -28,18 +28,18 @@ Reviewed revision 8, commit `e5b56e6`. Files remain unchanged because this sessi
 
 T4 passes the expression filter as a file-field/interface mapping; add its serializer provenance at **0x0055C3C0**. Section 3.3.3’s observable transition summary is admissible, subject to finding 8. The asset-policy check passes.
 
-| Component | Cleared scope | Still withheld |
-|---|---|---|
-| Campaign graph | Established graph, accessibility and outcome rules | Complete campaign transition and terminal integration |
-| Offers | Reduction, retries, selection, aging and persistent mutations | Recruitment/deployment dependencies; CAMP-224 corrections |
-| Recruitment | Established branch structure, naming, health and stock initialization; T4 | Experience-slot specification, recruit count, profile choice, recovery values |
-| Deployment | Membership/capability tests and T1–T3 | Spawn contract, native 165 actor effects, native 173 semantics |
-| Camp screen | Established presentation; immediate 1001 handler; no retail 1000 send requirement | Native 173, deployment and production integration |
-| Production | Verified arithmetic structure, B66 integers, established effects and per-workshop ordering | Effective arithmetic mode, membership rebuilding, capture scheduling, extras and retained overflow boundary |
-| Statistics | Established arithmetic and deterministic time contract | Corrected qualification/bonus contract, complete revival, profile percentage and update scheduling |
-| Own-format saves | Own-format decision; existing campaign snapshot and continuation requirements | Complete coverage of newly specified state and unresolved subsystem contracts |
-| Original-save/profile reading | Previously cleared grammar and campaign-prefix extraction | Playable original-save resume and original-readable exports, excluded by decision |
-| HUD / mini-map | Previously cleared counters and native-24 behavior | Existing clover, palette, mapping and visibility exclusions |
+| Component                     | Cleared scope                                                                              | Still withheld                                                                                              |
+| ----------------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| Campaign graph                | Established graph, accessibility and outcome rules                                         | Complete campaign transition and terminal integration                                                       |
+| Offers                        | Reduction, retries, selection, aging and persistent mutations                              | Recruitment/deployment dependencies; CAMP-224 corrections                                                   |
+| Recruitment                   | Established branch structure, naming, health and stock initialization; T4                  | Experience-slot specification, recruit count, profile choice, recovery values                               |
+| Deployment                    | Membership/capability tests and T1–T3                                                      | Spawn contract, native 165 actor effects, native 173 semantics                                              |
+| Camp screen                   | Established presentation; immediate 1001 handler; no retail 1000 send requirement          | Native 173, deployment and production integration                                                           |
+| Production                    | Verified arithmetic structure, B66 integers, established effects and per-workshop ordering | Effective arithmetic mode, membership rebuilding, capture scheduling, extras and retained overflow boundary |
+| Statistics                    | Established arithmetic and deterministic time contract                                     | Corrected qualification/bonus contract, complete revival, profile percentage and update scheduling          |
+| Own-format saves              | Own-format decision; existing campaign snapshot and continuation requirements              | Complete coverage of newly specified state and unresolved subsystem contracts                               |
+| Original-save/profile reading | Previously cleared grammar and campaign-prefix extraction                                  | Playable original-save resume and original-readable exports, excluded by decision                           |
+| HUD / mini-map                | Previously cleared counters and native-24 behavior                                         | Existing clover, palette, mapping and visibility exclusions                                                 |
 
 **These components are not yet cleared as an implementable whole for campaign A to Z.** Excluding original-save resume and exports does not remove the gameplay blockers.
 

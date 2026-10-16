@@ -95,13 +95,13 @@ unverified), jump-to-point (0x02), stop (0x07) and the two glances (0x0b / 0x0c,
 face + wait, "look to one side then the other" - which is left is not established). New observations
 (`rail_ops`, scratch, over the 1638 rails and the `BORG.rail` assignments):
 
-| Opcode | Who uses it (rails assigned to an actor) | Reading | Status |
-|---|---|---|---|
-| 0x0d `u16` | archers 35, crossbowmen 13, lancers 8, knights 5, halberdiers 5, officers 3, unassigned 28; operand 50 in 51 of 101 cases, else 25, 30, 40, 75, 100, 125, 1000 | **check-for** with a radius: the ranged units scan for enemies within `d` map pixels at the point; the operand set is the distance set the scripts use with native 160 (10..150) | hypothesis (the executable names a check-for command and says friendly soldiers cannot use it; no rail of a merry man carries it, but only three merry men have rails at all) |
-| 0x05 `u16, u16` | swordsmen 26, officers 16, green officers 9, crossbowmen 9, lancers 7, halberdiers 7, archers 5, unassigned 17; e.g. (14, 75), (79, 50), (89, 50), (28, 100), (0, 250) | the synchronised check-for (a partner point or rail plus a radius) | low |
-| 0x00 (none) | 126 unassigned, officers 15, swordsmen 8 | patrol start / stop marker of script-driven walks | unknown |
-| 0x09, 0x0a (none) | lancers 13 / 13, swordsmen 9 / 9, archers 7 / 9, unassigned 80 / 40 | a pair like 0x0b / 0x0c (0x09 ends blocks after face + wait) | unknown |
-| 0x06 `u16 x3`, 0x08 `u16`, 0x0e, 0x0f, 0x10 | rare (2..12 uses) | - | unknown |
+| Opcode                                      | Who uses it (rails assigned to an actor)                                                                                                                               | Reading                                                                                                                                                                          | Status                                                                                                                                                                        |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0x0d `u16`                                  | archers 35, crossbowmen 13, lancers 8, knights 5, halberdiers 5, officers 3, unassigned 28; operand 50 in 51 of 101 cases, else 25, 30, 40, 75, 100, 125, 1000         | **check-for** with a radius: the ranged units scan for enemies within `d` map pixels at the point; the operand set is the distance set the scripts use with native 160 (10..150) | hypothesis (the executable names a check-for command and says friendly soldiers cannot use it; no rail of a merry man carries it, but only three merry men have rails at all) |
+| 0x05 `u16, u16`                             | swordsmen 26, officers 16, green officers 9, crossbowmen 9, lancers 7, halberdiers 7, archers 5, unassigned 17; e.g. (14, 75), (79, 50), (89, 50), (28, 100), (0, 250) | the synchronised check-for (a partner point or rail plus a radius)                                                                                                               | low                                                                                                                                                                           |
+| 0x00 (none)                                 | 126 unassigned, officers 15, swordsmen 8                                                                                                                               | patrol start / stop marker of script-driven walks                                                                                                                                | unknown                                                                                                                                                                       |
+| 0x09, 0x0a (none)                           | lancers 13 / 13, swordsmen 9 / 9, archers 7 / 9, unassigned 80 / 40                                                                                                    | a pair like 0x0b / 0x0c (0x09 ends blocks after face + wait)                                                                                                                     | unknown                                                                                                                                                                       |
+| 0x06 `u16 x3`, 0x08 `u16`, 0x0e, 0x0f, 0x10 | rare (2..12 uses)                                                                                                                                                      | -                                                                                                                                                                                | unknown                                                                                                                                                                       |
 
 Consequence for the first mission: four 0x0d and four 0x05 commands sit on the 18 actor-assigned rails
 of `H01` (the engine's load coverage note in rhm.md), so "scan for the player in radius d while standing
@@ -149,24 +149,23 @@ sprint with their starts, stops and turn tables) but with the weapon held ready 
 frame counts, tick patterns and per-frame advances are read from the player's `.rhs` at run time
 (`docs/formats/sprite-animations.md`, "Reading rules"), only the roles are recorded here:
 
-| id | role (`Soldier A00`, direction 4) | patrol twin |
-|---|---|---|
-| 140 | alert idle: crouched forward, sword and shield up | 0 |
-| 141 | **noticed something**: straightens, hand to the helmet, peers | - |
-| 142 | **raises the alarm**: hand cupped to the mouth, then the arm thrown up | - |
-| 143 | alert walk, weapon ready (faster than the patrol walk) | 6 |
-| 144 / 146 | alert walk start / stop | 5 / 8 |
-| 151 | alert run (faster than the patrol run) | 7 |
-| 145 / 149 / 147 / 148 / 150 | run starts and stops, turn table | 9 / 51 / 11 / 12 / 50 |
-| 156 | charge: runs the last steps into a strike | - |
-| 170 .. 173 | raises the sword arm and holds it up, lowers it (a signal to the company; swordsmen, the merry men, the trainer and two heroes only) | - |
-| 189 | looks around, hands on hips (a check) | - |
-| 202 .. 205 | four near-identical short listens / glances (hand to the ear, small turn) | - |
-| 206 | points with the arm outstretched, holds, lowers (scripts play it after an archer shoots) | - |
-| 209 | second alert idle, crouched behind the shield | 0 |
+| id                          | role (`Soldier A00`, direction 4)                                                                                                    | patrol twin           |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------- |
+| 140                         | alert idle: crouched forward, sword and shield up                                                                                    | 0                     |
+| 141                         | **noticed something**: straightens, hand to the helmet, peers                                                                        | -                     |
+| 142                         | **raises the alarm**: hand cupped to the mouth, then the arm thrown up                                                               | -                     |
+| 143                         | alert walk, weapon ready (faster than the patrol walk)                                                                               | 6                     |
+| 144 / 146                   | alert walk start / stop                                                                                                              | 5 / 8                 |
+| 151                         | alert run (faster than the patrol run)                                                                                               | 7                     |
+| 145 / 149 / 147 / 148 / 150 | run starts and stops, turn table                                                                                                     | 9 / 51 / 11 / 12 / 50 |
+| 156                         | charge: runs the last steps into a strike                                                                                            | -                     |
+| 170 .. 173                  | raises the sword arm and holds it up, lowers it (a signal to the company; swordsmen, the merry men, the trainer and two heroes only) | -                     |
+| 189                         | looks around, hands on hips (a check)                                                                                                | -                     |
+| 202 .. 205                  | four near-identical short listens / glances (hand to the ear, small turn)                                                            | -                     |
+| 206                         | points with the arm outstretched, holds, lowers (scripts play it after an archer shoots)                                             | -                     |
+| 209                         | second alert idle, crouched behind the shield                                                                                        | 0                     |
 
-Reading (`inferred`): the engine has at least two AI postures for soldiers - the patrol posture (0, 6, 7,
-10) and the **alerted / fighting posture** (140, 143, 151) that moves faster, with 141 and 142 as the
+Reading (`inferred`): the engine has at least two AI postures for soldiers - the patrol posture (0, 6, 7, 10) and the **alerted / fighting posture** (140, 143, 151) that moves faster, with 141 and 142 as the
 transition animations that match the manual's question-mark and exclamation-mark emoticons. The scripts
 confirm 141 as a state change the engine reports to the script: every archer class of `H01` sends
 message 2 to the level from `ActionChange(_, 141)` (scb.md), which ends the archery training, i.e. "an
@@ -175,18 +174,18 @@ archer noticed something" ends the tutorial scene. Status of the 141 = noticed r
 
 ### 2.5 Script natives that touch perception and AI state (from scb.md, with the new uses)
 
-| Native | Use in the scripts | Reading | Status |
-|---|---|---|---|
-| 134 / 135 | lock / unlock the actor's AI (726 / 347 uses); every enemy is unlocked when it reaches its post | the AI does not perceive or react while locked | medium |
-| 140 `(actor, 0/1/2)` | 141 uses with 1, 15 with 0, 1 with 2; 1 right after a new patrol path, 0 when a girl is handed back to walking | movement gait: 0 walk, 1 run, 2 sprint - the three prefix cycles 6 / 7 / 10 | hypothesis (three values, three cycles) |
-| 126 `(actor) -> int` | compared with 1 (`== 1` required by zones for the entering PC; `!= 1` makes an archer get a new path) and 2 | an actor status code with 1 = normal / patrolling; 2 and other values = alerted or fighting or out of action | low |
-| 128 `(actor) -> bool` | required `== 1` by every zone that reacts to an actor and for an enemy to still count | able to act (not knocked out, tied, dead) | medium-low |
-| 177 `(actor, 0/1)` | 1 when an enemy reaches its post / is initialised, 0 when parked | "at post" flag (the AI patrol resumes) | low |
-| 228 `(actor, k, ticks)` | k = 1 for 10..100 ticks right after 177 | a timed guard state (stand and watch for n ticks?) | low |
-| 219 / 220 `(actor)` | 219 right before an "alert" helper (wake / alert), 220 after 177 and in `ReachPoint` (stop / clear orders) | 219 = alert the soldier by script, 220 = clear its current order | low |
-| 130 `(actor, target, 1)` | 3 uses: a soldier and the girl he escorts in `H01`, a "check chase" helper | actor follows / chases target | low |
-| `FilterAIEvent(_, event)` | returns 1 by default; classes test event ids 0, 2, 8, 11, 13, 14, 22, 23, 31, 33, 34, 52; crossbowmen relay event 31 to the level as a message; a mechanism object suppresses event 8; two soldiers of a town mission react to event 14 by taking a path | AI stimulus filter: the engine asks the script whether an event (a sighting, a noise, a hit ...) is to be processed; returning 0 suppresses it | medium for the mechanism, ids unknown |
-| `ActionChange(_, id)` | ids compared: 137 (objects, most), 141 (archers), 136, 107, 102, 135, 31, 280, 281 | the engine reports the actor's new **action id = sprite action id** (141 noticed, 107 fell backwards, 102 flinched, 136 hidden in leaves, 135 stood up; 137 on objects is not a sprite id) | inferred (the ids match the animation table) |
+| Native                    | Use in the scripts                                                                                                                                                                                                                                       | Reading                                                                                                                                                                                    | Status                                       |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| 134 / 135                 | lock / unlock the actor's AI (726 / 347 uses); every enemy is unlocked when it reaches its post                                                                                                                                                          | the AI does not perceive or react while locked                                                                                                                                             | medium                                       |
+| 140 `(actor, 0/1/2)`      | 141 uses with 1, 15 with 0, 1 with 2; 1 right after a new patrol path, 0 when a girl is handed back to walking                                                                                                                                           | movement gait: 0 walk, 1 run, 2 sprint - the three prefix cycles 6 / 7 / 10                                                                                                                | hypothesis (three values, three cycles)      |
+| 126 `(actor) -> int`      | compared with 1 (`== 1` required by zones for the entering PC; `!= 1` makes an archer get a new path) and 2                                                                                                                                              | an actor status code with 1 = normal / patrolling; 2 and other values = alerted or fighting or out of action                                                                               | low                                          |
+| 128 `(actor) -> bool`     | required `== 1` by every zone that reacts to an actor and for an enemy to still count                                                                                                                                                                    | able to act (not knocked out, tied, dead)                                                                                                                                                  | medium-low                                   |
+| 177 `(actor, 0/1)`        | 1 when an enemy reaches its post / is initialised, 0 when parked                                                                                                                                                                                         | "at post" flag (the AI patrol resumes)                                                                                                                                                     | low                                          |
+| 228 `(actor, k, ticks)`   | k = 1 for 10..100 ticks right after 177                                                                                                                                                                                                                  | a timed guard state (stand and watch for n ticks?)                                                                                                                                         | low                                          |
+| 219 / 220 `(actor)`       | 219 right before an "alert" helper (wake / alert), 220 after 177 and in `ReachPoint` (stop / clear orders)                                                                                                                                               | 219 = alert the soldier by script, 220 = clear its current order                                                                                                                           | low                                          |
+| 130 `(actor, target, 1)`  | 3 uses: a soldier and the girl he escorts in `H01`, a "check chase" helper                                                                                                                                                                               | actor follows / chases target                                                                                                                                                              | low                                          |
+| `FilterAIEvent(_, event)` | returns 1 by default; classes test event ids 0, 2, 8, 11, 13, 14, 22, 23, 31, 33, 34, 52; crossbowmen relay event 31 to the level as a message; a mechanism object suppresses event 8; two soldiers of a town mission react to event 14 by taking a path | AI stimulus filter: the engine asks the script whether an event (a sighting, a noise, a hit ...) is to be processed; returning 0 suppresses it                                             | medium for the mechanism, ids unknown        |
+| `ActionChange(_, id)`     | ids compared: 137 (objects, most), 141 (archers), 136, 107, 102, 135, 31, 280, 281                                                                                                                                                                       | the engine reports the actor's new **action id = sprite action id** (141 noticed, 107 fell backwards, 102 flinched, 136 hidden in leaves, 135 stood up; 137 on objects is not a sprite id) | inferred (the ids match the animation table) |
 
 `AI` and `BIG BROTHER` on the console draw the AI state and per-actor data of the original: the
 cheapest way to learn the state names and the cone geometry without the executable (section 7).
@@ -195,16 +194,16 @@ cheapest way to learn the state names and the cone geometry without the executab
 
 ### 3.1 States the scripts distinguish (observed uses, inferred meanings)
 
-| Native | Uses | Evidence | Reading | Status |
-|---|---|---|---|---|
-| 90 `(actor) -> bool` | 159, almost all `== 1` on enemies in `Hourglass` | the designers' variable names for "enemy out of service" flags are set from it; the "all enemies out of action" helpers count an enemy while `n128 == 1 and n240 == 1 and n90 == 0` | **out of action** (knocked out, tied or dead) | medium |
-| 87 `(actor) -> bool` | 25 | an "is any green soldier dead" helper sets its flag when `n81 == 1` (soldier) and `n87 == 1`; an "officer dead" flag is set on `n90 or n87`; victory / objective code tests it on named enemies | **dead** | medium |
-| 89 `(actor) -> bool` | 3 | a courier counts as lost when `n89 == 1` or absent; an objective in a town mission needs `n89(x) == 1` on a hidden actor inside a zone | a further neutralised state (tied up or netted / captured) | low |
-| 88 `(actor) -> bool` | 1 | only in the "is neutralised" helper, which returns `n88 or n87 or n89 or n90` | the fourth neutralised state | unknown |
-| 85 `(actor) -> bool` | 225 | helpers skip actors with `n85 == 1`; PCs absent from the team | unusable / removed / absent | medium |
-| 240 `(actor) -> bool` | 22 | with 90 above | present on the map | medium-low |
-| 102 `(actor, 10, 1)` | 39, in the "kill" and "kill everything in the zone" helpers, PCs are deactivated (113) instead; `(x, 100, 1)` twice; 229 (drop out) precedes it | inflict damage of the given size (10 kills any soldier only if the unit is not hit points - so the second argument is more likely a damage *kind* or a percentage) | low |
-| 59 `(actor, k, target)` | 26: `k` = 1 (11), 4, 2, 5, 6, 17, 18, 0; target = element index via native 10 or an immediate 0..15 (a direction when there is no target) | archer shoots: `k` arrows or a shot kind, at an element or in a direction | low |
+| Native                  | Uses                                                                                                                                            | Evidence                                                                                                                                                                                        | Reading                                                    | Status     |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ---------- |
+| 90 `(actor) -> bool`    | 159, almost all `== 1` on enemies in `Hourglass`                                                                                                | the designers' variable names for "enemy out of service" flags are set from it; the "all enemies out of action" helpers count an enemy while `n128 == 1 and n240 == 1 and n90 == 0`             | **out of action** (knocked out, tied or dead)              | medium     |
+| 87 `(actor) -> bool`    | 25                                                                                                                                              | an "is any green soldier dead" helper sets its flag when `n81 == 1` (soldier) and `n87 == 1`; an "officer dead" flag is set on `n90 or n87`; victory / objective code tests it on named enemies | **dead**                                                   | medium     |
+| 89 `(actor) -> bool`    | 3                                                                                                                                               | a courier counts as lost when `n89 == 1` or absent; an objective in a town mission needs `n89(x) == 1` on a hidden actor inside a zone                                                          | a further neutralised state (tied up or netted / captured) | low        |
+| 88 `(actor) -> bool`    | 1                                                                                                                                               | only in the "is neutralised" helper, which returns `n88 or n87 or n89 or n90`                                                                                                                   | the fourth neutralised state                               | unknown    |
+| 85 `(actor) -> bool`    | 225                                                                                                                                             | helpers skip actors with `n85 == 1`; PCs absent from the team                                                                                                                                   | unusable / removed / absent                                | medium     |
+| 240 `(actor) -> bool`   | 22                                                                                                                                              | with 90 above                                                                                                                                                                                   | present on the map                                         | medium-low |
+| 102 `(actor, 10, 1)`    | 39, in the "kill" and "kill everything in the zone" helpers, PCs are deactivated (113) instead; `(x, 100, 1)` twice; 229 (drop out) precedes it | inflict damage of the given size (10 kills any soldier only if the unit is not hit points - so the second argument is more likely a damage _kind_ or a percentage)                              | low                                                        |
+| 59 `(actor, k, target)` | 26: `k` = 1 (11), 4, 2, 5, 6, 17, 18, 0; target = element index via native 10 or an immediate 0..15 (a direction when there is no target)       | archer shoots: `k` arrows or a shot kind, at an element or in a direction                                                                                                                       | low                                                        |
 
 So the engine has at least the states **normal, out of action, dead** plus two more neutralised
 states (candidates: knocked out vs. tied up vs. caught in a net; the manual has all three) and the
@@ -305,13 +304,13 @@ their men" fading with rank. Both `hypothesis`.
 
 ### 4.1 Postures and cycles (observed tables)
 
-| Posture | idle | walk cycle | run cycle | sprint cycle | who |
-|---|---|---|---|---|---|
-| upright, weapon carried | 0 (6 frames, 33-35 ticks), 1 / 3 fidgets | 6 (22 frames) | 7 (12) | 10 (16 Robin / 32 soldier) | everyone |
-| crouched (sneak) | 14 (6 frames, 33 ticks) | 16 (12-14 frames, 18 ticks) | - | - | heroes only |
-| fighting stance | 54 (6, 32) | 35 forward / 38 backward (12 frames) | 156 charge (soldiers) | - | heroes, soldiers |
-| alerted (soldiers) | 140 (6, 33) | 143 (22) | 151 (12) | - | soldiers, knights |
-| climb | 19 / 22 / 23 | 20 up / 21 down (12 frames, 16 ticks, +-3 per frame, block displacement 45) | | | climbers |
+| Posture                 | idle                                     | walk cycle                                                                  | run cycle             | sprint cycle               | who               |
+| ----------------------- | ---------------------------------------- | --------------------------------------------------------------------------- | --------------------- | -------------------------- | ----------------- |
+| upright, weapon carried | 0 (6 frames, 33-35 ticks), 1 / 3 fidgets | 6 (22 frames)                                                               | 7 (12)                | 10 (16 Robin / 32 soldier) | everyone          |
+| crouched (sneak)        | 14 (6 frames, 33 ticks)                  | 16 (12-14 frames, 18 ticks)                                                 | -                     | -                          | heroes only       |
+| fighting stance         | 54 (6, 32)                               | 35 forward / 38 backward (12 frames)                                        | 156 charge (soldiers) | -                          | heroes, soldiers  |
+| alerted (soldiers)      | 140 (6, 33)                              | 143 (22)                                                                    | 151 (12)              | -                          | soldiers, knights |
+| climb                   | 19 / 22 / 23                             | 20 up / 21 down (12 frames, 16 ticks, +-3 per frame, block displacement 45) |                       |                            | climbers          |
 
 Crouch key / icon (manual p. 16, 31): `c` crouch, `s` stand (set 1). The tutorial and the manual give no
 crouched run; the tables have none (16 is the only crouched cycle). Soldiers and civilians have no crouch
@@ -323,16 +322,16 @@ The per-frame advance of the moving cycles is the same in every NPC profile (sol
 knights, civilians) and larger in the hero profiles, so two vectors describe all 117 files
 (`observed`):
 
-| cycle | hero (`RobinHood`) | NPC (`Soldier A00` and every other) |
-|---|---|---|
-| walk 6 | 4 px per frame x 22 frames = 88 per cycle | 2 x 22 = 44 |
-| run 7 | 5 x 12 = 60 | 3 x 12 = 36 |
-| sprint 10 | 7 x 16 = 112 | 5 x 32 = 160 |
-| alert walk 143 / run 151 | - | 3 x 22 / 4 x 12 |
-| sneak 16 | 27 px over 12..14 frames and 18 ticks | - |
-| fight step 55, guarded walk 35 | 3 per frame | 3 per frame |
-| climb 20 / 21 | +-3 per frame | - |
-| run-stops 11 / 12 | decelerating, e.g. 7 6 5 4 3 2 | decelerating, e.g. 6 6 5 4 3 2 0 |
+| cycle                          | hero (`RobinHood`)                        | NPC (`Soldier A00` and every other) |
+| ------------------------------ | ----------------------------------------- | ----------------------------------- |
+| walk 6                         | 4 px per frame x 22 frames = 88 per cycle | 2 x 22 = 44                         |
+| run 7                          | 5 x 12 = 60                               | 3 x 12 = 36                         |
+| sprint 10                      | 7 x 16 = 112                              | 5 x 32 = 160                        |
+| alert walk 143 / run 151       | -                                         | 3 x 22 / 4 x 12                     |
+| sneak 16                       | 27 px over 12..14 frames and 18 ticks     | -                                   |
+| fight step 55, guarded walk 35 | 3 per frame                               | 3 per frame                         |
+| climb 20 / 21                  | +-3 per frame                             | -                                   |
+| run-stops 11 / 12              | decelerating, e.g. 7 6 5 4 3 2            | decelerating, e.g. 6 6 5 4 3 2 0    |
 
 Every walking, running and sprinting frame has a **zero tick half** and only the advance half set; the
 sneak cycle has both (ticks 2 2 2 2 1 1 ... and advances 1 2 2 ...); the run-stops have decreasing
@@ -353,7 +352,7 @@ Reading A was the working hypothesis (the earlier "distance-timed" note in sprit
 section 7 item 1 measured it. **Measured 2026-09-05 (section 8): the advance is pixels per displayed frame, a walking
 frame lasts 46.9 ms (hero walk 85.3 px/s), the crouched cycle runs slower than one frame per walking tick
 (17.8 px/s): the frame clock of sprite-animations.md "Reading rules" (a frame lasts its tick half plus one
-table ticks of 3 clocks at 64 Hz) gives every measured value.** Either way the *ratios* are data: hero :
+table ticks of 3 clocks at 64 Hz) gives every measured value.** Either way the _ratios_ are data: hero :
 soldier walk = 2 : 1, run = 5 : 3, alert walk : patrol walk = 3 : 2.
 
 ### 4.3 Orders (manual p. 15-16, 26; ui-flow.md 9.4)
@@ -369,18 +368,18 @@ The four `u16` after the flags byte of every SD record (profile.md `unknown_post
 tier from blue to black and are zero for the green spare entries. Matching their non-zero pattern per
 family against the manual's stimulus table (section 1) gives:
 
-| family | word 1 | word 2 | word 3 | word 4 | manual: purse / apple / beer / whistle |
-|---|---|---|---|---|---|
-| halberdier | 0 | 0 | 75..55 | 25..5 | - / - / yes / - |
-| swordsman | 50..10 | 100..80 | 0 | 75..55 | yes / yes / - / yes |
-| archer | 100..60 | 0 | 0 | 50..30 | yes / - / - / yes |
-| officer | 0 | 80..60 | 25..5 | 100..80 | - / - / yes / yes |
-| knight on foot | 0 | 75..55 | 0 | 0 | - / yes / - / - |
-| lancer | 75..35 | 0 | 100..80 | 0 | yes / - / yes / yes |
-| crossbowman | 0 | 50..30 | 50..30 | 0 | - / yes / yes / - |
-| mounted knight | 0 | 25..5 | 0 | 25..5 | - / yes / - / yes |
-| trainer | 100 | 100 | 100 | 100 | (training dummy) |
-| merry men, antagonists | 0 | 0 | 0 | 0 | - |
+| family                 | word 1  | word 2  | word 3  | word 4  | manual: purse / apple / beer / whistle |
+| ---------------------- | ------- | ------- | ------- | ------- | -------------------------------------- |
+| halberdier             | 0       | 0       | 75..55  | 25..5   | - / - / yes / -                        |
+| swordsman              | 50..10  | 100..80 | 0       | 75..55  | yes / yes / - / yes                    |
+| archer                 | 100..60 | 0       | 0       | 50..30  | yes / - / - / yes                      |
+| officer                | 0       | 80..60  | 25..5   | 100..80 | - / - / yes / yes                      |
+| knight on foot         | 0       | 75..55  | 0       | 0       | - / yes / - / -                        |
+| lancer                 | 75..35  | 0       | 100..80 | 0       | yes / - / yes / yes                    |
+| crossbowman            | 0       | 50..30  | 50..30  | 0       | - / yes / yes / -                      |
+| mounted knight         | 0       | 25..5   | 0       | 25..5   | - / yes / - / yes                      |
+| trainer                | 100     | 100     | 100     | 100     | (training dummy)                       |
+| merry men, antagonists | 0       | 0       | 0       | 0       | -                                      |
 
 Word 1 = **purse** and word 3 = **beer** agree with the manual for all eight kinds; word 2 = **apple**
 disagrees once (officers) and word 4 = **whistle** twice (the lancer's and the halberdier's whistle
@@ -632,7 +631,7 @@ result deactivated (the reading itself records nothing).
   `PUNCH_TICKS` 54 from the hero's 19, `STRIKE_TICKS` 45 from 16, `FLINCH_TICKS` 34 from 12). The
   `+ 1` rule is `inferred` from the sneak cycle alone (8.4 note); no reaction animation was timed.
 - **Taint** (ADR-0008, "Hypotheses and taint"; Codex review 9, finding 1): the VM records an assumption
-  where a *hypothesised* part of the layer first changes authoritative state, whether or not a script
+  where a _hypothesised_ part of the layer first changes authoritative state, whether or not a script
   handler exists: `sight_cone` when a sighting changes a soldier's state (an actor alerted by a run heard,
   `heard`, records nothing: that channel is measured up to 330 px; from 330 to 350 px it is the engine's
   choice and records `noise_radius`), `alert_policy` for the noticed -> alarm -> search sequence and
@@ -767,14 +766,14 @@ frame), not the walking one.
 Note on the idle: the spec's "6 frames ping-pong" for action 0 would give 10 changes per cycle, the
 lancers show 16 per 1.5 s; either these guards play a different standing action (rail wait state) or
 the table reading is off. Open. Checked against the tables by the implementer (2026-09-05): the idle
-block 0 lists its six frames *with* the ping-pong (frame indices 0 1 2 3 2 1), so one loop is 6
+block 0 lists its six frames _with_ the ping-pong (frame indices 0 1 2 3 2 1), so one loop is 6
 changes of uneven length (tick halves 6 3 3 15 4 4 on `Soldier A00`, 6 2 2 15 4 4 on the hero and
 on the alert idle 140), 35 table ticks = 1.64 s on the walking clock or 41 = 1.92 s with the
 `+ 1` rule below; no static block of `Guard A00` (127 blocks) or of the other soldier profiles has
 16 uniform changes per 1.5 s under either reading (the nearest, the crossbowman's bow set 87, is 16
 uneven frames of 34 ticks). Neither reading reproduces the observation; the courtyard lancers'
 standing action is not identified (the console's `AI` display, item 7.7, would name it). What
-*is* settled by the sneak measurement: the crouched cycle's 14 frames carry tick halves summing
+_is_ settled by the sneak measurement: the crouched cycle's 14 frames carry tick halves summing
 to 18 and last 1.50 s together, which is `18 + 14 = 32` table ticks of 46.875 ms exactly, so a
 frame lasts its **tick half plus one** table ticks (the walking frames' 0 = one tick, as
 already read); the plain "tick half, at least 1" reading would give 0.84 s and 32 px/s for the
@@ -819,18 +818,18 @@ him at once and the whole courtyard joined (a mission-wide alarm, `inferred`).
 
 ### 8.8 Numbers for the implementer
 
-| Quantity | Use | Status |
-|---|---|---|
-| hero walk | 85.3 px/s (4 px per 46.9 ms frame) | observed |
-| hero crouched walk | 17.8 px/s (27 px per 1.50 s cycle) | observed |
-| hero run (double-click) | 107 px/s predicted, 101 +- 10 measured; gait = action 7 | observed / inferred |
-| hero sprint (action 10) | 149 px/s | inferred (clock) |
-| soldier walk / run / alert walk / alert run | 42.7 / 64 / 64 / 85.3 px/s | inferred (clock) |
-| displayed frame of a walking cycle | 46.9 ms (about 2.8 engine ticks at 60 Hz; the table's "1 tick" = 3 clocks of 1/64 s; a frame lasts its tick half plus one such ticks, from the sneak cycle) | inferred |
-| idle frame step | 93.75 ms | observed |
-| click -> first moving frame | 0.9-1.0 s (turn + walk-start animation) | observed (2 samples) |
-| running detected by standing soldiers | at >= 330 px; walking at 290 px not detected | observed |
-| `ALERT_TIMEOUT_TICKS`, `KNOCK_OUT_BASE_TICKS`, `PUNCH_REACH`, `VIEW_CONE_HALF_ANGLE_256` | unchanged hypotheses | not measured |
+| Quantity                                                                                 | Use                                                                                                                                                         | Status               |
+| ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| hero walk                                                                                | 85.3 px/s (4 px per 46.9 ms frame)                                                                                                                          | observed             |
+| hero crouched walk                                                                       | 17.8 px/s (27 px per 1.50 s cycle)                                                                                                                          | observed             |
+| hero run (double-click)                                                                  | 107 px/s predicted, 101 +- 10 measured; gait = action 7                                                                                                     | observed / inferred  |
+| hero sprint (action 10)                                                                  | 149 px/s                                                                                                                                                    | inferred (clock)     |
+| soldier walk / run / alert walk / alert run                                              | 42.7 / 64 / 64 / 85.3 px/s                                                                                                                                  | inferred (clock)     |
+| displayed frame of a walking cycle                                                       | 46.9 ms (about 2.8 engine ticks at 60 Hz; the table's "1 tick" = 3 clocks of 1/64 s; a frame lasts its tick half plus one such ticks, from the sneak cycle) | inferred             |
+| idle frame step                                                                          | 93.75 ms                                                                                                                                                    | observed             |
+| click -> first moving frame                                                              | 0.9-1.0 s (turn + walk-start animation)                                                                                                                     | observed (2 samples) |
+| running detected by standing soldiers                                                    | at >= 330 px; walking at 290 px not detected                                                                                                                | observed             |
+| `ALERT_TIMEOUT_TICKS`, `KNOCK_OUT_BASE_TICKS`, `PUNCH_REACH`, `VIEW_CONE_HALF_ANGLE_256` | unchanged hypotheses                                                                                                                                        | not measured         |
 
 ### Provenance (section 8)
 

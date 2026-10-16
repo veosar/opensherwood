@@ -8,7 +8,7 @@ fields. Parsers: `crates/opensherwood-formats/src/{rhs.rs,dic.rs,sprite_decode.r
 
 ## Files
 
-- `DATA/Characters/*.rhs` (117 files) and `DATA/Animations/{Day,Night,Fog}/*.rhs` (116): sprite *profiles*:
+- `DATA/Characters/*.rhs` (117 files) and `DATA/Animations/{Day,Night,Fog}/*.rhs` (116): sprite _profiles_:
   named sequences of animations whose frames reference the global frame table.
 - `DATA/robinhood.dic` (9,699,680 B): 134 dictionary pages followed by the global frame table.
 - `DATA/robinhood.bks` (592,261,466 B): the pixel streams of all frames, back to back, in frame-table order.
@@ -95,12 +95,12 @@ pixels).
 
 Pixels are RGB565 little-endian words, as in `docs/formats/image-blob.md`. Two colours are keys:
 
-| Value | Meaning |
-|---|---|
-| `0x07C0` | transparent (bright green). 17.3% of dictionary pixels, ~56% of span-frame pixels including the area outside spans. |
+| Value    | Meaning                                                                                                                                                                                                        |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0x07C0` | transparent (bright green). 17.3% of dictionary pixels, ~56% of span-frame pixels including the area outside spans.                                                                                            |
 | `0x001F` | second key (pure blue): 10.5% of dictionary pixels, found where a drop shadow would lie (under a character's feet, next to the coin). Inferred: the original draws it as a translucent shadow; **unverified**. |
 
-`0x07E0` (pure green) occurs 4 times in 2 million dictionary pixels and is *not* a key; `0xF81F` and `0xFFFF`
+`0x07E0` (pure green) occurs 4 times in 2 million dictionary pixels and is _not_ a key; `0xF81F` and `0xFFFF`
 never occur.
 
 ### Dictionary-page frames (`page != 0xFFFF`, 394,721 frames)

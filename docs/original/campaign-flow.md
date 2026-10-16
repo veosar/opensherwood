@@ -1,7 +1,7 @@
 # Original game: campaign flow (black-box observation)
 
 Status: **observed** for everything up to the start of the first mission; later stages are taken from the
-printed manual and the text resources and are marked *manual* / *inferred*. Coordinates: 1024x768 logical
+printed manual and the text resources and are marked _manual_ / _inferred_. Coordinates: 1024x768 logical
 pixels, see `ui-flow.md`. Screenshot file names refer to `harness/captures/original/` (git-ignored).
 
 ## 1. From the main menu to the first mission
@@ -9,14 +9,14 @@ pixels, see `ui-flow.md`. Screenshot file names refer to `harness/captures/origi
 Precondition: a profile selected in **Select player** (a fresh one: Medium difficulty, Money L100, Score 0,
 Progress 0 %). Then:
 
-| Step | t (s after click) | What happens | File |
-|---|---|---|---|
-| click **Play!** (748,364) | 0 | main menu disappears | `play_000_000.9s.png` |
-| | ~0.9-2.5 | **loading screen**: painting of Robin drawing his bow, progress bar y = 700, "v1.1" top right | `play_001_001.8s.png`, `play_002_002.2s.png` |
-| | ~2.6 | mission 1 (level HA) is loaded, shown green-tinted and paused, **briefing page 1** on a parchment | `m1_brief_page1.png` |
-| V seal (508,552) or Enter | | briefing page 2 | `m1_brief_page2.png` |
-| V seal / Enter | | briefing page 3 | `m1_brief_page3.png` |
-| V seal / Enter | | parchment closes, game unpauses, camera on Robin outside the gate of Lincoln castle; HUD shows Money L100, Clover 0, Robin's portrait | `m1_brief_page1.png` (background), `pause_menu.png` |
+| Step                      | t (s after click) | What happens                                                                                                                          | File                                                |
+| ------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| click **Play!** (748,364) | 0                 | main menu disappears                                                                                                                  | `play_000_000.9s.png`                               |
+|                           | ~0.9-2.5          | **loading screen**: painting of Robin drawing his bow, progress bar y = 700, "v1.1" top right                                         | `play_001_001.8s.png`, `play_002_002.2s.png`        |
+|                           | ~2.6              | mission 1 (level HA) is loaded, shown green-tinted and paused, **briefing page 1** on a parchment                                     | `m1_brief_page1.png`                                |
+| V seal (508,552) or Enter |                   | briefing page 2                                                                                                                       | `m1_brief_page2.png`                                |
+| V seal / Enter            |                   | briefing page 3                                                                                                                       | `m1_brief_page3.png`                                |
+| V seal / Enter            |                   | parchment closes, game unpauses, camera on Robin outside the gate of Lincoln castle; HUD shows Money L100, Clover 0, Robin's portrait | `m1_brief_page1.png` (background), `pause_menu.png` |
 
 There is **no intro video, no cutscene, no campaign map and no Sherwood camp** before the first mission; the
 manual (p.9, campaign planning section) confirms it: the first mission is played with Robin alone, the second
@@ -29,7 +29,7 @@ into the same mission as well (a short "mission loaded" style message in white o
 
 - Title: `2047/data/Text/Level.res` TEXT id **1000017** string 0 (strings 1 and 2 are placeholders). It is
   the first id in `DATA/Text/RHLevelHA.red`, so the level is **HA** =
-  `DATA/Levels/H01_Lin_VL.rhm` (Lincoln, proto-level `Lincoln`), day ambiance (*inferred* from the file names and
+  `DATA/Levels/H01_Lin_VL.rhm` (Lincoln, proto-level `Lincoln`), day ambiance (_inferred_ from the file names and
   the first `.red` value; the mission file was not verified by loading it).
 - Player characters: Robin Hood only. Start position: in front of the castle gate on a muddy yard with a pig
   sty and a barn to the left, two guards on the wall above the gate, a mendicant to the right.
@@ -52,16 +52,16 @@ into the same mission as well (a short "mission loaded" style message in white o
 - `RHLevelHA.red` (u32 values, layout only; the file is not reproduced): the title id (1000017), an unused
   goal id, 0, then `23` and 23 ids (the first, 1000105, is the text list; the others are probably the `WAVE`
   voice entries of each string), `1` + 1000349 (debriefing when won), `1` + 1000350 (debriefing when lost),
-  `6` + 1000283 (six short briefings). This refines the stub in `docs/formats/red.md` (*inferred* layout, consistent with all 57 files:
+  `6` + 1000283 (six short briefings). This refines the stub in `docs/formats/red.md` (_inferred_ layout, consistent with all 57 files:
   every file ends with `n_won, id, n_lost, id, n_short, id`).
 - Debriefings: won = 1000349 (Robin leaves Lincoln with the servant's son but without finding his godfather),
   lost = 1000350 (Robin was slain; start another game).
-- **Tutorial**: there is no separate training mission in the flow; the first mission *is* the tutorial (popup
+- **Tutorial**: there is no separate training mission in the flow; the first mission _is_ the tutorial (popup
   hints above). `Levels/EmbTut_FoC_EC.rhm` ("Emb" = ambush, "Tut" = tutorial) exists in the data but is not
-  reached from Play! with a fresh profile; when it is used is *unknown* (possibly the first ambush, see below).
+  reached from Play! with a fresh profile; when it is used is _unknown_ (possibly the first ambush, see below).
   It is therefore not mandatory in the sense of a separate step.
 
-## 2. After the first mission (*manual* p.9-14, `Level.res`, not observed)
+## 2. After the first mission (_manual_ p.9-14, `Level.res`, not observed)
 
 1. Mission 2 launches automatically after the debriefing of mission 1. By the `.red` order the second story
    mission is **HB** (title TEXT 1000018, briefing list 1000122, level `H02_Not_EC`, Nottingham). The H series
@@ -85,7 +85,7 @@ into the same mission as well (a short "mission loaded" style message in white o
 5. After a mission the team returns to Sherwood; the campaign statistics (money, score, lives saved) appear on
    the map parchment ("Money: ... Score: ... Lives saved: ..." per the manual's screenshot on p.10).
 
-## 3. The level table in `Configuration/profile.cpf` (*data*, 2026-09-02)
+## 3. The level table in `Configuration/profile.cpf` (_data_, 2026-09-02)
 
 `profile.cpf` ([../formats/profile.md](../formats/profile.md)) has one record per level code with the
 `.rhm` file, the map, the location index, the three music tracks and two lists of level codes read here as

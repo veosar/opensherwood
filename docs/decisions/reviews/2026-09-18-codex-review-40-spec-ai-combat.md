@@ -48,17 +48,17 @@ The automated asset check and manual expression filter pass. The admissibility t
 
 Clearance remains limited to individual contracts:
 
-| Area | Cleared | Still waiting |
-|---|---|---|
-| Perception | Previously cleared lifetimes, caching, staggering and fixed-value fixtures | Posture-result rounding; excluded geometry |
-| Hearing | Previously cleared noise, margin, deafness and staggering rules | Excluded oracle discrepancies |
-| State machine | Reviewed transitions and update ordering; corrected callback values; natives 177/220 | Callback source fixture, remaining native corrections and section 9.2 exclusions |
-| Rails | Reviewed cursor/opcode rules, cached rolls, waiter-registration ordering; native 140 styles 0/1 | Restore fixtures, excluded behaviour and invalid-style deviation ratification |
-| Orders | AI-185’s bounded movement-order contract | Context dispatch, cancellation, Ctrl queueing and gestures |
-| Combat rolls | Individual contribution rule and 18/48 fixture; reviewed indications and decision counts | Friendly-target scoring, lying-victim wording, delivery ordering and sweep ownership |
-| Energy | Costs, recovery amount/cadence and movement-based guard, including blocked actors | Unresolved oracle timing |
-| Knock-out | Punch scaling, thresholds, decay phase, coma 300 and stated conditional NPC floor | Setter-flag callers, body effects and scripted phase |
-| Bow | Corrected aim boundaries and both fixtures; penetration comparison and immunity draw count | Exact interpolation boundaries and excluded target behaviour |
+| Area          | Cleared                                                                                         | Still waiting                                                                        |
+| ------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Perception    | Previously cleared lifetimes, caching, staggering and fixed-value fixtures                      | Posture-result rounding; excluded geometry                                           |
+| Hearing       | Previously cleared noise, margin, deafness and staggering rules                                 | Excluded oracle discrepancies                                                        |
+| State machine | Reviewed transitions and update ordering; corrected callback values; natives 177/220            | Callback source fixture, remaining native corrections and section 9.2 exclusions     |
+| Rails         | Reviewed cursor/opcode rules, cached rolls, waiter-registration ordering; native 140 styles 0/1 | Restore fixtures, excluded behaviour and invalid-style deviation ratification        |
+| Orders        | AI-185’s bounded movement-order contract                                                        | Context dispatch, cancellation, Ctrl queueing and gestures                           |
+| Combat rolls  | Individual contribution rule and 18/48 fixture; reviewed indications and decision counts        | Friendly-target scoring, lying-victim wording, delivery ordering and sweep ownership |
+| Energy        | Costs, recovery amount/cadence and movement-based guard, including blocked actors               | Unresolved oracle timing                                                             |
+| Knock-out     | Punch scaling, thresholds, decay phase, coma 300 and stated conditional NPC floor               | Setter-flag callers, body effects and scripted phase                                 |
+| Bow           | Corrected aim boundaries and both fixtures; penetration comparison and immunity draw count      | Exact interpolation boundaries and excluded target behaviour                         |
 
 Natives **85, 87, 88, 90, 99, 128, 130, 228, 235 and 240** remain excluded from complete contract clearance. Integrated snapshot/replay/hash behaviour, exact figure admissibility and mission readiness remain uncleared. Publication approval remains separate.
 

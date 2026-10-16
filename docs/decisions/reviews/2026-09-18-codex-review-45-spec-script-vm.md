@@ -64,7 +64,7 @@ Reviewed revision 10, commit `1c7aecf`, blob `35459de492c79e00c4559de73c28a597b9
 
     **Correction:** identify those authoritative states and their owners; define the snapshot phase, tick-counter width/wrap, and whether fault/provenance timestamps use the tick’s entry counter or the incremented counter. Provide continuation fixtures spanning skipped ticks, scroll resumption, first initialization and camera-triggered sequence advancement.
 
-**Seven answers — verdict: fix-then-clear.** Answers **1, 3 and 4 are cleared for implementation** within their stated scope; answers **2, 5, 6 and 7 require the corrections above**. The finite normal-result rounding argument is consistent with the established double-rounding result; it should retain its explicit scope. [Roux, *Innocuous Double Rounding*](https://jfr.unibo.it/article/view/4359)
+**Seven answers — verdict: fix-then-clear.** Answers **1, 3 and 4 are cleared for implementation** within their stated scope; answers **2, 5, 6 and 7 require the corrections above**. The finite normal-result rounding argument is consistent with the established double-rounding result; it should retain its explicit scope. [Roux, _Innocuous Double Rounding_](https://jfr.unibo.it/article/view/4359)
 
 **Section 3.5 — verdict: fix-then-clear.**
 

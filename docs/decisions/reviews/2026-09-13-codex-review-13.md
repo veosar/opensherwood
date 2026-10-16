@@ -9,7 +9,7 @@ I reviewed `b13372e`, checked the installed Ghidra 12.1.3 source APIs, and exerc
 1. **[High] The decompilation mandate exceeds the legal justification documented for it.**
    [ADR-0009:16](../ADR-0009-decompilation-driven-reimplementation.md:16), [analyst skill:28](../../../.agents/skills/analyst-ghidra/SKILL.md:28)
 
-   “Understand each subsystem completely” and “Read everything” are unconditional instructions. Article 6 instead requires indispensability for interoperability, information not already readily available, authorized analysis, and confinement to necessary portions. Article 5(3) permits studying operation during authorized use; it is not blanket permission for static decompilation. *Top System* concerns necessary error correction, not authorization to reconstruct an entire replacement engine. [Directive 2009/24/EC, Articles 5–6](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32009L0024), [*Top System*, C‑13/20](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=celex%3A62020CJ0013).
+   “Understand each subsystem completely” and “Read everything” are unconditional instructions. Article 6 instead requires indispensability for interoperability, information not already readily available, authorized analysis, and confinement to necessary portions. Article 5(3) permits studying operation during authorized use; it is not blanket permission for static decompilation. _Top System_ concerns necessary error correction, not authorization to reconstruct an entire replacement engine. [Directive 2009/24/EC, Articles 5–6](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32009L0024), [_Top System_, C‑13/20](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=celex%3A62020CJ0013).
 
    **Fix:** Require a per-investigation necessity record: interoperability target, missing information, available documentation, authorized analyst, relevant functions, and stopping condition. Identify the other programs—potentially including mission scripts—and explain the required interaction. Compatibility with “the player’s data” does not by itself establish that every combat algorithm or HUD implementation detail must be decompiled. Broader analysis needs a separately justified legal basis or permission.
 
@@ -34,18 +34,18 @@ I reviewed `b13372e`, checked the installed Ghidra 12.1.3 source APIs, and exerc
 4. **[High] “Algorithms in our own words” is an insufficient expression filter.**
    [ADR-0009:22](../ADR-0009-decompilation-driven-reimplementation.md:22), [analyst skill:34](../../../.agents/skills/analyst-ghidra/SKILL.md:34)
 
-   The explicit bans on line-by-line paraphrases and transcribed pseudocode are good. However, nonliteral copying can survive renamed variables, prose, mathematics, or translation into Rust. *SAS Institute* distinguishes functionality from protected expression and explicitly cautions about recreating elements using acquired source/object code. Its facts involved no decompilation. [*SAS Institute*, C‑406/10, paragraphs 39–45](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:62010CJ0406).
+   The explicit bans on line-by-line paraphrases and transcribed pseudocode are good. However, nonliteral copying can survive renamed variables, prose, mathematics, or translation into Rust. _SAS Institute_ distinguishes functionality from protected expression and explicitly cautions about recreating elements using acquired source/object code. Its facts involved no decompilation. [_SAS Institute_, C‑406/10, paragraphs 39–45](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:62010CJ0406).
 
    **Fix:** Add these review rules, clearly identified as conservative project policy rather than claims that every listed item is copyrightable:
 
-   | Material | Required boundary |
-   |---|---|
-   | Line-by-line paraphrase | Reject, including one instruction or basic block rewritten as one sentence. |
-   | Internal structure | Do not prescribe recovered class layouts, function decomposition, call graphs, or branch structure unless a separately justified functional/interface requirement demands it. |
-   | Identifiers | Use independently chosen internal names. Allow individually reviewed compatibility tokens where exact spelling is required; ordinary short names are not automatically protected. |
-   | Constants | Permit justified individual functional facts with provenance. Reject reconstructing a copied table through many individually labelled “constants.” |
-   | Constant/string tables | Reject copied content, ordering, and encoded substitutes. A formula that merely re-encodes a curated table does not satisfy the policy. |
-   | Algorithms | Describe required results, state transitions, and observable ordering. Let implementers choose internal organization. |
+   | Material                | Required boundary                                                                                                                                                                 |
+   | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | Line-by-line paraphrase | Reject, including one instruction or basic block rewritten as one sentence.                                                                                                       |
+   | Internal structure      | Do not prescribe recovered class layouts, function decomposition, call graphs, or branch structure unless a separately justified functional/interface requirement demands it.     |
+   | Identifiers             | Use independently chosen internal names. Allow individually reviewed compatibility tokens where exact spelling is required; ordinary short names are not automatically protected. |
+   | Constants               | Permit justified individual functional facts with provenance. Reject reconstructing a copied table through many individually labelled “constants.”                                |
+   | Constant/string tables  | Reject copied content, ordering, and encoded substitutes. A formula that merely re-encodes a curated table does not satisfy the policy.                                           |
+   | Algorithms              | Describe required results, state transitions, and observable ordering. Let implementers choose internal organization.                                                             |
 
    There is **no safe numerical granularity threshold**—functions, lines, or pseudocode steps. Detailed interface semantics can be necessary; a short description can still preserve expressive implementation choices. Independent mathematical generation of a standard table differs from disguising extracted values.
 
@@ -84,15 +84,15 @@ I reviewed `b13372e`, checked the installed Ghidra 12.1.3 source APIs, and exerc
 
    With only the boundaries repaired **in memory**, I reproduced:
 
-   | Synthetic input | Result |
-   |---|---|
-   | C fragment with an auto-named function and an auto-named parameter only | Pass |
-   | Three-family fragment padded above 4 MiB | Pass |
-   | Small UTF-16 decompiler text | Pass |
-   | `strings.tsv` containing exported text | Pass |
-   | Small `analysis/demo.rep/idata/…/*.db` file | Pass |
-   | Small `.gar` project archive | Pass |
-   | Benign policy sentence naming three forbidden tokens | Reject |
+   | Synthetic input                                                         | Result |
+   | ----------------------------------------------------------------------- | ------ |
+   | C fragment with an auto-named function and an auto-named parameter only | Pass   |
+   | Three-family fragment padded above 4 MiB                                | Pass   |
+   | Small UTF-16 decompiler text                                            | Pass   |
+   | `strings.tsv` containing exported text                                  | Pass   |
+   | Small `analysis/demo.rep/idata/…/*.db` file                             | Pass   |
+   | Small `.gar` project archive                                            | Pass   |
+   | Benign policy sentence naming three forbidden tokens                    | Reject |
 
    `.rep` is a **directory suffix**; checking only the tracked file’s suffix misses its contents. Ghidra’s project archive extension `.gar` is absent. C/header, XML, HTML, assembly, and string exports need not carry a forbidden extension. Additional ordinary idioms include the other auto-named local families, stack-array names, the extra-output names and the p-code helper macros. Renamed output can contain none.
 

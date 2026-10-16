@@ -11,7 +11,7 @@ Thank you for helping. Three rules come before everything else:
 ## Workflow
 
 - Branch from `main`, open a pull request. CI must be green.
-- Small, reviewable commits. Commit messages: imperative subject line, a body that says *why*.
+- Small, reviewable commits. Commit messages: imperative subject line, a body that says _why_.
 - Keep `docs/` truthful: if you learn something about a file format, update the spec and its `Provenance` section;
   if you change a command-line flag or RPC method, update `docs/harness.md` / `docs/build.md`.
 - Rust: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`. Python: `ruff`.
