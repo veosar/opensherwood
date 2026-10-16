@@ -166,12 +166,14 @@ def test_replay_validation_rejects_bad_headers(engine):
     # Only the session time model exists.
     header = json.loads(lines[0])
     header["time"] = "world"
+    bad = "\n".join([json.dumps(header)] + lines[1:]) + "\n"
     with pytest.raises(EngineError) as ei:
-        engine.replay_play(jsonl="\n".join([json.dumps(header)] + lines[1:]) + "\n")
+        engine.replay_play(jsonl=bad)
     assert ei.value.code == -32602
     # events before the header are rejected too
+    bad = "\n".join(lines[1:] + [lines[0]]) + "\n"
     with pytest.raises(EngineError):
-        engine.replay_play(jsonl="\n".join(lines[1:] + [lines[0]]) + "\n")
+        engine.replay_play(jsonl=bad)
 
 
 def test_header_must_match_the_session_after_reset(engine):
@@ -181,8 +183,9 @@ def test_header_must_match_the_session_after_reset(engine):
     lines = rec["jsonl"].splitlines()
     header = json.loads(lines[0])
     header["viewport"] = [800, 600]
+    bad = "\n".join([json.dumps(header)] + lines[1:]) + "\n"
     with pytest.raises(EngineError) as ei:
-        engine.replay_play(jsonl="\n".join([json.dumps(header)] + lines[1:]) + "\n")
+        engine.replay_play(jsonl=bad)
     assert ei.value.code == -32000
     assert "viewport" in ei.value.message
     # The session was reset to the replay's scenario before the mismatch was found.
