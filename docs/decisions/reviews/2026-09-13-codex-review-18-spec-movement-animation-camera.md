@@ -63,13 +63,14 @@ Spec reviewer role (ADR-0009), with access to `re/`. Answered in the spec's next
 24. **Blocker — ANIM-522–523; §11 difference 16 — addresses: 0055dbb0, 00438710, 00438600, 004936f0.** **Difficulty exists.** The settings value is consumed by difficulty-dependent actor scaling and player recovery behavior. Both oracle documents identify their selected medium difficulty. Delete “there is no difficulty setting” and the prohibition on reproducing difficulty scaling. ANIM-523 must defer to the supported parts of AI-045; AI-045 must not be changed to accommodate this draft’s contrary assertion.
 
 25. **High — ANIM-103; required AI-spec amendments — addresses: 0050f710, 00471b00, 00403190, 00464230, 004ab7e0.** Amend these sibling claims:
-   - **AI-001:** 400 ms is the slow-motion selection, not the inactive-window rule; qualify realised 46.875 ms as in finding 3.
-   - **AI-004:** recovery phase compares the frame’s low six bits with the identity’s **low five bits**, not low six.
-   - **AI-190:** `ActionChange` parameters are current and previous action IDs; the actor is dynamically scoped, as VM-091/107 already say.
-   - **AI-005/006 and RNG cross-references:** include the additional cart draws when claiming trace-equivalent ordering.
-   - **AI-150/170 timing validation:** retain the unresolved swing-cadence and energy-recovery discrepancies. Changing the animation clock does not resolve them.
 
-   ANIM-103 also needs the no-adversary recovery guard and a precise phase, rather than “combined … is a multiple of 64.”
+- **AI-001:** 400 ms is the slow-motion selection, not the inactive-window rule; qualify realised 46.875 ms as in finding 3.
+- **AI-004:** recovery phase compares the frame’s low six bits with the identity’s **low five bits**, not low six.
+- **AI-190:** `ActionChange` parameters are current and previous action IDs; the actor is dynamically scoped, as VM-091/107 already say.
+- **AI-005/006 and RNG cross-references:** include the additional cart draws when claiming trace-equivalent ordering.
+- **AI-150/170 timing validation:** retain the unresolved swing-cadence and energy-recovery discrepancies. Changing the animation clock does not resolve them.
+
+ANIM-103 also needs the no-adversary recovery guard and a precise phase, rather than “combined … is a multiple of 64.”
 
 26. **High — required VM-spec amendments — addresses: 0050f710, 004c6ef0, 004cdfc0, 00464b20, 005b8050.** Amend **VM-100** to distinguish nominal pacing, measured reference cadence and the chosen deterministic conversion. Extend **VM-103** with the pre-update cart interaction phase when specifying cross-subsystem ordering. Amend **VM-219** to distinguish logical zoom equality from transition completion and document camera completion opportunities precisely. Replace the human-animation unknowns in **VM-231**, native rows **49–51**, and their assumption mapping only after startup and freeze-sequence ordering are settled. Clarify native rows **18–21, 33–35, 42** as in findings 16–18. Preserve **VM-101/221/222** against this draft’s conflicting suspension and timer-order descriptions.
 

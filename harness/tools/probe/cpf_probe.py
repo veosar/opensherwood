@@ -17,6 +17,7 @@ Layout (all little-endian, pstring = u16 length + Latin-1 bytes, code = char[4] 
 
 The script asserts that this grammar consumes the file exactly.
 """
+
 import json
 import os
 import struct
@@ -146,31 +147,53 @@ def parse(b):
     return out
 
 
+def _rhs_check(d, rhs_dir):
+    check = ""
+    if rhs_dir:
+        p = os.path.join(rhs_dir, d["sprite"] + ".rhs")
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                f.seek(6)
+                seq = f.read(32).split(b"\0")[0].decode("latin-1")
+            check = "rhs-seq=OK" if seq == d["sequence"] else f"rhs-seq={seq!r}"
+        else:
+            check = "rhs MISSING"
+    return check
+
+
+def _print_actors(t, rhs_dir, show_hex):
+    for sec in ("pc", "sd", "cv"):
+        print(f"== {sec.upper()} ({len(t[sec])})")
+        for i, d in enumerate(t[sec]):
+            check = _rhs_check(d, rhs_dir)
+            line = f"{i:3d} {d['sprite']:20s} seq={d['sequence']!r:22s} label={d['label']!r:30s} voice={d['voice']:4s} {check}"
+            if show_hex:
+                line += f"\n     pre={d['pre']} post={d['post']}"
+            print(line)
+
+
+def _print_tables(t):
+    print("== table_a heads")
+    for i, blk in enumerate(t["table_a"]):
+        print(i, blk["head"])
+        for rec in blk["records"]:
+            print("   ", rec)
+    print("== table_b")
+    for rec in t["table_b"]:
+        print("   ", rec)
+
+
 def main(argv):
     path = argv[0]
     b = open(path, "rb").read()
     t = parse(b)
     show_hex = "--hex" in argv
-    print(f"{os.path.basename(path)}: {len(b)} bytes; table_a {len(t['table_a'])} blocks, table_b {len(t['table_b'])}, "
-          f"pc {len(t['pc'])}, sd {len(t['sd'])}, level {len(t['level'])}, cv {len(t['cv'])}")
+    print(
+        f"{os.path.basename(path)}: {len(b)} bytes; table_a {len(t['table_a'])} blocks, table_b {len(t['table_b'])}, "
+        f"pc {len(t['pc'])}, sd {len(t['sd'])}, level {len(t['level'])}, cv {len(t['cv'])}"
+    )
     rhs_dir = argv[argv.index("--rhs") + 1] if "--rhs" in argv else None
-    for sec in ("pc", "sd", "cv"):
-        print(f"== {sec.upper()} ({len(t[sec])})")
-        for i, d in enumerate(t[sec]):
-            check = ""
-            if rhs_dir:
-                p = os.path.join(rhs_dir, d["sprite"] + ".rhs")
-                if os.path.exists(p):
-                    with open(p, "rb") as f:
-                        f.seek(6)
-                        seq = f.read(32).split(b"\0")[0].decode("latin-1")
-                    check = "rhs-seq=OK" if seq == d["sequence"] else f"rhs-seq={seq!r}"
-                else:
-                    check = "rhs MISSING"
-            line = f"{i:3d} {d['sprite']:20s} seq={d['sequence']!r:22s} label={d['label']!r:30s} voice={d['voice']:4s} {check}"
-            if show_hex:
-                line += f"\n     pre={d['pre']} post={d['post']}"
-            print(line)
+    _print_actors(t, rhs_dir, show_hex)
     print(f"== LEVEL ({len(t['level'])})")
     for i, d in enumerate(t["level"]):
         line = f"{i:3d} {d['code']:3s} map={d['map']:13s} mission={d['mission']:19s} title={d['title']!r:28s} music={d['music']}"
@@ -178,14 +201,7 @@ def main(argv):
             line += f"\n     mid[{len(d['mid']) // 2}]={d['mid']}"
         print(line)
     if show_hex:
-        print("== table_a heads")
-        for i, blk in enumerate(t["table_a"]):
-            print(i, blk["head"])
-            for rec in blk["records"]:
-                print("   ", rec)
-        print("== table_b")
-        for rec in t["table_b"]:
-            print("   ", rec)
+        _print_tables(t)
     if "--json" in argv:
         json.dump(t, open(argv[argv.index("--json") + 1], "w"), indent=1)
 

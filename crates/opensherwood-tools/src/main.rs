@@ -122,365 +122,395 @@ enum Cmd {
 fn main() -> anyhow::Result<()> {
     match Args::parse().cmd {
         Cmd::Inspect { file } => inspect(&file),
-        Cmd::Sres { file } => {
-            let a = sres::parse(&read(&file)?)?;
-            println!(
-                "SRES version {:#x}, {} entries, {} offsets in trailer",
-                a.version,
-                a.entries.len(),
-                a.offsets.len()
-            );
-            for e in &a.entries {
-                let desc = match &e.body {
-                    sres::Body::Picture(p) => format!("{}x{}", p.width, p.height),
-                    sres::Body::PictureCollection(v)
-                    | sres::Body::Widget { pictures: v, .. }
-                    | sres::Body::Cursor { frames: v, .. } => {
-                        format!(
-                            "{} pictures, first {}",
-                            v.len(),
-                            v.first()
-                                .map_or(String::from("-"), |p| format!("{}x{}", p.width, p.height))
-                        )
-                    }
-                    sres::Body::Text(v) => format!(
-                        "{} strings, first {:?}",
-                        v.len(),
-                        v.first().map(|s| truncate(s, 60))
-                    ),
-                    sres::Body::Wave(v) => format!("{} paths, first {:?}", v.len(), v.first()),
-                };
-                println!(
-                    "  {:#08x} {} id={:<8} {}",
-                    e.offset,
-                    e.body.kind(),
-                    e.id,
-                    desc
-                );
-            }
-            Ok(())
-        }
-        Cmd::Rhs { file, frames } => {
-            let p = rhs::parse(&read(&file)?)?;
-            println!(
-                "bank generation {:#x}, {} sequences",
-                p.bank_generation,
-                p.sequences.len()
-            );
-            for s in &p.sequences {
-                let nframes: usize = s.animations.iter().map(|a| a.frames.len()).sum();
-                println!(
-                    "  {:?}: {}x{} origin=({},{}) animations={} frame refs={}",
-                    s.name,
-                    s.width,
-                    s.height,
-                    s.origin_x,
-                    s.origin_y,
-                    s.animations.len(),
-                    nframes
-                );
-                if frames {
-                    for (i, a) in s.animations.iter().enumerate() {
-                        println!(
-                            "    anim {i}: u02={} u04={} u08={} u0c={} frames={:?}",
-                            a.unknown_0x02,
-                            a.unknown_0x04,
-                            a.unknown_0x08,
-                            a.unknown_0x0c,
-                            a.frames
-                                .iter()
-                                .map(|f| (f.frame, f.duration, f.anchor_x, f.anchor_y))
-                                .collect::<Vec<_>>()
-                        );
-                    }
-                }
-            }
-            Ok(())
-        }
-        Cmd::Dic { file } => {
-            let data = read(&file)?;
-            let d = dic::parse(&data)?;
-            println!(
-                "bank generation {:#x}, pages {}, symbols/page {}, dictionary region {} bytes, frames {}",
-                d.bank_generation,
-                d.page_count,
-                d.symbols_per_page,
-                d.dictionary_region.len(),
-                d.frames.len()
-            );
-            let mut per_page: BTreeMap<u16, (usize, u64)> = BTreeMap::new();
-            for f in &d.frames {
-                let e = per_page.entry(f.page).or_default();
-                e.0 += 1;
-                e.1 += u64::from(f.length);
-            }
-            for (page, (n, bytes)) in per_page.iter().take(10) {
-                println!("  page {page}: {n} frames, {bytes} bytes of symbols");
-            }
-            let maxw = d.frames.iter().map(|f| f.width).max().unwrap_or(0);
-            let maxh = d.frames.iter().map(|f| f.height).max().unwrap_or(0);
-            println!("  max frame {maxw}x{maxh}");
-            Ok(())
-        }
-        Cmd::Chunks { file } => {
-            let data = read(&file)?;
-            let root = match detect(&data) {
-                FileKind::Rhp => b"MEUH",
-                FileKind::Rhm => b"DUTY",
-                other => bail!("not a chunk container: {other:?}"),
-            };
-            let c = chunk::parse_container(&data, root)?;
-            println!(
-                "{} version {} with {} children",
-                String::from_utf8_lossy(&c.tag),
-                c.version,
-                c.children.len()
-            );
-            for ch in &c.children {
-                println!(
-                    "  {:#08x} {:?} version {} body {} bytes",
-                    ch.offset,
-                    ch.tag_str(),
-                    ch.version,
-                    ch.body.len()
-                );
-            }
-            Ok(())
-        }
-        Cmd::ExportImage { file, out, index } => {
-            let imgs = image_blob::parse_sequence(&read(&file)?)?;
-            let img = imgs
-                .get(index)
-                .with_context(|| format!("file has {} images", imgs.len()))?;
-            write_png(
-                &out,
-                u32::from(img.width),
-                u32::from(img.height),
-                &img.to_rgba8_565()?,
-            )?;
-            println!("wrote {} ({}x{})", out.display(), img.width, img.height);
-            Ok(())
-        }
+        Cmd::Sres { file } => command_sres(&file),
+        Cmd::Rhs { file, frames } => command_rhs(&file, frames),
+        Cmd::Dic { file } => command_dic(&file),
+        Cmd::Chunks { file } => command_chunks(&file),
+        Cmd::ExportImage { file, out, index } => command_export_image(&file, &out, index),
         Cmd::ExportSres {
             file,
             id,
             out,
             frame,
-        } => {
-            let a = sres::parse(&read(&file)?)?;
-            let e = a
-                .get(id)
-                .with_context(|| format!("no entry with id {id}"))?;
-            let img = match &e.body {
-                sres::Body::Picture(p) => p,
-                sres::Body::PictureCollection(v)
-                | sres::Body::Widget { pictures: v, .. }
-                | sres::Body::Cursor { frames: v, .. } => v
-                    .get(frame)
-                    .with_context(|| format!("entry has {} frames", v.len()))?,
-                _ => bail!("entry {id} is not a picture"),
-            };
-            write_png(
-                &out,
-                u32::from(img.width),
-                u32::from(img.height),
-                &img.to_rgba8_565()?,
-            )?;
-            println!("wrote {} ({}x{})", out.display(), img.width, img.height);
-            Ok(())
-        }
+        } => command_export_sres(&file, id, &out, frame),
         Cmd::ExportFrame {
             dic,
             bks,
             frame_index,
             out,
-        } => {
-            use std::io::{Read, Seek, SeekFrom};
-            let dic_data = read(&dic)?;
-            let d = dic::parse(&dic_data)?;
-            let pages = sprite_decode::parse_pages(&d)?;
-            let rec = d
-                .frame(frame_index)
-                .with_context(|| format!("table has {} frames", d.frames.len()))?;
-            // The same policy the engine applies: a hostile record is refused before the stream
-            // buffer exists, and the buffer itself is obtained with `try_reserve`.
-            let limits = sprite_decode::DecodeLimits::RETAIL;
-            limits
-                .check_record(rec)
-                .with_context(|| format!("frame {frame_index} record"))?;
-            let mut f =
-                std::fs::File::open(&bks).with_context(|| format!("opening {}", bks.display()))?;
-            let mut stream = Vec::new();
-            stream.try_reserve_exact(rec.length as usize).map_err(|_| {
-                anyhow::anyhow!("frame {frame_index}: cannot allocate {} bytes", rec.length)
-            })?;
-            stream.resize(rec.length as usize, 0);
-            f.seek(SeekFrom::Start(u64::from(rec.offset)))?;
-            f.read_exact(&mut stream)
-                .with_context(|| format!("reading frame {frame_index} stream"))?;
-            let img = sprite_decode::decode_frame_with(rec, &stream, &pages, &limits)?;
-            write_png(
-                &out,
-                u32::from(img.width),
-                u32::from(img.height),
-                &sprite_decode::to_rgba8_keyed(&img)?,
-            )?;
-            let enc = if rec.page == dic::NO_PAGE {
-                String::from("span encoded")
-            } else {
-                format!("page {}", rec.page)
-            };
-            println!(
-                "wrote {} ({}x{}, {enc}, {} stream bytes)",
-                out.display(),
-                img.width,
-                img.height,
-                rec.length
-            );
-            Ok(())
-        }
-        Cmd::FontSheet { file, out, columns } => {
-            let f = font::parse_bitmap(&read(&file)?)?;
-            let columns = columns.max(1);
-            let cell_w = f.glyphs.iter().map(|g| g.width).max().unwrap_or(1).max(1) + 2;
-            let cell_h = f.height() + 2;
-            let rows = (f.glyphs.len() as u32).div_ceil(columns);
-            let mut canvas = Canvas::new(cell_w * columns, cell_h * rows, [0x40, 0x40, 0x40]);
-            for (i, g) in f.glyphs.iter().enumerate() {
-                let i = i as u32;
-                let x = (i % columns) * cell_w + 1;
-                let y = (i / columns) * cell_h + 1;
-                canvas.blit(&f.glyph_rgba(g), x as i64, y as i64);
-            }
-            write_png(&out, canvas.width, canvas.height, &canvas.rgba)?;
-            println!(
-                "{}: face {:?} {} glyphs, strip {}x{}, spacing {}, unknown_2e={} unknown_36={} unknown_3a={}",
-                file.display(),
-                f.name,
-                f.glyphs.len(),
-                f.colour.width,
-                f.colour.height,
-                f.spacing,
-                f.unknown_2e,
-                f.unknown_36,
-                f.unknown_3a
-            );
-            println!(
-                "wrote {} ({}x{})",
-                out.display(),
-                canvas.width,
-                canvas.height
-            );
-            Ok(())
-        }
+        } => command_export_frame(&dic, &bks, frame_index, &out),
+        Cmd::FontSheet { file, out, columns } => command_font_sheet(&file, &out, columns),
         Cmd::FontText {
             file,
             text,
             out,
             background,
-        } => {
-            let f = font::parse_bitmap(&read(&file)?)?;
-            let bg =
-                u32::from_str_radix(&background, 16).context("background must be RRGGBB hex")?;
-            let bg = [(bg >> 16) as u8, (bg >> 8) as u8, bg as u8];
-            let glyphs: Vec<&font::Glyph> = text.chars().filter_map(|c| f.glyph(c)).collect();
-            let mut pen: i64 = 2;
-            let mut positions = Vec::with_capacity(glyphs.len());
-            for g in &glyphs {
-                pen += i64::from(g.x_adjust);
-                positions.push(pen);
-                pen += i64::from(g.width) + i64::from(g.advance_adjust) + i64::from(f.spacing);
-            }
-            let width = u32::try_from(pen.max(1) + 2).unwrap_or(1);
-            let mut canvas = Canvas::new(width, f.height() + 4, bg);
-            for (g, x) in glyphs.iter().zip(positions) {
-                // The space record of the Scroll-face fonts aliases the "!" cell: spaces only advance.
-                if g.code != 0x20 {
-                    canvas.blit(&f.glyph_rgba(g), x, 2);
-                }
-            }
-            write_png(&out, canvas.width, canvas.height, &canvas.rgba)?;
-            let missing: String = text.chars().filter(|&c| f.glyph(c).is_none()).collect();
-            if !missing.is_empty() {
-                println!("no glyph for: {missing:?}");
-            }
-            println!(
-                "wrote {} ({}x{})",
-                out.display(),
-                canvas.width,
-                canvas.height
-            );
-            Ok(())
-        }
-        Cmd::Rhm { file, programs } => {
-            dump_rhm(&rhm::parse(&read(&file)?)?, programs);
-            Ok(())
-        }
-        Cmd::RhmOverlay { rhm, map, out } => {
-            let m = rhm::parse(&read(&rhm)?)?;
-            let imgs = image_blob::parse_sequence(&read(&map)?)?;
-            let img = imgs.first().context("map has no image")?;
-            let mut canvas = OverlayCanvas {
-                w: usize::from(img.width),
-                h: usize::from(img.height),
-                rgba: img.to_rgba8_565()?,
-            };
-            draw_mission(&mut canvas, &m);
-            write_png(&out, img.width.into(), img.height.into(), &canvas.rgba)?;
-            println!("wrote {} ({}x{})", out.display(), img.width, img.height);
-            Ok(())
-        }
-        Cmd::Cpf { file, hex } => {
-            dump_cpf(&cpf::parse(&read(&file)?)?, hex);
-            Ok(())
-        }
+        } => command_font_text(&file, &text, &out, &background),
+        Cmd::Rhm { file, programs } => command_rhm(&file, programs),
+        Cmd::RhmOverlay { rhm, map, out } => command_rhm_overlay(&rhm, &map, &out),
+        Cmd::Cpf { file, hex } => command_cpf(&file, hex),
         Cmd::Scb {
             file,
             class,
             no_code,
-        } => {
-            dump_scb(&scb::parse(&read(&file)?)?, class.as_deref(), !no_code);
-            Ok(())
-        }
-        Cmd::Rhp { file } => {
-            let m = rhp::parse(&read(&file)?)?;
-            print_rhp(&m);
-            Ok(())
-        }
-        Cmd::RhpOverlay { rhp, map, out } => {
-            let m = rhp::parse(&read(&rhp)?)?;
-            let imgs = image_blob::parse_sequence(&read(&map)?)?;
-            let img = imgs.first().context("map file has no image")?;
-            let mut canvas = RhpCanvas {
-                w: i64::from(img.width),
-                h: i64::from(img.height),
-                px: img.to_rgba8_565()?,
-            };
-            draw_rhp(&mut canvas, &m);
-            write_png(
-                &out,
-                u32::from(img.width),
-                u32::from(img.height),
-                &canvas.px,
-            )?;
-            println!("wrote {} ({}x{})", out.display(), img.width, img.height);
-            Ok(())
-        }
-        Cmd::GameDir { path } => {
-            let g = opensherwood_assets::GameDir::discover(path.as_deref())?;
-            println!("root: {}", g.root.display());
-            for l in &g.layers {
+        } => command_scb(&file, class.as_deref(), no_code),
+        Cmd::Rhp { file } => command_rhp(&file),
+        Cmd::RhpOverlay { rhp, map, out } => command_rhp_overlay(&rhp, &map, &out),
+        Cmd::GameDir { path } => command_game_dir(path.as_deref()),
+    }
+}
+
+fn command_sres(file: &Path) -> anyhow::Result<()> {
+    let a = sres::parse(&read(file)?)?;
+    println!(
+        "SRES version {:#x}, {} entries, {} offsets in trailer",
+        a.version,
+        a.entries.len(),
+        a.offsets.len()
+    );
+    for e in &a.entries {
+        let desc = match &e.body {
+            sres::Body::Picture(p) => format!("{}x{}", p.width, p.height),
+            sres::Body::PictureCollection(v)
+            | sres::Body::Widget { pictures: v, .. }
+            | sres::Body::Cursor { frames: v, .. } => {
+                format!(
+                    "{} pictures, first {}",
+                    v.len(),
+                    v.first()
+                        .map_or(String::from("-"), |p| format!("{}x{}", p.width, p.height))
+                )
+            }
+            sres::Body::Text(v) => format!(
+                "{} strings, first {:?}",
+                v.len(),
+                v.first().map(|s| truncate(s, 60))
+            ),
+            sres::Body::Wave(v) => format!("{} paths, first {:?}", v.len(), v.first()),
+        };
+        println!(
+            "  {:#08x} {} id={:<8} {}",
+            e.offset,
+            e.body.kind(),
+            e.id,
+            desc
+        );
+    }
+    Ok(())
+}
+
+fn command_rhs(file: &Path, frames: bool) -> anyhow::Result<()> {
+    let p = rhs::parse(&read(file)?)?;
+    println!(
+        "bank generation {:#x}, {} sequences",
+        p.bank_generation,
+        p.sequences.len()
+    );
+    for s in &p.sequences {
+        let nframes: usize = s.animations.iter().map(|a| a.frames.len()).sum();
+        println!(
+            "  {:?}: {}x{} origin=({},{}) animations={} frame refs={}",
+            s.name,
+            s.width,
+            s.height,
+            s.origin_x,
+            s.origin_y,
+            s.animations.len(),
+            nframes
+        );
+        if frames {
+            for (i, a) in s.animations.iter().enumerate() {
                 println!(
-                    "  layer {} at {} ({} files)",
-                    l.name,
-                    l.root.display(),
-                    l.paths().count()
+                    "    anim {i}: u02={} u04={} u08={} u0c={} frames={:?}",
+                    a.unknown_0x02,
+                    a.unknown_0x04,
+                    a.unknown_0x08,
+                    a.unknown_0x0c,
+                    a.frames
+                        .iter()
+                        .map(|f| (f.frame, f.duration, f.anchor_x, f.anchor_y))
+                        .collect::<Vec<_>>()
                 );
             }
-            println!("fingerprint: {}", g.fingerprint()?);
-            Ok(())
         }
     }
+    Ok(())
+}
+
+fn command_dic(file: &Path) -> anyhow::Result<()> {
+    let data = read(file)?;
+    let d = dic::parse(&data)?;
+    println!(
+        "bank generation {:#x}, pages {}, symbols/page {}, dictionary region {} bytes, frames {}",
+        d.bank_generation,
+        d.page_count,
+        d.symbols_per_page,
+        d.dictionary_region.len(),
+        d.frames.len()
+    );
+    let mut per_page: BTreeMap<u16, (usize, u64)> = BTreeMap::new();
+    for f in &d.frames {
+        let e = per_page.entry(f.page).or_default();
+        e.0 += 1;
+        e.1 += u64::from(f.length);
+    }
+    for (page, (n, bytes)) in per_page.iter().take(10) {
+        println!("  page {page}: {n} frames, {bytes} bytes of symbols");
+    }
+    let maxw = d.frames.iter().map(|f| f.width).max().unwrap_or(0);
+    let maxh = d.frames.iter().map(|f| f.height).max().unwrap_or(0);
+    println!("  max frame {maxw}x{maxh}");
+    Ok(())
+}
+
+fn command_chunks(file: &Path) -> anyhow::Result<()> {
+    let data = read(file)?;
+    let root = match detect(&data) {
+        FileKind::Rhp => b"MEUH",
+        FileKind::Rhm => b"DUTY",
+        other => bail!("not a chunk container: {other:?}"),
+    };
+    let c = chunk::parse_container(&data, root)?;
+    println!(
+        "{} version {} with {} children",
+        String::from_utf8_lossy(&c.tag),
+        c.version,
+        c.children.len()
+    );
+    for ch in &c.children {
+        println!(
+            "  {:#08x} {:?} version {} body {} bytes",
+            ch.offset,
+            ch.tag_str(),
+            ch.version,
+            ch.body.len()
+        );
+    }
+    Ok(())
+}
+
+fn command_export_image(file: &Path, out: &Path, index: usize) -> anyhow::Result<()> {
+    let imgs = image_blob::parse_sequence(&read(file)?)?;
+    let img = imgs
+        .get(index)
+        .with_context(|| format!("file has {} images", imgs.len()))?;
+    write_png(
+        out,
+        u32::from(img.width),
+        u32::from(img.height),
+        &img.to_rgba8_565()?,
+    )?;
+    println!("wrote {} ({}x{})", out.display(), img.width, img.height);
+    Ok(())
+}
+
+fn command_export_sres(file: &Path, id: u32, out: &Path, frame: usize) -> anyhow::Result<()> {
+    let a = sres::parse(&read(file)?)?;
+    let e = a
+        .get(id)
+        .with_context(|| format!("no entry with id {id}"))?;
+    let img = match &e.body {
+        sres::Body::Picture(p) => p,
+        sres::Body::PictureCollection(v)
+        | sres::Body::Widget { pictures: v, .. }
+        | sres::Body::Cursor { frames: v, .. } => v
+            .get(frame)
+            .with_context(|| format!("entry has {} frames", v.len()))?,
+        _ => bail!("entry {id} is not a picture"),
+    };
+    write_png(
+        out,
+        u32::from(img.width),
+        u32::from(img.height),
+        &img.to_rgba8_565()?,
+    )?;
+    println!("wrote {} ({}x{})", out.display(), img.width, img.height);
+    Ok(())
+}
+
+fn command_export_frame(
+    dic: &Path,
+    bks: &Path,
+    frame_index: u32,
+    out: &Path,
+) -> anyhow::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let dic_data = read(dic)?;
+    let d = dic::parse(&dic_data)?;
+    let pages = sprite_decode::parse_pages(&d)?;
+    let rec = d
+        .frame(frame_index)
+        .with_context(|| format!("table has {} frames", d.frames.len()))?;
+    // The same policy the engine applies: a hostile record is refused before the stream
+    // buffer exists, and the buffer itself is obtained with `try_reserve`.
+    let limits = sprite_decode::DecodeLimits::RETAIL;
+    limits
+        .check_record(rec)
+        .with_context(|| format!("frame {frame_index} record"))?;
+    let mut f = std::fs::File::open(bks).with_context(|| format!("opening {}", bks.display()))?;
+    let mut stream = Vec::new();
+    stream.try_reserve_exact(rec.length as usize).map_err(|_| {
+        anyhow::anyhow!("frame {frame_index}: cannot allocate {} bytes", rec.length)
+    })?;
+    stream.resize(rec.length as usize, 0);
+    f.seek(SeekFrom::Start(u64::from(rec.offset)))?;
+    f.read_exact(&mut stream)
+        .with_context(|| format!("reading frame {frame_index} stream"))?;
+    let img = sprite_decode::decode_frame_with(rec, &stream, &pages, &limits)?;
+    write_png(
+        out,
+        u32::from(img.width),
+        u32::from(img.height),
+        &sprite_decode::to_rgba8_keyed(&img)?,
+    )?;
+    let enc = if rec.page == dic::NO_PAGE {
+        String::from("span encoded")
+    } else {
+        format!("page {}", rec.page)
+    };
+    println!(
+        "wrote {} ({}x{}, {enc}, {} stream bytes)",
+        out.display(),
+        img.width,
+        img.height,
+        rec.length
+    );
+    Ok(())
+}
+
+fn command_font_sheet(file: &Path, out: &Path, columns: u32) -> anyhow::Result<()> {
+    let f = font::parse_bitmap(&read(file)?)?;
+    let columns = columns.max(1);
+    let cell_w = f.glyphs.iter().map(|g| g.width).max().unwrap_or(1).max(1) + 2;
+    let cell_h = f.height() + 2;
+    let rows = (f.glyphs.len() as u32).div_ceil(columns);
+    let mut canvas = Canvas::new(cell_w * columns, cell_h * rows, [0x40, 0x40, 0x40]);
+    for (i, g) in f.glyphs.iter().enumerate() {
+        let i = i as u32;
+        let x = (i % columns) * cell_w + 1;
+        let y = (i / columns) * cell_h + 1;
+        canvas.blit(&f.glyph_rgba(g), x as i64, y as i64);
+    }
+    write_png(out, canvas.width, canvas.height, &canvas.rgba)?;
+    println!(
+        "{}: face {:?} {} glyphs, strip {}x{}, spacing {}, unknown_2e={} unknown_36={} unknown_3a={}",
+        file.display(),
+        f.name,
+        f.glyphs.len(),
+        f.colour.width,
+        f.colour.height,
+        f.spacing,
+        f.unknown_2e,
+        f.unknown_36,
+        f.unknown_3a
+    );
+    println!(
+        "wrote {} ({}x{})",
+        out.display(),
+        canvas.width,
+        canvas.height
+    );
+    Ok(())
+}
+
+fn command_font_text(file: &Path, text: &str, out: &Path, background: &str) -> anyhow::Result<()> {
+    let f = font::parse_bitmap(&read(file)?)?;
+    let bg = u32::from_str_radix(background, 16).context("background must be RRGGBB hex")?;
+    let bg = [(bg >> 16) as u8, (bg >> 8) as u8, bg as u8];
+    let glyphs: Vec<&font::Glyph> = text.chars().filter_map(|c| f.glyph(c)).collect();
+    let mut pen: i64 = 2;
+    let mut positions = Vec::with_capacity(glyphs.len());
+    for g in &glyphs {
+        pen += i64::from(g.x_adjust);
+        positions.push(pen);
+        pen += i64::from(g.width) + i64::from(g.advance_adjust) + i64::from(f.spacing);
+    }
+    let width = u32::try_from(pen.max(1) + 2).unwrap_or(1);
+    let mut canvas = Canvas::new(width, f.height() + 4, bg);
+    for (g, x) in glyphs.iter().zip(positions) {
+        // The space record of the Scroll-face fonts aliases the "!" cell: spaces only advance.
+        if g.code != 0x20 {
+            canvas.blit(&f.glyph_rgba(g), x, 2);
+        }
+    }
+    write_png(out, canvas.width, canvas.height, &canvas.rgba)?;
+    let missing: String = text.chars().filter(|&c| f.glyph(c).is_none()).collect();
+    if !missing.is_empty() {
+        println!("no glyph for: {missing:?}");
+    }
+    println!(
+        "wrote {} ({}x{})",
+        out.display(),
+        canvas.width,
+        canvas.height
+    );
+    Ok(())
+}
+
+fn command_rhm(file: &Path, programs: bool) -> anyhow::Result<()> {
+    dump_rhm(&rhm::parse(&read(file)?)?, programs);
+    Ok(())
+}
+
+fn command_rhm_overlay(rhm: &Path, map: &Path, out: &Path) -> anyhow::Result<()> {
+    let m = rhm::parse(&read(rhm)?)?;
+    let imgs = image_blob::parse_sequence(&read(map)?)?;
+    let img = imgs.first().context("map has no image")?;
+    let mut canvas = OverlayCanvas {
+        w: usize::from(img.width),
+        h: usize::from(img.height),
+        rgba: img.to_rgba8_565()?,
+    };
+    draw_mission(&mut canvas, &m);
+    write_png(out, img.width.into(), img.height.into(), &canvas.rgba)?;
+    println!("wrote {} ({}x{})", out.display(), img.width, img.height);
+    Ok(())
+}
+
+fn command_cpf(file: &Path, hex: bool) -> anyhow::Result<()> {
+    dump_cpf(&cpf::parse(&read(file)?)?, hex);
+    Ok(())
+}
+
+fn command_scb(file: &Path, class: Option<&str>, no_code: bool) -> anyhow::Result<()> {
+    dump_scb(&scb::parse(&read(file)?)?, class, !no_code);
+    Ok(())
+}
+
+fn command_rhp(file: &Path) -> anyhow::Result<()> {
+    let m = rhp::parse(&read(file)?)?;
+    print_rhp(&m);
+    Ok(())
+}
+
+fn command_rhp_overlay(rhp: &Path, map: &Path, out: &Path) -> anyhow::Result<()> {
+    let m = rhp::parse(&read(rhp)?)?;
+    let imgs = image_blob::parse_sequence(&read(map)?)?;
+    let img = imgs.first().context("map file has no image")?;
+    let mut canvas = RhpCanvas {
+        w: i64::from(img.width),
+        h: i64::from(img.height),
+        px: img.to_rgba8_565()?,
+    };
+    draw_rhp(&mut canvas, &m);
+    write_png(out, u32::from(img.width), u32::from(img.height), &canvas.px)?;
+    println!("wrote {} ({}x{})", out.display(), img.width, img.height);
+    Ok(())
+}
+
+fn command_game_dir(path: Option<&Path>) -> anyhow::Result<()> {
+    let g = opensherwood_assets::GameDir::discover(path)?;
+    println!("root: {}", g.root.display());
+    for l in &g.layers {
+        println!(
+            "  layer {} at {} ({} files)",
+            l.name,
+            l.root.display(),
+            l.paths().count()
+        );
+    }
+    println!("fingerprint: {}", g.fingerprint()?);
+    Ok(())
 }
 
 fn read(p: &Path) -> anyhow::Result<Vec<u8>> {
@@ -595,25 +625,7 @@ fn inspect(file: &Path) -> anyhow::Result<()> {
                 h.version, h.class_count, h.source_path, h.body_offset
             );
         }
-        FileKind::SpriteBank => {
-            if let Ok(p) = rhs::parse(&data) {
-                for s in &p.sequences {
-                    println!(
-                        "  sequence {:?} {}x{} {} animations",
-                        s.name,
-                        s.width,
-                        s.height,
-                        s.animations.len()
-                    );
-                }
-            } else if let Ok(d) = dic::parse(&data) {
-                println!(
-                    "  dictionary: {} pages, {} frames",
-                    d.page_count,
-                    d.frames.len()
-                );
-            }
-        }
+        FileKind::SpriteBank => inspect_sprite_bank(&data),
         FileKind::ImageBlob => {
             let imgs = image_blob::parse_sequence(&data)?;
             for img in &imgs {
@@ -729,6 +741,30 @@ fn dump_cpf(t: &cpf::ProfileTable, with_hex: bool) {
             );
         }
     }
+    dump_cpf_unknown_tables(t, with_hex);
+}
+
+fn inspect_sprite_bank(data: &[u8]) {
+    if let Ok(p) = rhs::parse(data) {
+        for s in &p.sequences {
+            println!(
+                "  sequence {:?} {}x{} {} animations",
+                s.name,
+                s.width,
+                s.height,
+                s.animations.len()
+            );
+        }
+    } else if let Ok(d) = dic::parse(data) {
+        println!(
+            "  dictionary: {} pages, {} frames",
+            d.page_count,
+            d.frames.len()
+        );
+    }
+}
+
+fn dump_cpf_unknown_tables(t: &cpf::ProfileTable, with_hex: bool) {
     if with_hex {
         println!("== table A");
         for (i, b) in t.table_a.iter().enumerate() {
@@ -769,114 +805,7 @@ fn dump_rhm(m: &rhm::Mission, programs: bool) {
         );
     }
     for g in &m.actor_groups {
-        match g {
-            rhm::ActorGroup::Meow { version, count } => println!("MEOW v{version}: {count}"),
-            rhm::ActorGroup::PlayerCharacters { version, records } => {
-                println!("SCOT v{version}: {} player characters", records.len());
-                for r in records {
-                    println!(
-                        "  ({},{}) dir {} u08={:#x} q=({},{},{}) u12={} u16={:02x?} trailer={} {}",
-                        r.placement.x,
-                        r.placement.y,
-                        r.placement.direction,
-                        r.placement.unknown_0x08,
-                        r.placement.unknown_0x0c,
-                        r.placement.unknown_0x0e,
-                        r.placement.unknown_0x10,
-                        r.unknown_0x12,
-                        r.unknown_0x16,
-                        r.unknown_trailer,
-                        r.name.as_deref().unwrap_or("-")
-                    );
-                }
-            }
-            rhm::ActorGroup::Npcs { version, records } => {
-                println!("BORG v{version}: {} NPCs", records.len());
-                for (i, r) in records.iter().enumerate() {
-                    println!(
-                        "  #{i} ({},{}) dir {} u08={:#x} q=({},{},{}) u12={} profile {} u1a={} u1b={} u23={} members {:?} rail {} u_i16 {} {}",
-                        r.placement.x,
-                        r.placement.y,
-                        r.placement.direction,
-                        r.placement.unknown_0x08,
-                        r.placement.unknown_0x0c,
-                        r.placement.unknown_0x0e,
-                        r.placement.unknown_0x10,
-                        r.unknown_0x12,
-                        r.profile,
-                        r.unknown_0x1a,
-                        r.unknown_0x1b,
-                        r.unknown_0x23,
-                        r.members,
-                        r.rail,
-                        r.unknown_i16,
-                        r.name.as_deref().unwrap_or("-")
-                    );
-                }
-            }
-            rhm::ActorGroup::Civilians { version, records } => {
-                println!("OILE v{version}: {} civilians", records.len());
-                for r in records {
-                    println!(
-                        "  ({},{}) dir {} u08={:#x} u12={} profile {} i16=({},{}) lists {:?} {}",
-                        r.placement.x,
-                        r.placement.y,
-                        r.placement.direction,
-                        r.placement.unknown_0x08,
-                        r.unknown_0x12,
-                        r.profile,
-                        r.unknown_i16_a,
-                        r.unknown_i16_b,
-                        r.lists,
-                        r.name.as_deref().unwrap_or("-")
-                    );
-                }
-            }
-            rhm::ActorGroup::Vips { version, records } => {
-                println!("TOTO v{version}: {} named NPCs", records.len());
-                for r in records {
-                    println!(
-                        "  ({},{}) dir {} u08={:#x} u12={} profile {} i16=({},{}) {}",
-                        r.placement.x,
-                        r.placement.y,
-                        r.placement.direction,
-                        r.placement.unknown_0x08,
-                        r.unknown_0x12,
-                        r.profile,
-                        r.unknown_i16_a,
-                        r.unknown_i16_b,
-                        r.name.as_deref().unwrap_or("-")
-                    );
-                }
-            }
-            rhm::ActorGroup::Objects { version, records } => {
-                println!("BOOM v{version}: {} objects", records.len());
-                for r in records {
-                    println!(
-                        "  ({},{}) u04={} u0a={} q=({},{},{}) {:?}/{:?} flags={:#x} anchor ({},{}) poly {} pts {}",
-                        r.x,
-                        r.y,
-                        r.unknown_0x04,
-                        r.unknown_0x0a,
-                        r.unknown_0x0e,
-                        r.unknown_0x10,
-                        r.unknown_0x12,
-                        r.sprite,
-                        r.label,
-                        r.unknown_flags,
-                        r.x2,
-                        r.y2,
-                        r.polygon.points.len(),
-                        r.name.as_deref().unwrap_or("-")
-                    );
-                }
-            }
-            rhm::ActorGroup::Unknown { tag, version, body } => println!(
-                "{} v{version}: {} bytes (unknown class)",
-                String::from_utf8_lossy(tag),
-                body.len()
-            ),
-        }
+        dump_actor_group(g);
     }
     println!("ZORG: {} entries", m.zorg.len());
     for z in &m.zorg {
@@ -912,41 +841,7 @@ fn dump_rhm(m: &rhm::Mission, programs: bool) {
             p.x, p.y, p.direction, p.unknown_0x08
         );
     }
-    println!("RAIL: {} paths", m.rails.len());
-    for (i, rail) in m.rails.iter().enumerate() {
-        let pts: Vec<String> = rail
-            .iter()
-            .map(|p| match &p.name {
-                Some(n) => format!("({},{}){n:?}", p.point.x, p.point.y),
-                None => format!(
-                    "({},{}){}",
-                    p.point.x,
-                    p.point.y,
-                    if p.tables.is_empty() { "" } else { "*" }
-                ),
-            })
-            .collect();
-        println!("  rail {i}: {}", pts.join(" "));
-        if programs {
-            for (j, p) in rail.iter().enumerate() {
-                for t in &p.tables {
-                    for blk in &t.blocks {
-                        let cmds: Vec<String> = blk
-                            .commands
-                            .iter()
-                            .map(|c| format!("cmd_{:02x}({})", c.opcode, hex(&c.args)))
-                            .collect();
-                        println!(
-                            "    point {j} table {} {}%: {}",
-                            t.id,
-                            blk.percent,
-                            cmds.join(" ")
-                        );
-                    }
-                }
-            }
-        }
-    }
+    dump_rails(m, programs);
     println!("SKRO: {} scrolls", m.scrolls.len());
     for s in &m.scrolls {
         println!(
@@ -992,6 +887,159 @@ fn dump_rhm(m: &rhm::Mission, programs: bool) {
     for (i, c) in m.cave.iter().enumerate() {
         if !c.ids.is_empty() || c.unknown_flag != 0 {
             println!("  #{i} ids {:?} flag {}", c.ids, c.unknown_flag);
+        }
+    }
+}
+
+fn dump_actor_group(g: &rhm::ActorGroup) {
+    match g {
+        rhm::ActorGroup::Meow { version, count } => println!("MEOW v{version}: {count}"),
+        rhm::ActorGroup::PlayerCharacters { version, records } => {
+            println!("SCOT v{version}: {} player characters", records.len());
+            for r in records {
+                println!(
+                    "  ({},{}) dir {} u08={:#x} q=({},{},{}) u12={} u16={:02x?} trailer={} {}",
+                    r.placement.x,
+                    r.placement.y,
+                    r.placement.direction,
+                    r.placement.unknown_0x08,
+                    r.placement.unknown_0x0c,
+                    r.placement.unknown_0x0e,
+                    r.placement.unknown_0x10,
+                    r.unknown_0x12,
+                    r.unknown_0x16,
+                    r.unknown_trailer,
+                    r.name.as_deref().unwrap_or("-")
+                );
+            }
+        }
+        rhm::ActorGroup::Npcs { version, records } => {
+            println!("BORG v{version}: {} NPCs", records.len());
+            for (i, r) in records.iter().enumerate() {
+                println!(
+                    "  #{i} ({},{}) dir {} u08={:#x} q=({},{},{}) u12={} profile {} u1a={} u1b={} u23={} members {:?} rail {} u_i16 {} {}",
+                    r.placement.x,
+                    r.placement.y,
+                    r.placement.direction,
+                    r.placement.unknown_0x08,
+                    r.placement.unknown_0x0c,
+                    r.placement.unknown_0x0e,
+                    r.placement.unknown_0x10,
+                    r.unknown_0x12,
+                    r.profile,
+                    r.unknown_0x1a,
+                    r.unknown_0x1b,
+                    r.unknown_0x23,
+                    r.members,
+                    r.rail,
+                    r.unknown_i16,
+                    r.name.as_deref().unwrap_or("-")
+                );
+            }
+        }
+        rhm::ActorGroup::Civilians { version, records } => {
+            println!("OILE v{version}: {} civilians", records.len());
+            for r in records {
+                println!(
+                    "  ({},{}) dir {} u08={:#x} u12={} profile {} i16=({},{}) lists {:?} {}",
+                    r.placement.x,
+                    r.placement.y,
+                    r.placement.direction,
+                    r.placement.unknown_0x08,
+                    r.unknown_0x12,
+                    r.profile,
+                    r.unknown_i16_a,
+                    r.unknown_i16_b,
+                    r.lists,
+                    r.name.as_deref().unwrap_or("-")
+                );
+            }
+        }
+        rhm::ActorGroup::Vips { version, records } => {
+            println!("TOTO v{version}: {} named NPCs", records.len());
+            for r in records {
+                println!(
+                    "  ({},{}) dir {} u08={:#x} u12={} profile {} i16=({},{}) {}",
+                    r.placement.x,
+                    r.placement.y,
+                    r.placement.direction,
+                    r.placement.unknown_0x08,
+                    r.unknown_0x12,
+                    r.profile,
+                    r.unknown_i16_a,
+                    r.unknown_i16_b,
+                    r.name.as_deref().unwrap_or("-")
+                );
+            }
+        }
+        rhm::ActorGroup::Objects { version, records } => {
+            println!("BOOM v{version}: {} objects", records.len());
+            for r in records {
+                println!(
+                    "  ({},{}) u04={} u0a={} q=({},{},{}) {:?}/{:?} flags={:#x} anchor ({},{}) poly {} pts {}",
+                    r.x,
+                    r.y,
+                    r.unknown_0x04,
+                    r.unknown_0x0a,
+                    r.unknown_0x0e,
+                    r.unknown_0x10,
+                    r.unknown_0x12,
+                    r.sprite,
+                    r.label,
+                    r.unknown_flags,
+                    r.x2,
+                    r.y2,
+                    r.polygon.points.len(),
+                    r.name.as_deref().unwrap_or("-")
+                );
+            }
+        }
+        rhm::ActorGroup::Unknown { tag, version, body } => println!(
+            "{} v{version}: {} bytes (unknown class)",
+            String::from_utf8_lossy(tag),
+            body.len()
+        ),
+    }
+}
+
+fn dump_rails(m: &rhm::Mission, programs: bool) {
+    println!("RAIL: {} paths", m.rails.len());
+    for (i, rail) in m.rails.iter().enumerate() {
+        let pts: Vec<String> = rail
+            .iter()
+            .map(|p| match &p.name {
+                Some(n) => format!("({},{}){n:?}", p.point.x, p.point.y),
+                None => format!(
+                    "({},{}){}",
+                    p.point.x,
+                    p.point.y,
+                    if p.tables.is_empty() { "" } else { "*" }
+                ),
+            })
+            .collect();
+        println!("  rail {i}: {}", pts.join(" "));
+        if programs {
+            dump_rail_programs(rail);
+        }
+    }
+}
+
+fn dump_rail_programs(rail: &[rhm::RailPoint]) {
+    for (j, p) in rail.iter().enumerate() {
+        for t in &p.tables {
+            for blk in &t.blocks {
+                let cmds: Vec<String> = blk
+                    .commands
+                    .iter()
+                    .map(|c| format!("cmd_{:02x}({})", c.opcode, hex(&c.args)))
+                    .collect();
+                println!(
+                    "    point {j} table {} {}%: {}",
+                    t.id,
+                    blk.percent,
+                    cmds.join(" ")
+                );
+            }
         }
     }
 }
@@ -1159,18 +1207,7 @@ fn draw_mission(cv: &mut OverlayCanvas, m: &rhm::Mission) {
     for b in &m.brains.bushes {
         cv.circle((i32::from(b.x), i32::from(b.y)), 3, BLUE);
     }
-    for rail in &m.rails {
-        for w in rail.windows(2) {
-            cv.line(
-                (i32::from(w[0].point.x), i32::from(w[0].point.y)),
-                (i32::from(w[1].point.x), i32::from(w[1].point.y)),
-                GREEN,
-            );
-        }
-        for p in rail {
-            cv.circle((i32::from(p.point.x), i32::from(p.point.y)), 2, GREEN);
-        }
-    }
+    draw_mission_rails(cv, m);
     for poly in &m.script_areas.polygons {
         cv.polygon(&poly.polygon.points, PURPLE);
     }
@@ -1321,10 +1358,23 @@ impl RhpCanvas {
     }
 }
 
-fn draw_rhp(cv: &mut RhpCanvas, m: &rhp::Rhp) {
-    let pts = |v: &[rhp::Point]| -> Vec<(i64, i64)> {
-        v.iter().map(|p| (i64::from(p.x), i64::from(p.y))).collect()
-    };
+fn draw_mission_rails(cv: &mut OverlayCanvas, m: &rhm::Mission) {
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    for rail in &m.rails {
+        for w in rail.windows(2) {
+            cv.line(
+                (i32::from(w[0].point.x), i32::from(w[0].point.y)),
+                (i32::from(w[1].point.x), i32::from(w[1].point.y)),
+                GREEN,
+            );
+        }
+        for p in rail {
+            cv.circle((i32::from(p.point.x), i32::from(p.point.y)), 2, GREEN);
+        }
+    }
+}
+
+fn draw_rhp_masks(cv: &mut RhpCanvas, m: &rhp::Rhp) {
     // FACE occluder masks, tinted.
     let tints = [
         [255, 0, 0, 110],
@@ -1345,6 +1395,13 @@ fn draw_rhp(cv: &mut RhpCanvas, m: &rhp::Rhp) {
             }
         }
     }
+}
+
+fn draw_rhp(cv: &mut RhpCanvas, m: &rhp::Rhp) {
+    let pts = |v: &[rhp::Point]| -> Vec<(i64, i64)> {
+        v.iter().map(|p| (i64::from(p.x), i64::from(p.y))).collect()
+    };
+    draw_rhp_masks(cv, m);
     // WOAW projection areas (green) and bonds (cyan).
     for a in &m.woaw.areas {
         let poly: Vec<(i64, i64)> = a.points.iter().map(|p| (p.x as i64, p.y as i64)).collect();

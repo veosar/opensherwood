@@ -56,7 +56,7 @@ The range is not mergeable. Review-9 findings 1–5 and 10 remain open in advers
 
 10. **[MEDIUM] The documentation/provenance closure remains inaccurate.** Direct manual/UI wording remains quoted in the combat report ([combat-measurements.md:40](../../original/combat-measurements.md:40), [combat-measurements.md:76](../../original/combat-measurements.md:76)) and H01 report ([h01-win-path.md:111](../../original/h01-win-path.md:111)). The Sherwood provenance records method/build/tests but not an explicit “who” attribution ([sherwood-hub.md:321](../../formats/sherwood-hub.md:321)). `movies.md` makes third-party licensing/relicensing claims without citing the upstream license or offer ([movies.md:23](../../formats/movies.md:23)); its provenance links only the codec description. I found no designer names.
 
-   **Fix:** paraphrase the remaining quoted wording, add an explicit analyst/session attribution to the hub provenance, and cite or remove the NihAV licensing/relicensing assertions.
+**Fix:** paraphrase the remaining quoted wording, add an explicit analyst/session attribution to the hub provenance, and cite or remove the NihAV licensing/relicensing assertions.
 
 The protocol-6 restart-money, strict format-envelope, signed HUD, option-bar and hover changes appear to close review-9 findings 6, 8 and 9. The new combat fields and all seven phase cursors are serialized and hashed; the obstacle index is correctly treated as deterministic derived state. The remaining problems are provenance/liveness/semantic gaps, not simple missing hash fields.
 

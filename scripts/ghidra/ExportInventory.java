@@ -32,27 +32,31 @@ public class ExportInventory extends GhidraScript {
             ReferenceManager rm = currentProgram.getReferenceManager();
             while (it.hasNext() && !monitor.isCancelled()) {
                 Function f = it.next();
-                long size = f.getBody().getNumAddresses();
-                int callers = f.getCallingFunctions(monitor).size();
-                int callees = f.getCalledFunctions(monitor).size();
-                int strings = 0;
-                String first = "";
-                AddressIterator ai = f.getBody().getAddresses(true);
-                while (ai.hasNext()) {
-                    Address a = ai.next();
-                    for (Reference r : rm.getReferencesFrom(a)) {
-                        Data d = currentProgram.getListing().getDefinedDataAt(r.getToAddress());
-                        if (d != null && d.hasStringValue()) {
-                            strings++;
-                            if (first.isEmpty()) first = r.getToAddress().toString();
-                        }
-                    }
-                }
-                w.println(f.getEntryPoint() + "\t" + size + "\t" + f.getName() + "\t" + callers + "\t" + callees
-                        + "\t" + strings + "\t" + first);
+                writeInventoryRow(w, f, rm);
             }
         }
         if (monitor.isCancelled()) throw new IOException("cancelled: the output is incomplete");
         println("inventory written to " + outDir);
+    }
+
+    private void writeInventoryRow(PrintWriter w, Function f, ReferenceManager rm) {
+        long size = f.getBody().getNumAddresses();
+        int callers = f.getCallingFunctions(monitor).size();
+        int callees = f.getCalledFunctions(monitor).size();
+        int strings = 0;
+        String first = "";
+        AddressIterator ai = f.getBody().getAddresses(true);
+        while (ai.hasNext()) {
+            Address a = ai.next();
+            for (Reference r : rm.getReferencesFrom(a)) {
+                Data d = currentProgram.getListing().getDefinedDataAt(r.getToAddress());
+                if (d != null && d.hasStringValue()) {
+                    strings++;
+                    if (first.isEmpty()) first = r.getToAddress().toString();
+                }
+            }
+        }
+        w.println(f.getEntryPoint() + "\t" + size + "\t" + f.getName() + "\t" + callers + "\t" + callees
+                + "\t" + strings + "\t" + first);
     }
 }

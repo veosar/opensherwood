@@ -46,7 +46,8 @@ def test_record_then_play_matches_every_checkpoint(engine):
     header = lines[0]
     assert header["type"] == "header"
     assert header["time"] == "session"
-    assert header["tick_rate"] == [64, 3] and header["viewport"] == [640, 480]
+    assert header["tick_rate"] == [64, 3]
+    assert header["viewport"] == [640, 480]
     assert header["rng_streams"]["gameplay"]["algorithm"] == "pcg32"
     checkpoints = [l for l in lines if l["type"] == "checkpoint"]
     assert [c["tick"] for c in checkpoints] == [0] + list(range(25, 201, 25)) + [203]
@@ -112,6 +113,7 @@ def test_initial_checkpoint_is_compared_before_anything_is_applied(engine):
     # The presentation digests are compared too: a tampered session digest or frame hash at a
     # checkpoint is a divergence of that name, with nothing else differing.
     for field in ("session", "frame"):
+
         def tamper(obj, field=field):
             if obj["type"] == "checkpoint" and obj["tick"] == 75:
                 obj[field] = "11" * 32
@@ -165,12 +167,14 @@ def test_replay_validation_rejects_bad_headers(engine):
     # Only the session time model exists.
     header = json.loads(lines[0])
     header["time"] = "world"
+    bad = "\n".join([json.dumps(header)] + lines[1:]) + "\n"
     with pytest.raises(EngineError) as ei:
-        engine.replay_play(jsonl="\n".join([json.dumps(header)] + lines[1:]) + "\n")
+        engine.replay_play(jsonl=bad)
     assert ei.value.code == -32602
     # events before the header are rejected too
+    bad = "\n".join(lines[1:] + [lines[0]]) + "\n"
     with pytest.raises(EngineError):
-        engine.replay_play(jsonl="\n".join(lines[1:] + [lines[0]]) + "\n")
+        engine.replay_play(jsonl=bad)
 
 
 def test_header_must_match_the_session_after_reset(engine):
@@ -180,8 +184,9 @@ def test_header_must_match_the_session_after_reset(engine):
     lines = rec["jsonl"].splitlines()
     header = json.loads(lines[0])
     header["viewport"] = [800, 600]
+    bad = "\n".join([json.dumps(header)] + lines[1:]) + "\n"
     with pytest.raises(EngineError) as ei:
-        engine.replay_play(jsonl="\n".join([json.dumps(header)] + lines[1:]) + "\n")
+        engine.replay_play(jsonl=bad)
     assert ei.value.code == -32000
     assert "viewport" in ei.value.message
     # The session was reset to the replay's scenario before the mismatch was found.

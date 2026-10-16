@@ -1,12 +1,15 @@
 """Page-0xFFFF frames: print small non-trivial streams, then test RLE hypotheses on all of them."""
+
 import sys, os
+
 sys.path.insert(0, os.path.dirname(__file__))
 import numpy as np
 from spritebank import Bank
 
 b = Bank()
 idx = b.frames_of_page(0xFFFF)
-w = b.width[idx].astype(np.int64); h = b.height[idx].astype(np.int64)
+w = b.width[idx].astype(np.int64)
+h = b.height[idx].astype(np.int64)
 area = w * h
 order = np.argsort(area, kind="stable")
 shown = 0
@@ -15,10 +18,32 @@ for k in order:
         continue
     i = idx[k]
     s = b.stream(i)
-    print(f"frame {i:6d} {w[k]:3d}x{h[k]:3d} len {len(s)*2:5d} :", " ".join(f"{v:04x}" for v in s[:48]))
+    print(f"frame {i:6d} {w[k]:3d}x{h[k]:3d} len {len(s) * 2:5d} :", " ".join(f"{v:04x}" for v in s[:48]))
     shown += 1
     if shown >= 25:
         break
+
+
+def _decode_row(s, w, count_minus_one, p, n):
+    x = 0
+    while x < w:
+        if p >= n:
+            return False, p
+        skip = int(s[p])
+        p += 1
+        x += skip
+        if p >= n:
+            return False, p
+        c = int(s[p])
+        p += 1
+        if c == 0xFFFF:
+            break
+        c = c + 1 if count_minus_one else c
+        x += c
+        p += c
+        if x > w:
+            return False, p
+    return True, p
 
 
 def decode(s, w, h, count_minus_one):
@@ -26,29 +51,16 @@ def decode(s, w, h, count_minus_one):
     Returns (ok, words consumed)."""
     p = 0
     n = len(s)
-    for y in range(h):
-        x = 0
-        while x < w:
-            if p >= n:
-                return False, p
-            skip = int(s[p]); p += 1
-            x += skip
-            if p >= n:
-                return False, p
-            c = int(s[p]); p += 1
-            if c == 0xFFFF:
-                x = w
-                break
-            c = c + 1 if count_minus_one else c
-            x += c
-            p += c
-            if x > w:
-                return False, p
+    for _ in range(h):
+        ok, p = _decode_row(s, w, count_minus_one, p, n)
+        if not ok:
+            return False, p
     return p == n, p
 
 
 for cm1 in (True, False):
-    ok = 0; bad = []
+    ok = 0
+    bad = []
     for k in range(len(idx)):
         i = idx[k]
         s = b.stream(i)

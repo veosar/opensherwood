@@ -3,8 +3,8 @@
 Status: **identified, not decoded** (2026-09-05). The two cinematics are Bink 1 files under a `.vid` extension
 (the game ships `binkw32.dll`; the "Show movies" menu entry and the outro play them).
 
-| File | Size | Magic | Frames | Size | Rate |
-|---|---|---|---|---|---|
+| File        | Size             | Magic  | Frames        | Size    | Rate   |
+| ----------- | ---------------- | ------ | ------------- | ------- | ------ |
 | `Intro.vid` | 68,707,752 bytes | `BIKi` | 4292 (~172 s) | 640x320 | 25 fps |
 | `Outro.vid` | 45,827,336 bytes | `BIKi` | 2739 (~110 s) | 640x320 | 25 fps |
 

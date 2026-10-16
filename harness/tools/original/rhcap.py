@@ -19,6 +19,7 @@ Usage (run from anywhere):
   python rhcap.py kill                      terminate the game process
   python rhcap.py seq "cmd a b; sleep 1; cmd" run several commands in one process
 """
+
 import ctypes
 import hashlib
 import os
@@ -81,7 +82,7 @@ def need_window():
 
 
 def to_screen(h, x, y):
-    sx, sy, w, hh = client_rect(h)
+    sx, sy, _, _ = client_rect(h)
     return sx + int(x), sy + int(y)
 
 
@@ -116,13 +117,24 @@ def focus(h):
 # (pyautogui.moveTo) does not move the in-game cursor. We clamp the in-game cursor to
 # the client's top-left corner with a huge negative delta, then move by (x, y).
 class _MI(ctypes.Structure):
-    _fields_ = [("dx", ctypes.c_long), ("dy", ctypes.c_long), ("mouseData", ctypes.c_ulong),
-                ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.c_void_p)]
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
 
 
 class _KI(ctypes.Structure):
-    _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort), ("dwFlags", ctypes.c_ulong),
-                ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.c_void_p)]
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
 
 
 class _IU(ctypes.Union):
@@ -142,10 +154,39 @@ def raw_rel(dx, dy, flags=0x0001):
         print("SendInput failed", ctypes.GetLastError(), file=sys.stderr)
 
 
-SCAN = {"1": 0x02, "2": 0x03, "3": 0x04, "4": 0x05, "5": 0x06, "q": 0x10, "d": 0x20, "c": 0x2E, "s": 0x1F,
-        "g": 0x22, "h": 0x23, "j": 0x24, "a": 0x1E, "space": 0x39, "backspace": 0x0E, "escape": 0x01, "enter": 0x1C,
-        "tab": 0x0F, "capslock": 0x3A, "f1": 0x3B, "f5": 0x3F, "f11": 0x57, "add": 0x4E, "subtract": 0x4A,
-        "up": 0xC8, "down": 0xD0, "left": 0xCB, "right": 0xCD, "lshift": 0x2A, "lctrl": 0x1D, "lalt": 0x38}
+SCAN = {
+    "1": 0x02,
+    "2": 0x03,
+    "3": 0x04,
+    "4": 0x05,
+    "5": 0x06,
+    "q": 0x10,
+    "d": 0x20,
+    "c": 0x2E,
+    "s": 0x1F,
+    "g": 0x22,
+    "h": 0x23,
+    "j": 0x24,
+    "a": 0x1E,
+    "space": 0x39,
+    "backspace": 0x0E,
+    "escape": 0x01,
+    "enter": 0x1C,
+    "tab": 0x0F,
+    "capslock": 0x3A,
+    "f1": 0x3B,
+    "f5": 0x3F,
+    "f11": 0x57,
+    "add": 0x4E,
+    "subtract": 0x4A,
+    "up": 0xC8,
+    "down": 0xD0,
+    "left": 0xCB,
+    "right": 0xCD,
+    "lshift": 0x2A,
+    "lctrl": 0x1D,
+    "lalt": 0x38,
+}
 
 
 def skey(name, hold=0.0):
@@ -170,7 +211,7 @@ MOUSE_SCALE = float(os.environ.get("RHCAP_MOUSE_SCALE", "0.775"))
 
 def rmove(h, x, y):
     """Put the in-game cursor at client (x, y): clamp to (0, 0), then move by (x, y)."""
-    sx, sy, w, hh = client_rect(h)
+    _, _, _, _ = client_rect(h)
     for _ in range(3):
         raw_rel(-4000, -4000)
         time.sleep(0.02)
@@ -188,7 +229,7 @@ def rmove(h, x, y):
 
 def amove(h, x, y):
     """Absolute move (SetCursorPos) plus a 1-pixel raw jiggle so the game notices."""
-    sx, sy, w, hh = client_rect(h)
+    sx, sy, _, _ = client_rect(h)
     ctypes.windll.user32.SetCursorPos(sx + int(x), sy + int(y))
     time.sleep(0.02)
     raw_rel(1, 1)
@@ -238,7 +279,7 @@ def grab(h):
 
 
 def shot(name):
-    h, t = need_window()
+    h, _ = need_window()
     os.makedirs(CAPDIR, exist_ok=True)
     img = grab(h)
     p = os.path.join(CAPDIR, name + ".png")
@@ -247,129 +288,189 @@ def shot(name):
     return p
 
 
+def _seq_command(args):
+    # rhcap.py seq "click 10 20; sleep 1; shot name; key escape"
+    for step in " ".join(args).split(";"):
+        step = step.strip()
+        if not step:
+            continue
+        parts = step.split()
+        if parts[0] == "sleep":
+            time.sleep(float(parts[1]))
+        else:
+            main(parts)
+
+
+def _launch_command(args):
+    gd = args[0] if args else os.environ.get("OPENSHERWOOD_GAME_DIR")
+    exe = os.path.join(gd, "Robin Hood.exe")
+    p = subprocess.Popen([exe], cwd=gd, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+    print("pid", p.pid, "t0", time.time())
+
+
+def _kill_command(args):
+    subprocess.call(["taskkill", "/IM", "Robin Hood.exe", "/F"])
+
+
+def _win_command(args):
+    h, t = need_window()
+    sx, sy, w, hh = client_rect(h)
+    _, pid = win32process.GetWindowThreadProcessId(h)
+    print(
+        "title=%r hwnd=%d pid=%d client_origin=(%d,%d) size=%dx%d fg=%s"
+        % (t, h, pid, sx, sy, w, hh, win32gui.GetForegroundWindow() == h)
+    )
+
+
+def _shot_command(args):
+    shot(args[0])
+
+
+def _boot_command(args):
+    prefix, secs, dt = args[0], float(args[1]), float(args[2])
+    os.makedirs(CAPDIR, exist_ok=True)
+    t0 = time.time()
+    last = None
+    i = 0
+    h = None
+    while time.time() - t0 < secs:
+        if h is None:
+            h, _ = find_window()
+            if h is None:
+                time.sleep(0.1)
+                continue
+            print("%.2f window found" % (time.time() - t0))
+        try:
+            img = grab(h)
+        except Exception:  # noqa: BLE001
+            h = None
+            continue
+        d = hashlib.md5(img.tobytes()).hexdigest()[:8]
+        if d != last:
+            p = os.path.join(CAPDIR, "%s_%03d_%05.1fs.png" % (prefix, i, time.time() - t0))
+            img.save(p)
+            print("%.2f %s %s %s" % (time.time() - t0, d, img.size, os.path.basename(p)))
+            last = d
+            i += 1
+        time.sleep(dt)
+
+
+def _move_command(h, args):
+    focus(h)
+    rmove(h, int(args[0]), int(args[1]))
+
+
+def _rclick_command(h, args):
+    btn = args[2] if len(args) > 2 else "left"
+    n = int(args[3]) if len(args) > 3 else 1
+    rclick(h, int(args[0]), int(args[1]), btn, n)
+
+
+def _focus_command(h, _args):
+    focus(h)
+
+
+def _screen_click_command(h, args):
+    focus(h)
+    btn = args[2] if len(args) > 2 else "left"
+    n = int(args[3]) if len(args) > 3 else 1
+    x, y = to_screen(h, args[0], args[1])
+    pyautogui.moveTo(x, y)
+    time.sleep(0.1)
+    pyautogui.click(x, y, clicks=n, interval=0.08, button=btn)
+
+
+def _drag_command(h, args):
+    focus(h)
+    btn = args[4] if len(args) > 4 else "left"
+    x1, y1 = to_screen(h, args[0], args[1])
+    x2, y2 = to_screen(h, args[2], args[3])
+    pyautogui.moveTo(x1, y1)
+    pyautogui.mouseDown(button=btn)
+    pyautogui.moveTo(x2, y2, duration=0.4)
+    pyautogui.mouseUp(button=btn)
+
+
+def _key_command(h, args):
+    if not focus(h):
+        return
+    if args[0] in SCAN:
+        skey(args[0], float(args[1]) if len(args) > 1 else 0.0)
+    elif len(args) > 1:
+        pyautogui.keyDown(args[0])
+        time.sleep(float(args[1]))
+        pyautogui.keyUp(args[0])
+    else:
+        pyautogui.press(args[0])
+
+
+def _type_command(h, args):
+    if not focus(h):
+        return
+    pyautogui.typewrite(args[0], interval=0.05)
+
+
+def _hover_command(h, args):
+    focus(h)
+    rmove(h, int(args[0]), int(args[1]))
+    time.sleep(0.6)
+    shot(args[2])
+
+
+def _pix_command(h, args):
+    img = grab(h)
+    print(img.getpixel((int(args[0]), int(args[1]))))
+
+
+def _window_command(cmd, args, h):
+    if cmd == "move":
+        _move_command(h, args)
+        return
+    if cmd == "rclick" or cmd == "click":
+        _rclick_command(h, args)
+        return
+    if cmd == "focus":
+        _focus_command(h, args)
+        return
+    if cmd == "click":
+        _screen_click_command(h, args)
+        return
+    if cmd == "drag":
+        _drag_command(h, args)
+        return
+    if cmd == "key":
+        _key_command(h, args)
+        return
+    if cmd == "type":
+        _type_command(h, args)
+        return
+    if cmd == "hover":
+        _hover_command(h, args)
+        return
+    if cmd == "pix":
+        _pix_command(h, args)
+        return
+    print("unknown command", cmd)
+
+
 def main(argv):
     if not argv:
         print(__doc__)
         return
     cmd, args = argv[0], argv[1:]
-    if cmd == "seq":
-        # rhcap.py seq "click 10 20; sleep 1; shot name; key escape"
-        for step in " ".join(args).split(";"):
-            step = step.strip()
-            if not step:
-                continue
-            parts = step.split()
-            if parts[0] == "sleep":
-                time.sleep(float(parts[1]))
-            else:
-                main(parts)
+    commands = {
+        "seq": _seq_command,
+        "launch": _launch_command,
+        "kill": _kill_command,
+        "win": _win_command,
+        "shot": _shot_command,
+        "boot": _boot_command,
+    }
+    if cmd in commands:
+        commands[cmd](args)
         return
-    if cmd == "launch":
-        gd = args[0] if args else os.environ.get("OPENSHERWOOD_GAME_DIR")
-        exe = os.path.join(gd, "Robin Hood.exe")
-        p = subprocess.Popen([exe], cwd=gd, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
-        print("pid", p.pid, "t0", time.time())
-        return
-    if cmd == "kill":
-        subprocess.call(["taskkill", "/IM", "Robin Hood.exe", "/F"])
-        return
-    if cmd == "win":
-        h, t = need_window()
-        sx, sy, w, hh = client_rect(h)
-        _, pid = win32process.GetWindowThreadProcessId(h)
-        print("title=%r hwnd=%d pid=%d client_origin=(%d,%d) size=%dx%d fg=%s" % (t, h, pid, sx, sy, w, hh, win32gui.GetForegroundWindow() == h))
-        return
-    if cmd == "shot":
-        shot(args[0])
-        return
-    if cmd == "boot":
-        prefix, secs, dt = args[0], float(args[1]), float(args[2])
-        os.makedirs(CAPDIR, exist_ok=True)
-        t0 = time.time()
-        last = None
-        i = 0
-        h = None
-        while time.time() - t0 < secs:
-            if h is None:
-                h, _ = find_window()
-                if h is None:
-                    time.sleep(0.1)
-                    continue
-                print("%.2f window found" % (time.time() - t0))
-            try:
-                img = grab(h)
-            except Exception:  # noqa: BLE001
-                h = None
-                continue
-            d = hashlib.md5(img.tobytes()).hexdigest()[:8]
-            if d != last:
-                p = os.path.join(CAPDIR, "%s_%03d_%05.1fs.png" % (prefix, i, time.time() - t0))
-                img.save(p)
-                print("%.2f %s %s %s" % (time.time() - t0, d, img.size, os.path.basename(p)))
-                last = d
-                i += 1
-            time.sleep(dt)
-        return
-    h, t = need_window()
-    if cmd == "move":
-        focus(h)
-        rmove(h, int(args[0]), int(args[1]))
-        return
-    if cmd == "rclick" or cmd == "click":
-        btn = args[2] if len(args) > 2 else "left"
-        n = int(args[3]) if len(args) > 3 else 1
-        rclick(h, int(args[0]), int(args[1]), btn, n)
-        return
-    if cmd == "focus":
-        focus(h)
-        return
-    if cmd == "click":
-        focus(h)
-        btn = args[2] if len(args) > 2 else "left"
-        n = int(args[3]) if len(args) > 3 else 1
-        x, y = to_screen(h, args[0], args[1])
-        pyautogui.moveTo(x, y)
-        time.sleep(0.1)
-        pyautogui.click(x, y, clicks=n, interval=0.08, button=btn)
-        return
-    if cmd == "drag":
-        focus(h)
-        btn = args[4] if len(args) > 4 else "left"
-        x1, y1 = to_screen(h, args[0], args[1])
-        x2, y2 = to_screen(h, args[2], args[3])
-        pyautogui.moveTo(x1, y1)
-        pyautogui.mouseDown(button=btn)
-        pyautogui.moveTo(x2, y2, duration=0.4)
-        pyautogui.mouseUp(button=btn)
-        return
-    if cmd == "key":
-        if not focus(h):
-            return
-        if args[0] in SCAN:
-            skey(args[0], float(args[1]) if len(args) > 1 else 0.0)
-        elif len(args) > 1:
-            pyautogui.keyDown(args[0])
-            time.sleep(float(args[1]))
-            pyautogui.keyUp(args[0])
-        else:
-            pyautogui.press(args[0])
-        return
-    if cmd == "type":
-        if not focus(h):
-            return
-        pyautogui.typewrite(args[0], interval=0.05)
-        return
-    if cmd == "hover":
-        focus(h)
-        rmove(h, int(args[0]), int(args[1]))
-        time.sleep(0.6)
-        shot(args[2])
-        return
-    if cmd == "pix":
-        img = grab(h)
-        print(img.getpixel((int(args[0]), int(args[1]))))
-        return
-    print("unknown command", cmd)
+    h, _t = need_window()
+    _window_command(cmd, args, h)
 
 
 if __name__ == "__main__":

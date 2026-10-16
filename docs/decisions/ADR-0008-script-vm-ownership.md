@@ -22,7 +22,7 @@ settled before any interpreter is written: a VM living above core cannot be snap
 2. **Natives are core functions.** A native call is dispatched by number to a function of `World`
    (`opensherwood-core::natives`) that acts on entities, objectives, timers, texts and camera through the same
    code paths the player's orders use. Natives with a documented effect the engine does not model yet are
-   *stubs*: recorded no-ops counted per id. A native with no documented row is *unknown*, and calling one is a
+   _stubs_: recorded no-ops counted per id. A native with no documented row is _unknown_, and calling one is a
    deterministic trap by default: the id is counted, the running callback stops at that instruction (its
    frames are discarded, later callbacks still run) and the script is marked `faulted`, observable through
    `observe.script` and `debug.vm`; the call sites are counted per mission at load. The permissive behaviour
@@ -103,7 +103,7 @@ settled before any interpreter is written: a VM living above core cannot be snap
   faults, traps, message and text drops, per-id native counts) and `VmState::budget` (the work left in the
   current tick) are diagnostics: they are neither serialised nor hashed (`#[serde(skip)]`), a restored world
   counts afresh and `debug.vm` reports the live values only. Everything the scripts can observe stays in the
-  snapshot and the hash. Callbacks never yield, so a snapshot is *quiescent*: `validate` refuses frames,
+  snapshot and the hash. Callbacks never yield, so a snapshot is _quiescent_: `validate` refuses frames,
   pushed arguments or a sequence still being collected instead of pretending to resume them; the
   interpreter guarantees it through one teardown path (`vm::teardown`) that every callback exit takes
   (return, budget abort, fault, trap), and `Program::validate` rejects programs whose parameter / argument
@@ -170,7 +170,7 @@ settled before any interpreter is written: a VM living above core cannot be snap
   his query on his turn instead of restarting it from zero forever. Navigation has no fail-open entry point:
   `World::try_ensure_nav` is the only way to rebuild a missing grid and every caller handles its error.
 - **Trust boundary** (rewritten for ruleset 19 against `docs/original/spec-script-vm.md` revision 9).
-  `Program::validate` in core is self-sufficient and checks what the *container* must satisfy: functions in
+  `Program::validate` in core is self-sufficient and checks what the _container_ must satisfy: functions in
   table order from address 0 with their prologue, jump and call targets inside the class code (the sentinel
   `0xFFFFFFFF` of VM-070 excepted), symbol indices inside their block, native ids below the 265-entry call
   table, aggregate code / vertex bounds, and element and location coordinates within `+-2^20`. It
@@ -274,7 +274,7 @@ settled before any interpreter is written: a VM living above core cannot be snap
   (`VmState::capture_cost`, charged to the frame's budget; a capture that does not fit is a budget abort
   and the callback does not run), and the entities its natives touch (`World::vm_touch_entity`), the
   selection and the camera are captured as they are touched. Since ruleset 19 the capture serves **only**
-  the work budget: a callback that *terminates on a fault* keeps everything it did, because that is the
+  the work budget: a callback that _terminates on a fault_ keeps everything it did, because that is the
   termination contract of the specification's 8.1 (all its frames are popped, both buffers and both
   registers stay as the fault found them, and the engine goes on with its frame). A queued handler the
   budget cut short (`CallOutcome::Exhausted`) is still rolled back and stays at the front to be delivered

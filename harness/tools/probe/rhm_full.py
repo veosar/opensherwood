@@ -3,6 +3,7 @@
 Usage: python rhm_full.py <dir-or-file> [--stats] [--json FILE]
 Parses every chunk of every file, asserts exact consumption and prints a summary or failures.
 """
+
 import collections
 import glob
 import json
@@ -28,7 +29,7 @@ def sub_chunks(r):
 
 def parse_foot(b):
     r = R(b)
-    d = dict(map_id=r.u32(), variant=r.u32(), map=r.pstr(), mission_id=r.u32())
+    d = {"map_id": r.u32(), "variant": r.u32(), "map": r.pstr(), "mission_id": r.u32()}
     assert r.done()
     return d
 
@@ -67,7 +68,7 @@ def parse_pouf(b):
             end = p
         body = b[start:end]
         r.p = end
-        out.append(dict(sprite=sprite, label=label, body=body.hex()))
+        out.append({"sprite": sprite, "label": label, "body": body.hex()})
     assert r.done()
     return out
 
@@ -125,7 +126,18 @@ def rec_toto(r):
 
 
 def rec_boom(r):
-    d = dict(x=r.u16(), y=r.u16(), i16a=r.i16(), u16b=r.u16(), u16c=r.u16(), u16d=r.u16(), u16e=r.u16(), P=r.i16(), Q=r.u16(), R=r.u16())
+    d = {
+        "x": r.u16(),
+        "y": r.u16(),
+        "i16a": r.i16(),
+        "u16b": r.u16(),
+        "u16c": r.u16(),
+        "u16d": r.u16(),
+        "u16e": r.u16(),
+        "P": r.i16(),
+        "Q": r.u16(),
+        "R": r.u16(),
+    }
     d["sprite"] = r.pstr()
     d["label"] = r.pstr()
     d["X"] = r.u32()
@@ -149,8 +161,8 @@ def parse_boyz(b):
         if tag != "MEOW":
             fn = RECS[tag]
             recs = [fn(g) for _ in range(n)]
-        assert g.done(), f"{tag} left {len(gb)-g.p}"
-        groups.append(dict(tag=tag, version=ver, count=n, records=recs))
+        assert g.done(), f"{tag} left {len(gb) - g.p}"
+        groups.append({"tag": tag, "version": ver, "count": n, "records": recs})
     assert r.done()
     return groups
 
@@ -175,27 +187,50 @@ def parse_hirn(b):
         g = R(gb)
         n = g.u16()
         if tag == "HOLE":
-            recs = [dict(x=g.u16(), y=g.u16(), Q=g.u16(), R=g.u16(), dir=g.u16()) for _ in range(n)]
+            recs = [{"x": g.u16(), "y": g.u16(), "Q": g.u16(), "R": g.u16(), "dir": g.u16()} for _ in range(n)]
         elif tag == "BUSH":
-            recs = [dict(x=g.u16(), y=g.u16(), Q=g.u16(), R=g.u16()) for _ in range(n)]
+            recs = [{"x": g.u16(), "y": g.u16(), "Q": g.u16(), "R": g.u16()} for _ in range(n)]
         elif tag == "POW ":
             recs = [header(g) for _ in range(n)]
         elif tag == "NLIP":
             recs = []
             for _ in range(n):
-                d = dict(u32=g.u32(), poly=polygon(g))
+                d = {"u32": g.u32(), "poly": polygon(g)}
                 m = g.u16()
-                d["points"] = [dict(x=g.u16(), y=g.u16(), Q=g.u16(), R=g.u16(), flag=g.u8(), val=g.u16()) for _ in range(m)]
+                d["points"] = [
+                    {"x": g.u16(), "y": g.u16(), "Q": g.u16(), "R": g.u16(), "flag": g.u8(), "val": g.u16()}
+                    for _ in range(m)
+                ]
                 recs.append(d)
         else:
             raise ValueError(tag)
-        assert g.done(), f"{tag} left {len(gb)-g.p}"
-        out[tag] = dict(version=ver, records=recs)
+        assert g.done(), f"{tag} left {len(gb) - g.p}"
+        out[tag] = {"version": ver, "records": recs}
     assert r.done()
     return out
 
 
-CMD_ARGS = {0: 0, 1: 0, 7: 0, 9: 0, 0x0A: 0, 0x0B: 0, 0x0C: 0, 0x0E: 0, 0x10: 0, 2: 2, 3: 2, 4: 2, 8: 2, 0x0D: 2, 0x0F: 2, 5: 4, 6: 6, 0x81: 4, 0x82: 6}
+CMD_ARGS = {
+    0: 0,
+    1: 0,
+    7: 0,
+    9: 0,
+    0x0A: 0,
+    0x0B: 0,
+    0x0C: 0,
+    0x0E: 0,
+    0x10: 0,
+    2: 2,
+    3: 2,
+    4: 2,
+    8: 2,
+    0x0D: 2,
+    0x0F: 2,
+    5: 4,
+    6: 6,
+    0x81: 4,
+    0x82: 6,
+}
 
 
 def parse_commands(blk):
@@ -224,9 +259,9 @@ def parse_program(blob):
             ln = r.u16()
             blk = r.raw(ln)
             blocks.append((pct, blk.hex(), parse_commands(blk)))
-        tables.append(dict(id=tid, blocks=blocks))
-    assert r.done(), f"program left {len(blob)-r.p}"
-    return dict(tables=tables)
+        tables.append({"id": tid, "blocks": blocks})
+    assert r.done(), f"program left {len(blob) - r.p}"
+    return {"tables": tables}
 
 
 def parse_rail(b):
@@ -237,7 +272,7 @@ def parse_rail(b):
         npts = r.u16()
         pts = []
         for _ in range(npts):
-            d = dict(x=r.u16(), y=r.u16(), Q=r.u16(), R=r.u16(), kind=r.u8())
+            d = {"x": r.u16(), "y": r.u16(), "Q": r.u16(), "R": r.u16(), "kind": r.u8()}
             ln = r.u16()
             payload = r.raw(ln)
             if d["kind"] == 1:
@@ -277,39 +312,47 @@ def parse_ting(b):
         m = f.u16()
         items = []
         for _ in range(m):
-            it = dict(sprite=f.pstr(), anim=f.pstr(), dx=f.i16(), dy=f.i16(), u16=f.u16(), b3=f.raw(3).hex(), poly=polygon(f))
+            it = {
+                "sprite": f.pstr(),
+                "anim": f.pstr(),
+                "dx": f.i16(),
+                "dy": f.i16(),
+                "u16": f.u16(),
+                "b3": f.raw(3).hex(),
+                "poly": polygon(f),
+            }
             items.append(it)
         assert f.done()
-        e["flim"] = dict(version=ver, items=items)
+        e["flim"] = {"version": ver, "items": items}
         tag = r.raw(4).decode("latin-1")
         assert tag == "WOAW", tag
         size, ver = r.u32(), r.u32()
         w = R(r.raw(size - 4))
         wc = w.u16()
-        e["woaw"] = dict(version=ver, count=wc, rest=w.raw(len(w.b) - w.p).hex())
+        e["woaw"] = {"version": ver, "count": wc, "rest": w.raw(len(w.b) - w.p).hex()}
         e["poly"] = polygon(r)
         e["x"], e["y"] = r.u16(), r.u16()
         e["u16a"], e["u32b"], e["u16c"], e["u32d"], e["i16e"] = r.u16(), r.u32(), r.u16(), r.u32(), r.i16()
         out.append(e)
-    assert r.done(), f"ting left {len(b)-r.p}"
+    assert r.done(), f"ting left {len(b) - r.p}"
     return out
 
 
 def parse_gulp(b):
     r = R(b)
     n = r.u16()
-    pts = [dict(x=r.u16(), y=r.u16(), Q=r.u16(), R=r.u16()) for _ in range(n)]
+    pts = [{"x": r.u16(), "y": r.u16(), "Q": r.u16(), "R": r.u16()} for _ in range(n)]
     m = r.u16()
     polys = []
     for _ in range(m):
-        d = dict(u8a=r.u8())
+        d = {"u8a": r.u8()}
         k = r.u16()
         d["points"] = [(r.u16(), r.u16()) for _ in range(k)]
         d["u8b"], d["Q"], d["R"] = r.u8(), r.u16(), r.u16()
         d["name"] = opt_name(r)
         polys.append(d)
     assert r.done()
-    return dict(points=pts, polygons=polys)
+    return {"points": pts, "polygons": polys}
 
 
 def parse_cave(b):
@@ -318,20 +361,81 @@ def parse_cave(b):
     out = []
     for _ in range(n):
         m = r.u16()
-        out.append(dict(ids=[r.u16() for _ in range(m)], flag=r.u8()))
+        out.append({"ids": [r.u16() for _ in range(m)], "flag": r.u8()})
     assert r.done()
     return out
 
 
-PARSERS = dict(FOOT=parse_foot, POUF=parse_pouf, BOYZ=parse_boyz, ZORG=parse_zorg, HIRN=parse_hirn, RAIL=parse_rail, SKRO=parse_skro, TING=parse_ting, GULP=parse_gulp, CAVE=parse_cave)
+PARSERS = {
+    "FOOT": parse_foot,
+    "POUF": parse_pouf,
+    "BOYZ": parse_boyz,
+    "ZORG": parse_zorg,
+    "HIRN": parse_hirn,
+    "RAIL": parse_rail,
+    "SKRO": parse_skro,
+    "TING": parse_ting,
+    "GULP": parse_gulp,
+    "CAVE": parse_cave,
+}
 
 
 def parse_file(data):
-    root, ver, ch = children(data)
+    _, _, ch = children(data)
     out = {}
     for tag, v, off, body in ch:
-        out[tag] = dict(version=v, data=PARSERS[tag](body))
+        out[tag] = {"version": v, "data": PARSERS[tag](body)}
     return out
+
+
+def _count_commands(t, cmds):
+    for pct, blk, cl in t["blocks"]:
+        for c, a in cl:
+            cmds[(c, a if len(a) <= 8 else len(a))] += 1
+
+
+def _count_rail_point(p, stats, cmds):
+    if p.get("program"):
+        stats[("RAIL", "ntab")][len(p["program"]["tables"])] += 1
+        for t in p["program"]["tables"]:
+            stats[("RAIL", "tab id")][t["id"]] += 1
+            stats[("RAIL", "pcts")][tuple(b[0] for b in t["blocks"])] += 1
+            _count_commands(t, cmds)
+
+
+def _count_rails(m, stats, cmds):
+    for pts in m["RAIL"]["data"]:
+        for p in pts:
+            _count_rail_point(p, stats, cmds)
+
+
+def _count_boyz(m, stats):
+    for g in m["BOYZ"]["data"]:
+        for rec in g["records"]:
+            for k, v in rec.items():
+                if isinstance(v, (int, str)) and k not in ("x", "y", "name", "sprite", "label", "flags10", "x2", "y2"):
+                    stats[(g["tag"], k)][v] += 1
+
+
+def _count_mission(m, stats, cmds):
+    _count_rails(m, stats, cmds)
+    _count_boyz(m, stats)
+    for e in m["TING"]["data"]:
+        for k in ("u16a", "u32b", "u16c", "u32d", "i16e"):
+            stats[("TING", k)][e[k]] += 1
+        stats[("TING", "woaw")][e["woaw"]["count"]] += 1
+    for z in m["ZORG"]["data"]:
+        stats[("ZORG", "a")][z["a"]] += 1
+        stats[("ZORG", "b-flags")][(z["b"], z["flags"])] += 1
+    for s in m["SKRO"]["data"]:
+        stats[("SKRO", "flags5")][s["flags5"]] += 1
+        stats[("SKRO", "flags")][s["flags"]] += 1
+    for c in m["CAVE"]["data"]:
+        stats[("CAVE", "flag")][c["flag"]] += 1
+        stats[("CAVE", "len")][len(c["ids"])] += 1
+    for tag, sub in m["HIRN"]["data"].items():
+        stats[("HIRN", tag)][len(sub["records"])] += 1
+    stats[("FOOT", "variant")][m["FOOT"]["data"]["variant"]] += 1
 
 
 def main():
@@ -350,37 +454,7 @@ def main():
             continue
         if "--json" in sys.argv:
             json.dump(m, open(sys.argv[sys.argv.index("--json") + 1], "w"), indent=1)
-        for pts in m["RAIL"]["data"]:
-            for p in pts:
-                if p.get("program"):
-                    stats[("RAIL", "ntab")][len(p["program"]["tables"])] += 1
-                    for t in p["program"]["tables"]:
-                        stats[("RAIL", "tab id")][t["id"]] += 1
-                        stats[("RAIL", "pcts")][tuple(b[0] for b in t["blocks"])] += 1
-                        for pct, blk, cl in t["blocks"]:
-                            for c, a in cl:
-                                cmds[(c, a if len(a) <= 8 else len(a))] += 1
-        for g in m["BOYZ"]["data"]:
-            for rec in g["records"]:
-                for k, v in rec.items():
-                    if isinstance(v, (int, str)) and k not in ("x", "y", "name", "sprite", "label", "flags10", "x2", "y2"):
-                        stats[(g["tag"], k)][v] += 1
-        for e in m["TING"]["data"]:
-            for k in ("u16a", "u32b", "u16c", "u32d", "i16e"):
-                stats[("TING", k)][e[k]] += 1
-            stats[("TING", "woaw")][e["woaw"]["count"]] += 1
-        for z in m["ZORG"]["data"]:
-            stats[("ZORG", "a")][z["a"]] += 1
-            stats[("ZORG", "b-flags")][(z["b"], z["flags"])] += 1
-        for s in m["SKRO"]["data"]:
-            stats[("SKRO", "flags5")][s["flags5"]] += 1
-            stats[("SKRO", "flags")][s["flags"]] += 1
-        for c in m["CAVE"]["data"]:
-            stats[("CAVE", "flag")][c["flag"]] += 1
-            stats[("CAVE", "len")][len(c["ids"])] += 1
-        for tag, sub in m["HIRN"]["data"].items():
-            stats[("HIRN", tag)][len(sub["records"])] += 1
-        stats[("FOOT", "variant")][m["FOOT"]["data"]["variant"]] += 1
+        _count_mission(m, stats, cmds)
     print(f"{ok}/{len(files)} files parsed")
     if "--stats" in sys.argv:
         for k in sorted(stats, key=str):

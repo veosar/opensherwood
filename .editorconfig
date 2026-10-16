@@ -1,0 +1,14 @@
+# Shared formatter baseline (oxfmt and shfmt read this file; ruff does not: its 120 line length is set in ruff.toml).
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+[*.{sh,bash}]
+indent_size = 4
+
+[*.md]
+trim_trailing_whitespace = false

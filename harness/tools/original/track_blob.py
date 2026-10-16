@@ -5,6 +5,7 @@ Frames are captures/original/<prefix>_<i>_<t>s.png; ref_index -1 = differ from b
 last frame (start and end poses cancel out), otherwise that frame is the single reference.
 For each frame prints: t, bbox of the changed pixels inside the region, centroid, bottom-centre (feet).
 """
+
 import glob
 import os
 import re
@@ -66,7 +67,10 @@ def main(argv):
             print("%3d %6.2f -" % (i, t))
         else:
             bx0, by0, bx1, by1, cx, cy, fx, fy, n = r
-            print("%3d %6.2f bbox (%d,%d)-(%d,%d) centroid (%.1f,%.1f) feet (%.1f,%d) n=%d" % (i, t, bx0, by0, bx1, by1, cx, cy, fx, fy, n))
+            print(
+                "%3d %6.2f bbox (%d,%d)-(%d,%d) centroid (%.1f,%.1f) feet (%.1f,%d) n=%d"
+                % (i, t, bx0, by0, bx1, by1, cx, cy, fx, fy, n)
+            )
 
 
 if __name__ == "__main__":

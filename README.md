@@ -1,6 +1,6 @@
 # OpenSherwood
 
-OpenSherwood is a free, open-source game engine that plays *Robin Hood: The Legend of Sherwood* (Spellbound
+OpenSherwood is a free, open-source game engine that plays _Robin Hood: The Legend of Sherwood_ (Spellbound
 Entertainment, 2002) from the data files of a copy you already own. It is a clean-room reimplementation in the
 tradition of OpenMW, Julius and OpenRCT2: the original game's assets are read, never shipped.
 
@@ -49,15 +49,15 @@ when it is not set.
 
 ## Repository map
 
-| Path | Content |
-|---|---|
-| `crates/` | the engine (Rust workspace); see [docs/architecture.md](docs/architecture.md) |
-| `harness/` | Python test harness: drives the engine over JSON-RPC and compares screens with local captures of the original (`docs/harness.md`, `docs/oracle.md`) |
-| `docs/` | all documentation: legal policy, architecture, roadmap, file formats, notes on the original |
-| `docs/decisions/` | architecture decision records |
-| `.agents/skills/`, `.claude/skills/` | procedures for AI agents working on this repo (kept identical) |
-| `AGENTS.md`, `CLAUDE.md` | instructions for AI coding agents; humans should read them too |
-| `scripts/` | helper scripts (skill sync, game directory detection, CI helpers) |
+| Path                                 | Content                                                                                                                                             |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crates/`                            | the engine (Rust workspace); see [docs/architecture.md](docs/architecture.md)                                                                       |
+| `harness/`                           | Python test harness: drives the engine over JSON-RPC and compares screens with local captures of the original (`docs/harness.md`, `docs/oracle.md`) |
+| `docs/`                              | all documentation: legal policy, architecture, roadmap, file formats, notes on the original                                                         |
+| `docs/decisions/`                    | architecture decision records                                                                                                                       |
+| `.agents/skills/`, `.claude/skills/` | procedures for AI agents working on this repo (kept identical)                                                                                      |
+| `AGENTS.md`, `CLAUDE.md`             | instructions for AI coding agents; humans should read them too                                                                                      |
+| `scripts/`                           | helper scripts (skill sync, game directory detection, CI helpers)                                                                                   |
 
 ## Development model
 

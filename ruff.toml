@@ -1,0 +1,11 @@
+# Python (harness/, scripts/): formatted by `ruff format`; lint rules cover correctness only (the formatter owns style).
+line-length = 120
+required-version = "==0.17.0"
+
+[lint]
+select = ["F", "E9", "B", "PLE"]
+
+[lint.per-file-ignores]
+# a pytest fixture passed as a test argument looks like a redefined import
+"**/test_*.py" = ["F811"]
+"**/conftest.py" = ["F811"]

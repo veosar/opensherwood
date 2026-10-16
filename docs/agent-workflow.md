@@ -18,14 +18,14 @@ and spec are loaded into a session; large files should be searched and read in e
 
 ## State without a tracker
 
-| Information | Home |
-|---|---|
-| Rules needed every session | `AGENTS.md`; client-specific adapter in `CLAUDE.md` |
-| Repeated procedure | canonical `.agents/skills/` |
-| Reviewed facts, formats and architecture | appropriate `docs/` document or ADR |
-| Milestones | `docs/roadmap.md` |
+| Information                                           | Home                                                                                   |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Rules needed every session                            | `AGENTS.md`; client-specific adapter in `CLAUDE.md`                                    |
+| Repeated procedure                                    | canonical `.agents/skills/`                                                            |
+| Reviewed facts, formats and architecture              | appropriate `docs/` document or ADR                                                    |
+| Milestones                                            | `docs/roadmap.md`                                                                      |
 | Current task, results, exact last error and next step | local handoff file per task, outside the repository (location depends on your tooling) |
-| Automatic check cache | local `.local/agent-hooks/` per checkout/session |
+| Automatic check cache                                 | local `.local/agent-hooks/` per checkout/session                                       |
 
 All handoffs, including analyst handoffs, contain only safe progress and spec links. Private
 analysis stays in `re/`. Switching clients or compacting does not erase a session's exposure to

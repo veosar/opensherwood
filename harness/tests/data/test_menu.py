@@ -23,10 +23,13 @@ def test_menu_renders_and_hover_changes_the_frame(binary, game_dir, tmp_path):
         actions = [it["action"] for it in ui["items"]]
         assert actions == ["play", "load", "select_player", "options", "show_movies", "credits", "exit"]
         # Labels are read from the player's string table, so they are not the fallback identifiers.
-        assert len(set(labels)) == 7 and all(labels) and labels != actions
+        assert len(set(labels)) == 7
+        assert all(labels)
+        assert labels != actions
         assert ui["items"][0]["rect"] == [664, 339, 168, 39]
         c0 = e.capture(path="menu_idle.png")
-        assert c0["width"] == 1024 and c0["height"] == 768
+        assert c0["width"] == 1024
+        assert c0["height"] == 768
         e.step(1, [pointer_move(748, 364, 0, 0)])
         assert e.observe(entities=False)["ui"]["hovered"] == 0
         c1 = e.capture(path="menu_hover_play.png")
@@ -54,7 +57,8 @@ def test_play_starts_the_first_mission_behind_the_briefing(binary, game_dir, tmp
         # The mission is loaded and paused behind the parchment: Lincoln, Robin alone as player.
         assert obs["map_size"][0] > 1024
         players = [x for x in obs["entities"] if x["kind"] == "player"]
-        assert len(players) == 1 and players[0]["anim"]["set"] == "RobinHood"
+        assert len(players) == 1
+        assert players[0]["anim"]["set"] == "RobinHood"
         tick0 = obs["tick"]
         e.capture(path="briefing_page1.png")
         e.step(5, [key("enter")])
@@ -161,7 +165,8 @@ def test_hud_kneel_and_stand_icons_change_the_posture(binary, game_dir):
         assert posture() == "standing"
         e.step(2, pointer_click(960, 60, "left"))  # map scroll: consumed, no walk order
         p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
-        assert p["target"] is None and e.observe(entities=False)["selected"] is not None
+        assert p["target"] is None
+        assert e.observe(entities=False)["selected"] is not None
 
 
 def test_options_sound_sliders_apply_and_persist(binary, game_dir, tmp_path):
@@ -226,11 +231,13 @@ def test_select_player_new_profile_and_selection(binary, game_dir, tmp_path):
         assert ui["screen"] == "select_player"
         rows = [it for it in ui["items"] if it["action"].startswith("row:")]
         assert [r["label"] for r in rows] == ["Player", "marian"]
-        assert rows[1]["selected"] and all(r["enabled"] for r in rows), "the new profile is selected"
+        assert rows[1]["selected"], "the new profile is selected"
+        assert all(r["enabled"] for r in rows), "the new profile is selected"
         e.step(1, pointer_click(748, 481, "left"))  # Select (row 3)
         assert e.observe(entities=False)["ui"]["screen"] == "main_menu"
         doc = json.loads((tmp_path / "profiles.json").read_text())
-        assert doc["selected"] == 1 and doc["profiles"][1]["name"] == "marian"
+        assert doc["selected"] == 1
+        assert doc["profiles"][1]["name"] == "marian"
         assert doc["profiles"][1]["difficulty"] == 2
         # The menu now shows the selected profile: its name changes the frame.
         e.capture(path="menu_marian.png")
@@ -277,7 +284,9 @@ def test_minimap_toggles_from_the_map_scroll_and_ignores_right_clicks(binary, ga
             far = next(
                 x
                 for x in full["entities"]
-                if x["kind"] == "guard" and x["alive"] and x["active"]
+                if x["kind"] == "guard"
+                and x["alive"]
+                and x["active"]
                 and abs(x["x"] // 256 - robin["x"] // 256) + abs(x["y"] // 256 - robin["y"] // 256) > 1200
             )
             fx, fy = to_map(far["x"] // 256, far["y"] // 256)
@@ -315,22 +324,51 @@ def test_profiles_persist_across_sessions_and_survive_a_fresh_or_corrupt_store(b
         e.reset({"menu": "main"}, seed=0)
         e.step(1, pointer_click(748, 440, "left"))
         rows = [it for it in e.observe(entities=False)["ui"]["items"] if it["action"].startswith("row:")]
-        assert [r["label"] for r in rows] == ["Player", "tuck"] and rows[1]["selected"]
+        assert [r["label"] for r in rows] == ["Player", "tuck"]
+        assert rows[1]["selected"]
     # Clamping and a bad selection index.
-    (fresh / "profiles.json").write_text(json.dumps({
-        "format": 1, "selected": 99,
-        "profiles": [{"name": "  x" * 20, "difficulty": 9, "money": -5, "score": 1, "spared_lives": 300,
-                      "progress": 200, "game_length": "y" * 100}, {"name": "   ", "difficulty": 0, "money": 0,
-                      "score": 0, "spared_lives": 0, "progress": 0, "game_length": ""}]}))
+    (fresh / "profiles.json").write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "selected": 99,
+                "profiles": [
+                    {
+                        "name": "  x" * 20,
+                        "difficulty": 9,
+                        "money": -5,
+                        "score": 1,
+                        "spared_lives": 300,
+                        "progress": 200,
+                        "game_length": "y" * 100,
+                    },
+                    {
+                        "name": "   ",
+                        "difficulty": 0,
+                        "money": 0,
+                        "score": 0,
+                        "spared_lives": 0,
+                        "progress": 0,
+                        "game_length": "",
+                    },
+                ],
+            }
+        )
+    )
     with Engine(binary=binary, game_dir=game_dir, artifacts=fresh) as e:
         e.reset({"menu": "main"}, seed=0)
         e.step(1, pointer_click(748, 440, "left"))
         rows = [it for it in e.observe(entities=False)["ui"]["items"] if it["action"].startswith("row:")]
-        assert len(rows) == 1 and len(rows[0]["label"]) <= 16 and rows[0]["selected"]
+        assert len(rows) == 1
+        assert len(rows[0]["label"]) <= 16
+        assert rows[0]["selected"]
     # Corrupt JSON, a missing version envelope, a string version and a future version are all ignored.
-    for bad in ("{ not json", json.dumps({"selected": 0, "profiles": [{"name": "ghost"}]}),
-                json.dumps({"format": "1", "selected": 0, "profiles": [{"name": "ghost"}]}),
-                json.dumps({"format": 2, "selected": 0, "profiles": [{"name": "ghost"}]})):
+    for bad in (
+        "{ not json",
+        json.dumps({"selected": 0, "profiles": [{"name": "ghost"}]}),
+        json.dumps({"format": "1", "selected": 0, "profiles": [{"name": "ghost"}]}),
+        json.dumps({"format": 2, "selected": 0, "profiles": [{"name": "ghost"}]}),
+    ):
         (fresh / "profiles.json").write_text(bad)
         with Engine(binary=binary, game_dir=game_dir, artifacts=fresh) as e:
             e.reset({"menu": "main"}, seed=0)
@@ -338,9 +376,19 @@ def test_profiles_persist_across_sessions_and_survive_a_fresh_or_corrupt_store(b
             rows = [it for it in e.observe(entities=False)["ui"]["items"] if it["action"].startswith("row:")]
             assert [r["label"] for r in rows] == ["Player"], bad
     # Settings: the same envelope rule.
-    (fresh / "settings.json").write_text(json.dumps({"aspect": 2, "effects": [False] * 4, "sound_mode": 0,
-                                                     "sound_quality": 0, "volumes": [1, 1, 1, 1],
-                                                     "comment_frequency": 0, "shortcut_set": 0}))
+    (fresh / "settings.json").write_text(
+        json.dumps(
+            {
+                "aspect": 2,
+                "effects": [False] * 4,
+                "sound_mode": 0,
+                "sound_quality": 0,
+                "volumes": [1, 1, 1, 1],
+                "comment_frequency": 0,
+                "shortcut_set": 0,
+            }
+        )
+    )
     with Engine(binary=binary, game_dir=game_dir, artifacts=fresh) as e:
         e.reset({"menu": "main"}, seed=0)
         e.step(1, pointer_click(748, 481, "left"))  # Options
@@ -408,8 +456,11 @@ def test_alt_over_a_soldier_draws_his_view_cone(binary, game_dir, tmp_path):
         guard = next(
             x
             for x in obs["entities"]
-            if x["kind"] == "guard" and x["alive"] and x["active"]
-            and 100 < x["x"] // 256 - cam[0] < 900 and 100 < x["y"] // 256 - cam[1] < 600
+            if x["kind"] == "guard"
+            and x["alive"]
+            and x["active"]
+            and 100 < x["x"] // 256 - cam[0] < 900
+            and 100 < x["y"] // 256 - cam[1] < 600
         )
         sx, sy = guard["x"] // 256 - cam[0], guard["y"] // 256 - cam[1]
         e.step(1, [pointer_move(sx, sy)])  # the hit test is a 12 px circle at the feet today

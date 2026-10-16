@@ -166,15 +166,19 @@ class Engine:
         try:
             self.proc.stdin.write(json.dumps(req) + "\n")
             self.proc.stdin.flush()
-        except (BrokenPipeError, OSError) as e:
+        except OSError as e:
             raise EngineError(-1, f"engine pipe closed ({e}); stderr: {self.stderr_text[-2000:]}") from e
         try:
             line = self._out.pop(timeout or self.timeout)
         except TimeoutError:
             self.kill()
-            raise EngineError(-1, f"no response to {method} within {timeout or self.timeout}s; stderr: {self.stderr_text[-2000:]}")
+            raise EngineError(
+                -1, f"no response to {method} within {timeout or self.timeout}s; stderr: {self.stderr_text[-2000:]}"
+            )
         if line is None:
-            raise EngineError(-1, f"engine closed the connection (exit={self.proc.poll()}); stderr: {self.stderr_text[-2000:]}")
+            raise EngineError(
+                -1, f"engine closed the connection (exit={self.proc.poll()}); stderr: {self.stderr_text[-2000:]}"
+            )
         resp = json.loads(line)
         if resp.get("id") != self._next_id:
             raise EngineError(-1, f"response id mismatch: {resp}")

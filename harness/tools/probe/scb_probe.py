@@ -2,6 +2,7 @@
 
 Usage: python scb_probe.py <dir-or-file> [--dump CLASS] [--hist]
 """
+
 import collections
 import glob
 import os
@@ -48,8 +49,41 @@ def parse(d):
         p += 4
         quads = d[p : p + QUAD * nquads]
         p += QUAD * nquads
-        classes.append(dict(path=path, name=name, nvars=nvars, sizevars=sizevars, vars=vars_, funcs=funcs, nquads=nquads, quads=quads))
+        classes.append(
+            {
+                "path": path,
+                "name": name,
+                "nvars": nvars,
+                "sizevars": sizevars,
+                "vars": vars_,
+                "funcs": funcs,
+                "nquads": nquads,
+                "quads": quads,
+            }
+        )
     return ver, classes, p
+
+
+def _count_class(c, vartypes, fields, hist, natives):
+    for t, tname, vn, off in c["vars"]:
+        vartypes[(t, tname)] += 1
+    for fn in c["funcs"]:
+        for i, v in enumerate(fn[2:]):
+            fields[i][v] += 1
+    q = c["quads"]
+    for i in range(0, len(q), QUAD):
+        hist[q[i]] += 1
+        if q[i] == 0x0C:
+            natives[struct.unpack_from("<I", q, i + 1)[0]] += 1
+
+
+def _dump_class(c):
+    q = c["quads"]
+    print(c["path"], c["name"], c["vars"])
+    for fn in c["funcs"]:
+        print("  ", fn)
+    for i in range(0, len(q), QUAD):
+        print(f"  {i // QUAD:5d}: " + " ".join(f"{b:02x}" for b in q[i : i + QUAD]))
 
 
 def main():
@@ -62,25 +96,12 @@ def main():
     for f in files:
         d = open(f, "rb").read()
         ver, classes, end = parse(d)
-        ok = "OK" if end == len(d) else f"LEFT {len(d)-end}"
+        ok = "OK" if end == len(d) else f"LEFT {len(d) - end}"
         print(f"{os.path.basename(f)}: v{ver} {len(classes)} classes, {sum(c['nquads'] for c in classes)} quads, {ok}")
         for c in classes:
-            for t, tname, vn, off in c["vars"]:
-                vartypes[(t, tname)] += 1
-            for fn in c["funcs"]:
-                for i, v in enumerate(fn[2:]):
-                    fields[i][v] += 1
-            q = c["quads"]
-            for i in range(0, len(q), QUAD):
-                hist[q[i]] += 1
-                if q[i] == 0x0C:
-                    natives[struct.unpack_from("<I", q, i + 1)[0]] += 1
+            _count_class(c, vartypes, fields, hist, natives)
             if "--dump" in sys.argv and c["name"] == sys.argv[sys.argv.index("--dump") + 1]:
-                print(c["path"], c["name"], c["vars"])
-                for fn in c["funcs"]:
-                    print("  ", fn)
-                for i in range(0, len(q), QUAD):
-                    print(f"  {i//QUAD:5d}: " + " ".join(f"{b:02x}" for b in q[i : i + QUAD]))
+                _dump_class(c)
     print("var types:", dict(vartypes))
     for i in range(6):
         print(f"func field {i}:", sorted(fields[i].items())[:20])

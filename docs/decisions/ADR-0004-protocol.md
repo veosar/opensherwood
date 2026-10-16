@@ -123,15 +123,15 @@ Logs go to stderr only. No fixed TCP port in tests (an optional loopback socket 
 
 ## Canonical methods
 
-| Method | Purpose |
-|---|---|
-| `hello` | protocol version, capabilities, build and ruleset version, content fingerprint |
-| `reset` | load a synthetic scenario or a mission with seed and configuration |
-| `step` | atomically enqueue canonical input events and advance exactly N ticks; while a screen (menu, briefing, pause) is shown the events drive the screen and the world does not tick, so `tick_offset` counts frames of the screen, not world ticks |
-| `observe` | filtered structured state, UI state, objectives, subsystem hashes |
-| `snapshot` / `restore` | authoritative internal checkpoint |
-| `capture` | framebuffer hash; optionally write a PNG under the artifact directory |
-| `shutdown` | clean termination |
+| Method                 | Purpose                                                                                                                                                                                                                                       |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hello`                | protocol version, capabilities, build and ruleset version, content fingerprint                                                                                                                                                                |
+| `reset`                | load a synthetic scenario or a mission with seed and configuration                                                                                                                                                                            |
+| `step`                 | atomically enqueue canonical input events and advance exactly N ticks; while a screen (menu, briefing, pause) is shown the events drive the screen and the world does not tick, so `tick_offset` counts frames of the screen, not world ticks |
+| `observe`              | filtered structured state, UI state, objectives, subsystem hashes                                                                                                                                                                             |
+| `snapshot` / `restore` | authoritative internal checkpoint                                                                                                                                                                                                             |
+| `capture`              | framebuffer hash; optionally write a PNG under the artifact directory                                                                                                                                                                         |
+| `shutdown`             | clean termination                                                                                                                                                                                                                             |
 
 Limits: 16 MiB per request line, 100k ticks or events per `step`, 10k ticks with per-tick hashes, 32 snapshot
 handles. Notifications (requests without `id`) get no response. In window mode with `--rpc stdio` the simulation

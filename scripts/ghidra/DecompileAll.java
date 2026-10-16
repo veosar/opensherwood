@@ -36,22 +36,7 @@ public class DecompileAll extends GhidraScript {
             Function f = it.next();
             File out = new File(dir, f.getEntryPoint() + ".c");
             if (out.exists()) { n++; continue; }
-            DecompileResults res = di.decompileFunction(f, 90, monitor);
-            try (PrintWriter w = new PrintWriter(new FileWriter(out))) {
-                w.println("// " + f.getName() + " at " + f.getEntryPoint() + " size " + f.getBody().getNumAddresses());
-                Set<String> callers = new TreeSet<>();
-                for (Function c : f.getCallingFunctions(monitor)) callers.add(c.getEntryPoint().toString());
-                Set<String> callees = new TreeSet<>();
-                for (Function c : f.getCalledFunctions(monitor)) callees.add(c.getEntryPoint().toString());
-                w.println("// callers: " + String.join(",", callers));
-                w.println("// callees: " + String.join(",", callees));
-                if (res.decompileCompleted() && res.getDecompiledFunction() != null) {
-                    w.println(res.getDecompiledFunction().getC());
-                } else {
-                    failed++;
-                    w.println("// decompilation failed: " + res.getErrorMessage());
-                }
-            }
+            failed += writeFunction(di, f, out);
             n++;
             if (n % 500 == 0) println("decompiled " + n);
         }
@@ -61,5 +46,26 @@ public class DecompileAll extends GhidraScript {
         if (monitor.isCancelled()) throw new IOException("cancelled: the output is incomplete");
         println("decompilation failures: " + failed);
         println("decompiled " + n + " functions into " + dir);
+    }
+
+    private int writeFunction(DecompInterface di, Function f, File out) throws Exception {
+        int failed = 0;
+        DecompileResults res = di.decompileFunction(f, 90, monitor);
+        try (PrintWriter w = new PrintWriter(new FileWriter(out))) {
+            w.println("// " + f.getName() + " at " + f.getEntryPoint() + " size " + f.getBody().getNumAddresses());
+            Set<String> callers = new TreeSet<>();
+            for (Function c : f.getCallingFunctions(monitor)) callers.add(c.getEntryPoint().toString());
+            Set<String> callees = new TreeSet<>();
+            for (Function c : f.getCalledFunctions(monitor)) callees.add(c.getEntryPoint().toString());
+            w.println("// callers: " + String.join(",", callers));
+            w.println("// callees: " + String.join(",", callees));
+            if (res.decompileCompleted() && res.getDecompiledFunction() != null) {
+                w.println(res.getDecompiledFunction().getC());
+            } else {
+                failed++;
+                w.println("// decompilation failed: " + res.getErrorMessage());
+            }
+        }
+        return failed;
     }
 }

@@ -1,0 +1,5 @@
+# Mechanical formatting commits; enable with: git config blame.ignoreRevsFile .git-blame-ignore-revs
+# ruff format over the repository
+f7a1086f2682502a276df3daedb9b76c3558c085
+# oxfmt over the repository
+ed80f6613142bb8b2f5d35a1ddad2b2600392e2d

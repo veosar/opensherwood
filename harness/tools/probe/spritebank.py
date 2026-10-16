@@ -2,6 +2,7 @@
 
 Generic: reads the files named by OPENSHERWOOD_GAME_DIR, embeds no game bytes.
 """
+
 import os
 import struct
 import sys
@@ -36,7 +37,7 @@ class Bank:
         self.offset = rec[:, 4:8].copy().view("<u4").ravel()
         self.length = rec[:, 8:12].copy().view("<u4").ravel()
         self.page = rec[:, 12:14].copy().view("<u2").ravel()
-        self.region = self.dic[8:self.table_start]
+        self.region = self.dic[8 : self.table_start]
         self.bks = open(self.bks_path, "rb")
 
     def _find_table_start(self):
@@ -71,6 +72,7 @@ def rgb565_to_rgb8(v):
 def write_png(path, rgba):
     """Write an HxWx4 uint8 array as PNG without external deps."""
     import zlib
+
     h, w, _ = rgba.shape
     raw = b"".join(b"\x00" + rgba[y].tobytes() for y in range(h))
 

@@ -1168,273 +1168,322 @@ impl Session {
     /// The screen / world part of [`Session::advance`].
     fn advance_screen(&mut self, events: &[InputEvent]) {
         match &mut self.screen {
-            Screen::Menu(menu) => {
-                let mut chosen = None;
-                for e in events {
-                    if let Some(a) = menu.handle(*e) {
-                        chosen = Some(a);
-                        break;
+            Screen::Menu(_) => self.advance_menu(events),
+            Screen::Briefing(_) => self.advance_briefing(events),
+            Screen::SelectPlayer(_) => self.advance_select_player(events),
+            Screen::Options { .. } => self.advance_options(events),
+            Screen::Saves { .. } => self.advance_saves(events),
+            Screen::Debriefing(_) => self.advance_debriefing(events),
+            Screen::Credits(_) => self.advance_credits(events),
+            Screen::Lost(_) => self.advance_lost(events),
+            Screen::Pause(_) => self.advance_pause(events),
+            Screen::World => self.advance_world(events),
+        }
+    }
+
+    fn advance_menu(&mut self, events: &[InputEvent]) {
+        let Screen::Menu(menu) = &mut self.screen else {
+            unreachable!()
+        };
+        let mut chosen = None;
+        for e in events {
+            if let Some(a) = menu.handle(*e) {
+                chosen = Some(a);
+                break;
+            }
+        }
+        self.frame = None;
+        match chosen {
+            Some(MenuAction::Play) => {
+                if let Err(e) = self.start_campaign() {
+                    // Stay on the menu rather than leaving the player with nothing.
+                    eprintln!("opensherwood: cannot start the campaign: {e}");
+                    self.open_menu();
+                }
+            }
+            Some(MenuAction::Exit) => self.exit_requested = true,
+            Some(MenuAction::Credits) => {
+                let _ = self.ui_assets();
+                self.screen = Screen::Credits(Credits::new(TICK_RATE));
+            }
+            Some(MenuAction::Load) => self.open_saves(false, false),
+            Some(MenuAction::Options) => self.open_options(false),
+            Some(MenuAction::SelectPlayer) => self.open_select_player(),
+            Some(other) => eprintln!("opensherwood: menu action {other:?} not implemented"),
+            None => {}
+        }
+    }
+
+    fn advance_briefing(&mut self, events: &[InputEvent]) {
+        let Screen::Briefing(b) = &mut self.screen else {
+            unreachable!()
+        };
+        let mut done = false;
+        let pages = b.pages.len();
+        for e in events {
+            if b.handle(*e) {
+                done = true;
+                break;
+            }
+        }
+        self.frame = None;
+        if done {
+            // The parchment presented the script's text page (native 202 / 203): dismiss it
+            // in the VM; the next page, if any, is shown by `sync_text_screen`.
+            let _ = pages;
+            self.dismiss_text();
+        }
+    }
+
+    fn advance_select_player(&mut self, events: &[InputEvent]) {
+        let Screen::SelectPlayer(screen) = &mut self.screen else {
+            unreachable!()
+        };
+        let mut outcome = None;
+        for e in events {
+            if let Some(o) = screen.handle(*e) {
+                outcome = Some(o);
+                break;
+            }
+        }
+        self.frame = None;
+        match outcome {
+            None => {}
+            Some(SelectOutcome::Leave) => self.open_menu(),
+            Some(SelectOutcome::Changed) => {
+                self.profiles = screen.profiles.clone();
+                self.profile_index = screen.selected.unwrap_or(0);
+                self.save_profiles();
+            }
+            Some(SelectOutcome::Select(i)) => {
+                self.profiles = screen.profiles.clone();
+                self.profile_index = i.min(self.profiles.len().saturating_sub(1));
+                self.save_profiles();
+                self.open_menu();
+            }
+        }
+    }
+
+    fn advance_options(&mut self, events: &[InputEvent]) {
+        let Screen::Options { screen, from_pause } = &mut self.screen else {
+            unreachable!()
+        };
+        let from_pause = *from_pause;
+        let mut outcome = None;
+        for e in events {
+            if let Some(o) = screen.handle(*e) {
+                outcome = Some(o);
+                break;
+            }
+        }
+        self.frame = None;
+        match outcome {
+            None => {}
+            Some(OptionsOutcome::Back) => self.leave_saves(from_pause),
+            Some(OptionsOutcome::Apply(settings)) => self.apply_settings(settings),
+        }
+    }
+
+    fn advance_saves(&mut self, events: &[InputEvent]) {
+        let Screen::Saves { screen, from_pause } = &mut self.screen else {
+            unreachable!()
+        };
+        let from_pause = *from_pause;
+        let mut outcome = None;
+        for e in events {
+            if let Some(o) = screen.handle(*e) {
+                outcome = Some(o);
+                break;
+            }
+        }
+        self.frame = None;
+        self.apply_save_outcome(outcome, from_pause);
+    }
+
+    fn apply_save_outcome(&mut self, outcome: Option<SaveOutcome>, from_pause: bool) {
+        match outcome {
+            None => {}
+            Some(SaveOutcome::Cancel) => self.leave_saves(from_pause),
+            Some(SaveOutcome::Save(name)) => {
+                // Saving happens from the pause menu: write the paused world, stay paused.
+                self.screen = Screen::World;
+                match self.write_save(&name) {
+                    Ok(_) => self.open_pause(),
+                    Err(e) => {
+                        eprintln!("opensherwood: save failed: {}", e.message);
+                        self.open_pause();
                     }
                 }
-                self.frame = None;
-                match chosen {
-                    Some(MenuAction::Play) => {
-                        if let Err(e) = self.start_campaign() {
-                            // Stay on the menu rather than leaving the player with nothing.
-                            eprintln!("opensherwood: cannot start the campaign: {e}");
+            }
+            Some(SaveOutcome::Delete(name)) => {
+                let path = self.saves_dir().join(format!("{name}.json"));
+                if let Err(e) = std::fs::remove_file(&path) {
+                    eprintln!("opensherwood: delete {}: {e}", path.display());
+                }
+                self.open_saves(false, from_pause);
+            }
+            Some(SaveOutcome::Load(name)) => {
+                // Loading replaces the world whatever screen we came from.
+                let had_world = self.world.is_some();
+                self.screen = Screen::World;
+                match self.load_save_any(&name) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        eprintln!("opensherwood: load failed: {}", e.message);
+                        if had_world && from_pause {
+                            self.open_pause();
+                        } else {
                             self.open_menu();
                         }
                     }
-                    Some(MenuAction::Exit) => self.exit_requested = true,
-                    Some(MenuAction::Credits) => {
-                        let _ = self.ui_assets();
-                        self.screen = Screen::Credits(Credits::new(TICK_RATE));
-                    }
-                    Some(MenuAction::Load) => self.open_saves(false, false),
-                    Some(MenuAction::Options) => self.open_options(false),
-                    Some(MenuAction::SelectPlayer) => self.open_select_player(),
-                    Some(other) => eprintln!("opensherwood: menu action {other:?} not implemented"),
-                    None => {}
                 }
             }
-            Screen::Briefing(b) => {
-                let mut done = false;
-                let pages = b.pages.len();
-                for e in events {
-                    if b.handle(*e) {
-                        done = true;
-                        break;
+        }
+    }
+
+    fn advance_debriefing(&mut self, events: &[InputEvent]) {
+        let Screen::Debriefing(b) = &mut self.screen else {
+            unreachable!()
+        };
+        let done = events.iter().any(|e| b.handle(*e));
+        self.frame = None;
+        if done {
+            // After a win the next level of the campaign graph launches automatically
+            // (manual, p.9); without one (or when it cannot load), and after a loss, the
+            // main menu follows.
+            match self.next_mission.clone().filter(|_| !self.ended_lost) {
+                Some(next) => match self.reset(Scenario::Mission(next.clone()), 0) {
+                    Ok(()) => {
+                        // The successor rule is a hypothesis of the campaign graph
+                        // reading: the new world carries the assumption from tick 0.
+                        if let Some(w) = self.world.as_mut() {
+                            w.record_assumption(opensherwood_core::vm::Assumption::CampaignGraph);
+                        }
                     }
-                }
-                self.frame = None;
-                if done {
-                    // The parchment presented the script's text page (native 202 / 203): dismiss it
-                    // in the VM; the next page, if any, is shown by `sync_text_screen`.
-                    let _ = pages;
-                    self.dismiss_text();
-                }
+                    Err(e) => {
+                        eprintln!("opensherwood: cannot start {next}: {e}");
+                        self.open_menu();
+                    }
+                },
+                None => self.open_menu(),
             }
-            Screen::SelectPlayer(screen) => {
-                let mut outcome = None;
-                for e in events {
-                    if let Some(o) = screen.handle(*e) {
-                        outcome = Some(o);
-                        break;
-                    }
-                }
-                self.frame = None;
-                match outcome {
-                    None => {}
-                    Some(SelectOutcome::Leave) => self.open_menu(),
-                    Some(SelectOutcome::Changed) => {
-                        self.profiles = screen.profiles.clone();
-                        self.profile_index = screen.selected.unwrap_or(0);
-                        self.save_profiles();
-                    }
-                    Some(SelectOutcome::Select(i)) => {
-                        self.profiles = screen.profiles.clone();
-                        self.profile_index = i.min(self.profiles.len().saturating_sub(1));
-                        self.save_profiles();
+        }
+    }
+
+    fn advance_credits(&mut self, events: &[InputEvent]) {
+        let Screen::Credits(c) = &mut self.screen else {
+            unreachable!()
+        };
+        let leave = events.iter().any(|e| Credits::leaves(*e));
+        c.tick();
+        self.frame = None;
+        if leave {
+            self.open_menu();
+        }
+    }
+
+    fn advance_lost(&mut self, events: &[InputEvent]) {
+        let Screen::Lost(page) = &mut self.screen else {
+            unreachable!()
+        };
+        let outcome = events.iter().find_map(|e| page.handle(*e));
+        self.frame = None;
+        match outcome {
+            Some(crate::ui::LostOutcome::Restart) => {
+                if let Some((scenario, seed, money)) = self.current.clone() {
+                    self.money_override = money;
+                    if let Err(e) = self.reset(scenario, seed) {
+                        eprintln!("opensherwood: cannot restart: {e}");
                         self.open_menu();
                     }
                 }
             }
-            Screen::Options { screen, from_pause } => {
-                let from_pause = *from_pause;
-                let mut outcome = None;
-                for e in events {
-                    if let Some(o) = screen.handle(*e) {
-                        outcome = Some(o);
-                        break;
+            Some(crate::ui::LostOutcome::Load) => self.open_saves(false, false),
+            Some(crate::ui::LostOutcome::Ok) => self.open_menu(),
+            None => {}
+        }
+    }
+
+    fn advance_pause(&mut self, events: &[InputEvent]) {
+        let Screen::Pause(p) = &mut self.screen else {
+            unreachable!()
+        };
+        let mut chosen = None;
+        for e in events {
+            if let Some(a) = p.handle(*e) {
+                chosen = Some(a);
+                break;
+            }
+        }
+        self.frame = None;
+        match chosen {
+            Some(MenuAction::Continue) => self.screen = Screen::World,
+            Some(MenuAction::Save) => self.open_saves(true, true),
+            Some(MenuAction::Load) => self.open_saves(false, true),
+            Some(MenuAction::Options) => self.open_options(true),
+            Some(MenuAction::Restart) => {
+                // Restart replays the same reset descriptor, starting money included, so
+                // a replay with a restart does not depend on the profile file.
+                if let Some((scenario, seed, money)) = self.current.clone() {
+                    self.money_override = money;
+                    if let Err(e) = self.reset(scenario, seed) {
+                        eprintln!("opensherwood: cannot restart: {e}");
                     }
+                }
+            }
+            Some(MenuAction::Quit) => {
+                if let Err(e) = self.reset(Scenario::Menu("main".into()), 0) {
+                    eprintln!("opensherwood: cannot open the menu: {e}");
+                }
+            }
+            Some(other) => {
+                eprintln!("opensherwood: pause action {other:?} not implemented");
+            }
+            None => {}
+        }
+    }
+
+    fn advance_world(&mut self, events: &[InputEvent]) {
+        let in_mission = matches!(
+            self.world.as_ref().map(|w| &w.scenario),
+            Some(Scenario::Mission(_))
+        );
+        let escape_at = events
+            .iter()
+            .position(|e| in_mission && matches!(e, InputEvent::KeyDown { key: Key::Escape }));
+        // Escape wins the tick: the world does not advance and the tick's other events
+        // are dropped, so the pause always lands on the state the player saw.
+        if escape_at.is_some() {
+            self.open_pause();
+        } else {
+            // Clicks on HUD widgets act on the interface, not on the map: the kneel /
+            // standing figures crouch / stand the selection like the `c` / `s` keys, other
+            // widgets consume the click. Derived from canonical pointer events only, so a
+            // replay reproduces it.
+            let events = if in_mission {
+                self.route_hud_clicks(events)
+            } else {
+                events.to_vec()
+            };
+            let events = events.as_slice();
+            if let Some(world) = self.world.as_mut() {
+                world.step(events);
+                // The cached frame shows the previous tick: a checkpoint or `capture`
+                // after this tick must render the world as it is now.
+                self.frame = None;
+            }
+            if let Some((_, left)) = self.notice.as_mut() {
+                *left = left.saturating_sub(1);
+                if *left == 0 {
+                    self.notice = None;
                 }
                 self.frame = None;
-                match outcome {
-                    None => {}
-                    Some(OptionsOutcome::Back) => self.leave_saves(from_pause),
-                    Some(OptionsOutcome::Apply(settings)) => self.apply_settings(settings),
-                }
             }
-            Screen::Saves { screen, from_pause } => {
-                let from_pause = *from_pause;
-                let mut outcome = None;
-                for e in events {
-                    if let Some(o) = screen.handle(*e) {
-                        outcome = Some(o);
-                        break;
-                    }
-                }
-                self.frame = None;
-                match outcome {
-                    None => {}
-                    Some(SaveOutcome::Cancel) => self.leave_saves(from_pause),
-                    Some(SaveOutcome::Save(name)) => {
-                        // Saving happens from the pause menu: write the paused world, stay paused.
-                        self.screen = Screen::World;
-                        match self.write_save(&name) {
-                            Ok(_) => self.open_pause(),
-                            Err(e) => {
-                                eprintln!("opensherwood: save failed: {}", e.message);
-                                self.open_pause();
-                            }
-                        }
-                    }
-                    Some(SaveOutcome::Delete(name)) => {
-                        let path = self.saves_dir().join(format!("{name}.json"));
-                        if let Err(e) = std::fs::remove_file(&path) {
-                            eprintln!("opensherwood: delete {}: {e}", path.display());
-                        }
-                        self.open_saves(false, from_pause);
-                    }
-                    Some(SaveOutcome::Load(name)) => {
-                        // Loading replaces the world whatever screen we came from.
-                        let had_world = self.world.is_some();
-                        self.screen = Screen::World;
-                        match self.load_save_any(&name) {
-                            Ok(()) => {}
-                            Err(e) => {
-                                eprintln!("opensherwood: load failed: {}", e.message);
-                                if had_world && from_pause {
-                                    self.open_pause();
-                                } else {
-                                    self.open_menu();
-                                }
-                            }
-                        }
-                    }
-                }
+            if in_mission {
+                self.handle_saves(events);
             }
-            Screen::Debriefing(b) => {
-                let done = events.iter().any(|e| b.handle(*e));
-                self.frame = None;
-                if done {
-                    // After a win the next level of the campaign graph launches automatically
-                    // (manual, p.9); without one (or when it cannot load), and after a loss, the
-                    // main menu follows.
-                    match self.next_mission.clone().filter(|_| !self.ended_lost) {
-                        Some(next) => match self.reset(Scenario::Mission(next.clone()), 0) {
-                            Ok(()) => {
-                                // The successor rule is a hypothesis of the campaign graph
-                                // reading: the new world carries the assumption from tick 0.
-                                if let Some(w) = self.world.as_mut() {
-                                    w.record_assumption(
-                                        opensherwood_core::vm::Assumption::CampaignGraph,
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("opensherwood: cannot start {next}: {e}");
-                                self.open_menu();
-                            }
-                        },
-                        None => self.open_menu(),
-                    }
-                }
-            }
-            Screen::Credits(c) => {
-                let leave = events.iter().any(|e| Credits::leaves(*e));
-                c.tick();
-                self.frame = None;
-                if leave {
-                    self.open_menu();
-                }
-            }
-            Screen::Lost(page) => {
-                let outcome = events.iter().find_map(|e| page.handle(*e));
-                self.frame = None;
-                match outcome {
-                    Some(crate::ui::LostOutcome::Restart) => {
-                        if let Some((scenario, seed, money)) = self.current.clone() {
-                            self.money_override = money;
-                            if let Err(e) = self.reset(scenario, seed) {
-                                eprintln!("opensherwood: cannot restart: {e}");
-                                self.open_menu();
-                            }
-                        }
-                    }
-                    Some(crate::ui::LostOutcome::Load) => self.open_saves(false, false),
-                    Some(crate::ui::LostOutcome::Ok) => self.open_menu(),
-                    None => {}
-                }
-            }
-            Screen::Pause(p) => {
-                let mut chosen = None;
-                for e in events {
-                    if let Some(a) = p.handle(*e) {
-                        chosen = Some(a);
-                        break;
-                    }
-                }
-                self.frame = None;
-                match chosen {
-                    Some(MenuAction::Continue) => self.screen = Screen::World,
-                    Some(MenuAction::Save) => self.open_saves(true, true),
-                    Some(MenuAction::Load) => self.open_saves(false, true),
-                    Some(MenuAction::Options) => self.open_options(true),
-                    Some(MenuAction::Restart) => {
-                        // Restart replays the same reset descriptor, starting money included, so
-                        // a replay with a restart does not depend on the profile file.
-                        if let Some((scenario, seed, money)) = self.current.clone() {
-                            self.money_override = money;
-                            if let Err(e) = self.reset(scenario, seed) {
-                                eprintln!("opensherwood: cannot restart: {e}");
-                            }
-                        }
-                    }
-                    Some(MenuAction::Quit) => {
-                        if let Err(e) = self.reset(Scenario::Menu("main".into()), 0) {
-                            eprintln!("opensherwood: cannot open the menu: {e}");
-                        }
-                    }
-                    Some(other) => {
-                        eprintln!("opensherwood: pause action {other:?} not implemented");
-                    }
-                    None => {}
-                }
-            }
-            Screen::World => {
-                let in_mission = matches!(
-                    self.world.as_ref().map(|w| &w.scenario),
-                    Some(Scenario::Mission(_))
-                );
-                let escape_at = events.iter().position(|e| {
-                    in_mission && matches!(e, InputEvent::KeyDown { key: Key::Escape })
-                });
-                // Escape wins the tick: the world does not advance and the tick's other events
-                // are dropped, so the pause always lands on the state the player saw.
-                if escape_at.is_some() {
-                    self.open_pause();
-                } else {
-                    // Clicks on HUD widgets act on the interface, not on the map: the kneel /
-                    // standing figures crouch / stand the selection like the `c` / `s` keys, other
-                    // widgets consume the click. Derived from canonical pointer events only, so a
-                    // replay reproduces it.
-                    let events = if in_mission {
-                        self.route_hud_clicks(events)
-                    } else {
-                        events.to_vec()
-                    };
-                    let events = events.as_slice();
-                    if let Some(world) = self.world.as_mut() {
-                        world.step(events);
-                        // The cached frame shows the previous tick: a checkpoint or `capture`
-                        // after this tick must render the world as it is now.
-                        self.frame = None;
-                    }
-                    if let Some((_, left)) = self.notice.as_mut() {
-                        *left = left.saturating_sub(1);
-                        if *left == 0 {
-                            self.notice = None;
-                        }
-                        self.frame = None;
-                    }
-                    if in_mission {
-                        self.handle_saves(events);
-                    }
-                    self.sync_text_screen();
-                    self.sync_mission_end();
-                }
-            }
+            self.sync_text_screen();
+            self.sync_mission_end();
         }
     }
 
@@ -2157,6 +2206,73 @@ impl Session {
         Ok(path)
     }
 
+    fn world_frame(&mut self) -> Option<Framebuffer> {
+        let in_mission = matches!(
+            self.world.as_ref().map(|w| &w.scenario),
+            Some(Scenario::Mission(_))
+        );
+        if in_mission {
+            let _ = self.ui_assets();
+        }
+        let world = self.world.as_ref()?;
+        let mut frame = match self.sprites.as_mut() {
+            Some(s) => opensherwood_render::render_with_items(
+                world,
+                self.background.as_ref(),
+                s,
+                self.item_art.as_ref(),
+            ),
+            None => render(world, self.background.as_ref(), &mut NoSprites),
+        };
+        // The field-of-vision overlay lies on the scene, under the HUD.
+        if matches!(self.screen, Screen::World) {
+            crate::ui::draw_view_cone(&mut frame, world);
+        }
+        if in_mission && let Some(a) = self.ui_assets.as_ref() {
+            self.draw_mission_hud(&mut frame, world, a);
+        }
+        match &self.screen {
+            Screen::Briefing(b) | Screen::Debriefing(b) => {
+                b.render(&mut frame, self.ui_assets.as_ref());
+            }
+            Screen::Lost(page) => page.render(&mut frame, self.ui_assets.as_ref()),
+            Screen::Pause(p) => p.render(&mut frame, self.ui_assets.as_ref()),
+            _ => {}
+        }
+        Some(frame)
+    }
+
+    fn draw_mission_hud(&self, frame: &mut Framebuffer, world: &World, a: &UiAssets) {
+        // The money counter follows the script's player money (natives 236 / 237,
+        // initialised by the mission script); the profile default only stands in
+        // before the script sets it.
+        let mut hud = self.hud.clone();
+        if let Some(vm) = world.vm.as_ref() {
+            hud.money = vm.money;
+        }
+        // The portrait's counters follow the selected player character (the
+        // first one while nobody is selected).
+        let hero = world
+            .entities
+            .iter()
+            .find(|e| world.selected == Some(e.id) && e.kind == EntityKind::Player)
+            .or_else(|| world.entities.iter().find(|e| e.kind == EntityKind::Player));
+        if let Some(h) = hero {
+            hud.arrows = h.arrows;
+            hud.purses = h.purses;
+        }
+        crate::ui::draw_hud(frame, a, &hud);
+        if let Some((text, _)) = &self.notice {
+            crate::ui::draw_notice(frame, a, text);
+        }
+        if self.minimap_open
+            && matches!(self.screen, Screen::World)
+            && let Some(m) = self.minimap.as_ref()
+        {
+            crate::ui::draw_minimap(frame, m, world);
+        }
+    }
+
     /// The current frame, rendering it if needed.
     pub fn frame(&mut self) -> Option<&Framebuffer> {
         if self.frame.is_none() {
@@ -2176,70 +2292,7 @@ impl Session {
                 | Screen::Debriefing(_)
                 | Screen::Pause(_)
                 | Screen::Lost(_)
-                | Screen::World => {
-                    let in_mission = matches!(
-                        self.world.as_ref().map(|w| &w.scenario),
-                        Some(Scenario::Mission(_))
-                    );
-                    if in_mission {
-                        let _ = self.ui_assets();
-                    }
-                    let world = self.world.as_ref()?;
-                    let mut frame = match self.sprites.as_mut() {
-                        Some(s) => opensherwood_render::render_with_items(
-                            world,
-                            self.background.as_ref(),
-                            s,
-                            self.item_art.as_ref(),
-                        ),
-                        None => render(world, self.background.as_ref(), &mut NoSprites),
-                    };
-                    // The field-of-vision overlay lies on the scene, under the HUD.
-                    if matches!(self.screen, Screen::World) {
-                        crate::ui::draw_view_cone(&mut frame, world);
-                    }
-                    if in_mission && let Some(a) = self.ui_assets.as_ref() {
-                        // The money counter follows the script's player money (natives 236 / 237,
-                        // initialised by the mission script); the profile default only stands in
-                        // before the script sets it.
-                        let mut hud = self.hud.clone();
-                        if let Some(vm) = world.vm.as_ref() {
-                            hud.money = vm.money;
-                        }
-                        // The portrait's counters follow the selected player character (the
-                        // first one while nobody is selected).
-                        let hero = world
-                            .entities
-                            .iter()
-                            .find(|e| world.selected == Some(e.id) && e.kind == EntityKind::Player)
-                            .or_else(|| {
-                                world.entities.iter().find(|e| e.kind == EntityKind::Player)
-                            });
-                        if let Some(h) = hero {
-                            hud.arrows = h.arrows;
-                            hud.purses = h.purses;
-                        }
-                        crate::ui::draw_hud(&mut frame, a, &hud);
-                        if let Some((text, _)) = &self.notice {
-                            crate::ui::draw_notice(&mut frame, a, text);
-                        }
-                        if self.minimap_open
-                            && matches!(self.screen, Screen::World)
-                            && let Some(m) = self.minimap.as_ref()
-                        {
-                            crate::ui::draw_minimap(&mut frame, m, world);
-                        }
-                    }
-                    match &self.screen {
-                        Screen::Briefing(b) | Screen::Debriefing(b) => {
-                            b.render(&mut frame, self.ui_assets.as_ref());
-                        }
-                        Screen::Lost(page) => page.render(&mut frame, self.ui_assets.as_ref()),
-                        Screen::Pause(p) => p.render(&mut frame, self.ui_assets.as_ref()),
-                        _ => {}
-                    }
-                    frame
-                }
+                | Screen::World => self.world_frame()?,
             };
             self.frame = Some(frame);
         }
@@ -2250,6 +2303,521 @@ impl Session {
         self.world
             .as_mut()
             .ok_or_else(|| engine_err("no world loaded; call reset first"))
+    }
+
+    fn rpc_reset(&mut self, p: Option<Value>) -> RpcResult {
+        let p: ResetParams = params_required(p)?;
+        self.money_override = p.starting_money;
+        self.reset(p.scenario, p.seed).map_err(engine_err)?;
+        let ui = self.ui_state();
+        match self.world.as_ref() {
+            Some(world) => ok(json!({ "tick": world.tick, "hashes": world.hashes(), "ui": ui })),
+            None => ok(json!({ "tick": 0, "hashes": {}, "ui": ui })),
+        }
+    }
+
+    fn validate_step(p: &StepParams) -> Result<(), RpcError> {
+        if p.ticks == 0 || p.ticks > limits::MAX_TICKS {
+            return Err(RpcError::new(
+                RpcError::INVALID_PARAMS,
+                format!("ticks must be in 1..={}", limits::MAX_TICKS),
+            ));
+        }
+        if p.hash_every_tick && p.ticks > limits::MAX_HASHED_TICKS {
+            return Err(RpcError::new(
+                RpcError::INVALID_PARAMS,
+                format!(
+                    "hash_every_tick allows at most {} ticks",
+                    limits::MAX_HASHED_TICKS
+                ),
+            ));
+        }
+        if p.events.len() > limits::MAX_EVENTS {
+            return Err(RpcError::new(
+                RpcError::INVALID_PARAMS,
+                format!("at most {} events per step", limits::MAX_EVENTS),
+            ));
+        }
+        if p.events.iter().any(|e| e.tick_offset >= p.ticks) {
+            return Err(RpcError::new(
+                RpcError::INVALID_PARAMS,
+                "event tick_offset beyond ticks",
+            ));
+        }
+        Ok(())
+    }
+
+    fn rpc_step(&mut self, p: Option<Value>) -> RpcResult {
+        let p: StepParams = params_required(p)?;
+        Self::validate_step(&p)?;
+        let mut events = p.events;
+        events.sort_by_key(|e| (e.tick_offset, e.sequence));
+        let planned: Vec<InputEvent> = self
+            .queued_input
+            .iter()
+            .copied()
+            .chain(events.iter().map(|e| e.event))
+            .collect();
+        self.check_recording_quota(p.ticks, &planned)?;
+        let queued = std::mem::take(&mut self.queued_input);
+        if self.world.is_none() && matches!(self.screen, Screen::World) {
+            return Err(engine_err("no world loaded; call reset first"));
+        }
+        let mut per_tick = Vec::new();
+        let mut cursor = 0usize;
+        let mut tick_events: Vec<InputEvent> = Vec::new();
+        for offset in 0..p.ticks {
+            tick_events.clear();
+            if offset == 0 {
+                tick_events.extend(queued.iter().copied());
+            }
+            while cursor < events.len() && events[cursor].tick_offset == offset {
+                tick_events.push(events[cursor].event);
+                cursor += 1;
+            }
+            self.advance(&tick_events);
+            if p.hash_every_tick
+                && let Some(w) = self.world.as_ref()
+            {
+                per_tick.push(w.hashes());
+            }
+        }
+        self.frame = None;
+        let (tick, hashes) = self
+            .world
+            .as_ref()
+            .map_or((0, opensherwood_core::Hashes::default()), |w| {
+                (w.tick, w.hashes())
+            });
+        ok(StepResult {
+            tick,
+            hashes,
+            per_tick,
+        })
+    }
+
+    fn rpc_observe(&mut self, p: Option<Value>) -> RpcResult {
+        let p: ObserveParams = params(p)?;
+        let ui = self.ui_state();
+        ok(ObserveResult {
+            observation: self.world.as_ref().map(|w| w.observe(p.entities)),
+            hashes: self
+                .world
+                .as_ref()
+                .map_or_else(opensherwood_core::Hashes::default, World::hashes),
+            ui,
+            persistence_error: self.persistence_error.clone(),
+        })
+    }
+
+    fn rpc_snapshot(&mut self, _p: Option<Value>) -> RpcResult {
+        self.require_world_screen()?;
+        self.require_no_notice()?;
+        let scenario = self.world()?.scenario.clone();
+        let content = self.scenario_content(&scenario)?;
+        let world = self.world()?;
+        let snapshot = world.snapshot(content);
+        let hashes = world.hashes();
+        self.next_snapshot += 1;
+        // Zero-padded so lexicographic order in the map is insertion (FIFO) order.
+        let id = format!("snap-{:012}", self.next_snapshot);
+        while self.snapshots.len() >= limits::MAX_SNAPSHOTS {
+            let oldest = self.snapshots.keys().next().cloned();
+            if let Some(k) = oldest {
+                self.snapshots.remove(&k);
+            }
+        }
+        self.snapshots.insert(id.clone(), snapshot.clone());
+        ok(SnapshotResult {
+            id,
+            snapshot,
+            hashes,
+        })
+    }
+
+    fn rpc_restore(&mut self, p: Option<Value>) -> RpcResult {
+        self.require_world_screen()?;
+        self.require_no_notice()?;
+        if self.recording.is_some() {
+            return Err(engine_err(
+                "a replay is being recorded; call replay.stop before restore",
+            ));
+        }
+        let p: RestoreParams = params_required(p)?;
+        let snap = match (p.snapshot, p.id) {
+            (Some(s), _) => s,
+            (None, Some(id)) => self.snapshots.get(&id).cloned().ok_or_else(|| {
+                RpcError::new(RpcError::INVALID_PARAMS, format!("unknown snapshot {id}"))
+            })?,
+            (None, None) => {
+                return Err(RpcError::new(
+                    RpcError::INVALID_PARAMS,
+                    "id or snapshot required",
+                ));
+            }
+        };
+        self.restore_snapshot(&snap)?;
+        let world = self.world()?;
+        ok(json!({ "tick": world.tick, "hashes": world.hashes() }))
+    }
+
+    fn rpc_capture(&mut self, p: Option<Value>) -> RpcResult {
+        let p: CaptureParams = params(p)?;
+        let artifacts = self.artifacts.clone();
+        let frame = self
+            .frame()
+            .ok_or_else(|| engine_err("nothing to capture; call reset first"))?;
+        let mut written = None;
+        if let Some(rel) = p.path {
+            if rel.contains("..") || PathBuf::from(&rel).is_absolute() {
+                return Err(RpcError::new(
+                    RpcError::INVALID_PARAMS,
+                    "path must be relative",
+                ));
+            }
+            let path = artifacts.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
+            }
+            let png = frame
+                .encode_png()
+                .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
+            std::fs::write(&path, png)
+                .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
+            written = Some(path.to_string_lossy().to_string());
+        }
+        ok(CaptureResult {
+            hash: frame.hash(),
+            width: frame.width,
+            height: frame.height,
+            path: written,
+        })
+    }
+
+    fn rpc_replay_start(&mut self, p: Option<Value>) -> RpcResult {
+        let p: ReplayStartParams = params(p)?;
+        // Allowed at session tick 0 only: right after `reset`, even while the mission's
+        // first text page is shown (its dismissal is then part of the replay). The main
+        // menu has no world to record.
+        let world = self
+            .world
+            .as_ref()
+            .ok_or_else(|| engine_err("no world loaded; call reset first"))?;
+        if self.session_tick() != 0 {
+            return Err(engine_err(
+                "replay recording must start at session tick 0 (call reset first)",
+            ));
+        }
+        let header = self.replay_header(world)?;
+        let hashes = world.hashes();
+        let mut recorder = ReplayRecorder::new(header, &hashes).map_err(engine_err)?;
+        // The initial state (world, screen, frame): playback compares it before applying
+        // anything.
+        let initial = self.observed_checkpoint(0);
+        recorder.push_checkpoint(initial).map_err(engine_err)?;
+        self.recording = Some(Recording {
+            recorder,
+            checkpoint_every: p.checkpoint_every,
+            failed: None,
+        });
+        ok(json!({ "recording": true }))
+    }
+
+    fn rpc_replay_stop(&mut self, p: Option<Value>) -> RpcResult {
+        let p: CaptureParams = params(p)?;
+        let rec = self
+            .recording
+            .take()
+            .ok_or_else(|| engine_err("no replay is being recorded"))?;
+        if let Some(why) = rec.failed {
+            return Err(engine_err(format!("recording discarded: {why}")));
+        }
+        let tick = self.session_tick();
+        let last = self.observed_checkpoint(tick);
+        // The final checkpoint goes into the bytes the recorder reserved for it, through
+        // the recorder's validated path; the text is then built with fallible allocation
+        // and is within `replay_limits::MAX_BYTES` by construction, so the parser
+        // accepts it.
+        let replay = rec
+            .recorder
+            .finish(last)
+            .map_err(|e| engine_err(format!("recording discarded: {e}")))?;
+        let jsonl = replay
+            .to_jsonl()
+            .map_err(|e| engine_err(format!("recording discarded: {e}")))?;
+        let mut written = None;
+        if let Some(rel) = p.path {
+            let path = self.artifact_path(&rel)?;
+            std::fs::write(&path, &jsonl)
+                .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
+            written = Some(path.to_string_lossy().to_string());
+        }
+        ok(ReplayStopResult {
+            events: replay.events.len(),
+            checkpoints: replay.checkpoints.len(),
+            jsonl,
+            path: written,
+        })
+    }
+
+    fn replay_text(&self, jsonl: Option<String>, path: Option<String>) -> Result<String, RpcError> {
+        let text = match (jsonl, path) {
+            (Some(t), _) => t,
+            (None, Some(rel)) => {
+                let path = self.artifact_path(&rel)?;
+                // Size first: the parser's cap must never be reached by reading the file.
+                let len = std::fs::metadata(&path)
+                    .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?
+                    .len();
+                if len > replay_limits::MAX_BYTES as u64 {
+                    return Err(RpcError::new(
+                        RpcError::INVALID_PARAMS,
+                        format!(
+                            "replay file is {len} bytes; at most {} are accepted",
+                            replay_limits::MAX_BYTES
+                        ),
+                    ));
+                }
+                std::fs::read_to_string(&path)
+                    .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?
+            }
+            (None, None) => {
+                return Err(RpcError::new(
+                    RpcError::INVALID_PARAMS,
+                    "jsonl or path required",
+                ));
+            }
+        };
+        Ok(text)
+    }
+
+    fn rpc_replay_play(&mut self, p: Option<Value>) -> RpcResult {
+        // Playback resets the session to the replay's scenario, so it is allowed from
+        // any screen.
+        let p: ReplayPlayParams = params(p)?;
+        let text = self.replay_text(p.jsonl, p.path)?;
+        let replay =
+            Replay::from_jsonl(&text).map_err(|e| RpcError::new(RpcError::INVALID_PARAMS, e))?;
+        let last = replay.last_tick();
+        if last > limits::MAX_REPLAY_PLAY_TICKS {
+            return Err(RpcError::new(
+                RpcError::INVALID_PARAMS,
+                format!(
+                    "replay runs to tick {last}; at most {} ticks are played in one call",
+                    limits::MAX_REPLAY_PLAY_TICKS
+                ),
+            ));
+        }
+        if let Some(fp) = &replay.header.content_fingerprint
+            && self.content_fingerprint()?.as_ref() != Some(fp)
+        {
+            return Err(engine_err(
+                "replay was recorded with different game content",
+            ));
+        }
+        self.money_override = replay.header.starting_money;
+        self.reset(replay.header.scenario.clone(), replay.header.seed)
+            .map_err(engine_err)?;
+        // The header must be exactly what this session would record now: a replay with
+        // another viewport, tick rate, RNG stream identity or content is not played
+        // against a session that would produce different checkpoints.
+        let world = self
+            .world
+            .as_ref()
+            .ok_or_else(|| engine_err("replay scenario has no world to play"))?;
+        let expected = self.replay_header(world)?;
+        if expected != replay.header {
+            return Err(engine_err(format!(
+                "replay header does not match the session after reset ({})",
+                replay.header.diff(&expected).join(", ")
+            )));
+        }
+        ok(self.run_replay(&replay, last, p.stop_on_divergence))
+    }
+
+    fn run_replay(
+        &mut self,
+        replay: &Replay,
+        last: u64,
+        stop_on_divergence: bool,
+    ) -> ReplayPlayResult {
+        let mut events = replay.events.iter().peekable();
+        let mut checkpoints = replay.checkpoints.iter().peekable();
+        let mut checkpoints_ok = 0usize;
+        let mut first_divergence = None;
+        let mut tick_events: Vec<InputEvent> = Vec::new();
+        let mut simulated = 0u64;
+        // Session tick `t` (0 = the state right after reset, compared before anything
+        // is applied) is reached by advancing with the events recorded at tick `t - 1`,
+        // through the same `advance` the recording went through (screens included).
+        for tick in 0..=last {
+            if tick > 0 {
+                tick_events.clear();
+                while let Some(e) = events.peek()
+                    && e.tick == tick - 1
+                {
+                    tick_events.push(e.event);
+                    events.next();
+                }
+                self.advance(&tick_events);
+                simulated = tick;
+            }
+            let observed = self.observed_checkpoint(tick);
+            while let Some(c) = checkpoints.peek()
+                && c.tick <= tick
+            {
+                Self::compare_replay_checkpoint(
+                    c,
+                    &observed,
+                    tick,
+                    &mut checkpoints_ok,
+                    &mut first_divergence,
+                );
+                checkpoints.next();
+            }
+            if first_divergence.is_some() && stop_on_divergence {
+                break;
+            }
+        }
+        self.frame = None;
+        let hashes = self.observed_checkpoint(simulated).hashes;
+        ReplayPlayResult {
+            ticks: simulated,
+            checkpoints_ok,
+            first_divergence,
+            hashes,
+        }
+    }
+
+    fn compare_replay_checkpoint(
+        c: &ReplayCheckpoint,
+        observed: &ReplayCheckpoint,
+        tick: u64,
+        checkpoints_ok: &mut usize,
+        first_divergence: &mut Option<(u64, Vec<String>)>,
+    ) {
+        if c.tick == tick {
+            let diff = c.diff(observed);
+            if diff.is_empty() {
+                *checkpoints_ok += 1;
+            } else if first_divergence.is_none() {
+                *first_divergence = Some((c.tick, diff));
+            }
+        }
+    }
+
+    fn rpc_debug_nav(&mut self, p: Option<Value>) -> RpcResult {
+        #[derive(serde::Deserialize)]
+        struct P {
+            x: i32,
+            y: i32,
+            #[serde(default)]
+            to: Option<(i32, i32)>,
+        }
+        let p: P = params_required(p)?;
+        let world = self.world()?;
+        world
+            .try_ensure_nav()
+            .map_err(|e| engine_err(format!("navigation grid: {e}")))?;
+        let nav = world.nav.as_ref().expect("ensured");
+        let cell = nav.cell_of(p.x, p.y);
+        let path = p.to.map(|(tx, ty)| {
+            let goal = nav.cell_of(tx, ty);
+            nav.find_path(cell, goal).map(|cells| cells.len())
+        });
+        ok(json!({
+            "geometry_walkable": world.geometry.is_walkable(p.x, p.y),
+            "cell": cell,
+            "cell_walkable": nav.walkable(cell),
+            "nearest_walkable": nav.nearest_walkable(cell, 8),
+            "grid": [nav.width, nav.height],
+            "boundary_points": world.geometry.boundary.len(),
+            "areas": world.geometry.areas.len(),
+            "obstacles": world.geometry.obstacles.len(),
+            "path_cells": path,
+        }))
+    }
+
+    fn rpc_debug_vm(&mut self, p: Option<Value>) -> RpcResult {
+        // Inspection only: nothing here mutates the world. Text pages are dismissed
+        // through the briefing screen with canonical input, a mission is won or lost
+        // through play (`harness/tests/data/test_win.py`).
+        #[derive(serde::Deserialize, Default)]
+        struct P {
+            /// Describe one entry of the element table (native 3's index space).
+            #[serde(default)]
+            element: Option<i32>,
+        }
+        let p: P = params(p)?;
+        self.world()?;
+        let world = self.world()?;
+        let Some(vm) = world.vm.as_ref() else {
+            return ok(json!({ "present": false }));
+        };
+        let element = p.element.map(|index| {
+            use opensherwood_core::vm::Element;
+            match usize::try_from(index)
+                .ok()
+                .and_then(|i| vm.program.elements.get(i))
+            {
+                Some(Element::Map(i)) => json!({ "kind": "map", "index": i }),
+                Some(Element::Unmodelled(i)) => json!({ "kind": "unmodelled", "index": i }),
+                Some(Element::Actor(e)) => json!({ "kind": "actor", "entity": e }),
+                Some(Element::Object { x, y }) => {
+                    json!({ "kind": "object", "x": x, "y": y })
+                }
+                Some(Element::Scroll { x, y }) => {
+                    json!({ "kind": "scroll", "x": x, "y": y })
+                }
+                Some(Element::Item { x, y, kind, stack }) => {
+                    json!({ "kind": "item", "x": x, "y": y, "item_kind": kind, "stack": stack })
+                }
+                Some(Element::Polygon(l)) => json!({ "kind": "polygon", "location": l }),
+                None => json!(null),
+            }
+        });
+        ok(json!({
+            "present": true,
+            "classes": vm.program.classes.len(),
+            "elements": vm.program.elements.len(),
+            "element": element,
+            "locations": vm.program.locations.len(),
+            "objectives": vm.objectives,
+            "texts": vm.pending_texts(),
+            "scrolls": vm
+                .program
+                .elements
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| match e {
+                    opensherwood_core::vm::Element::Scroll { x, y } => Some(json!({
+                        "element": i,
+                        "x": x,
+                        "y": y,
+                        "active": !vm.inactive_elements.contains(&(i as i32)),
+                    })),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            "items": vm.items(),
+            "mission_won": vm.mission_won,
+            "mission_lost": vm.mission_lost,
+            "tainted": vm.tainted(),
+            "assumptions": vm.assumptions,
+            "money": vm.money,
+            "sequence_active": !vm.sequences.is_empty(),
+            "sequences": vm.sequences.len(),
+            "faulted": vm.faulted(),
+            "fault": vm.fault,
+            "lenient": vm.lenient,
+            "unknown_calls": vm.unknown_calls,
+            "camera_target": vm.camera_target,
+            "debriefing": vm.debriefing,
+            "mission_vars": vm.mission_vars,
+            "counters": vm.counters,
+            "rng_draws": vm.rng.draws,
+        }))
     }
 
     /// Dispatch one RPC method.
@@ -2271,477 +2839,17 @@ impl Session {
                 ],
                 content_fingerprint: self.content_fingerprint()?,
             }),
-            "reset" => {
-                let p: ResetParams = params_required(p)?;
-                self.money_override = p.starting_money;
-                self.reset(p.scenario, p.seed).map_err(engine_err)?;
-                let ui = self.ui_state();
-                match self.world.as_ref() {
-                    Some(world) => {
-                        ok(json!({ "tick": world.tick, "hashes": world.hashes(), "ui": ui }))
-                    }
-                    None => ok(json!({ "tick": 0, "hashes": {}, "ui": ui })),
-                }
-            }
-            "step" => {
-                let p: StepParams = params_required(p)?;
-                if p.ticks == 0 || p.ticks > limits::MAX_TICKS {
-                    return Err(RpcError::new(
-                        RpcError::INVALID_PARAMS,
-                        format!("ticks must be in 1..={}", limits::MAX_TICKS),
-                    ));
-                }
-                if p.hash_every_tick && p.ticks > limits::MAX_HASHED_TICKS {
-                    return Err(RpcError::new(
-                        RpcError::INVALID_PARAMS,
-                        format!(
-                            "hash_every_tick allows at most {} ticks",
-                            limits::MAX_HASHED_TICKS
-                        ),
-                    ));
-                }
-                if p.events.len() > limits::MAX_EVENTS {
-                    return Err(RpcError::new(
-                        RpcError::INVALID_PARAMS,
-                        format!("at most {} events per step", limits::MAX_EVENTS),
-                    ));
-                }
-                if p.events.iter().any(|e| e.tick_offset >= p.ticks) {
-                    return Err(RpcError::new(
-                        RpcError::INVALID_PARAMS,
-                        "event tick_offset beyond ticks",
-                    ));
-                }
-                let mut events = p.events;
-                events.sort_by_key(|e| (e.tick_offset, e.sequence));
-                let planned: Vec<InputEvent> = self
-                    .queued_input
-                    .iter()
-                    .copied()
-                    .chain(events.iter().map(|e| e.event))
-                    .collect();
-                self.check_recording_quota(p.ticks, &planned)?;
-                let queued = std::mem::take(&mut self.queued_input);
-                if self.world.is_none() && matches!(self.screen, Screen::World) {
-                    return Err(engine_err("no world loaded; call reset first"));
-                }
-                let mut per_tick = Vec::new();
-                let mut cursor = 0usize;
-                let mut tick_events: Vec<InputEvent> = Vec::new();
-                for offset in 0..p.ticks {
-                    tick_events.clear();
-                    if offset == 0 {
-                        tick_events.extend(queued.iter().copied());
-                    }
-                    while cursor < events.len() && events[cursor].tick_offset == offset {
-                        tick_events.push(events[cursor].event);
-                        cursor += 1;
-                    }
-                    self.advance(&tick_events);
-                    if p.hash_every_tick
-                        && let Some(w) = self.world.as_ref()
-                    {
-                        per_tick.push(w.hashes());
-                    }
-                }
-                self.frame = None;
-                let (tick, hashes) = self
-                    .world
-                    .as_ref()
-                    .map_or((0, opensherwood_core::Hashes::default()), |w| {
-                        (w.tick, w.hashes())
-                    });
-                ok(StepResult {
-                    tick,
-                    hashes,
-                    per_tick,
-                })
-            }
-            "observe" => {
-                let p: ObserveParams = params(p)?;
-                let ui = self.ui_state();
-                ok(ObserveResult {
-                    observation: self.world.as_ref().map(|w| w.observe(p.entities)),
-                    hashes: self
-                        .world
-                        .as_ref()
-                        .map_or_else(opensherwood_core::Hashes::default, World::hashes),
-                    ui,
-                    persistence_error: self.persistence_error.clone(),
-                })
-            }
-            "snapshot" => {
-                self.require_world_screen()?;
-                self.require_no_notice()?;
-                let scenario = self.world()?.scenario.clone();
-                let content = self.scenario_content(&scenario)?;
-                let world = self.world()?;
-                let snapshot = world.snapshot(content);
-                let hashes = world.hashes();
-                self.next_snapshot += 1;
-                // Zero-padded so lexicographic order in the map is insertion (FIFO) order.
-                let id = format!("snap-{:012}", self.next_snapshot);
-                while self.snapshots.len() >= limits::MAX_SNAPSHOTS {
-                    let oldest = self.snapshots.keys().next().cloned();
-                    if let Some(k) = oldest {
-                        self.snapshots.remove(&k);
-                    }
-                }
-                self.snapshots.insert(id.clone(), snapshot.clone());
-                ok(SnapshotResult {
-                    id,
-                    snapshot,
-                    hashes,
-                })
-            }
-            "restore" => {
-                self.require_world_screen()?;
-                self.require_no_notice()?;
-                if self.recording.is_some() {
-                    return Err(engine_err(
-                        "a replay is being recorded; call replay.stop before restore",
-                    ));
-                }
-                let p: RestoreParams = params_required(p)?;
-                let snap = match (p.snapshot, p.id) {
-                    (Some(s), _) => s,
-                    (None, Some(id)) => self.snapshots.get(&id).cloned().ok_or_else(|| {
-                        RpcError::new(RpcError::INVALID_PARAMS, format!("unknown snapshot {id}"))
-                    })?,
-                    (None, None) => {
-                        return Err(RpcError::new(
-                            RpcError::INVALID_PARAMS,
-                            "id or snapshot required",
-                        ));
-                    }
-                };
-                self.restore_snapshot(&snap)?;
-                let world = self.world()?;
-                ok(json!({ "tick": world.tick, "hashes": world.hashes() }))
-            }
-            "capture" => {
-                let p: CaptureParams = params(p)?;
-                let artifacts = self.artifacts.clone();
-                let frame = self
-                    .frame()
-                    .ok_or_else(|| engine_err("nothing to capture; call reset first"))?;
-                let mut written = None;
-                if let Some(rel) = p.path {
-                    if rel.contains("..") || PathBuf::from(&rel).is_absolute() {
-                        return Err(RpcError::new(
-                            RpcError::INVALID_PARAMS,
-                            "path must be relative",
-                        ));
-                    }
-                    let path = artifacts.join(rel);
-                    if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent)
-                            .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
-                    }
-                    let png = frame
-                        .encode_png()
-                        .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
-                    std::fs::write(&path, png)
-                        .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
-                    written = Some(path.to_string_lossy().to_string());
-                }
-                ok(CaptureResult {
-                    hash: frame.hash(),
-                    width: frame.width,
-                    height: frame.height,
-                    path: written,
-                })
-            }
-            "replay.start" => {
-                let p: ReplayStartParams = params(p)?;
-                // Allowed at session tick 0 only: right after `reset`, even while the mission's
-                // first text page is shown (its dismissal is then part of the replay). The main
-                // menu has no world to record.
-                let world = self
-                    .world
-                    .as_ref()
-                    .ok_or_else(|| engine_err("no world loaded; call reset first"))?;
-                if self.session_tick() != 0 {
-                    return Err(engine_err(
-                        "replay recording must start at session tick 0 (call reset first)",
-                    ));
-                }
-                let header = self.replay_header(world)?;
-                let hashes = world.hashes();
-                let mut recorder = ReplayRecorder::new(header, &hashes).map_err(engine_err)?;
-                // The initial state (world, screen, frame): playback compares it before applying
-                // anything.
-                let initial = self.observed_checkpoint(0);
-                recorder.push_checkpoint(initial).map_err(engine_err)?;
-                self.recording = Some(Recording {
-                    recorder,
-                    checkpoint_every: p.checkpoint_every,
-                    failed: None,
-                });
-                ok(json!({ "recording": true }))
-            }
-            "replay.stop" => {
-                let p: CaptureParams = params(p)?;
-                let rec = self
-                    .recording
-                    .take()
-                    .ok_or_else(|| engine_err("no replay is being recorded"))?;
-                if let Some(why) = rec.failed {
-                    return Err(engine_err(format!("recording discarded: {why}")));
-                }
-                let tick = self.session_tick();
-                let last = self.observed_checkpoint(tick);
-                // The final checkpoint goes into the bytes the recorder reserved for it, through
-                // the recorder's validated path; the text is then built with fallible allocation
-                // and is within `replay_limits::MAX_BYTES` by construction, so the parser
-                // accepts it.
-                let replay = rec
-                    .recorder
-                    .finish(last)
-                    .map_err(|e| engine_err(format!("recording discarded: {e}")))?;
-                let jsonl = replay
-                    .to_jsonl()
-                    .map_err(|e| engine_err(format!("recording discarded: {e}")))?;
-                let mut written = None;
-                if let Some(rel) = p.path {
-                    let path = self.artifact_path(&rel)?;
-                    std::fs::write(&path, &jsonl)
-                        .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?;
-                    written = Some(path.to_string_lossy().to_string());
-                }
-                ok(ReplayStopResult {
-                    events: replay.events.len(),
-                    checkpoints: replay.checkpoints.len(),
-                    jsonl,
-                    path: written,
-                })
-            }
-            "replay.play" => {
-                // Playback resets the session to the replay's scenario, so it is allowed from
-                // any screen.
-                let p: ReplayPlayParams = params(p)?;
-                let text = match (p.jsonl, p.path) {
-                    (Some(t), _) => t,
-                    (None, Some(rel)) => {
-                        let path = self.artifact_path(&rel)?;
-                        // Size first: the parser's cap must never be reached by reading the file.
-                        let len = std::fs::metadata(&path)
-                            .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?
-                            .len();
-                        if len > replay_limits::MAX_BYTES as u64 {
-                            return Err(RpcError::new(
-                                RpcError::INVALID_PARAMS,
-                                format!(
-                                    "replay file is {len} bytes; at most {} are accepted",
-                                    replay_limits::MAX_BYTES
-                                ),
-                            ));
-                        }
-                        std::fs::read_to_string(&path)
-                            .map_err(|e| RpcError::new(RpcError::INTERNAL, e.to_string()))?
-                    }
-                    (None, None) => {
-                        return Err(RpcError::new(
-                            RpcError::INVALID_PARAMS,
-                            "jsonl or path required",
-                        ));
-                    }
-                };
-                let replay = Replay::from_jsonl(&text)
-                    .map_err(|e| RpcError::new(RpcError::INVALID_PARAMS, e))?;
-                let last = replay.last_tick();
-                if last > limits::MAX_REPLAY_PLAY_TICKS {
-                    return Err(RpcError::new(
-                        RpcError::INVALID_PARAMS,
-                        format!(
-                            "replay runs to tick {last}; at most {} ticks are played in one call",
-                            limits::MAX_REPLAY_PLAY_TICKS
-                        ),
-                    ));
-                }
-                if let Some(fp) = &replay.header.content_fingerprint
-                    && self.content_fingerprint()?.as_ref() != Some(fp)
-                {
-                    return Err(engine_err(
-                        "replay was recorded with different game content",
-                    ));
-                }
-                self.money_override = replay.header.starting_money;
-                self.reset(replay.header.scenario.clone(), replay.header.seed)
-                    .map_err(engine_err)?;
-                // The header must be exactly what this session would record now: a replay with
-                // another viewport, tick rate, RNG stream identity or content is not played
-                // against a session that would produce different checkpoints.
-                let world = self
-                    .world
-                    .as_ref()
-                    .ok_or_else(|| engine_err("replay scenario has no world to play"))?;
-                let expected = self.replay_header(world)?;
-                if expected != replay.header {
-                    return Err(engine_err(format!(
-                        "replay header does not match the session after reset ({})",
-                        replay.header.diff(&expected).join(", ")
-                    )));
-                }
-                let mut events = replay.events.iter().peekable();
-                let mut checkpoints = replay.checkpoints.iter().peekable();
-                let mut checkpoints_ok = 0usize;
-                let mut first_divergence = None;
-                let mut tick_events: Vec<InputEvent> = Vec::new();
-                let mut simulated = 0u64;
-                // Session tick `t` (0 = the state right after reset, compared before anything
-                // is applied) is reached by advancing with the events recorded at tick `t - 1`,
-                // through the same `advance` the recording went through (screens included).
-                for tick in 0..=last {
-                    if tick > 0 {
-                        tick_events.clear();
-                        while let Some(e) = events.peek()
-                            && e.tick == tick - 1
-                        {
-                            tick_events.push(e.event);
-                            events.next();
-                        }
-                        self.advance(&tick_events);
-                        simulated = tick;
-                    }
-                    let observed = self.observed_checkpoint(tick);
-                    while let Some(c) = checkpoints.peek()
-                        && c.tick <= tick
-                    {
-                        if c.tick == tick {
-                            let diff = c.diff(&observed);
-                            if diff.is_empty() {
-                                checkpoints_ok += 1;
-                            } else if first_divergence.is_none() {
-                                first_divergence = Some((c.tick, diff));
-                            }
-                        }
-                        checkpoints.next();
-                    }
-                    if first_divergence.is_some() && p.stop_on_divergence {
-                        break;
-                    }
-                }
-                self.frame = None;
-                let hashes = self.observed_checkpoint(simulated).hashes;
-                ok(ReplayPlayResult {
-                    ticks: simulated,
-                    checkpoints_ok,
-                    first_divergence,
-                    hashes,
-                })
-            }
-            "debug.nav" => {
-                #[derive(serde::Deserialize)]
-                struct P {
-                    x: i32,
-                    y: i32,
-                    #[serde(default)]
-                    to: Option<(i32, i32)>,
-                }
-                let p: P = params_required(p)?;
-                let world = self.world()?;
-                world
-                    .try_ensure_nav()
-                    .map_err(|e| engine_err(format!("navigation grid: {e}")))?;
-                let nav = world.nav.as_ref().expect("ensured");
-                let cell = nav.cell_of(p.x, p.y);
-                let path = p.to.map(|(tx, ty)| {
-                    let goal = nav.cell_of(tx, ty);
-                    nav.find_path(cell, goal).map(|cells| cells.len())
-                });
-                ok(json!({
-                    "geometry_walkable": world.geometry.is_walkable(p.x, p.y),
-                    "cell": cell,
-                    "cell_walkable": nav.walkable(cell),
-                    "nearest_walkable": nav.nearest_walkable(cell, 8),
-                    "grid": [nav.width, nav.height],
-                    "boundary_points": world.geometry.boundary.len(),
-                    "areas": world.geometry.areas.len(),
-                    "obstacles": world.geometry.obstacles.len(),
-                    "path_cells": path,
-                }))
-            }
-            "debug.vm" => {
-                // Inspection only: nothing here mutates the world. Text pages are dismissed
-                // through the briefing screen with canonical input, a mission is won or lost
-                // through play (`harness/tests/data/test_win.py`).
-                #[derive(serde::Deserialize, Default)]
-                struct P {
-                    /// Describe one entry of the element table (native 3's index space).
-                    #[serde(default)]
-                    element: Option<i32>,
-                }
-                let p: P = params(p)?;
-                self.world()?;
-                let world = self.world()?;
-                let Some(vm) = world.vm.as_ref() else {
-                    return ok(json!({ "present": false }));
-                };
-                let element = p.element.map(|index| {
-                    use opensherwood_core::vm::Element;
-                    match usize::try_from(index)
-                        .ok()
-                        .and_then(|i| vm.program.elements.get(i))
-                    {
-                        Some(Element::Map(i)) => json!({ "kind": "map", "index": i }),
-                        Some(Element::Unmodelled(i)) => json!({ "kind": "unmodelled", "index": i }),
-                        Some(Element::Actor(e)) => json!({ "kind": "actor", "entity": e }),
-                        Some(Element::Object { x, y }) => {
-                            json!({ "kind": "object", "x": x, "y": y })
-                        }
-                        Some(Element::Scroll { x, y }) => {
-                            json!({ "kind": "scroll", "x": x, "y": y })
-                        }
-                        Some(Element::Item { x, y, kind, stack }) => {
-                            json!({ "kind": "item", "x": x, "y": y, "item_kind": kind, "stack": stack })
-                        }
-                        Some(Element::Polygon(l)) => json!({ "kind": "polygon", "location": l }),
-                        None => json!(null),
-                    }
-                });
-                ok(json!({
-                    "present": true,
-                    "classes": vm.program.classes.len(),
-                    "elements": vm.program.elements.len(),
-                    "element": element,
-                    "locations": vm.program.locations.len(),
-                    "objectives": vm.objectives,
-                    "texts": vm.pending_texts(),
-                    "scrolls": vm
-                        .program
-                        .elements
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, e)| match e {
-                            opensherwood_core::vm::Element::Scroll { x, y } => Some(json!({
-                                "element": i,
-                                "x": x,
-                                "y": y,
-                                "active": !vm.inactive_elements.contains(&(i as i32)),
-                            })),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>(),
-                    "items": vm.items(),
-                    "mission_won": vm.mission_won,
-                    "mission_lost": vm.mission_lost,
-                    "tainted": vm.tainted(),
-                    "assumptions": vm.assumptions,
-                    "money": vm.money,
-                    "sequence_active": !vm.sequences.is_empty(),
-                    "sequences": vm.sequences.len(),
-                    "faulted": vm.faulted(),
-                    "fault": vm.fault,
-                    "lenient": vm.lenient,
-                    "unknown_calls": vm.unknown_calls,
-                    "camera_target": vm.camera_target,
-                    "debriefing": vm.debriefing,
-                    "mission_vars": vm.mission_vars,
-                    "counters": vm.counters,
-                    "rng_draws": vm.rng.draws,
-                }))
-            }
+            "reset" => self.rpc_reset(p),
+            "step" => self.rpc_step(p),
+            "observe" => self.rpc_observe(p),
+            "snapshot" => self.rpc_snapshot(p),
+            "restore" => self.rpc_restore(p),
+            "capture" => self.rpc_capture(p),
+            "replay.start" => self.rpc_replay_start(p),
+            "replay.stop" => self.rpc_replay_stop(p),
+            "replay.play" => self.rpc_replay_play(p),
+            "debug.nav" => self.rpc_debug_nav(p),
+            "debug.vm" => self.rpc_debug_vm(p),
             "shutdown" => ok(json!({ "ok": true })),
             _ => Err(RpcError::new(
                 RpcError::METHOD_NOT_FOUND,

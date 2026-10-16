@@ -5,13 +5,13 @@ Status: container **verified** for all three retail archives (`Interface/DEFAULT
 
 ## Header
 
-| Offset | Type | Meaning |
-|---|---|---|
-| 0 | char[4] | `SRES` |
-| 4 | u32 | version, `0x100` |
-| 8 | u32 | entry count |
-| 12 | ... | entries, back to back |
-| end | trailer | see below |
+| Offset | Type    | Meaning               |
+| ------ | ------- | --------------------- |
+| 0      | char[4] | `SRES`                |
+| 4      | u32     | version, `0x100`      |
+| 8      | u32     | entry count           |
+| 12     | ...     | entries, back to back |
+| end    | trailer | see below             |
 
 ## Entry
 
@@ -19,14 +19,14 @@ Every entry starts with `tag: char[4]`, `id: u32`, `unknown_0x08: u32` (0 or 1; 
 `Level.res`, 1 for about a third of the picture entries of `DEFAULT.RES` including the input field, the slider, one
 of the two text entries and a few cursors; a flag whose meaning is not established). The rest depends on the tag:
 
-| Tag | Body |
-|---|---|
-| `PIC ` | one [image blob](image-blob.md) |
-| `PICC` | `count: u32`, then `count` image blobs (an animation / icon set; e.g. id 6 = nine 32x32 frames) |
+| Tag                            | Body                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PIC `                         | one [image blob](image-blob.md)                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `PICC`                         | `count: u32`, then `count` image blobs (an animation / icon set; e.g. id 6 = nine 32x32 frames)                                                                                                                                                                                                                                                                                                                                       |
 | `BTTN`, `RDO `, `NPTF`, `SLID` | UI widgets: `states: u32` bit mask, then one image blob per set bit in ascending bit order. Buttons use 14 (`0b1110`, 3 pictures) or 15 (4 pictures); radio buttons 0x7F (7 pictures); the input field and the slider 0x3F (6 pictures: five 424x39 backgrounds and an 8x28 caret for `NPTF`; knobs and a 23x1 track for `SLID`). Which bit is which visual state (normal / hover / pressed / disabled / checked...) is not confirmed |
-| `CUR ` | `unknown_0x0c: u16` (2), `hotspot_x: u16`, `hotspot_y: u16`, `unknown_0x12: u16` (0 or 2), `count: u32`, then `count` image blobs: an animated mouse cursor (e.g. id 22 = 12 frames of 30x30) |
-| `TEXT` | `count: u16`, then `count` strings, each `len: u16` + `len` UTF-16LE code units |
-| `WAVE` | `count: u16`, then `count` strings, each `len: u16` + `len` bytes (Latin-1 path relative to `Data\Sounds`) |
+| `CUR `                         | `unknown_0x0c: u16` (2), `hotspot_x: u16`, `hotspot_y: u16`, `unknown_0x12: u16` (0 or 2), `count: u32`, then `count` image blobs: an animated mouse cursor (e.g. id 22 = 12 frames of 30x30)                                                                                                                                                                                                                                         |
+| `TEXT`                         | `count: u16`, then `count` strings, each `len: u16` + `len` UTF-16LE code units                                                                                                                                                                                                                                                                                                                                                       |
+| `WAVE`                         | `count: u16`, then `count` strings, each `len: u16` + `len` bytes (Latin-1 path relative to `Data\Sounds`)                                                                                                                                                                                                                                                                                                                            |
 
 `DEFAULT.RES` has no trailer (its `count` field says 292 while 292 entries were found; the file ends with the
 last entry). `actors.res` and `Level.res` have the offset trailer described below.

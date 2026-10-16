@@ -9,19 +9,19 @@ All files live in `DATA/Interface/Fonts/`. Parser: `crates/opensherwood-formats/
 
 ## Inventory
 
-| File | Size | Face name | Glyphs | Strip (w x h) | Spacing |
-|---|---|---|---|---|---|
-| `Debrief.bfn` | 37,988 | Scroll | 161 | 3520 x 19 | 0 |
-| `EditFields.bfn` | 28,280 | Scroll | 161 | 3520 x 22 | 1 |
-| `InfoScroll.bfn` | 10,669 | Lydian | 162 | 2592 x 19 | -2 |
-| `MenuButtonDisabled.bfn` | 24,061 | Scroll | 161 | 3520 x 22 | 1 |
-| `MenuButtonEnabled.bfn` | 27,867 | Scroll | 161 | 3520 x 22 | 1 |
-| `Scroll.bfn` | 36,932 | Scroll | 161 | 3520 x 18 | -1 |
-| `ShortBriefingActive.bfn` | 4,259 | ShortBriefing | 161 | 1118 x 13 | 0 |
-| `ShortBriefingInactive.bfn` | 4,327 | ShortBriefing | 161 | 1118 x 13 | 0 |
-| `Title.bfn` | 56,059 | Title | 162 | 2144 x 29 | 0 |
-| `tooltips.bfn` | 18,024 | Lydian | 162 | 2592 x 20 | -2 |
-| `dialog.fnt` | 36,058 | Lydian | 162 | 4212 x 30 | -4 |
+| File                        | Size   | Face name     | Glyphs | Strip (w x h) | Spacing |
+| --------------------------- | ------ | ------------- | ------ | ------------- | ------- |
+| `Debrief.bfn`               | 37,988 | Scroll        | 161    | 3520 x 19     | 0       |
+| `EditFields.bfn`            | 28,280 | Scroll        | 161    | 3520 x 22     | 1       |
+| `InfoScroll.bfn`            | 10,669 | Lydian        | 162    | 2592 x 19     | -2      |
+| `MenuButtonDisabled.bfn`    | 24,061 | Scroll        | 161    | 3520 x 22     | 1       |
+| `MenuButtonEnabled.bfn`     | 27,867 | Scroll        | 161    | 3520 x 22     | 1       |
+| `Scroll.bfn`                | 36,932 | Scroll        | 161    | 3520 x 18     | -1      |
+| `ShortBriefingActive.bfn`   | 4,259  | ShortBriefing | 161    | 1118 x 13     | 0       |
+| `ShortBriefingInactive.bfn` | 4,327  | ShortBriefing | 161    | 1118 x 13     | 0       |
+| `Title.bfn`                 | 56,059 | Title         | 162    | 2144 x 29     | 0       |
+| `tooltips.bfn`              | 18,024 | Lydian        | 162    | 2592 x 20     | -2      |
+| `dialog.fnt`                | 36,058 | Lydian        | 162    | 4212 x 30     | -4      |
 
 `.fnt` and `.bfn` are the same format. Sixteen `.tfn` descriptors (90 bytes each) and `simsun.ttc` (a stock
 CJK TrueType collection, 10.5 MB) sit next to them.
@@ -32,27 +32,27 @@ All integers little-endian.
 
 ### Header (70 bytes)
 
-| Offset | Type | Field | Value in retail files |
-|---|---|---|---|
-| 0x00 | char[6] | magic | `SBFONT` |
-| 0x06 | u32 | version | `0x200` (bytes `00 02 00 00`; the `.tfn` has `0x100`), read as 8.8 "2.0" |
-| 0x0A | char[36] | name | NUL-padded face/project name: `Lydian`, `Scroll`, `Title`, `ShortBriefing` |
-| 0x2E | u32 | `unknown_2e` | 2 for the three Lydian fonts, 0 otherwise |
-| 0x32 | u32 | cell_height | equals the strip height (13 .. 30) |
-| 0x36 | u32 | `unknown_36` | 0; 15 (`InfoScroll`), 25 (`dialog.fnt`) |
-| 0x3A | u32 | `unknown_3a` | 11 .. 25; identical (13) for the four `Scroll`-face fonts of heights 18/19/22, so not a pixel metric of the strip |
-| 0x3E | u32 | glyph_count | 161 or 162 |
-| 0x42 | i32 | spacing | -4 .. 1; global advance adjustment (inferred) |
+| Offset | Type     | Field        | Value in retail files                                                                                             |
+| ------ | -------- | ------------ | ----------------------------------------------------------------------------------------------------------------- |
+| 0x00   | char[6]  | magic        | `SBFONT`                                                                                                          |
+| 0x06   | u32      | version      | `0x200` (bytes `00 02 00 00`; the `.tfn` has `0x100`), read as 8.8 "2.0"                                          |
+| 0x0A   | char[36] | name         | NUL-padded face/project name: `Lydian`, `Scroll`, `Title`, `ShortBriefing`                                        |
+| 0x2E   | u32      | `unknown_2e` | 2 for the three Lydian fonts, 0 otherwise                                                                         |
+| 0x32   | u32      | cell_height  | equals the strip height (13 .. 30)                                                                                |
+| 0x36   | u32      | `unknown_36` | 0; 15 (`InfoScroll`), 25 (`dialog.fnt`)                                                                           |
+| 0x3A   | u32      | `unknown_3a` | 11 .. 25; identical (13) for the four `Scroll`-face fonts of heights 18/19/22, so not a pixel metric of the strip |
+| 0x3E   | u32      | glyph_count  | 161 or 162                                                                                                        |
+| 0x42   | i32      | spacing      | -4 .. 1; global advance adjustment (inferred)                                                                     |
 
 ### Glyph table (`glyph_count` x 18 bytes at 0x46)
 
-| Offset | Type | Field | Notes |
-|---|---|---|---|
-| 0 | u16 | code | Unicode scalar value; ascending in every file |
-| 2 | u32 | x | first column of the glyph in both strips; monotonic |
-| 6 | u32 | width | 0 .. 25; `x + width <= strip width` for every glyph |
-| 10 | i32 | x_adjust | -2 .. 4; non-zero on narrow/tall glyphs (`!`, `1`, `|`, `^`, `` ` ``) and on swash letters of `Title` |
-| 14 | i32 | advance_adjust | -8 .. 5; `Q` of the Scroll face is -8 (its tail runs under the next letter), `T`/`W`/`f` -2; the `Title` space has width 0 and +5 |
+| Offset | Type | Field          | Notes                                                                                                                             |
+| ------ | ---- | -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| 0      | u16  | code           | Unicode scalar value; ascending in every file                                                                                     |
+| 2      | u32  | x              | first column of the glyph in both strips; monotonic                                                                               |
+| 6      | u32  | width          | 0 .. 25; `x + width <= strip width` for every glyph                                                                               |
+| 10     | i32  | x_adjust       | -2 .. 4; non-zero on narrow/tall glyphs (`!`, `1`, `                                                                              | `, `^`, `` ` ``) and on swash letters of `Title` |
+| 14     | i32  | advance_adjust | -8 .. 5; `Q` of the Scroll face is -8 (its tail runs under the next letter), `T`/`W`/`f` -2; the `Title` space has width 0 and +5 |
 
 Code set: the 95 printable ASCII codes 0x20..0x7E, then 0xA1 0xA3 0xA4 0xA7 0xB0 0xB2 0xB5 0xBF, 0xC0..0xCF,
 0xD1..0xD6, 0xD8..0xDC, 0xDF, 0xE0..0xEF, 0xF1..0xF6, 0xF8..0xFC, then U+0152 U+0153 (Œ œ) and U+2026 (…) = 161
@@ -96,15 +96,15 @@ added per glyph, is not verified against the original renderer.
 
 ## TrueType descriptor (`SBTTFT`, 90 bytes)
 
-| Offset | Type | Field | Retail values |
-|---|---|---|---|
-| 0x00 | char[6] | magic | `SBTTFT` |
-| 0x06 | u32 | version | `0x100` |
-| 0x0A | char[36] | name | `New font` (all but the list fonts), `List Default` |
-| 0x2E | u32 | `unknown_2e` | 1 for `Dialog`, `EditFields`, `MenuButton*`, `Title`, `Title_grand`; 0 otherwise (bold flag?) |
-| 0x32 | u32 | size | 11 (`tooltips`), 12, 14, 15 (`List*`), 16, 18, 21 (`Dialog`), 23 (`Title`), 34 (`Title_grand`) |
-| 0x36 | char[32] | face | `SimSun` (13 files) or `Arial` (the three `List*`); bytes after the NUL are junk (`U`, `a`) |
-| 0x56 | u32 | colour | Windows `COLORREF` (`R, G, B, 0`): e.g. white for `ListSelected`, yellow for `ListFocused`, black for `tooltips_black`, dark red for `Title` |
+| Offset | Type     | Field        | Retail values                                                                                                                                |
+| ------ | -------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0x00   | char[6]  | magic        | `SBTTFT`                                                                                                                                     |
+| 0x06   | u32      | version      | `0x100`                                                                                                                                      |
+| 0x0A   | char[36] | name         | `New font` (all but the list fonts), `List Default`                                                                                          |
+| 0x2E   | u32      | `unknown_2e` | 1 for `Dialog`, `EditFields`, `MenuButton*`, `Title`, `Title_grand`; 0 otherwise (bold flag?)                                                |
+| 0x32   | u32      | size         | 11 (`tooltips`), 12, 14, 15 (`List*`), 16, 18, 21 (`Dialog`), 23 (`Title`), 34 (`Title_grand`)                                               |
+| 0x36   | char[32] | face         | `SimSun` (13 files) or `Arial` (the three `List*`); bytes after the NUL are junk (`U`, `a`)                                                  |
+| 0x56   | u32      | colour       | Windows `COLORREF` (`R, G, B, 0`): e.g. white for `ListSelected`, yellow for `ListFocused`, black for `tooltips_black`, dark red for `Title` |
 
 The descriptors give the role's text colour and size for the TrueType fallback path (CJK locales use
 `simsun.ttc`); the western locales draw with the bitmap fonts.

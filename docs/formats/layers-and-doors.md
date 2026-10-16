@@ -1,4 +1,4 @@
-# Layers, doors and the path graph (`WOAW`, `007 `, `FARM`, ` AZ `, `PPPP`, the `STAT` remainder)
+# Layers, doors and the path graph (`WOAW`, `007 `, `FARM`, `AZ`, `PPPP`, the `STAT` remainder)
 
 Status: **data observation** (analyst session 2026-09-06, ADR-0003: the player's files, the compiled scripts
 through the probes, the manual by eye, and earlier oracle notes; no executable, disassembly or debugger). Every
@@ -9,12 +9,12 @@ mission elements are named by index and role as in `docs/original/h01-win-path.m
 Scope: what an implementer needs for work-list item 4 of `docs/original/h01-win-path.md` ("Layers (`WOAW`)
 and doors (`FARM`, natives 4 / 191 / 186-189)"): (1) the layer model of the projection areas, (2) doors,
 buildings and stairs, (3) the path graph, (4) the first mission's intended route through them, (5) an
-implementation plan, (6) provenance. This document supersedes the `WOAW`, `007 `, `FARM` and ` AZ ` sections
+implementation plan, (6) provenance. This document supersedes the `WOAW`, `007 `, `FARM` and `AZ` sections
 of `rhp.md`, the "placement qualifier" hypothesis of `rhm.md` and the rows of natives 4, 8, 182, 186-189 and 191
 of `scb.md` where they differ; those files should be updated to point here when the parser lands.
 
 Coordinates: **screen** coordinates are pixels of the prerendered background (every `.rhm` placement, every
-`STAT`, `FARM`, ` AZ `, `007 `, `PPPP` point). The `WOAW` vertices are the one exception: they are **world**
+`STAT`, `FARM`, `AZ`, `007 `, `PPPP` point). The `WOAW` vertices are the one exception: they are **world**
 coordinates with a height, see 1.1.
 
 ## 1. Layers and projection areas (`WOAW`)
@@ -58,17 +58,17 @@ area_count x {
 }
 ```
 
-| Field | Role | Status | Evidence |
-|---|---|---|---|
-| `layer_id` list | editor ids of the map's layers; **not** what the rest of the data indexes | observed | Lincoln lists 14 ids 27..=40 while its links, placements and bonds use layer numbers 0..=12; Derby lists 6 ids (0..=5) while its links use 1..=11. The count is echoed by `STAT unknown_0x00` (14 Lincoln, 2 forest maps) |
-| vertex `x`, `y` | world ground-plane position (screen `x`, screen `y + z`) | inferred, high | 1.1 |
-| vertex `z` | height above the ground plane; screen row = `y - z` | inferred, high | 1.1. Per vertex: 282 of Lincoln's 466 areas are flat (one `z`), 138 have two heights (ramps, stair flights: e.g. area 301 rises 220 -> 330, area 230 420 -> 550), the rest up to ten. Interpolate linearly across the polygon (planar for quads; a general polygon needs a triangulation - the retail ones are near-planar) |
-| vertex `unknown_0x08` | a second height, 0 on 1911 of 2748 Lincoln vertices, otherwise 3..=52 below `z` (wall walks, floors on layers 2..=12) | unknown | not the projection (sweep, 1.1); hypotheses: the floor's underside for depth sorting, or a step height. Ignore for navigation |
-| `min`, `max` | bounding box of `(x, y, unknown_0x08)` / `(x, y, z)` in world coordinates | observed | `rhp.md` |
-| `links` | the **sector** and **layer** the area belongs to; 0 or 1 entry per area (no area of any map has two) | inferred, high | the `(Q, R)` of every placed record equals the single link of its area `P` in 1814 of 1814 cases; `GULP` points / polygons and `RAIL` points carry the same pairs in `q_b / q_c` |
-| `unknown_flags[4]` | (1,1,1,1) 309, (0,1,1,1) 143, (1,0,0,1) 10, (1,1,1,0) 3, (0,0,0,1) 1 in Lincoln; flag 0 is 0 on 65 of the 131 areas with a nonzero `unknown_0x08` and on 79 without | unknown | |
-| `unknown_a` | 0..=4; 1, 2 and 4 occur only on linked areas (14 / 52 / 3 of them), 15 linked areas have 0 | unknown | 2 = most floors, 1 = several halls and stair flights, 4 = the three climb areas of the ` AZ ` lifts with flag 3 (sectors 62/3, 63/3, 77/5) and area 222; a "surface kind" is the guess |
-| `unknown_list` | 0..=26 in Lincoln, consecutive runs owned by the large layer-0 areas (area 62 owns 17..=24, 63 4..=8, 64 9..=13, 67 14..=16, 53 1..=3, 55 0, 189 25..=26); 26 for a few areas of Croisement02 | unknown | not the layer ids, not `FACE` indices; possibly indices of the per-sector motion polygons of the `STAT` remainder (section 3.1) |
+| Field                 | Role                                                                                                                                                                                          | Status         | Evidence                                                                                                                                                                                                                                                                                                                    |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `layer_id` list       | editor ids of the map's layers; **not** what the rest of the data indexes                                                                                                                     | observed       | Lincoln lists 14 ids 27..=40 while its links, placements and bonds use layer numbers 0..=12; Derby lists 6 ids (0..=5) while its links use 1..=11. The count is echoed by `STAT unknown_0x00` (14 Lincoln, 2 forest maps)                                                                                                   |
+| vertex `x`, `y`       | world ground-plane position (screen `x`, screen `y + z`)                                                                                                                                      | inferred, high | 1.1                                                                                                                                                                                                                                                                                                                         |
+| vertex `z`            | height above the ground plane; screen row = `y - z`                                                                                                                                           | inferred, high | 1.1. Per vertex: 282 of Lincoln's 466 areas are flat (one `z`), 138 have two heights (ramps, stair flights: e.g. area 301 rises 220 -> 330, area 230 420 -> 550), the rest up to ten. Interpolate linearly across the polygon (planar for quads; a general polygon needs a triangulation - the retail ones are near-planar) |
+| vertex `unknown_0x08` | a second height, 0 on 1911 of 2748 Lincoln vertices, otherwise 3..=52 below `z` (wall walks, floors on layers 2..=12)                                                                         | unknown        | not the projection (sweep, 1.1); hypotheses: the floor's underside for depth sorting, or a step height. Ignore for navigation                                                                                                                                                                                               |
+| `min`, `max`          | bounding box of `(x, y, unknown_0x08)` / `(x, y, z)` in world coordinates                                                                                                                     | observed       | `rhp.md`                                                                                                                                                                                                                                                                                                                    |
+| `links`               | the **sector** and **layer** the area belongs to; 0 or 1 entry per area (no area of any map has two)                                                                                          | inferred, high | the `(Q, R)` of every placed record equals the single link of its area `P` in 1814 of 1814 cases; `GULP` points / polygons and `RAIL` points carry the same pairs in `q_b / q_c`                                                                                                                                            |
+| `unknown_flags[4]`    | (1,1,1,1) 309, (0,1,1,1) 143, (1,0,0,1) 10, (1,1,1,0) 3, (0,0,0,1) 1 in Lincoln; flag 0 is 0 on 65 of the 131 areas with a nonzero `unknown_0x08` and on 79 without                           | unknown        |                                                                                                                                                                                                                                                                                                                             |
+| `unknown_a`           | 0..=4; 1, 2 and 4 occur only on linked areas (14 / 52 / 3 of them), 15 linked areas have 0                                                                                                    | unknown        | 2 = most floors, 1 = several halls and stair flights, 4 = the three climb areas of the `AZ` lifts with flag 3 (sectors 62/3, 63/3, 77/5) and area 222; a "surface kind" is the guess                                                                                                                                        |
+| `unknown_list`        | 0..=26 in Lincoln, consecutive runs owned by the large layer-0 areas (area 62 owns 17..=24, 63 4..=8, 64 9..=13, 67 14..=16, 53 1..=3, 55 0, 189 25..=26); 26 for a few areas of Croisement02 | unknown        | not the layer ids, not `FACE` indices; possibly indices of the per-sector motion polygons of the `STAT` remainder (section 3.1)                                                                                                                                                                                             |
 
 ### 1.3 Sectors, layers and the ground (inferred, high)
 
@@ -77,7 +77,7 @@ area_count x {
   Sherwood 18, the forest maps 12..=22. Sector ids are per map (Lincoln 0..=92 with gaps).
 - A **layer** is a number 0..=12 (Lincoln; Derby to 11, Nottingham 8, Sherwood 8, York 6, forests 1). Layer
   0 is the ground. Even layers are floors; odd layers are the stairs / climbs between them in Lincoln (all
-  ten ` AZ ` lifts sit on layers 1, 3, 5; the cross-layer bonds join 0-1, 1-2, 2-3, 3-4, 4-5, 5-6 through
+  ten `AZ` lifts sit on layers 1, 3, 5; the cross-layer bonds join 0-1, 1-2, 2-3, 3-4, 4-5, 5-6 through
   them, and 0-2 / 2-5 / 0-3 directly where a sloped area is the ramp or the climb itself), but York has two
   lifts on layer 0, so "odd = transition" is a Lincoln convention, not a rule.
 - **Sector 0 / layer 0** is the outer ground of the town maps (Lincoln: eleven areas at `z` 0..=220, the road
@@ -93,25 +93,25 @@ area_count x {
 
 Lincoln, the areas the first mission uses (screen bbox = shifted polygon):
 
-| Area | Sector / layer | `z` | Screen bbox | Role in H01 |
-|---|---|---|---|---|
-| 62 | 24 / 0 | 220 | (664,1180)-(2619,1948) | the castle yard: the start (1937,1384), the climbing / knock-out tutorial scrolls 115 / 117 |
-| 67 | 27 / 0 | 220 | (1601,454)-(2941,1237) | the archery yard: archers 68..=74, targets 95..=98, scrolls 112 / 119, items 101 / 106 / 108 |
-| 65, 73 | 36 / 0 | 220 | (366,1126)-(968,1588) | the west court: civilian 50, purse items 104 / 105, location 3 |
-| 301, 288 | 55 / 2 | 220 -> 330, 330 -> 420 | (1081,1288)-(1490,1463) | the ramp out of the yard and the stair landing (zone 135 sits here) |
-| 230 | 76 / 5 | 420 -> 550 | (1456,910)-(1644,1125) | the stair flight up to the keep (lift 3) |
-| 198 | 78 / 6 | 550 | (1614,681)-(1945,945) | the keep's passage (zones 127 / 133 / 136) |
-| 190 | 79 / 6 | 550 | (1470,498)-(1816,732) | the room between the passage and the hall (soldier 92, zone 6 of `PPPP`) |
-| 229 | 81 / 6 | 550 | (1239,604)-(1517,735) | the great hall (zone 134: message 5) |
-| 233, 234, 257 | 82 / 6 | 550 / 558 | (1020,650)-(1623,963) | the servant's hall: servant 53 at (1266,776), his scroll 113 at (1173,836), zone 137 (page 18), location 4 |
-| 242, 243 | 86 / 6 | 530 -> 550 | (1174,941)-(1431,1075) | the lower central room: zone 131, the knight-tip scroll 121 at (1288,982), soldier 57 |
-| 416 | 45 / 2 | 390 | (738,1019)-(1222,1285) | the terrace of the knight (78 at (861,1135), rail 22 entirely on it) |
-| 281 | 71 / 4 | 435 | (803,1085)-(1198,1291) | the west tower's floor: zone 129 (message 3), the steward-tip scroll 120 at (941,1192) |
-| 77 | 50 / 2 | 350 | (1966,1060)-(2326,1155) | the gatehouse walkway: the training-start scroll 111, the jump / beggar tutorial scrolls 116 / 118, arrow pile 100 |
-| 123 | 62 / 3 | 220 -> 350 | (2238,1135)-(2308,1284) | the ivy climb to the walkway (lift 7, oracle-observed: `h01-measurements-2.md` 1.2 / 3) |
-| 188 | 59 / 2 | 303 -> 358 | (1723,1114)-(1967,1252) | the wall walk over the yard gate: the hall-opening tutorial scroll 123 |
-| 189, 228 | 69 / 4 | 472 | (1660,895)-(1926,1049) | the floor above: purse item 109, location 12, building door 23 |
-| 209 | 90 / 8 | 800 | (1471,226)-(1817,472) | the tower floor with the arrows scroll 124 and arrow pile 102 |
+| Area          | Sector / layer | `z`                    | Screen bbox             | Role in H01                                                                                                        |
+| ------------- | -------------- | ---------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| 62            | 24 / 0         | 220                    | (664,1180)-(2619,1948)  | the castle yard: the start (1937,1384), the climbing / knock-out tutorial scrolls 115 / 117                        |
+| 67            | 27 / 0         | 220                    | (1601,454)-(2941,1237)  | the archery yard: archers 68..=74, targets 95..=98, scrolls 112 / 119, items 101 / 106 / 108                       |
+| 65, 73        | 36 / 0         | 220                    | (366,1126)-(968,1588)   | the west court: civilian 50, purse items 104 / 105, location 3                                                     |
+| 301, 288      | 55 / 2         | 220 -> 330, 330 -> 420 | (1081,1288)-(1490,1463) | the ramp out of the yard and the stair landing (zone 135 sits here)                                                |
+| 230           | 76 / 5         | 420 -> 550             | (1456,910)-(1644,1125)  | the stair flight up to the keep (lift 3)                                                                           |
+| 198           | 78 / 6         | 550                    | (1614,681)-(1945,945)   | the keep's passage (zones 127 / 133 / 136)                                                                         |
+| 190           | 79 / 6         | 550                    | (1470,498)-(1816,732)   | the room between the passage and the hall (soldier 92, zone 6 of `PPPP`)                                           |
+| 229           | 81 / 6         | 550                    | (1239,604)-(1517,735)   | the great hall (zone 134: message 5)                                                                               |
+| 233, 234, 257 | 82 / 6         | 550 / 558              | (1020,650)-(1623,963)   | the servant's hall: servant 53 at (1266,776), his scroll 113 at (1173,836), zone 137 (page 18), location 4         |
+| 242, 243      | 86 / 6         | 530 -> 550             | (1174,941)-(1431,1075)  | the lower central room: zone 131, the knight-tip scroll 121 at (1288,982), soldier 57                              |
+| 416           | 45 / 2         | 390                    | (738,1019)-(1222,1285)  | the terrace of the knight (78 at (861,1135), rail 22 entirely on it)                                               |
+| 281           | 71 / 4         | 435                    | (803,1085)-(1198,1291)  | the west tower's floor: zone 129 (message 3), the steward-tip scroll 120 at (941,1192)                             |
+| 77            | 50 / 2         | 350                    | (1966,1060)-(2326,1155) | the gatehouse walkway: the training-start scroll 111, the jump / beggar tutorial scrolls 116 / 118, arrow pile 100 |
+| 123           | 62 / 3         | 220 -> 350             | (2238,1135)-(2308,1284) | the ivy climb to the walkway (lift 7, oracle-observed: `h01-measurements-2.md` 1.2 / 3)                            |
+| 188           | 59 / 2         | 303 -> 358             | (1723,1114)-(1967,1252) | the wall walk over the yard gate: the hall-opening tutorial scroll 123                                             |
+| 189, 228      | 69 / 4         | 472                    | (1660,895)-(1926,1049)  | the floor above: purse item 109, location 12, building door 23                                                     |
+| 209           | 90 / 8         | 800                    | (1471,226)-(1817,472)   | the tower floor with the arrows scroll 124 and arrow pile 102                                                      |
 
 ### 1.4 Heights and depth (partly hypothesis)
 
@@ -153,7 +153,7 @@ Lincoln, the areas the first mission uses (screen bbox = shifted polygon):
 73 H01 rails stay in one sector; the two mixed ones are the walkway guard's (`h01-measurements-2.md` 3) and the
 girl's, so NPC patrols cross layers too and the AI's walks need the same navigation as the player's.
 
-## 2. Doors, buildings (`FARM`), stairs and climbs (` AZ `)
+## 2. Doors, buildings (`FARM`), stairs and climbs (`AZ`)
 
 ### 2.1 `FARM` (version 4), consumed exactly on all 9 maps (observed)
 
@@ -205,7 +205,7 @@ and an empty / 4-point polygon; the "`u16 a, u8 0, u8 id`" it lists is the empty
 - `p1` / `p2`: two points just outside the door on the `sector_a` side (kind 0 and 1 alike); hypothesis: the
   stand point of the actor opening it and the point he walks to on the far side. Not needed for a first
   implementation (walk to `door`).
-- The 9-byte `block`: byte 0 is 1 on all 397 `FARM` and 171 ` AZ ` leaves; bytes 1..=4 are 0 / 1 and come in the patterns above (bytes
+- The 9-byte `block`: byte 0 is 1 on all 397 `FARM` and 171 `AZ` leaves; bytes 1..=4 are 0 / 1 and come in the patterns above (bytes
   3 and 4 always equal; bytes 1 and 2 set only with 3 and 4); bytes 5..=8 are 0 except on two Croisement03
   leaves. **Hypothesis**: byte 0 = initial state open, bytes 1..=4 = the four lock kinds of natives 186..=189
   (the door-locking helper of the scripts calls the four in a row; door 8 of Lincoln, the west gate with all
@@ -216,7 +216,7 @@ and an empty / 4-point polygon; the "`u16 a, u8 0, u8 id`" it lists is the empty
   lifts 5 = the lower end (9 of 10 Lincoln lifts, the tenth has 5 / 5), 4 = the upper end of a stair, 6 = the
   upper end of a climb (flag 3 lifts). A "door type" byte; `unknown` beyond that.
 
-### 2.3 ` AZ ` (version 2), consumed exactly on all 9 maps (observed): the lifts
+### 2.3 `AZ` (version 2), consumed exactly on all 9 maps (observed): the lifts
 
 ```
 u16 lift_count
@@ -256,7 +256,7 @@ gate); 5: 36/0 <-> 56/2 by 42/1; 6: 56/2 <-> 73/4 by 61/3 (to the west tower); 7
   leaves" gives 92 for Nottingham and 50 for Leicester, below the immediates used. The first mission fixes the
   choice: door 20 is the west house's door at (525,1367), 38 px from civilian 50 whom the same message 3
   activates, and door 23 is the building door at (1912,966) beside item 109 and location 12 that message 7
-  activates (2.5). Whether the ` AZ ` leaves follow at index 59.. is `unknown` (no script addresses them;
+  activates (2.5). Whether the `AZ` leaves follow at index 59.. is `unknown` (no script addresses them;
   York's immediates stop at 122 = the last `FARM` leaf). Confidence high.
 - **Native 8 (building handle)** indexes the **kind-1 records** in file order, skipping kind-0 records: York has
   74 kind-1 records and native 8's largest immediate there is 73, Leicester 16 and 15 (`scb.md`); Nottingham's
@@ -264,26 +264,26 @@ gate); 5: 36/0 <-> 56/2 by 42/1; 6: 56/2 <-> 73/4 by 61/3 (to the west tower); 7
 
 ### 2.5 The door natives as the scripts use them (observed over the 39 scripts)
 
-| Native | Arity | Calls | Reading | Confidence |
-|---|---|---|---|---|
-| 4 `(i) -> door` | 1 | 460, always an immediate, always fed to 191 / 186..=189 / 182 / a helper | door leaf `i` | high |
-| 191 `(state, door)` | 2 | 221: `state` 0 (156) or 1 (65); 72 in `Initialize` (all with 0), 107 in `ProcessMessage`, 19 in `EnterZone`, 10 in `Hourglass` | 0 = close, 1 = open. Doors start **open** (block byte 0 = 1 on every leaf) and the levels close the ones they want shut; messages open them area by area | high for the direction (a level never "closes" a door it did not close first... it opens 20, 23, 25, 37 that `Initialize` closed) |
-| 186..=189 `(door, 0/1)` | 2 | 105 / 35 / 36 / 50; second argument 1 in 79 / 22 / 30 / 43 calls, 0 otherwise; mostly `Initialize`; a "lock door" helper calls all four | four lock flags per door (block bytes 1..=4 by hypothesis); 1 = lock. Which of the four the player's lock-pick (manual p. 28, a context action) or an enemy respects is `unknown`; the first implementation treats **any** set flag as "locked: cannot be opened by walking into it" | medium for "lock", low for the four kinds |
-| 182 `(door) -> int` | 1 | 3, all in `Hourglass`, compared with 0 once per door, then a patch, an actor move and `n191(0, door)` | door is open (1) / closed (0), or "has been opened by the player" (a run-once trigger) | low; `scb.md` stub note stands (return 1 avoids a spurious close at tick 1) |
+| Native                  | Arity | Calls                                                                                                                                   | Reading                                                                                                                                                                                                                                                                              | Confidence                                                                                                                        |
+| ----------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| 4 `(i) -> door`         | 1     | 460, always an immediate, always fed to 191 / 186..=189 / 182 / a helper                                                                | door leaf `i`                                                                                                                                                                                                                                                                        | high                                                                                                                              |
+| 191 `(state, door)`     | 2     | 221: `state` 0 (156) or 1 (65); 72 in `Initialize` (all with 0), 107 in `ProcessMessage`, 19 in `EnterZone`, 10 in `Hourglass`          | 0 = close, 1 = open. Doors start **open** (block byte 0 = 1 on every leaf) and the levels close the ones they want shut; messages open them area by area                                                                                                                             | high for the direction (a level never "closes" a door it did not close first... it opens 20, 23, 25, 37 that `Initialize` closed) |
+| 186..=189 `(door, 0/1)` | 2     | 105 / 35 / 36 / 50; second argument 1 in 79 / 22 / 30 / 43 calls, 0 otherwise; mostly `Initialize`; a "lock door" helper calls all four | four lock flags per door (block bytes 1..=4 by hypothesis); 1 = lock. Which of the four the player's lock-pick (manual p. 28, a context action) or an enemy respects is `unknown`; the first implementation treats **any** set flag as "locked: cannot be opened by walking into it" | medium for "lock", low for the four kinds                                                                                         |
+| 182 `(door) -> int`     | 1     | 3, all in `Hourglass`, compared with 0 once per door, then a patch, an actor move and `n191(0, door)`                                   | door is open (1) / closed (0), or "has been opened by the player" (a run-once trigger)                                                                                                                                                                                               | low; `scb.md` stub note stands (return 1 avoids a spurious close at tick 1)                                                       |
 
 The first mission (`H01_Lin_VL`, level class; indices = `FARM` leaves; sectors from 2.1):
 
-| When | Call | Leaf | Kind | Screen | Sides | Meaning |
-|---|---|---|---|---|---|---|
-| `Initialize` | `n191(0, 8)` | 8 (record 6) | 0, polygon, all four lock bytes set | (435,1578) | 33/0 - 35/0 | the west gate of the lower town shut for the mission |
-| `Initialize` | `n186(20, 1)`, `n191(0, 20)`; `n191(0, 21)` | 20, 21 (record 13) | 1 | (525,1367), (443,1447) | 36/0, 35/0 -> inside | the west house locked and shut; the girl (50) waits inside, hidden |
-| `Initialize` | `n186(28, 1)` | 28 (record 17) | 1 | (1931,786) | 27/0 -> inside | a building in the archery yard locked |
-| `Initialize` | `n191(0, 37)`, `n191(0, 25)`, `n191(0, 23)` | 37 (record 22), 25 (record 16), 23 (record 15) | 1 | (1304,1066), (1755,633), (1912,966) | 70/4, 79/6, 69/4 -> inside | three tower doors shut until their area is entered |
-| message 3 (zone 129, the west tower 71/4) | `n191(1, 20)` | 20 | 1 | | | the house opens, civilian 50 and soldier 79 appear, purse items 104 / 105 activate |
-| message 5 (zone 134, the great hall 81/6) | `n191(0, 0)` | 0 (record 0) | 0, polygon | (1399,961) | 86/6 - 82/6 | the door between the lower central room and the servant's hall shuts behind the player |
-| message 6 (zones 127 / 128) | `n191(1, 25)`, `n191(0, 4)`, `n191(0, 5)` | 25; 4, 5 (record 3) | 1; 0 | (1755,633); (1747,680), (1476,627) | 79/6 -> inside; 79/6 - 78/6, 81/6 - 79/6 | the tower door in room 79 opens and soldier 92 comes out along path 53; both passage doors of room 79 shut |
-| message 7 (zones 132 / 133) | `n191(1, 23)`, `n191(0, 22)` | 23; 22 (record 14) | 1; 0, polygon | (1912,966); (1727,1013) | 69/4 -> inside; 75/4 - 69/4 | the hall-opening event: item 109 activates, scroll 123's state changes |
-| zone 131 (the lower central room 86/6) | `n191(1, 37)`, `n191(0, 6)` | 37; 6 (record 4) | 1; 0, polygon | (1304,1066); (1167,1100) | 70/4 -> inside; 71/4 - 70/4 | the tower's middle door opens (the way down to the knight's terrace through building 22), map element 23 (the room's torch, `FLIM` 23 at (1383,982); `scb.md`'s "soldier 23" is this light) activates |
+| When                                      | Call                                        | Leaf                                           | Kind                                | Screen                              | Sides                                    | Meaning                                                                                                                                                                                               |
+| ----------------------------------------- | ------------------------------------------- | ---------------------------------------------- | ----------------------------------- | ----------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Initialize`                              | `n191(0, 8)`                                | 8 (record 6)                                   | 0, polygon, all four lock bytes set | (435,1578)                          | 33/0 - 35/0                              | the west gate of the lower town shut for the mission                                                                                                                                                  |
+| `Initialize`                              | `n186(20, 1)`, `n191(0, 20)`; `n191(0, 21)` | 20, 21 (record 13)                             | 1                                   | (525,1367), (443,1447)              | 36/0, 35/0 -> inside                     | the west house locked and shut; the girl (50) waits inside, hidden                                                                                                                                    |
+| `Initialize`                              | `n186(28, 1)`                               | 28 (record 17)                                 | 1                                   | (1931,786)                          | 27/0 -> inside                           | a building in the archery yard locked                                                                                                                                                                 |
+| `Initialize`                              | `n191(0, 37)`, `n191(0, 25)`, `n191(0, 23)` | 37 (record 22), 25 (record 16), 23 (record 15) | 1                                   | (1304,1066), (1755,633), (1912,966) | 70/4, 79/6, 69/4 -> inside               | three tower doors shut until their area is entered                                                                                                                                                    |
+| message 3 (zone 129, the west tower 71/4) | `n191(1, 20)`                               | 20                                             | 1                                   |                                     |                                          | the house opens, civilian 50 and soldier 79 appear, purse items 104 / 105 activate                                                                                                                    |
+| message 5 (zone 134, the great hall 81/6) | `n191(0, 0)`                                | 0 (record 0)                                   | 0, polygon                          | (1399,961)                          | 86/6 - 82/6                              | the door between the lower central room and the servant's hall shuts behind the player                                                                                                                |
+| message 6 (zones 127 / 128)               | `n191(1, 25)`, `n191(0, 4)`, `n191(0, 5)`   | 25; 4, 5 (record 3)                            | 1; 0                                | (1755,633); (1747,680), (1476,627)  | 79/6 -> inside; 79/6 - 78/6, 81/6 - 79/6 | the tower door in room 79 opens and soldier 92 comes out along path 53; both passage doors of room 79 shut                                                                                            |
+| message 7 (zones 132 / 133)               | `n191(1, 23)`, `n191(0, 22)`                | 23; 22 (record 14)                             | 1; 0, polygon                       | (1912,966); (1727,1013)             | 69/4 -> inside; 75/4 - 69/4              | the hall-opening event: item 109 activates, scroll 123's state changes                                                                                                                                |
+| zone 131 (the lower central room 86/6)    | `n191(1, 37)`, `n191(0, 6)`                 | 37; 6 (record 4)                               | 1; 0, polygon                       | (1304,1066); (1167,1100)            | 70/4 -> inside; 71/4 - 70/4              | the tower's middle door opens (the way down to the knight's terrace through building 22), map element 23 (the room's torch, `FLIM` 23 at (1383,982); `scb.md`'s "soldier 23" is this light) activates |
 
 So the keep is **not** gated by closed doors at the start: `Initialize` shuts a gate and building doors only;
 every passage door on the route of section 4 (19, 2, 3, 4, 5, 1, 0) starts open. What the engine lacks for the
@@ -354,8 +354,7 @@ Leicester, 2958 Lincoln, 4296 Nottingham, 1624 Sherwood, 4240 York (a few more t
 
 ### 3.6 Trailing table (unknown)
 
-After the edges: 21418 Croisement01 .. 34514 Nottingham bytes of small values (0..=13, dominated by 1, 0, 4, 8,
-2) with a strong period-8 texture; not a whole-map cell grid at 4 / 8 / 16 / 32 px (no size matches with a
+After the edges: 21418 Croisement01 .. 34514 Nottingham bytes of small values (0..=13, dominated by 1, 0, 4, 8, 2) with a strong period-8 texture; not a whole-map cell grid at 4 / 8 / 16 / 32 px (no size matches with a
 0..=15-byte header). The "fast-find grid" of `executable-notes.md` is the guess.
 
 ## 4. The first mission's intended route (inferred from sections 1-2 and the script)
@@ -364,18 +363,18 @@ The sector graph of Lincoln (nodes = sectors, edges = bonds, passage doors and l
 `lay5.py`) gives one route from the start to the servant's hall and none to the knight's terrace or the arrows
 scroll except through buildings, which matches the script's door choreography:
 
-| Step | From -> to | Crossing | Where (screen) | What happens |
-|---|---|---|---|---|
-| 1 | 24 / 0 (yard, area 62) -> 55 / 2 (ramp 301) | bonds 61 / 62 = passage door 19 (open, no leaf) | (1081,1438)-(1108,1461) | Robin walks up the ramp; `z` rises 220 -> 330 |
-| 2 | 55 / 2 (landing, area 288) | inside the sector | zone 135 at (1384..1482, 1103..1184) is the staircase zone: patch 10, map elements 24 / 25 (two torches) activate | |
-| 3 | 55 / 2 -> 76 / 5 (stair flight, area 230) | bonds 56 / 57 = door 2 (open) = lift 3's lower leaf (1455,1118) | (1455,1099)-(1483,1123) | the stair gait; `z` 420 -> 550 |
-| 4 | 76 / 5 -> 78 / 6 (the keep's passage, area 198) | bonds 35 / 36 = door 3 (open) = lift 3's upper leaf (1642,916) | (1614,909)-(1643,936) | zone 136 (the other staircase zone) and zone 127 / 133 (message 6 / 7) sit here |
-| 5 | 78 / 6 -> 79 / 6 (the room, area 190) | bond 33 = door 4 (open, leaf polygon) | (1741,699)-(1773,686) | message 6 will shut doors 4 and 5 behind the player and open the tower door 25 |
-| 6 | 79 / 6 -> 81 / 6 (the great hall, area 229) | bond 34 = door 5 (open, leaf polygon) | (1482,604)-(1516,638) | zone 134: message 5 (the hall's lights, the servant 53 appears at (1266,776) and walks to his scroll 113, door 0 shuts) |
-| 7 | 81 / 6 -> 82 / 6 (the servant's hall, areas 233 / 257 / 234) | bond 98 = door 1 (open, no leaf) | (1238,703)-(1277,734) | zone 137 (page 18); **the servant's scroll 113 at (1173,836) on area 233** - objective 0 |
-| 8 | 82 / 6 -> 86 / 6 (the lower central room, areas 242 / 243) | bond 40 = door 0 (**closed by message 5**) | (1399,941)-(1424,963) | the knight-tip scroll 121 at (1288,982) on area 243 (objective 4 added); zone 131 opens door 37 and shuts door 6 |
-| 9 | 86 / 6 -> building 22 -> 45 / 2 (the terrace, area 416) | building door 36 at (1302,968) in, door 38 at (1136,1048) out (door 37 at (1304,1066) is the middle floor 70 / 4) | | the knight 78 at (861,1135) on rail 22 (all five points on 45 / 2): knock out and search (objective 4) |
-| 10 | back to 24 / 0, then 24 / 0 -> 0 / 0 (areas 64 / 63) -> the river road (areas 53, 54..=57, 52) -> the `STAT` ground | bonds 65 / 84, 59, 77, 80, 89, 60, then bond 108 (`area_b` none) at `z` 0 | | the son's scroll 114 at (253,380) is on the `STAT` motion area (`P` = -1): objective 1, the win |
+| Step | From -> to                                                                                                          | Crossing                                                                                                          | Where (screen)                                                                                                    | What happens                                                                                                            |
+| ---- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| 1    | 24 / 0 (yard, area 62) -> 55 / 2 (ramp 301)                                                                         | bonds 61 / 62 = passage door 19 (open, no leaf)                                                                   | (1081,1438)-(1108,1461)                                                                                           | Robin walks up the ramp; `z` rises 220 -> 330                                                                           |
+| 2    | 55 / 2 (landing, area 288)                                                                                          | inside the sector                                                                                                 | zone 135 at (1384..1482, 1103..1184) is the staircase zone: patch 10, map elements 24 / 25 (two torches) activate |                                                                                                                         |
+| 3    | 55 / 2 -> 76 / 5 (stair flight, area 230)                                                                           | bonds 56 / 57 = door 2 (open) = lift 3's lower leaf (1455,1118)                                                   | (1455,1099)-(1483,1123)                                                                                           | the stair gait; `z` 420 -> 550                                                                                          |
+| 4    | 76 / 5 -> 78 / 6 (the keep's passage, area 198)                                                                     | bonds 35 / 36 = door 3 (open) = lift 3's upper leaf (1642,916)                                                    | (1614,909)-(1643,936)                                                                                             | zone 136 (the other staircase zone) and zone 127 / 133 (message 6 / 7) sit here                                         |
+| 5    | 78 / 6 -> 79 / 6 (the room, area 190)                                                                               | bond 33 = door 4 (open, leaf polygon)                                                                             | (1741,699)-(1773,686)                                                                                             | message 6 will shut doors 4 and 5 behind the player and open the tower door 25                                          |
+| 6    | 79 / 6 -> 81 / 6 (the great hall, area 229)                                                                         | bond 34 = door 5 (open, leaf polygon)                                                                             | (1482,604)-(1516,638)                                                                                             | zone 134: message 5 (the hall's lights, the servant 53 appears at (1266,776) and walks to his scroll 113, door 0 shuts) |
+| 7    | 81 / 6 -> 82 / 6 (the servant's hall, areas 233 / 257 / 234)                                                        | bond 98 = door 1 (open, no leaf)                                                                                  | (1238,703)-(1277,734)                                                                                             | zone 137 (page 18); **the servant's scroll 113 at (1173,836) on area 233** - objective 0                                |
+| 8    | 82 / 6 -> 86 / 6 (the lower central room, areas 242 / 243)                                                          | bond 40 = door 0 (**closed by message 5**)                                                                        | (1399,941)-(1424,963)                                                                                             | the knight-tip scroll 121 at (1288,982) on area 243 (objective 4 added); zone 131 opens door 37 and shuts door 6        |
+| 9    | 86 / 6 -> building 22 -> 45 / 2 (the terrace, area 416)                                                             | building door 36 at (1302,968) in, door 38 at (1136,1048) out (door 37 at (1304,1066) is the middle floor 70 / 4) |                                                                                                                   | the knight 78 at (861,1135) on rail 22 (all five points on 45 / 2): knock out and search (objective 4)                  |
+| 10   | back to 24 / 0, then 24 / 0 -> 0 / 0 (areas 64 / 63) -> the river road (areas 53, 54..=57, 52) -> the `STAT` ground | bonds 65 / 84, 59, 77, 80, 89, 60, then bond 108 (`area_b` none) at `z` 0                                         |                                                                                                                   | the son's scroll 114 at (253,380) is on the `STAT` motion area (`P` = -1): objective 1, the win                         |
 
 Side plots: the west court 36 / 0 (bonds 66 / 86 from the yard) holds the purse items 104 / 105 and the girl's
 house (doors 20 / 21); the west tower 71 / 4 with the steward-tip scroll 120 is reached by lift 5 (36 / 0 ->
@@ -467,7 +466,7 @@ Portal { a: SectorRef, b: SectorRef, p1, p2, kind: Bond | Door(leaf) | Lift(lift
 
 ### 5.5 Lifts and climbs (1 day)
 
-- Portals of kind `Lift` from ` AZ ` leaves (they coincide with bonds; keep the bond portal and tag it): the
+- Portals of kind `Lift` from `AZ` leaves (they coincide with bonds; keep the bond portal and tag it): the
   crossing uses the stair gait / animation (`sprite-animations.md`: the climb sequences) instead of the walk;
   flag 3 requires the character's climb ability (player action 3 by hypothesis; when disabled the portal is
   closed for that character; `Assumption::ClimbAbility`). Jump lines (`PPPP`) are a later item (one-way
@@ -513,7 +512,7 @@ parapet; (c) click a building door (36 at (1302,968)) and record the cursor, the
   natives 4, 182, 186..=189, 191), `map_png.py`; `opensherwood-tools rhp / chunks` (release build of
   `931f496`).
 - Scratch scripts in the session scratchpad (not committed, generic, no game bytes): `lay1.py` (`WOAW` fields
-  and points of interest), `lay2.py` / `lay4.py` (`FARM` / ` AZ ` parsers, leaf layout, all maps), `lay3.py`
+  and points of interest), `lay2.py` / `lay4.py` (`FARM` / `AZ` parsers, leaf layout, all maps), `lay3.py`
   (the projection sweep and the `(Q, R)` test on H01), `lay5.py` (bonds, doors on bonds, the sector graph and
   its routes), `lay6.py` (the corpus-wide placement test over 39 missions, `PPPP` of Lincoln, native 8's
   index), `lay7.py` .. `lay9.py` (the path graph); the overlay pictures `keep_overlay.png`, `west_overlay.png`,

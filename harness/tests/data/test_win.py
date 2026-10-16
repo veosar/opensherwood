@@ -72,8 +72,10 @@ def test_first_mission_is_won_by_walking_to_the_sons_scroll_and_the_replay_agree
         _walk_to_the_sons_scroll(e)
         _wait_for_screen(e, "debriefing")
         vm = e.call("debug.vm", {})
-        assert vm["mission_won"] and not vm["mission_lost"]
-        assert vm["tainted"] and any("scroll" in str(a) for a in vm["assumptions"]), vm["assumptions"]
+        assert vm["mission_won"]
+        assert not vm["mission_lost"]
+        assert vm["tainted"], vm["assumptions"]
+        assert any("scroll" in str(a) for a in vm["assumptions"]), vm["assumptions"]
         total = e.observe(entities=False)["hashes"]["total"]
         out = e.replay_stop(path="win.jsonl")
         # The recorded run plays back to the same state: every checkpoint equal, no divergence.
@@ -97,8 +99,11 @@ def test_the_won_flow_launches_the_campaign_successor_with_the_money(binary, gam
         assert obs["scenario"]["mission"].lower() != "h01_lin_vl", obs["scenario"]
         assert obs.get("ui") is None or obs["ui"]["screen"] == "briefing"
         vm = e.call("debug.vm", {})
-        assert vm["present"] and not vm["faulted"] and vm["counters"]["traps"] == 0
-        assert vm["tainted"] and any("ampaign" in str(a) for a in vm["assumptions"]), vm["assumptions"]
+        assert vm["present"]
+        assert not vm["faulted"]
+        assert vm["counters"]["traps"] == 0
+        assert vm["tainted"], vm["assumptions"]
+        assert any("ampaign" in str(a) for a in vm["assumptions"]), vm["assumptions"]
         assert vm["money"] == money_at_win
         doc = json.loads((tmp_path / "profiles.json").read_text())
         assert doc["profiles"][doc["selected"]]["money"] == money_at_win
@@ -128,7 +133,8 @@ def test_the_lost_page_after_the_heros_death_offers_restart_and_ok(binary, game_
         assert e.observe(entities=False)["ui"]["screen"] == "briefing"
         e.skip_briefing()
         robin = e.observe()["entities"][robin_index]
-        assert robin["hp"] == 100 and robin["alive"]
+        assert robin["hp"] == 100
+        assert robin["alive"]
         # The same death again, then OK to the main menu.
         tm._start_fight(e)
         for _ in range(600):

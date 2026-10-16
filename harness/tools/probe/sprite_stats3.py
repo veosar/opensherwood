@@ -1,5 +1,7 @@
 """Test page layout hypotheses: pages of (max_symbol+1) entries of 8 bytes back to back."""
+
 import sys, os
+
 sys.path.insert(0, os.path.dirname(__file__))
 import numpy as np
 from spritebank import Bank
@@ -11,8 +13,10 @@ print("pages with <4096 symbols:", [(int(p), int(c)) for p, c in zip(pp[:, 0], c
 reg = b.region
 u16 = np.frombuffer(reg, dtype="<u2")
 
+
 def show(off, n=4):
-    return " ".join(f"{v:04x}" for v in np.frombuffer(reg[off:off + 2 * n], dtype="<u2"))
+    return " ".join(f"{v:04x}" for v in np.frombuffer(reg[off : off + 2 * n], dtype="<u2"))
+
 
 # most frequent symbol per page (first 6 pages)
 starts_h1 = np.concatenate([[0], np.cumsum(counts * 8)])

@@ -53,15 +53,15 @@ Reviewed [revision 5](../../original/spec-navigation.md), commit `4e35271`, blob
 
 The asset check passes. Existing probes consume all nine maps’ `STAT`, `FARM` and lift chunks exactly. Review 32’s proximity-constant correction is complete; the concrete movement fallbacks and accurate AI-065 reference also resolve those portions of its dependency finding.
 
-| Component | Updated clearance |
-|---|---|
-| Formats | Established layouts cleared. `TUPO` name/record parsing waits on finding 5; unread `TUPO`/`PPPP` semantics remain excluded. |
+| Component               | Updated clearance                                                                                                                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Formats                 | Established layouts cleared. `TUPO` name/record parsing waits on finding 5; unread `TUPO`/`PPPP` semantics remain excluded.                                                                       |
 | Corner graph and search | Graph decoding, availability predicate, quadrant rules, corner walks and waypoint ordering remain cleared. Full integration waits on findings 1, 2, 4 and 6, plus applicable deviation approvals. |
-| Click resolution | Established resolution and cursor rules cleared. Patch/jump behavior remains provisional. |
-| Doors | Admission, native state changes and passage action ordering cleared. Original leaf interaction remains unread; execution inherits the movement boundary. |
-| Buildings | Established admission, placement, occupancy and removal semantics cleared. Full execution inherits the movement boundary. |
-| Stairs | Gait ordering, endpoints and run-flag rule cleared. Execution timing inherits the movement boundary. Ladder/climb substitution remains a fallback. |
-| Movement hand-off | Waypoint delivery, approach tests and navigation-owned crossing state cleared. Proximity integration waits on finding 3; faithful reactions and sliding remain unread. |
+| Click resolution        | Established resolution and cursor rules cleared. Patch/jump behavior remains provisional.                                                                                                         |
+| Doors                   | Admission, native state changes and passage action ordering cleared. Original leaf interaction remains unread; execution inherits the movement boundary.                                          |
+| Buildings               | Established admission, placement, occupancy and removal semantics cleared. Full execution inherits the movement boundary.                                                                         |
+| Stairs                  | Gait ordering, endpoints and run-flag rule cleared. Execution timing inherits the movement boundary. Ladder/climb substitution remains a fallback.                                                |
+| Movement hand-off       | Waypoint delivery, approach tests and navigation-owned crossing state cleared. Proximity integration waits on finding 3; faithful reactions and sliding remain unread.                            |
 
 Dynamic patches and faithful ladder/climb execution remain deferred. Scheduling, canonical availability order and numeric-policy approvals remain separate from factual clearance, as does publication approval.
 

@@ -33,13 +33,16 @@ public class ExportListing extends GhidraScript {
             if (s.startsWith("0x")) s = s.substring(2);
             Address a = currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(Long.parseLong(s, 16));
             Function f = fm.getFunctionContaining(a);
-            if (f == null) { println("no function at " + s); continue; }
-            try (PrintWriter w = new PrintWriter(new FileWriter(new File(dir, f.getEntryPoint() + ".asm")))) {
-                w.println("; " + f.getName() + " at " + f.getEntryPoint() + " size " + f.getBody().getNumAddresses());
-                InstructionIterator it = listing.getInstructions(f.getBody(), true);
-                while (it.hasNext() && !monitor.isCancelled()) {
-                    Instruction ins = it.next();
-                    w.println(ins.getAddress() + "  " + ins.toString());
+            if (f == null) {
+                println("no function at " + s);
+            } else {
+                try (PrintWriter w = new PrintWriter(new FileWriter(new File(dir, f.getEntryPoint() + ".asm")))) {
+                    w.println("; " + f.getName() + " at " + f.getEntryPoint() + " size " + f.getBody().getNumAddresses());
+                    InstructionIterator it = listing.getInstructions(f.getBody(), true);
+                    while (it.hasNext() && !monitor.isCancelled()) {
+                        Instruction ins = it.next();
+                        w.println(ins.getAddress() + "  " + ins.toString());
+                    }
                 }
             }
         }

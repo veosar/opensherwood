@@ -400,20 +400,7 @@ impl ButtonColumn {
 
     fn draw(&self, fb: &mut Framebuffer, assets: Option<&UiAssets>) {
         let Some(a) = assets else {
-            for (i, it) in self.items.iter().enumerate() {
-                let c = if self.hovered == Some(i) {
-                    [220, 140, 40, 255]
-                } else {
-                    [40, 110, 110, 255]
-                };
-                fb.fill_rect(
-                    it.rect.0,
-                    it.rect.1,
-                    it.rect.0 + it.rect.2,
-                    it.rect.1 + it.rect.3,
-                    c,
-                );
-            }
+            self.draw_placeholders(fb);
             return;
         };
         for (i, it) in self.items.iter().enumerate() {
@@ -437,6 +424,22 @@ impl ButtonColumn {
                 let cy = it.rect.1 + 19 - font.height() as i32 / 2;
                 font.draw_centered(fb, &it.label, cx, cy);
             }
+        }
+    }
+    fn draw_placeholders(&self, fb: &mut Framebuffer) {
+        for (i, it) in self.items.iter().enumerate() {
+            let c = if self.hovered == Some(i) {
+                [220, 140, 40, 255]
+            } else {
+                [40, 110, 110, 255]
+            };
+            fb.fill_rect(
+                it.rect.0,
+                it.rect.1,
+                it.rect.0 + it.rect.2,
+                it.rect.1 + it.rect.3,
+                c,
+            );
         }
     }
 }
@@ -871,43 +874,49 @@ impl SelectPlayerScreen {
             InputEvent::PointerDown {
                 button: Button::Left,
             } if ed.rename_of.is_none() => {
-                let (px, py) = self.pointer;
-                if hit(SEAL_EASY, px, py) {
-                    ed.difficulty = 0;
-                } else if hit(SEAL_MEDIUM, px, py) {
-                    ed.difficulty = 1;
-                } else if hit(SEAL_HARD, px, py) {
-                    ed.difficulty = 2;
-                } else if hit(SEAL_EDIT_CANCEL, px, py) {
-                    self.editor = None;
-                } else if hit(SEAL_EDIT_OK, px, py) {
-                    let name: String = ed.name.trim().chars().take(16).collect();
-                    if name.is_empty() {
-                        return None;
-                    }
-                    let ed = self.editor.take()?;
-                    match ed.rename_of {
-                        Some(i) => {
-                            if let Some(p) = self.profiles.get_mut(i) {
-                                p.name = name;
-                                p.difficulty = ed.difficulty;
-                            }
-                        }
-                        None => {
-                            if self.profiles.len() < PROFILE_ROWS {
-                                self.profiles.push(ProfileSummary {
-                                    name,
-                                    difficulty: ed.difficulty,
-                                    ..ProfileSummary::default()
-                                });
-                                self.selected = Some(self.profiles.len() - 1);
-                            }
-                        }
-                    }
-                    return Some(SelectOutcome::Changed);
-                }
+                return self.handle_new_editor_click();
             }
             _ => {}
+        }
+        None
+    }
+
+    fn handle_new_editor_click(&mut self) -> Option<SelectOutcome> {
+        let ed = self.editor.as_mut()?;
+        let (px, py) = self.pointer;
+        if hit(SEAL_EASY, px, py) {
+            ed.difficulty = 0;
+        } else if hit(SEAL_MEDIUM, px, py) {
+            ed.difficulty = 1;
+        } else if hit(SEAL_HARD, px, py) {
+            ed.difficulty = 2;
+        } else if hit(SEAL_EDIT_CANCEL, px, py) {
+            self.editor = None;
+        } else if hit(SEAL_EDIT_OK, px, py) {
+            let name: String = ed.name.trim().chars().take(16).collect();
+            if name.is_empty() {
+                return None;
+            }
+            let ed = self.editor.take()?;
+            match ed.rename_of {
+                Some(i) => {
+                    if let Some(p) = self.profiles.get_mut(i) {
+                        p.name = name;
+                        p.difficulty = ed.difficulty;
+                    }
+                }
+                None => {
+                    if self.profiles.len() < PROFILE_ROWS {
+                        self.profiles.push(ProfileSummary {
+                            name,
+                            difficulty: ed.difficulty,
+                            ..ProfileSummary::default()
+                        });
+                        self.selected = Some(self.profiles.len() - 1);
+                    }
+                }
+            }
+            return Some(SelectOutcome::Changed);
         }
         None
     }
@@ -1072,54 +1081,7 @@ impl SelectPlayerScreen {
             self.editor.as_ref().filter(|e| e.rename_of.is_none()),
             assets,
         ) {
-            if let Some(p) = &a.parchment {
-                fb.blit_rgba(264, 148, p.width, p.height, &p.rgba);
-            }
-            if let Some(f) = a.font_title.as_ref() {
-                f.draw_centered(&mut fb, text(s, 30, "new player"), 512, 200);
-            }
-            if let Some(f) = a.font_debrief.as_ref().or(font) {
-                f.draw(&mut fb, text(s, 61, "name"), 316, 262);
-                let (x, y, w, h) = PROFILE_NAME_FIELD;
-                fb.fill_rect(x, y, x + w, y + h, [60, 40, 20, 255]);
-                fb.fill_rect(x + 1, y + 1, x + w - 1, y + h - 1, [240, 225, 190, 255]);
-                f.draw(&mut fb, &format!("{}_", ed.name), x + 6, y + 3);
-                f.draw(&mut fb, text(s, t::DIFFICULTY, "difficulty"), 316, 370);
-                for (d, r) in [SEAL_EASY, SEAL_MEDIUM, SEAL_HARD].into_iter().enumerate() {
-                    let seal = if ed.difficulty == d as u8 {
-                        a.seal_ok.get(2).or(a.seal_ok.first())
-                    } else {
-                        a.seal_ok.first()
-                    };
-                    if let Some(sl) = seal {
-                        fb.blit_rgba(r.0, r.1, sl.width, sl.height, &sl.rgba);
-                    }
-                    f.draw_centered(
-                        &mut fb,
-                        text(s, t::DIFFICULTY_NAMES + d, ["easy", "medium", "hard"][d]),
-                        r.0 + r.2 / 2,
-                        r.1 + r.3 + 2,
-                    );
-                }
-                if let Some(sl) = a.seal_ok.get(1).or(a.seal_ok.first()) {
-                    fb.blit_rgba(
-                        SEAL_EDIT_OK.0,
-                        SEAL_EDIT_OK.1,
-                        sl.width,
-                        sl.height,
-                        &sl.rgba,
-                    );
-                }
-                if let Some(sl) = a.seal_cancel.get(1).or(a.seal_cancel.first()) {
-                    fb.blit_rgba(
-                        SEAL_EDIT_CANCEL.0,
-                        SEAL_EDIT_CANCEL.1,
-                        sl.width,
-                        sl.height,
-                        &sl.rgba,
-                    );
-                }
-            }
+            self.draw_new_editor(&mut fb, ed, a);
         }
         draw_pointer(
             &mut fb,
@@ -1127,6 +1089,68 @@ impl SelectPlayerScreen {
             assets.and_then(|a| a.cursor.as_ref()),
         );
         fb
+    }
+    fn draw_new_editor(&self, fb: &mut Framebuffer, ed: &ProfileEditor, a: &UiAssets) {
+        let s = &self.strings;
+        let font = a.font_text.as_ref();
+        if let Some(p) = &a.parchment {
+            fb.blit_rgba(264, 148, p.width, p.height, &p.rgba);
+        }
+        if let Some(f) = a.font_title.as_ref() {
+            f.draw_centered(fb, text(s, 30, "new player"), 512, 200);
+        }
+        if let Some(f) = a.font_debrief.as_ref().or(font) {
+            f.draw(fb, text(s, 61, "name"), 316, 262);
+            let (x, y, w, h) = PROFILE_NAME_FIELD;
+            fb.fill_rect(x, y, x + w, y + h, [60, 40, 20, 255]);
+            fb.fill_rect(x + 1, y + 1, x + w - 1, y + h - 1, [240, 225, 190, 255]);
+            f.draw(fb, &format!("{}_", ed.name), x + 6, y + 3);
+            f.draw(fb, text(s, t::DIFFICULTY, "difficulty"), 316, 370);
+            self.draw_difficulty_seals(fb, ed, a, f);
+            if let Some(sl) = a.seal_ok.get(1).or(a.seal_ok.first()) {
+                fb.blit_rgba(
+                    SEAL_EDIT_OK.0,
+                    SEAL_EDIT_OK.1,
+                    sl.width,
+                    sl.height,
+                    &sl.rgba,
+                );
+            }
+            if let Some(sl) = a.seal_cancel.get(1).or(a.seal_cancel.first()) {
+                fb.blit_rgba(
+                    SEAL_EDIT_CANCEL.0,
+                    SEAL_EDIT_CANCEL.1,
+                    sl.width,
+                    sl.height,
+                    &sl.rgba,
+                );
+            }
+        }
+    }
+    fn draw_difficulty_seals(
+        &self,
+        fb: &mut Framebuffer,
+        ed: &ProfileEditor,
+        a: &UiAssets,
+        f: &FontAtlas,
+    ) {
+        let s = &self.strings;
+        for (d, r) in [SEAL_EASY, SEAL_MEDIUM, SEAL_HARD].into_iter().enumerate() {
+            let seal = if ed.difficulty == d as u8 {
+                a.seal_ok.get(2).or(a.seal_ok.first())
+            } else {
+                a.seal_ok.first()
+            };
+            if let Some(sl) = seal {
+                fb.blit_rgba(r.0, r.1, sl.width, sl.height, &sl.rgba);
+            }
+            f.draw_centered(
+                fb,
+                text(s, t::DIFFICULTY_NAMES + d, ["easy", "medium", "hard"][d]),
+                r.0 + r.2 / 2,
+                r.1 + r.3 + 2,
+            );
+        }
     }
 }
 
@@ -1265,6 +1289,69 @@ pub struct OptionsScreen {
 }
 
 impl OptionsScreen {
+    fn draw_sliders(&self, fb: &mut Framebuffer, f: &FontAtlas) {
+        let s = &self.strings;
+        for (y, label, value) in self.sliders() {
+            f.draw(
+                fb,
+                text(s, label, "volume"),
+                SLIDER_X,
+                y - 9 - f.height() as i32 + 4,
+            );
+            for cell in 0..10 {
+                let x = SLIDER_X + SLIDER_PITCH * cell;
+                let filled = (cell as u8) < value;
+                fb.fill_rect(
+                    x,
+                    y,
+                    x + SLIDER_CELL_W,
+                    y + SLIDER_H,
+                    if filled { ORANGE } else { TEAL_DIM },
+                );
+            }
+        }
+    }
+    fn draw_page_labels(&self, fb: &mut Framebuffer, f: &FontAtlas) {
+        let s = &self.strings;
+        match self.page {
+            OptionsPage::Main => {
+                // The original prints the processor and memory here; the engine prints its own.
+                f.draw_centered(fb, "OpenSherwood", 442, 254 - f.height() as i32 / 2);
+                f.draw_centered(
+                    fb,
+                    concat!("v", env!("CARGO_PKG_VERSION")),
+                    442,
+                    274 - f.height() as i32 / 2,
+                );
+            }
+            OptionsPage::Graphics => {
+                f.draw(
+                    fb,
+                    text(s, 42, "resolution"),
+                    OPT_BAR_X,
+                    233 - f.height() as i32,
+                );
+                f.draw(
+                    fb,
+                    text(s, 46, "effects"),
+                    OPT_BAR_X,
+                    383 - f.height() as i32,
+                );
+            }
+            OptionsPage::Shortcuts => {
+                let mut y = 161;
+                for (i, (name, key)) in shortcut_lines(self.edit.shortcut_set).iter().enumerate() {
+                    let _ = i;
+                    f.draw(fb, name, 226, y);
+                    let w = f.measure(key);
+                    f.draw(fb, key, 590 - w, y);
+                    y += 15;
+                }
+            }
+            OptionsPage::Sounds => {}
+        }
+    }
+
     /// New options screen over the current settings.
     #[must_use]
     pub fn new(settings: Settings, strings: &[String]) -> Self {
@@ -1506,45 +1593,7 @@ impl OptionsScreen {
             f.draw_centered(&mut fb, title, 442, 158 - f.height() as i32 / 2);
         }
         if let Some(f) = font {
-            match self.page {
-                OptionsPage::Main => {
-                    // The original prints the processor and memory here; the engine prints its own.
-                    f.draw_centered(&mut fb, "OpenSherwood", 442, 254 - f.height() as i32 / 2);
-                    f.draw_centered(
-                        &mut fb,
-                        concat!("v", env!("CARGO_PKG_VERSION")),
-                        442,
-                        274 - f.height() as i32 / 2,
-                    );
-                }
-                OptionsPage::Graphics => {
-                    f.draw(
-                        &mut fb,
-                        text(s, 42, "resolution"),
-                        OPT_BAR_X,
-                        233 - f.height() as i32,
-                    );
-                    f.draw(
-                        &mut fb,
-                        text(s, 46, "effects"),
-                        OPT_BAR_X,
-                        383 - f.height() as i32,
-                    );
-                }
-                OptionsPage::Shortcuts => {
-                    let mut y = 161;
-                    for (i, (name, key)) in
-                        shortcut_lines(self.edit.shortcut_set).iter().enumerate()
-                    {
-                        let _ = i;
-                        f.draw(&mut fb, name, 226, y);
-                        let w = f.measure(key);
-                        f.draw(&mut fb, key, 590 - w, y);
-                        y += 15;
-                    }
-                }
-                OptionsPage::Sounds => {}
-            }
+            self.draw_page_labels(&mut fb, f);
             for (r, label, on) in self.bars() {
                 fb.fill_rect(
                     r.0,
@@ -1555,25 +1604,7 @@ impl OptionsScreen {
                 );
                 f.draw_centered(&mut fb, text(s, label, "option"), r.0 + r.2 / 2, r.1 + 5);
             }
-            for (y, label, value) in self.sliders() {
-                f.draw(
-                    &mut fb,
-                    text(s, label, "volume"),
-                    SLIDER_X,
-                    y - 9 - f.height() as i32 + 4,
-                );
-                for cell in 0..10 {
-                    let x = SLIDER_X + SLIDER_PITCH * cell;
-                    let filled = (cell as u8) < value;
-                    fb.fill_rect(
-                        x,
-                        y,
-                        x + SLIDER_CELL_W,
-                        y + SLIDER_H,
-                        if filled { ORANGE } else { TEAL_DIM },
-                    );
-                }
-            }
+            self.draw_sliders(&mut fb, f);
         }
         self.column.draw(&mut fb, assets);
         draw_pointer(
@@ -2427,37 +2458,7 @@ pub fn draw_minimap(scene: &mut Framebuffer, m: &Minimap, world: &opensherwood_c
     let sy = |v: i32| ay + (i64::from(v) * i64::from(ah) / i64::from(map.1)) as i32;
     let inside = |px: i32, py: i32| px >= ax && px < ax + aw && py >= ay && py < ay + ah;
     // Pick-ups first (under the characters): active scrolls and items.
-    if let Some(vm) = world.vm.as_ref() {
-        let mut crosses: Vec<(i32, i32)> = vm
-            .items()
-            .into_iter()
-            .filter(|it| it.active)
-            .map(|it| (it.x, it.y))
-            .collect();
-        crosses.extend(
-            vm.program
-                .elements
-                .iter()
-                .enumerate()
-                .filter_map(|(i, el)| match el {
-                    opensherwood_core::vm::Element::Scroll { x, y }
-                        if i32::try_from(i).is_ok_and(|h| vm.element_active(h)) =>
-                    {
-                        Some((*x, *y))
-                    }
-                    _ => None,
-                }),
-        );
-        for (mx, my) in crosses {
-            let (cx, cy) = (sx(mx), sy(my));
-            if !inside(cx, cy) {
-                continue;
-            }
-            scene.fill_rect(cx - 2, cy, cx + 3, cy + 1, minimap_palette::CROSS);
-            scene.fill_rect(cx, cy - 2, cx + 1, cy + 3, minimap_palette::CROSS);
-            scene.fill_rect(cx, cy, cx + 1, cy + 1, minimap_palette::CROSS_CENTRE);
-        }
-    }
+    draw_minimap_pickups(scene, world, &sx, &sy, &inside);
     let players: Vec<(i32, i32)> = world
         .entities
         .iter()
@@ -2555,6 +2556,46 @@ fn tint_green(fb: &mut Framebuffer) {
     }
 }
 
+fn draw_minimap_pickups(
+    scene: &mut Framebuffer,
+    world: &opensherwood_core::World,
+    sx: &dyn Fn(i32) -> i32,
+    sy: &dyn Fn(i32) -> i32,
+    inside: &dyn Fn(i32, i32) -> bool,
+) {
+    if let Some(vm) = world.vm.as_ref() {
+        let mut crosses: Vec<(i32, i32)> = vm
+            .items()
+            .into_iter()
+            .filter(|it| it.active)
+            .map(|it| (it.x, it.y))
+            .collect();
+        crosses.extend(
+            vm.program
+                .elements
+                .iter()
+                .enumerate()
+                .filter_map(|(i, el)| match el {
+                    opensherwood_core::vm::Element::Scroll { x, y }
+                        if i32::try_from(i).is_ok_and(|h| vm.element_active(h)) =>
+                    {
+                        Some((*x, *y))
+                    }
+                    _ => None,
+                }),
+        );
+        for (mx, my) in crosses {
+            let (cx, cy) = (sx(mx), sy(my));
+            if !inside(cx, cy) {
+                continue;
+            }
+            scene.fill_rect(cx - 2, cy, cx + 3, cy + 1, minimap_palette::CROSS);
+            scene.fill_rect(cx, cy - 2, cx + 1, cy + 3, minimap_palette::CROSS);
+            scene.fill_rect(cx, cy, cx + 1, cy + 1, minimap_palette::CROSS_CENTRE);
+        }
+    }
+}
+
 /// Draw the arrow cursor (hotspot at its top-left tip) or a cross when the picture is missing.
 fn draw_pointer(fb: &mut Framebuffer, (mx, my): (i32, i32), cursor: Option<&SpriteFrame>) {
     if let Some(c) = cursor {
@@ -2580,6 +2621,107 @@ mod tests {
         InputEvent::PointerDown {
             button: Button::Left,
         }
+    }
+
+    #[test]
+    fn profile_editor_commits_trims_and_cancels() {
+        let mut screen = SelectPlayerScreen::new(vec![], None, &[]);
+        screen.editor = Some(ProfileEditor {
+            rename_of: None,
+            name: "  Alice  ".into(),
+            difficulty: 0,
+        });
+        screen.handle(mv(SEAL_HARD.0 + 1, SEAL_HARD.1 + 1));
+        assert_eq!(screen.handle(click()), None);
+        screen.handle(mv(SEAL_EDIT_OK.0 + 1, SEAL_EDIT_OK.1 + 1));
+        assert_eq!(screen.handle(click()), Some(SelectOutcome::Changed));
+        assert_eq!(screen.profiles[0].name, "Alice");
+        assert_eq!(screen.profiles[0].difficulty, 2);
+        assert_eq!(screen.selected, Some(0));
+        screen.editor = Some(ProfileEditor {
+            rename_of: Some(0),
+            name: "Bob".into(),
+            difficulty: 0,
+        });
+        assert_eq!(
+            screen.handle(InputEvent::KeyDown { key: Key::Enter }),
+            Some(SelectOutcome::Changed)
+        );
+        assert_eq!(screen.profiles[0].name, "Bob");
+        assert_eq!(screen.profiles[0].difficulty, 2);
+        screen.editor = Some(ProfileEditor {
+            rename_of: Some(0),
+            name: "Ignored".into(),
+            difficulty: 0,
+        });
+        screen.handle(InputEvent::KeyDown { key: Key::Escape });
+        assert!(screen.editor.is_none());
+        assert_eq!(screen.profiles[0].name, "Bob");
+    }
+
+    #[test]
+    fn retail_profile_and_options_frames_are_stable() {
+        let Some(root) = std::env::var_os("OPENSHERWOOD_GAME_DIR") else {
+            return;
+        };
+        let game = opensherwood_assets::GameDir::open(root).unwrap();
+        let assets = crate::ui_assets::load(&game);
+        let mut screen = SelectPlayerScreen::new(
+            vec![ProfileSummary {
+                name: "Alice".into(),
+                ..ProfileSummary::default()
+            }],
+            Some(0),
+            &[],
+        );
+        let mut hashes = vec![screen.render(Some(&assets)).hash()];
+        screen.editor = Some(ProfileEditor {
+            rename_of: None,
+            name: "New".into(),
+            difficulty: 1,
+        });
+        hashes.push(screen.render(Some(&assets)).hash());
+        let mut options = OptionsScreen::new(Settings::default(), &[]);
+        for page in [
+            OptionsPage::Main,
+            OptionsPage::Graphics,
+            OptionsPage::Sounds,
+            OptionsPage::Shortcuts,
+        ] {
+            options.page = page;
+            hashes.push(options.render(Some(&assets)).hash());
+        }
+        assert_eq!(
+            hashes,
+            [
+                "a3d329877bb92927cc2fa72eb1573aa5a22a5e37070541045b4a12c5de3af8d9",
+                "13b7e3ebc8ce0f9d9d8d3d68b365ff4769998f3c2eee0c850cbe3dde03cd6fc6",
+                "c4cf57b480d537f121f8c729b92026a46b4991d9e7f5c68be64ee65600511e43",
+                "afe5f2e492ec5a6c5ecabc0ece76004d43884b5a3c61b962f0a07371f147c3f5",
+                "2317dbd34c07efbb32e915bcf110b19f4ca85b8fe327d2b27b8778c81ad29aac",
+                "632bca7b13bf5d890606fcaa080f1ff74554d012037b5a89bb4b99f738904c4f"
+            ]
+        );
+    }
+
+    #[test]
+    fn minimap_synthetic_pixels_are_stable() {
+        let world = opensherwood_core::World::new(
+            opensherwood_core::Scenario::Synthetic("corridor".into()),
+            7,
+        )
+        .unwrap();
+        let minimap = Minimap {
+            width: 1,
+            height: 1,
+            rgba: vec![1, 2, 3, 255],
+        };
+        let mut frame = Framebuffer::new(1024, 768);
+        draw_minimap(&mut frame, &minimap, &world);
+        assert_eq!(
+            frame.hash(),
+            "4a5bf8b894637284c0c2c4d55e107d0278185d98c83551486d1c875e9fe860ef"
+        );
     }
 
     #[test]

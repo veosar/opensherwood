@@ -925,42 +925,9 @@ impl World {
         match id {
             // 0 (k, v): mission variable k := v, growing the array to k + 16 (VM-020); a
             // negative k is an unchecked write.
-            0 => {
-                let (k, v) = (a0, arg(args, 1));
-                if k < 0 {
-                    return Err(Fault::UncheckedAccess(0));
-                }
-                let Some(vm) = self.vm.as_mut() else {
-                    return Ok(0);
-                };
-                let k = k as usize;
-                if k >= vm.mission_vars.len() {
-                    let size = k
-                        .saturating_add(MISSION_VARIABLE_GROWTH)
-                        .min(MAX_MISSION_VARIABLES);
-                    vm.mission_vars.resize(size, 0);
-                }
-                if let Some(slot) = vm.mission_vars.get_mut(k) {
-                    *slot = v;
-                }
-                Ok(0)
-            }
+            0 => self.native_grow_mission_variable(a0, args),
             // 1 (k, v): store only into a declared variable, else an error and no effect.
-            1 => {
-                let (k, v) = (a0, arg(args, 1));
-                if let Some(vm) = self.vm.as_mut() {
-                    match usize::try_from(k)
-                        .ok()
-                        .and_then(|k| vm.mission_vars.get_mut(k))
-                    {
-                        Some(slot) => *slot = v,
-                        None => {
-                            vm.counters.native_errors = vm.counters.native_errors.saturating_add(1);
-                        }
-                    }
-                }
-                Ok(0)
-            }
+            1 => Ok(self.native_set_mission_variable(a0, args)),
             // 2 (k) -> int: the value, or -1 outside the declared range.
             2 => Ok(self
                 .vm
@@ -975,28 +942,10 @@ impl World {
             // 3 (i) -> handle: element i of the table (VM-030b): -1 is null without an error,
             // i < N mod 65536 the entry, the cart range beyond it (empty here), anything else
             // an error; i < -1 is an unchecked read.
-            3 => {
-                if a0 == NONE_HANDLE {
-                    return Ok(NONE_HANDLE);
-                }
-                let n = self.vm.as_ref().map_or(0, |vm| vm.program.elements.len());
-                if a0 < NONE_HANDLE {
-                    self.record_read_fault(3);
-                    return Ok(NONE_HANDLE);
-                }
-                let n16 = (n % 65536) as i32;
-                if a0 < n16 {
-                    return Ok(a0);
-                }
-                self.record_error();
-                Ok(NONE_HANDLE)
-            }
+            3 => Ok(self.native_element_handle(a0)),
             // 10 (e) -> int: the index of e in the element table, else -1 (the cart table is
             // empty here).
-            10 => {
-                let n = self.vm.as_ref().map_or(0, |vm| vm.program.elements.len()) as i32;
-                Ok(if a0 >= 0 && a0 < n { a0 } else { -1 })
-            }
+            10 => Ok(self.native_element_index(a0)),
             // 75 () -> int: the element table's full size N (not truncated, unlike 3).
             75 => Ok(self
                 .vm
@@ -1004,22 +953,10 @@ impl World {
                 .map_or(0, |vm| vm.program.elements.len() as i32)),
             // 4 / 5 (i) -> handle: door / patch i of the map's list; -1 or out of range -> null.
             // The engine has no door or patch lists of its own: the handle is the index.
-            4 | 5 => Ok(if a0 >= 0 { a0 } else { NONE_HANDLE }),
+            4 | 5 => Ok(Self::native_map_handle(a0)),
             // 6 (i) -> handle: location i of the level's list, i modulo 65536 and no upper
             // check (an unchecked read); -1 or an empty entry -> null.
-            6 => {
-                if a0 == NONE_HANDLE {
-                    return Ok(NONE_HANDLE);
-                }
-                let k = ((a0 as u32) % 65536) as usize;
-                let len = self.vm.as_ref().map_or(0, |vm| vm.program.locations.len());
-                if k < len {
-                    Ok(k as i32)
-                } else {
-                    self.record_read_fault(6);
-                    Ok(NONE_HANDLE)
-                }
-            }
+            6 => Ok(self.native_location_handle(a0)),
             // 7 (k) -> handle: sound source k; this engine has no sound sources.
             7 => Ok(NONE_HANDLE),
             // 8 (i) -> handle: building i of the map's list, **no check** (U). This engine
@@ -1027,180 +964,39 @@ impl World {
             // past: the reading itself is the `Policy(8)` this row records.
             8 => Ok(a0),
             // 9 (i) -> handle: patrol path i (modulo 65536, no upper check); -1 -> null.
-            9 => {
-                if a0 == NONE_HANDLE {
-                    return Ok(NONE_HANDLE);
-                }
-                let k = ((a0 as u32) % 65536) as usize;
-                let len = self.vm.as_ref().map_or(0, |vm| vm.paths.len());
-                if k < len {
-                    Ok(k as i32)
-                } else {
-                    self.record_read_fault(9);
-                    Ok(NONE_HANDLE)
-                }
-            }
+            9 => Ok(self.native_path_handle(a0)),
             // 11 / 12 / 15 (x) -> int: the index of a door / patch / building, else -1.
-            11 | 12 | 15 => Ok(if a0 >= 0 { a0 } else { -1 }),
+            11 | 12 | 15 => Ok(Self::native_map_index(a0)),
             // 14 (sound) -> int: the index of a sound source; none exist.
             14 => Ok(-1),
             // 16 (path) -> int: the index in the patrol-path list, 16-bit; 65535 if absent.
-            16 => {
-                let len = self.vm.as_ref().map_or(0, |vm| vm.paths.len()) as i32;
-                Ok(if a0 >= 0 && a0 < len { a0 } else { 65535 })
-            }
+            16 => Ok(self.native_path_index(a0)),
             // 17 (k): show dialog page k now in the modal loop (VM-218). The engine has no
             // modal loop: the page is queued like native 202's and the app dismisses it.
-            17 => {
-                if let Some(vm) = self.vm.as_mut() {
-                    let _ = vm.show_text(a0, true);
-                }
-                Ok(0)
-            }
+            17 => Ok(self.native_dialog(a0)),
             // 18 / 19 (loc[, f]) -> bool: the scroll request of VM-219: the destination is the
             // converted point. The camera model is the movement specification's; the engine
             // centres its camera on the point and remembers it.
-            18 | 19 => match self.location_position(a0) {
-                Some((x, y)) => {
-                    self.vm_camera_to(x, y);
-                    Ok(1)
-                }
-                None => {
-                    self.record_error();
-                    Ok(0)
-                }
-            },
+            18 | 19 => Ok(self.native_scroll_camera(a0)),
             // 20 (loc) -> bool: the camera jump of VM-219.
-            20 => match self.location_position(a0) {
-                Some((x, y)) => {
-                    self.vm_camera_to(x, y);
-                    Ok(1)
-                }
-                None => {
-                    self.record_error();
-                    Ok(0)
-                }
-            },
+            20 => Ok(self.native_jump_camera(a0)),
             // 21 (f) -> bool: the requested zoom; only 0.5 / 1.0 / 2.0 are accepted. The engine
             // draws at one zoom, so the request is remembered and nothing else follows.
-            21 => {
-                let f = f32::from_bits(a0 as u32);
-                if f == 0.5 || f == 1.0 || f == 2.0 {
-                    Ok(1)
-                } else {
-                    self.record_error();
-                    Ok(0)
-                }
-            }
+            21 => Ok(self.native_zoom(a0)),
             // 29 (): force the next victory check (VM-242): the flag the scheduler consumes.
-            29 => {
-                if let Some(vm) = self.vm.as_mut() {
-                    vm.force_victory = true;
-                }
-                Ok(0)
-            }
+            29 => Ok(self.native_force_victory()),
             // 26 (k, main): add objective k; 27 (k): objective k accomplished (VM-240).
-            26 => {
-                let (k, main) = (a0, arg(args, 1));
-                if let Some(vm) = self.vm.as_mut() {
-                    if let Some(o) = vm.objectives.iter_mut().find(|o| o.index == k) {
-                        o.primary = main != 0;
-                    } else if vm.objectives.len() < MAX_QUEUE {
-                        vm.objectives.push(Objective {
-                            index: k,
-                            primary: main != 0,
-                            done: false,
-                        });
-                    }
-                }
-                Ok(0)
-            }
-            27 => {
-                if let Some(vm) = self.vm.as_mut() {
-                    match vm.objectives.iter_mut().find(|o| o.index == a0) {
-                        Some(o) => o.done = true,
-                        None => {
-                            vm.counters.objective_done_before_added =
-                                vm.counters.objective_done_before_added.saturating_add(1);
-                        }
-                    }
-                }
-                Ok(0)
-            }
+            26 => Ok(self.native_add_objective(a0, args)),
+            27 => Ok(self.native_complete_objective(a0)),
             // 28 (k): the debriefing variant read when the level ends (VM-241).
-            28 => {
-                if let Some(vm) = self.vm.as_mut() {
-                    vm.debriefing = Some(a0);
-                }
-                Ok(0)
-            }
+            28 => Ok(self.native_debriefing(a0)),
             // 30 () -> bool: begin recording (VM-200); a recording already open is an error.
-            30 => {
-                let Some(vm) = self.vm.as_mut() else {
-                    return Ok(0);
-                };
-                if vm.collecting.is_some() {
-                    self.record_error();
-                    return Ok(0);
-                }
-                let provenance = vm.provenance();
-                vm.collecting = Some(Recording {
-                    elements: Vec::new(),
-                    level: 1,
-                    last_level: 0,
-                    entered: BTreeSet::new(),
-                    provenance,
-                });
-                Ok(1)
-            }
+            30 => Ok(self.native_begin_recording()),
             // 31 () -> bool: end the recording and launch it at once (VM-202); an empty
             // recording is an error and is discarded, but the result is 1 either way.
-            31 => {
-                let Some(vm) = self.vm.as_mut() else {
-                    return Ok(0);
-                };
-                let Some(rec) = vm.collecting.take() else {
-                    self.record_error();
-                    return Ok(0);
-                };
-                if rec.elements.is_empty() {
-                    self.record_error();
-                    return Ok(1);
-                }
-                let total: usize = vm.sequences.iter().map(|s| s.elements.len()).sum();
-                if vm.sequences.len() < MAX_QUEUE
-                    && total.saturating_add(rec.elements.len()) <= crate::vm::MAX_SEQUENCE_ELEMENTS
-                {
-                    vm.sequences.push(crate::vm::Sequence {
-                        elements: rec.elements,
-                        next: 0,
-                        wait: crate::vm::SeqWait::None,
-                        tokens: Vec::new(),
-                        provenance: rec.provenance,
-                    });
-                }
-                Ok(1)
-            }
+            31 => Ok(self.native_end_recording()),
             // 32 () -> int: the barrier of VM-201; two consecutive barriers count once.
-            32 => {
-                let Some(vm) = self.vm.as_mut() else {
-                    return Ok(0);
-                };
-                let Some(rec) = vm.collecting.as_mut() else {
-                    self.record_error();
-                    return Ok(0);
-                };
-                if rec.last_level != 0 && rec.last_level == rec.level {
-                    let Some(next) = rec.level.checked_add(1) else {
-                        return Err(Fault::BarrierOverflow);
-                    };
-                    rec.level = next;
-                    if rec.elements.len() < MAX_QUEUE {
-                        rec.elements.push(SeqElement::Barrier);
-                    }
-                }
-                Ok(i32::from(rec.level))
-            }
+            32 => self.native_barrier(),
             // 58 (x) -> bool: a placeholder that is always 0.
             58 => Ok(0),
             // 74 () -> handle: the current actor (VM-093).
@@ -1220,211 +1016,57 @@ impl World {
             // 78 (x) -> bool: x is of the actor family.
             78 => Ok(i32::from(self.entity_of(a0).is_some())),
             // 79 (x) -> bool: x is a player character.
-            79 => {
-                Ok(i32::from(self.entity_of(a0).is_some_and(|i| {
-                    self.entities[i].kind == EntityKind::Player
-                })))
-            }
+            79 => Ok(self.native_is_player(a0)),
             // 80 (x) -> bool: x is an NPC (a human that is not a player character).
-            80 => {
-                Ok(i32::from(self.entity_of(a0).is_some_and(|i| {
-                    self.entities[i].kind != EntityKind::Player
-                })))
-            }
+            80 => Ok(self.native_is_npc(a0)),
             // 81 / 82 (x) -> bool: x is a soldier / a civilian. The engine's non-player actors
             // are all guards; a civilian class does not exist yet.
-            81 => {
-                Ok(i32::from(self.entity_of(a0).is_some_and(|i| {
-                    self.entities[i].kind == EntityKind::Guard
-                })))
-            }
+            81 => Ok(self.native_is_guard(a0)),
             82 | 83 | 84 => Ok(0),
             // 85 (x) -> bool: x is null. 86 (a, b) -> bool: the two handles are the same.
             85 => Ok(i32::from(a0 == NONE_HANDLE)),
             86 => Ok(i32::from(a0 == arg(args, 1))),
             // 87 / 88 / 90 (x) -> bool: the human is dead / unconscious / out of action. All
             // three read one state function (`ai::ActorStatus`), so they cannot contradict.
-            87 => Ok(match self.entity_of(a0) {
-                Some(i) => i32::from(ActorStatus::of(&self.entities[i]).dead),
-                None => {
-                    self.record_error();
-                    0
-                }
-            }),
-            88 => Ok(match self.entity_of(a0) {
-                Some(i) => {
-                    let s = ActorStatus::of(&self.entities[i]);
-                    if s.knocked_out
-                        && let Some(vm) = self.vm.as_mut()
-                    {
-                        vm.assume(Assumption::KnockOut);
-                    }
-                    i32::from(s.knocked_out)
-                }
-                None => 0,
-            }),
+            87 => Ok(self.native_is_dead(a0)),
+            88 => Ok(self.native_is_unconscious(a0)),
             89 => Ok(0),
-            90 => Ok(match self.entity_of(a0) {
-                Some(i) => {
-                    let s = ActorStatus::of(&self.entities[i]);
-                    if s.out_of_action
-                        && let Some(vm) = self.vm.as_mut()
-                    {
-                        vm.counters.out_of_action_true =
-                            vm.counters.out_of_action_true.saturating_add(1);
-                        if s.knocked_out {
-                            vm.assume(Assumption::KnockOut);
-                        }
-                    }
-                    i32::from(s.out_of_action)
-                }
-                None => 0,
-            }),
+            90 => Ok(self.native_is_out_of_action(a0)),
             // 93 (x) -> int: the facing direction 0..15 of a known element; 94 (x, d): set it.
-            93 => Ok(match self.entity_of(a0) {
-                Some(i) => self.entities[i].facing256.rem_euclid(256) / FACING_UNITS_PER_DIRECTION,
-                None => 0,
-            }),
-            94 | 133 => {
-                if let Some(entity) = self.entity_of(a0) {
-                    self.vm_touch_entity(entity);
-                    let dir = if id == 133 {
-                        let to = self.location_position(arg(args, 1));
-                        self.vm_teleport(entity as u32, to);
-                        arg(args, 2)
-                    } else {
-                        arg(args, 1)
-                    };
-                    self.entities[entity].facing256 =
-                        dir.rem_euclid(16) * FACING_UNITS_PER_DIRECTION;
-                    Ok(1)
-                } else {
-                    self.record_error();
-                    Ok(0)
-                }
-            }
+            93 => Ok(self.native_facing(a0)),
+            94 | 133 => Ok(self.native_set_facing(id, a0, args)),
             // 95 (x) -> handle: a new point location at x's position; unknown -> null.
-            95 => Ok(match self.element_position(a0) {
-                Some((x, y)) => location_of_point(x, y),
-                None => NONE_HANDLE,
-            }),
+            95 => Ok(self.native_element_location(a0)),
             // 96 (x, loc) -> bool: a null location takes x off the map; else x is put back and
             // moved to the point.
-            96 => {
-                if let Some(entity) = self.entity_of(a0) {
-                    let to = self.location_position(arg(args, 1));
-                    self.vm_teleport(entity as u32, to);
-                    Ok(1)
-                } else {
-                    self.record_error();
-                    Ok(0)
-                }
-            }
+            96 => Ok(self.native_teleport(a0, args)),
             // 97 (x, zone) -> bool: x is inside the zone. One work unit per polygon edge.
-            97 => {
-                let Some((x, y)) = self.element_position(a0) else {
-                    return Ok(0);
-                };
-                let zone = arg(args, 1);
-                let Some(vm) = self.vm.as_mut() else {
-                    return Ok(0);
-                };
-                let Some(poly) = polygon_in(&vm.program, zone) else {
-                    return Ok(0);
-                };
-                if !charge_budget(&mut vm.budget, poly.len() as u64) {
-                    vm.counters.budget_aborts = vm.counters.budget_aborts.saturating_add(1);
-                    return Ok(0);
-                }
-                Ok(i32::from(poly.len() >= 3 && point_in_polygon(x, y, poly)))
-            }
+            97 => Ok(self.native_is_in_zone(a0, args)),
             // 98 (x, building) -> bool: a null building asks "is x in a building interior",
             // any other one "is x's zone that building". This engine has no interiors, so
             // every actor is outdoors and both answers are 0.
             98 => Ok(0),
             // 101 (x) -> int: the current action id; an actor without one answers 283.
-            101 => Ok(match self.entity_of(a0) {
-                Some(i) => self.entities[i].action as i32,
-                None => {
-                    self.record_error();
-                    0
-                }
-            }),
+            101 => Ok(self.native_action(a0)),
             // 103 (x) -> bool: stop the actor (its movement and order are cancelled).
-            103 => {
-                if let Some(i) = self.entity_of(a0) {
-                    self.vm_touch_entity(i);
-                    let e = &mut self.entities[i];
-                    e.target = None;
-                    e.path.clear();
-                    e.clear_pickup();
-                    Ok(1)
-                } else {
-                    self.record_error();
-                    Ok(0)
-                }
-            }
+            103 => Ok(self.native_stop(a0)),
             // 109 (target, msg) / 110 (target, msg, a, b): send the message **now** (VM-120);
             // a null target is the level class, anything but an actor an error.
-            109 | 110 => {
-                let m = Message {
-                    target: a0,
-                    id: arg(args, 1),
-                    arg: arg(args, 2),
-                    arg2: arg(args, 3),
-                };
-                if m.target != NONE_HANDLE && self.entity_of(m.target).is_none() {
-                    self.record_error();
-                    return Ok(0);
-                }
-                self.vm_deliver(m);
-                Ok(0)
-            }
+            109 | 110 => Ok(self.native_send_message(a0, args)),
             // 111 / 159 () -> handle: always null in this build.
             111 | 159 => Ok(NONE_HANDLE),
             // 112 (k) -> bool: select all (31) or none (0); any other code is an error, and the
             // native answers 1 either way.
-            112 => {
-                match a0 {
-                    0 => self.selected = None,
-                    31 => {}
-                    _ => self.record_error(),
-                }
-                Ok(1)
-            }
+            112 => Ok(self.native_select_all(a0)),
             // 113 / 114 (x) -> bool: deactivate / activate an element.
-            113 | 114 => {
-                self.set_element_active(a0, id == 114);
-                Ok(1)
-            }
+            113 | 114 => Ok(self.native_set_active(id, a0)),
             // 115 (pc, k, b) -> bool / 116 (pc, k) -> bool: the availability of action k
             // (0..5) for a player character; the HUD is not modelled, the flag is stored.
-            115 | 116 => {
-                let k = arg(args, 1);
-                if !(0..6).contains(&k) {
-                    self.record_error();
-                    return Ok(0);
-                }
-                let Some(vm) = self.vm.as_mut() else {
-                    return Ok(0);
-                };
-                if id == 115 {
-                    let b = arg(args, 2);
-                    crate::vm::VmState::set_pair_table(&mut vm.pc_actions, a0, k, b, MAX_QUEUE);
-                    Ok(1)
-                } else {
-                    Ok(crate::vm::VmState::pair_table(&vm.pc_actions, a0, k, 1))
-                }
-            }
+            115 | 116 => Ok(self.native_player_action(id, a0, args)),
             // 117 (x, prop, v) -> bool / 118 (x, prop) -> int: element properties; the engine
             // keeps them as one hashed table (the per-property meaning is the AI's and the
             // campaign's).
-            117 => {
-                if let Some(vm) = self.vm.as_mut() {
-                    vm.set_attribute(a0, arg(args, 1), arg(args, 2));
-                }
-                Ok(1)
-            }
+            117 => Ok(self.native_set_property(a0, args)),
             118 => Ok(self
                 .vm
                 .as_ref()
@@ -1438,405 +1080,80 @@ impl World {
             )),
             // 128 (npc) -> int: 1 if the NPC is hostile. The engine reads its able-to-act
             // state, a policy row.
-            128 => Ok(match self.entity_of(a0) {
-                Some(i) => {
-                    let s = ActorStatus::of(&self.entities[i]);
-                    if !s.can_act
-                        && s.knocked_out
-                        && let Some(vm) = self.vm.as_mut()
-                    {
-                        vm.assume(Assumption::KnockOut);
-                    }
-                    i32::from(s.can_act)
-                }
-                None => 1,
-            }),
+            128 => Ok(self.native_can_act(a0)),
             // 127 (a, b) -> bool: obsolete, always an error and 0.
-            127 => {
-                self.record_error();
-                Ok(0)
-            }
+            127 => Ok(self.native_obsolete()),
             // 129 (npc, a, b) -> bool: no effect; 1 for an NPC, an error otherwise.
             129 => Ok(i32::from(self.entity_of(a0).is_some())),
             // 130 (npc, target, b) / 131 (npc, loc, b): the operation is empty in this build;
             // only the arguments are validated.
-            130 | 131 => {
-                if self.entity_of(a0).is_none() {
-                    self.record_error();
-                }
-                Ok(0)
-            }
+            130 | 131 => Ok(self.native_validate_actor(a0)),
             // 132 (npc, path): assign the patrol path (AI 3.4).
-            132 => {
-                let path = arg(args, 1);
-                let program = self.vm.as_ref().and_then(|vm| {
-                    usize::try_from(path)
-                        .ok()
-                        .and_then(|p| vm.paths.get(p).copied())
-                });
-                if let Some(i) = self.entity_of(a0) {
-                    self.vm_touch_entity(i);
-                    let e = &mut self.entities[i];
-                    e.program = program.flatten();
-                    e.pc = 0;
-                    e.target = None;
-                    e.path.clear();
-                    e.wait_ticks = 0;
-                } else {
-                    self.record_error();
-                }
-                Ok(0)
-            }
+            132 => Ok(self.native_assign_path(a0, args)),
             // 134 (x, b) / 135 (x): lock / unlock the AI. Locking halts the actor's own walk
             // (the engine's reading); a player character is an error and is not touched.
-            134 | 135 => {
-                match self.entity_of(a0) {
-                    Some(i) if self.entities[i].kind != EntityKind::Player => {
-                        self.vm_touch_entity(i);
-                        let e = &mut self.entities[i];
-                        e.ai_locked = id == 134;
-                        if e.ai_locked {
-                            e.target = None;
-                            e.path.clear();
-                        }
-                    }
-                    _ => self.record_error(),
-                }
-                Ok(0)
-            }
+            134 | 135 => Ok(self.native_lock_ai(id, a0)),
             // 137 (loc, k): make a noise at the point; an unknown k is reported and still used.
-            137 => {
-                if self.location_position(a0).is_none() {
-                    self.record_error();
-                }
-                Ok(0)
-            }
+            137 => Ok(self.native_noise(a0)),
             // 140 (npc, k): the walking style of the NPC's own walks.
-            140 => {
-                if let Some(i) = self.entity_of(a0) {
-                    self.vm_touch_entity(i);
-                    self.entities[i].npc_gait = if arg(args, 1) == 0 {
-                        Gait::Walk
-                    } else {
-                        Gait::Run
-                    };
-                } else {
-                    self.record_error();
-                }
-                Ok(0)
-            }
+            140 => Ok(self.native_gait(a0, args)),
             // 144 (patch) -> bool: the patch's active flag; a null patch is the unchecked
             // read of 8.1 (0, the callback continues).
-            144 => {
-                if a0 == NONE_HANDLE {
-                    self.record_read_fault(144);
-                    return Ok(0);
-                }
-                Ok(i32::from(
-                    self.vm.as_ref().is_some_and(|vm| vm.patches.contains(&a0)),
-                ))
-            }
+            144 => Ok(self.native_patch_active(a0)),
             // 145 / 146 (patch) -> bool: activate / deactivate the patch.
-            145 | 146 => {
-                if let Some(vm) = self.vm.as_mut() {
-                    if id == 145 {
-                        if vm.patches.len() < MAX_QUEUE {
-                            vm.patches.insert(a0);
-                        }
-                    } else {
-                        vm.patches.remove(&a0);
-                    }
-                }
-                Ok(1)
-            }
+            145 | 146 => Ok(self.native_set_patch_active(id, a0)),
             // 153 / 154 (x, zone) -> bool: fire `ExitZone` / `EnterZone` for an actor that is
             // already a member of the zone (VM-120b).
-            153 | 154 => {
-                let zone = arg(args, 1);
-                let Some(entity) = self.entity_of(a0) else {
-                    self.record_error();
-                    return Ok(0);
-                };
-                let member = self.vm.as_ref().and_then(|vm| {
-                    let class = vm
-                        .program
-                        .classes
-                        .iter()
-                        .position(|c| c.zone.is_some_and(|z| z as i32 == zone))?;
-                    vm.zone_presence
-                        .contains(&(class as u32, entity as u32))
-                        .then_some(class as u32)
-                });
-                let Some(class) = member else {
-                    self.record_error();
-                    return Ok(0);
-                };
-                let name = if id == 154 {
-                    crate::vm::callbacks::ENTER_ZONE
-                } else {
-                    crate::vm::callbacks::EXIT_ZONE
-                };
-                self.vm_with_current_actor(a0, |w| {
-                    w.vm_callback(class, name, &[a0]);
-                });
-                Ok(1)
-            }
+            153 | 154 => Ok(self.native_zone_callback(id, a0, args)),
             // 155 (x): no effect.
             155 => Ok(0),
             // 158 (zone) -> handle: the first actor inside the zone, null if none.
-            158 => {
-                let Some(vm) = self.vm.as_ref() else {
-                    return Ok(NONE_HANDLE);
-                };
-                let Some(poly) = polygon_in(&vm.program, a0) else {
-                    self.record_error();
-                    return Ok(NONE_HANDLE);
-                };
-                let poly: Vec<(i32, i32)> = poly.to_vec();
-                let found = self.entities.iter().position(|e| {
-                    e.alive && e.active && point_in_polygon(e.x.round(), e.y.round(), &poly)
-                });
-                Ok(match found {
-                    Some(i) => self
-                        .vm
-                        .as_ref()
-                        .map_or(NONE_HANDLE, |vm| vm.program.element_of_entity(i as u32)),
-                    None => NONE_HANDLE,
-                })
-            }
+            158 => Ok(self.native_first_actor_in_zone(a0)),
             // 160 (a, b) -> int: the distance between two points, truncated; a non-point is an
             // error and 0. The differences are formed in `i64` and squared in `u128`, so any
             // pair of positions gives the same answer in debug and release.
-            160 => match (
-                self.location_position(a0),
-                self.location_position(arg(args, 1)),
-            ) {
-                (Some(a), Some(b)) => {
-                    let dx = u128::from((i64::from(a.0) - i64::from(b.0)).unsigned_abs());
-                    let dy = u128::from((i64::from(a.1) - i64::from(b.1)).unsigned_abs());
-                    let d = (dx * dx + dy * dy).isqrt();
-                    Ok(i32::try_from(d).unwrap_or(i32::MAX))
-                }
-                _ => {
-                    self.record_error();
-                    Ok(0)
-                }
-            },
+            160 => Ok(self.native_distance(a0, args)),
             // 161 (n) -> int: `rand() mod n`; n = 0 is an arithmetic trap (8.2: the engine
             // draws from its own `script` stream).
-            161 => {
-                if a0 == 0 {
-                    return Err(Fault::Trap);
-                }
-                let n = a0.unsigned_abs();
-                Ok(self.vm.as_mut().map_or(0, |vm| vm.rng.below(n) as i32))
-            }
+            161 => self.native_random(a0),
             // 162 (x): debug output of x as a decimal number; no game effect.
             162 => Ok(0),
             // 168 (i) -> handle: the element of team entry i; the index is compared unsigned
             // with the list size, so a negative one takes the same path: an exception (X).
             168 => Err(Fault::Range(168)),
             // 175 (id, loc): place the player character with campaign id `id` at the point.
-            175 => {
-                let to = self.location_position(arg(args, 1));
-                if let Some(entity) = self.entity_of(self.player_element(a0)).map(|i| i as u32) {
-                    self.vm_teleport(entity, to);
-                }
-                Ok(0)
-            }
+            175 => Ok(self.native_place_player(a0, args)),
             // 178 (banner): capture a banner (it must be active): deactivated, the campaign's
             // banner counter raised. 179 (banner): lose one again. 223 (banner) -> bool: the
             // banner is inactive (= captured). 234 () -> bool: the counter reached the
             // requirement (the requirement is the campaign specification's; 0 here).
-            178 | 179 => {
-                let active = self.vm.as_ref().is_some_and(|vm| vm.element_active(a0));
-                if (id == 178) != active {
-                    self.record_error();
-                    return Ok(0);
-                }
-                self.set_element_active(a0, id == 179);
-                if let Some(vm) = self.vm.as_mut() {
-                    vm.banner_count = if id == 178 {
-                        vm.banner_count.saturating_add(1)
-                    } else {
-                        vm.banner_count.saturating_sub(1)
-                    };
-                }
-                Ok(0)
-            }
+            178 | 179 => Ok(self.native_banner(id, a0)),
             223 => Ok(i32::from(
                 self.vm.as_ref().is_some_and(|vm| !vm.element_active(a0)),
             )),
             234 => Ok(0),
             // 182 - 185 (door) -> bool: the four door lock bytes (NAV-172); null unchecked.
             // 186 - 189 (door, b): set them; 186 / 188 / 189 with b = 0 also open the door.
-            182..=185 => {
-                if a0 == NONE_HANDLE {
-                    self.record_read_fault(id);
-                    return Ok(0);
-                }
-                Ok(self.vm.as_ref().map_or(0, |vm| {
-                    crate::vm::VmState::pair_table(&vm.door_bytes, a0, id as i32 - 182, 0)
-                }))
-            }
-            186..=189 => {
-                if a0 == NONE_HANDLE {
-                    return Err(Fault::UncheckedAccess(id));
-                }
-                let b = arg(args, 1);
-                if let Some(vm) = self.vm.as_mut() {
-                    crate::vm::VmState::set_pair_table(
-                        &mut vm.door_bytes,
-                        a0,
-                        id as i32 - 186,
-                        b,
-                        MAX_QUEUE * 16,
-                    );
-                }
-                Ok(0)
-            }
+            182..=185 => Ok(self.native_door_byte(id, a0)),
+            186..=189 => self.native_set_door_byte(id, a0, args),
             // 191 (b, door): the door leaf's click-target flag; a null door is an error.
-            191 => {
-                let door = arg(args, 1);
-                if door == NONE_HANDLE {
-                    self.record_error();
-                    return Ok(0);
-                }
-                if let Some(vm) = self.vm.as_mut() {
-                    crate::vm::VmState::set_pair_table(
-                        &mut vm.door_bytes,
-                        door,
-                        4,
-                        a0,
-                        MAX_QUEUE * 16,
-                    );
-                }
-                Ok(0)
-            }
+            191 => Ok(self.native_door_leaf(a0, args)),
             // 193 (scroll) -> int: the scroll status 0..3; 194 (scroll, s): set it (1 and 3
             // visible, 0 and 2 hidden).
-            193 => {
-                if self.vm.as_ref().and_then(|vm| vm.scroll(a0)).is_none() {
-                    self.record_error();
-                    return Ok(0);
-                }
-                Ok(self
-                    .vm
-                    .as_ref()
-                    .map_or(0, |vm| vm.states.get(&a0).copied().unwrap_or(0)))
-            }
-            194 => {
-                let s = arg(args, 1);
-                if !(0..4).contains(&s) || self.vm.as_ref().and_then(|vm| vm.scroll(a0)).is_none() {
-                    self.record_error();
-                    return Ok(0);
-                }
-                if let Some(vm) = self.vm.as_mut()
-                    && (vm.states.contains_key(&a0) || vm.states.len() < MAX_QUEUE * 16)
-                {
-                    vm.states.insert(a0, s);
-                }
-                self.set_element_active(a0, s == 1 || s == 3);
-                Ok(0)
-            }
+            193 => Ok(self.native_scroll_status(a0)),
+            194 => Ok(self.native_set_scroll_status(a0, args)),
             // 195 (k) -> int / 196 (k, v): the twenty script-visible campaign values, k in 0..19.
-            195 | 196 => {
-                if !(0..CAMPAIGN_VALUES as i32).contains(&a0) {
-                    self.record_error();
-                    return Ok(0);
-                }
-                let Some(vm) = self.vm.as_mut() else {
-                    return Ok(0);
-                };
-                if id == 195 {
-                    Ok(vm.campaign_values[a0 as usize])
-                } else {
-                    vm.campaign_values[a0 as usize] = arg(args, 1);
-                    Ok(0)
-                }
-            }
+            195 | 196 => Ok(self.native_campaign_value(id, a0, args)),
             // 197 (npc, k) -> int / 198 (npc, k, v): ten custom values per NPC.
-            197 | 198 => {
-                let k = arg(args, 1);
-                if !(0..NPC_VALUES as i32).contains(&k) || self.entity_of(a0).is_none() {
-                    self.record_error();
-                    return Ok(if id == 197 { -1 } else { 0 });
-                }
-                let Some(vm) = self.vm.as_mut() else {
-                    return Ok(0);
-                };
-                if id == 197 {
-                    Ok(crate::vm::VmState::pair_table(&vm.npc_values, a0, k, 0))
-                } else {
-                    crate::vm::VmState::set_pair_table(
-                        &mut vm.npc_values,
-                        a0,
-                        k,
-                        arg(args, 2),
-                        MAX_QUEUE * 16,
-                    );
-                    Ok(0)
-                }
-            }
+            197 | 198 => Ok(self.native_npc_value(id, a0, args)),
             // 201 (id) -> handle: the player-character slot with campaign id `id`.
             201 => Ok(self.player_element(a0)),
             // 202 (k): show the popup page k now (VM-218: a modal loop in the original; the
             // engine queues it and the app dismisses it).
-            202 => {
-                if let Some(vm) = self.vm.as_mut() {
-                    let _ = vm.show_text(a0, false);
-                }
-                Ok(0)
-            }
+            202 => Ok(self.native_popup(a0)),
             // 204 (zone) -> int: the number of actors inside the zone; 205 (zone, i) -> handle:
             // the i-th of them. One unit per entity looked at and one per edge tested.
-            204 | 205 => {
-                let Some(vm) = self.vm.as_mut() else {
-                    return Ok(0);
-                };
-                let Some(poly) = polygon_in(&vm.program, a0) else {
-                    self.record_error();
-                    return Ok(if id == 204 { 0 } else { NONE_HANDLE });
-                };
-                if poly.len() < 3 {
-                    return Ok(if id == 204 { 0 } else { NONE_HANDLE });
-                }
-                let edges = poly.len() as u64;
-                let poly: Vec<(i32, i32)> = poly.to_vec();
-                let want = arg(args, 1);
-                let mut count = 0;
-                let mut found = None;
-                for (i, e) in self.entities.iter().enumerate() {
-                    let live = e.alive && e.active;
-                    let cost = if live { 1 + edges } else { 1 };
-                    let Some(vm) = self.vm.as_mut() else {
-                        return Ok(0);
-                    };
-                    if !charge_budget(&mut vm.budget, cost) {
-                        vm.counters.budget_aborts = vm.counters.budget_aborts.saturating_add(1);
-                        return Ok(0);
-                    }
-                    if live && point_in_polygon(e.x.round(), e.y.round(), &poly) {
-                        if count == want {
-                            found = Some(i);
-                        }
-                        count += 1;
-                    }
-                }
-                if id == 204 {
-                    return Ok(count);
-                }
-                Ok(match found {
-                    Some(i) => self
-                        .vm
-                        .as_ref()
-                        .map_or(NONE_HANDLE, |vm| vm.program.element_of_entity(i as u32)),
-                    None => {
-                        self.record_error();
-                        NONE_HANDLE
-                    }
-                })
-            }
+            204 | 205 => Ok(self.native_actors_in_zone(id, a0, args)),
             // 206 / 207 / 208 (a, b) -> int: full-width bitwise and / or / exclusive or.
             206 => Ok(a0 & arg(args, 1)),
             207 => Ok(a0 | arg(args, 1)),
@@ -1844,27 +1161,7 @@ impl World {
             // 211 () -> handle: the first player character flagged as the leader, or null.
             211 => Ok(self.player_element(0)),
             // 213 (a, b, t) -> handle: a new point at a + (b - a) * t.
-            213 => match (
-                self.location_position(a0),
-                self.location_position(arg(args, 1)),
-            ) {
-                (Some(a), Some(b)) => {
-                    let t = f64::from(f32::from_bits(arg(args, 2) as u32));
-                    let lerp = |p: i32, q: i32| {
-                        let v = f64::from(p) + (f64::from(q) - f64::from(p)) * t;
-                        if v.is_finite() {
-                            v.trunc().clamp(0.0, 32767.0) as i32
-                        } else {
-                            0
-                        }
-                    };
-                    Ok(location_of_point(lerp(a.0, b.0), lerp(a.1, b.1)))
-                }
-                _ => {
-                    self.record_error();
-                    Ok(NONE_HANDLE)
-                }
-            },
+            213 => Ok(self.native_interpolate_location(a0, args)),
             // 216 () -> int: the number of player characters; 217 (i) -> handle: the i-th.
             216 => Ok(self
                 .entities
@@ -1873,75 +1170,19 @@ impl World {
                 .count() as i32),
             217 => Ok(self.player_element(a0.rem_euclid(256))),
             // 229 (human): confiscate a non-player human's money into the campaign counter.
-            229 => {
-                if self.entity_of(a0).is_none() {
-                    self.record_error();
-                }
-                Ok(0)
-            }
+            229 => Ok(self.native_confiscate(a0)),
             // 230 (zone) -> bool: every player character is inside the zone; 246 (zone): every
             // living one.
-            230 | 246 => {
-                let Some(vm) = self.vm.as_ref() else {
-                    return Ok(0);
-                };
-                let Some(poly) = polygon_in(&vm.program, a0) else {
-                    return Ok(0);
-                };
-                let poly: Vec<(i32, i32)> = poly.to_vec();
-                Ok(i32::from(
-                    poly.len() >= 3
-                        && self
-                            .entities
-                            .iter()
-                            .filter(|e| e.kind == EntityKind::Player && (id == 230 || e.alive))
-                            .all(|e| point_in_polygon(e.x.round(), e.y.round(), &poly)),
-                ))
-            }
+            230 | 246 => Ok(self.native_players_in_zone(id, a0)),
             // 231 (zone) -> bool: no active hostile soldier in the zone can still fight.
-            231 => {
-                let Some(vm) = self.vm.as_ref() else {
-                    return Ok(0);
-                };
-                let Some(poly) = polygon_in(&vm.program, a0) else {
-                    self.record_error();
-                    return Ok(0);
-                };
-                let poly: Vec<(i32, i32)> = poly.to_vec();
-                Ok(i32::from(!self.entities.iter().any(|e| {
-                    e.kind == EntityKind::Guard
-                        && ActorStatus::of(e).can_act
-                        && point_in_polygon(e.x.round(), e.y.round(), &poly)
-                })))
-            }
+            231 => Ok(self.native_zone_cleared(a0)),
             // 235 (item) -> bool: the bonus item's picked-up flag; anything else is an error.
-            235 => {
-                if !matches!(
-                    self.vm.as_ref().and_then(|vm| vm.element(a0)),
-                    Some(Element::Item { .. })
-                ) {
-                    self.record_error();
-                    return Ok(0);
-                }
-                Ok(i32::from(
-                    self.vm
-                        .as_ref()
-                        .is_some_and(|vm| vm.taken_items.contains(&a0)),
-                ))
-            }
+            235 => Ok(self.native_item_taken(a0)),
             // 236 () -> int / 237 (v): the campaign money (counter 1).
             236 => Ok(self.vm.as_ref().map_or(-1, |vm| vm.money)),
-            237 => {
-                if let Some(vm) = self.vm.as_mut() {
-                    vm.money = a0;
-                }
-                Ok(0)
-            }
+            237 => Ok(self.native_set_money(a0)),
             // 240 (x) -> bool: the active flag of a known element.
-            240 => Ok(match self.entity_of(a0) {
-                Some(i) => i32::from(ActorStatus::of(&self.entities[i]).present),
-                None => i32::from(self.vm.as_ref().is_some_and(|vm| vm.element_active(a0))),
-            }),
+            240 => Ok(self.native_active(a0)),
             // 245 () -> int: the number of player characters that are not dead.
             245 => Ok(self
                 .entities
@@ -1950,75 +1191,997 @@ impl World {
                 .count() as i32),
             // 248 (pc) -> bool: the player character is selected (a null handle asks whether
             // anything is selected); a non-player character is an error answering 1.
-            248 => {
-                if a0 == NONE_HANDLE {
-                    return Ok(i32::from(self.selected.is_some()));
-                }
-                let Some(i) = self.entity_of(a0) else {
-                    self.record_error();
-                    return Ok(1);
-                };
-                Ok(i32::from(self.selected == Some(self.entities[i].id)))
-            }
+            248 => Ok(self.native_selected(a0)),
             // 249 () -> int: the number of selected player characters; 250 (i) -> handle: the
             // i-th of them.
             249 => Ok(i32::from(self.selected.is_some())),
-            250 => {
-                let selected = self.selected;
-                let Some(sel) = selected else {
-                    self.record_error();
-                    return Ok(NONE_HANDLE);
-                };
-                if a0 != 0 {
-                    self.record_error();
-                    return Ok(NONE_HANDLE);
-                }
-                let idx = self.entities.iter().position(|e| e.id == sel);
-                Ok(match idx {
-                    Some(i) => self
-                        .vm
-                        .as_ref()
-                        .map_or(NONE_HANDLE, |vm| vm.program.element_of_entity(i as u32)),
-                    None => NONE_HANDLE,
-                })
-            }
+            250 => Ok(self.native_selected_player(a0)),
             // 252 (pc): make the player character crouch.
-            252 => {
-                match self.entity_of(a0) {
-                    Some(i) if self.entities[i].kind == EntityKind::Player => {
-                        self.vm_touch_entity(i);
-                        self.entities[i].posture = crate::world::Posture::Crouched;
-                    }
-                    _ => self.record_error(),
-                }
-                Ok(0)
-            }
+            252 => Ok(self.native_crouch(a0)),
             // 257 (pc, b): select or deselect a player character (a null handle acts on all).
-            257 => {
-                let b = arg(args, 1);
-                if a0 == NONE_HANDLE {
-                    if b == 0 {
-                        self.selected = None;
-                    }
-                    return Ok(0);
-                }
-                match self.entity_of(a0) {
-                    Some(i) if self.entities[i].kind == EntityKind::Player => {
-                        let eid = self.entities[i].id;
-                        if b != 0 {
-                            self.selected = Some(eid);
-                        } else if self.selected == Some(eid) {
-                            self.selected = None;
-                        }
-                    }
-                    _ => self.record_error(),
-                }
-                Ok(0)
-            }
+            257 => Ok(self.native_select_player(a0, args)),
             // Every remaining id is a stub of [`Kind::Stub`]: its call was counted and recorded
             // by `native_dispatch`; it answers the row's neutral value.
             other => Ok(stub_value(other)),
         }
+    }
+
+    fn native_grow_mission_variable(&mut self, a0: i32, args: &[i32]) -> Result<i32, Fault> {
+        let (k, v) = (a0, arg(args, 1));
+        if k < 0 {
+            return Err(Fault::UncheckedAccess(0));
+        }
+        let Some(vm) = self.vm.as_mut() else {
+            return Ok(0);
+        };
+        let k = k as usize;
+        if k >= vm.mission_vars.len() {
+            let size = k
+                .saturating_add(MISSION_VARIABLE_GROWTH)
+                .min(MAX_MISSION_VARIABLES);
+            vm.mission_vars.resize(size, 0);
+        }
+        if let Some(slot) = vm.mission_vars.get_mut(k) {
+            *slot = v;
+        }
+        Ok(0)
+    }
+
+    fn native_set_mission_variable(&mut self, a0: i32, args: &[i32]) -> i32 {
+        let (k, v) = (a0, arg(args, 1));
+        if let Some(vm) = self.vm.as_mut() {
+            match usize::try_from(k)
+                .ok()
+                .and_then(|k| vm.mission_vars.get_mut(k))
+            {
+                Some(slot) => *slot = v,
+                None => {
+                    vm.counters.native_errors = vm.counters.native_errors.saturating_add(1);
+                }
+            }
+        }
+        0
+    }
+
+    fn native_element_handle(&mut self, a0: i32) -> i32 {
+        if a0 == NONE_HANDLE {
+            return NONE_HANDLE;
+        }
+        let n = self.vm.as_ref().map_or(0, |vm| vm.program.elements.len());
+        if a0 < NONE_HANDLE {
+            self.record_read_fault(3);
+            return NONE_HANDLE;
+        }
+        let n16 = (n % 65536) as i32;
+        if a0 < n16 {
+            return a0;
+        }
+        self.record_error();
+        NONE_HANDLE
+    }
+
+    fn native_element_index(&mut self, a0: i32) -> i32 {
+        let n = self.vm.as_ref().map_or(0, |vm| vm.program.elements.len()) as i32;
+        if a0 >= 0 && a0 < n { a0 } else { -1 }
+    }
+
+    fn native_map_handle(a0: i32) -> i32 {
+        if a0 >= 0 { a0 } else { NONE_HANDLE }
+    }
+
+    fn native_location_handle(&mut self, a0: i32) -> i32 {
+        if a0 == NONE_HANDLE {
+            return NONE_HANDLE;
+        }
+        let k = ((a0 as u32) % 65536) as usize;
+        let len = self.vm.as_ref().map_or(0, |vm| vm.program.locations.len());
+        if k < len {
+            k as i32
+        } else {
+            self.record_read_fault(6);
+            NONE_HANDLE
+        }
+    }
+
+    fn native_path_handle(&mut self, a0: i32) -> i32 {
+        if a0 == NONE_HANDLE {
+            return NONE_HANDLE;
+        }
+        let k = ((a0 as u32) % 65536) as usize;
+        let len = self.vm.as_ref().map_or(0, |vm| vm.paths.len());
+        if k < len {
+            k as i32
+        } else {
+            self.record_read_fault(9);
+            NONE_HANDLE
+        }
+    }
+
+    fn native_map_index(a0: i32) -> i32 {
+        if a0 >= 0 { a0 } else { -1 }
+    }
+
+    fn native_path_index(&mut self, a0: i32) -> i32 {
+        let len = self.vm.as_ref().map_or(0, |vm| vm.paths.len()) as i32;
+        if a0 >= 0 && a0 < len { a0 } else { 65535 }
+    }
+
+    fn native_dialog(&mut self, a0: i32) -> i32 {
+        if let Some(vm) = self.vm.as_mut() {
+            let _ = vm.show_text(a0, true);
+        }
+        0
+    }
+
+    fn native_scroll_camera(&mut self, a0: i32) -> i32 {
+        if let Some((x, y)) = self.location_position(a0) {
+            self.vm_camera_to(x, y);
+            1
+        } else {
+            self.record_error();
+            0
+        }
+    }
+
+    fn native_jump_camera(&mut self, a0: i32) -> i32 {
+        if let Some((x, y)) = self.location_position(a0) {
+            self.vm_camera_to(x, y);
+            1
+        } else {
+            self.record_error();
+            0
+        }
+    }
+
+    #[allow(clippy::float_cmp)]
+    fn native_zoom(&mut self, a0: i32) -> i32 {
+        let f = f32::from_bits(a0 as u32);
+        if f == 0.5 || f == 1.0 || f == 2.0 {
+            1
+        } else {
+            self.record_error();
+            0
+        }
+    }
+
+    fn native_force_victory(&mut self) -> i32 {
+        if let Some(vm) = self.vm.as_mut() {
+            vm.force_victory = true;
+        }
+        0
+    }
+
+    fn native_add_objective(&mut self, a0: i32, args: &[i32]) -> i32 {
+        let (k, main) = (a0, arg(args, 1));
+        if let Some(vm) = self.vm.as_mut() {
+            if let Some(o) = vm.objectives.iter_mut().find(|o| o.index == k) {
+                o.primary = main != 0;
+            } else if vm.objectives.len() < MAX_QUEUE {
+                vm.objectives.push(Objective {
+                    index: k,
+                    primary: main != 0,
+                    done: false,
+                });
+            }
+        }
+        0
+    }
+
+    fn native_complete_objective(&mut self, a0: i32) -> i32 {
+        if let Some(vm) = self.vm.as_mut() {
+            match vm.objectives.iter_mut().find(|o| o.index == a0) {
+                Some(o) => o.done = true,
+                None => {
+                    vm.counters.objective_done_before_added =
+                        vm.counters.objective_done_before_added.saturating_add(1);
+                }
+            }
+        }
+        0
+    }
+
+    fn native_debriefing(&mut self, a0: i32) -> i32 {
+        if let Some(vm) = self.vm.as_mut() {
+            vm.debriefing = Some(a0);
+        }
+        0
+    }
+
+    fn native_begin_recording(&mut self) -> i32 {
+        let Some(vm) = self.vm.as_mut() else {
+            return 0;
+        };
+        if vm.collecting.is_some() {
+            self.record_error();
+            return 0;
+        }
+        let provenance = vm.provenance();
+        vm.collecting = Some(Recording {
+            elements: Vec::new(),
+            level: 1,
+            last_level: 0,
+            entered: BTreeSet::new(),
+            provenance,
+        });
+        1
+    }
+
+    fn native_end_recording(&mut self) -> i32 {
+        let Some(vm) = self.vm.as_mut() else {
+            return 0;
+        };
+        let Some(rec) = vm.collecting.take() else {
+            self.record_error();
+            return 0;
+        };
+        if rec.elements.is_empty() {
+            self.record_error();
+            return 1;
+        }
+        let total: usize = vm.sequences.iter().map(|s| s.elements.len()).sum();
+        if vm.sequences.len() < MAX_QUEUE
+            && total.saturating_add(rec.elements.len()) <= crate::vm::MAX_SEQUENCE_ELEMENTS
+        {
+            vm.sequences.push(crate::vm::Sequence {
+                elements: rec.elements,
+                next: 0,
+                wait: crate::vm::SeqWait::None,
+                tokens: Vec::new(),
+                provenance: rec.provenance,
+            });
+        }
+        1
+    }
+
+    fn native_barrier(&mut self) -> Result<i32, Fault> {
+        let Some(vm) = self.vm.as_mut() else {
+            return Ok(0);
+        };
+        let Some(rec) = vm.collecting.as_mut() else {
+            self.record_error();
+            return Ok(0);
+        };
+        if rec.last_level != 0 && rec.last_level == rec.level {
+            let Some(next) = rec.level.checked_add(1) else {
+                return Err(Fault::BarrierOverflow);
+            };
+            rec.level = next;
+            if rec.elements.len() < MAX_QUEUE {
+                rec.elements.push(SeqElement::Barrier);
+            }
+        }
+        Ok(i32::from(rec.level))
+    }
+
+    fn native_is_player(&mut self, a0: i32) -> i32 {
+        i32::from(
+            self.entity_of(a0)
+                .is_some_and(|i| self.entities[i].kind == EntityKind::Player),
+        )
+    }
+
+    fn native_is_npc(&mut self, a0: i32) -> i32 {
+        i32::from(
+            self.entity_of(a0)
+                .is_some_and(|i| self.entities[i].kind != EntityKind::Player),
+        )
+    }
+
+    fn native_is_guard(&mut self, a0: i32) -> i32 {
+        i32::from(
+            self.entity_of(a0)
+                .is_some_and(|i| self.entities[i].kind == EntityKind::Guard),
+        )
+    }
+
+    fn native_is_dead(&mut self, a0: i32) -> i32 {
+        if let Some(i) = self.entity_of(a0) {
+            i32::from(ActorStatus::of(&self.entities[i]).dead)
+        } else {
+            self.record_error();
+            0
+        }
+    }
+
+    fn native_is_unconscious(&mut self, a0: i32) -> i32 {
+        match self.entity_of(a0) {
+            Some(i) => {
+                let s = ActorStatus::of(&self.entities[i]);
+                if s.knocked_out
+                    && let Some(vm) = self.vm.as_mut()
+                {
+                    vm.assume(Assumption::KnockOut);
+                }
+                i32::from(s.knocked_out)
+            }
+            None => 0,
+        }
+    }
+
+    fn native_is_out_of_action(&mut self, a0: i32) -> i32 {
+        match self.entity_of(a0) {
+            Some(i) => {
+                let s = ActorStatus::of(&self.entities[i]);
+                if s.out_of_action
+                    && let Some(vm) = self.vm.as_mut()
+                {
+                    vm.counters.out_of_action_true =
+                        vm.counters.out_of_action_true.saturating_add(1);
+                    if s.knocked_out {
+                        vm.assume(Assumption::KnockOut);
+                    }
+                }
+                i32::from(s.out_of_action)
+            }
+            None => 0,
+        }
+    }
+
+    fn native_facing(&mut self, a0: i32) -> i32 {
+        match self.entity_of(a0) {
+            Some(i) => self.entities[i].facing256.rem_euclid(256) / FACING_UNITS_PER_DIRECTION,
+            None => 0,
+        }
+    }
+
+    fn native_set_facing(&mut self, id: u32, a0: i32, args: &[i32]) -> i32 {
+        if let Some(entity) = self.entity_of(a0) {
+            self.vm_touch_entity(entity);
+            let dir = if id == 133 {
+                let to = self.location_position(arg(args, 1));
+                self.vm_teleport(entity as u32, to);
+                arg(args, 2)
+            } else {
+                arg(args, 1)
+            };
+            self.entities[entity].facing256 = dir.rem_euclid(16) * FACING_UNITS_PER_DIRECTION;
+            1
+        } else {
+            self.record_error();
+            0
+        }
+    }
+
+    fn native_element_location(&mut self, a0: i32) -> i32 {
+        match self.element_position(a0) {
+            Some((x, y)) => location_of_point(x, y),
+            None => NONE_HANDLE,
+        }
+    }
+
+    fn native_teleport(&mut self, a0: i32, args: &[i32]) -> i32 {
+        if let Some(entity) = self.entity_of(a0) {
+            let to = self.location_position(arg(args, 1));
+            self.vm_teleport(entity as u32, to);
+            1
+        } else {
+            self.record_error();
+            0
+        }
+    }
+
+    fn native_is_in_zone(&mut self, a0: i32, args: &[i32]) -> i32 {
+        let Some((x, y)) = self.element_position(a0) else {
+            return 0;
+        };
+        let zone = arg(args, 1);
+        let Some(vm) = self.vm.as_mut() else {
+            return 0;
+        };
+        let Some(poly) = polygon_in(&vm.program, zone) else {
+            return 0;
+        };
+        if !charge_budget(&mut vm.budget, poly.len() as u64) {
+            vm.counters.budget_aborts = vm.counters.budget_aborts.saturating_add(1);
+            return 0;
+        }
+        i32::from(poly.len() >= 3 && point_in_polygon(x, y, poly))
+    }
+
+    fn native_action(&mut self, a0: i32) -> i32 {
+        if let Some(i) = self.entity_of(a0) {
+            self.entities[i].action as i32
+        } else {
+            self.record_error();
+            0
+        }
+    }
+
+    fn native_stop(&mut self, a0: i32) -> i32 {
+        if let Some(i) = self.entity_of(a0) {
+            self.vm_touch_entity(i);
+            let e = &mut self.entities[i];
+            e.target = None;
+            e.path.clear();
+            e.clear_pickup();
+            1
+        } else {
+            self.record_error();
+            0
+        }
+    }
+
+    fn native_send_message(&mut self, a0: i32, args: &[i32]) -> i32 {
+        let m = Message {
+            target: a0,
+            id: arg(args, 1),
+            arg: arg(args, 2),
+            arg2: arg(args, 3),
+        };
+        if m.target != NONE_HANDLE && self.entity_of(m.target).is_none() {
+            self.record_error();
+            return 0;
+        }
+        self.vm_deliver(m);
+        0
+    }
+
+    fn native_select_all(&mut self, a0: i32) -> i32 {
+        match a0 {
+            0 => self.selected = None,
+            31 => {}
+            _ => self.record_error(),
+        }
+        1
+    }
+
+    fn native_set_active(&mut self, id: u32, a0: i32) -> i32 {
+        self.set_element_active(a0, id == 114);
+        1
+    }
+
+    fn native_player_action(&mut self, id: u32, a0: i32, args: &[i32]) -> i32 {
+        let k = arg(args, 1);
+        if !(0..6).contains(&k) {
+            self.record_error();
+            return 0;
+        }
+        let Some(vm) = self.vm.as_mut() else {
+            return 0;
+        };
+        if id == 115 {
+            let b = arg(args, 2);
+            crate::vm::VmState::set_pair_table(&mut vm.pc_actions, a0, k, b, MAX_QUEUE);
+            1
+        } else {
+            crate::vm::VmState::pair_table(&vm.pc_actions, a0, k, 1)
+        }
+    }
+
+    fn native_set_property(&mut self, a0: i32, args: &[i32]) -> i32 {
+        if let Some(vm) = self.vm.as_mut() {
+            vm.set_attribute(a0, arg(args, 1), arg(args, 2));
+        }
+        1
+    }
+
+    fn native_can_act(&mut self, a0: i32) -> i32 {
+        match self.entity_of(a0) {
+            Some(i) => {
+                let s = ActorStatus::of(&self.entities[i]);
+                if !s.can_act
+                    && s.knocked_out
+                    && let Some(vm) = self.vm.as_mut()
+                {
+                    vm.assume(Assumption::KnockOut);
+                }
+                i32::from(s.can_act)
+            }
+            None => 1,
+        }
+    }
+
+    fn native_obsolete(&mut self) -> i32 {
+        self.record_error();
+        0
+    }
+
+    fn native_validate_actor(&mut self, a0: i32) -> i32 {
+        if self.entity_of(a0).is_none() {
+            self.record_error();
+        }
+        0
+    }
+
+    fn native_assign_path(&mut self, a0: i32, args: &[i32]) -> i32 {
+        let path = arg(args, 1);
+        let program = self.vm.as_ref().and_then(|vm| {
+            usize::try_from(path)
+                .ok()
+                .and_then(|p| vm.paths.get(p).copied())
+        });
+        if let Some(i) = self.entity_of(a0) {
+            self.vm_touch_entity(i);
+            let e = &mut self.entities[i];
+            e.program = program.flatten();
+            e.pc = 0;
+            e.target = None;
+            e.path.clear();
+            e.wait_ticks = 0;
+        } else {
+            self.record_error();
+        }
+        0
+    }
+
+    fn native_lock_ai(&mut self, id: u32, a0: i32) -> i32 {
+        match self.entity_of(a0) {
+            Some(i) if self.entities[i].kind != EntityKind::Player => {
+                self.vm_touch_entity(i);
+                let e = &mut self.entities[i];
+                e.ai_locked = id == 134;
+                if e.ai_locked {
+                    e.target = None;
+                    e.path.clear();
+                }
+            }
+            _ => self.record_error(),
+        }
+        0
+    }
+
+    fn native_noise(&mut self, a0: i32) -> i32 {
+        if self.location_position(a0).is_none() {
+            self.record_error();
+        }
+        0
+    }
+
+    fn native_gait(&mut self, a0: i32, args: &[i32]) -> i32 {
+        if let Some(i) = self.entity_of(a0) {
+            self.vm_touch_entity(i);
+            self.entities[i].npc_gait = if arg(args, 1) == 0 {
+                Gait::Walk
+            } else {
+                Gait::Run
+            };
+        } else {
+            self.record_error();
+        }
+        0
+    }
+
+    fn native_patch_active(&mut self, a0: i32) -> i32 {
+        if a0 == NONE_HANDLE {
+            self.record_read_fault(144);
+            return 0;
+        }
+        i32::from(self.vm.as_ref().is_some_and(|vm| vm.patches.contains(&a0)))
+    }
+
+    fn native_set_patch_active(&mut self, id: u32, a0: i32) -> i32 {
+        if let Some(vm) = self.vm.as_mut() {
+            if id == 145 {
+                if vm.patches.len() < MAX_QUEUE {
+                    vm.patches.insert(a0);
+                }
+            } else {
+                vm.patches.remove(&a0);
+            }
+        }
+        1
+    }
+
+    fn native_zone_callback(&mut self, id: u32, a0: i32, args: &[i32]) -> i32 {
+        let zone = arg(args, 1);
+        let Some(entity) = self.entity_of(a0) else {
+            self.record_error();
+            return 0;
+        };
+        let member = self.vm.as_ref().and_then(|vm| {
+            let class = vm
+                .program
+                .classes
+                .iter()
+                .position(|c| c.zone.is_some_and(|z| z as i32 == zone))?;
+            vm.zone_presence
+                .contains(&(class as u32, entity as u32))
+                .then_some(class as u32)
+        });
+        let Some(class) = member else {
+            self.record_error();
+            return 0;
+        };
+        let name = if id == 154 {
+            crate::vm::callbacks::ENTER_ZONE
+        } else {
+            crate::vm::callbacks::EXIT_ZONE
+        };
+        self.vm_with_current_actor(a0, |w| {
+            w.vm_callback(class, name, &[a0]);
+        });
+        1
+    }
+
+    fn native_first_actor_in_zone(&mut self, a0: i32) -> i32 {
+        let Some(vm) = self.vm.as_ref() else {
+            return NONE_HANDLE;
+        };
+        let Some(poly) = polygon_in(&vm.program, a0) else {
+            self.record_error();
+            return NONE_HANDLE;
+        };
+        let poly: Vec<(i32, i32)> = poly.to_vec();
+        let found = self
+            .entities
+            .iter()
+            .position(|e| e.alive && e.active && point_in_polygon(e.x.round(), e.y.round(), &poly));
+        match found {
+            Some(i) => self
+                .vm
+                .as_ref()
+                .map_or(NONE_HANDLE, |vm| vm.program.element_of_entity(i as u32)),
+            None => NONE_HANDLE,
+        }
+    }
+
+    fn native_distance(&mut self, a0: i32, args: &[i32]) -> i32 {
+        if let (Some(a), Some(b)) = (
+            self.location_position(a0),
+            self.location_position(arg(args, 1)),
+        ) {
+            let dx = u128::from((i64::from(a.0) - i64::from(b.0)).unsigned_abs());
+            let dy = u128::from((i64::from(a.1) - i64::from(b.1)).unsigned_abs());
+            let d = (dx * dx + dy * dy).isqrt();
+            i32::try_from(d).unwrap_or(i32::MAX)
+        } else {
+            self.record_error();
+            0
+        }
+    }
+
+    fn native_random(&mut self, a0: i32) -> Result<i32, Fault> {
+        if a0 == 0 {
+            return Err(Fault::Trap);
+        }
+        let n = a0.unsigned_abs();
+        Ok(self.vm.as_mut().map_or(0, |vm| vm.rng.below(n) as i32))
+    }
+
+    fn native_place_player(&mut self, a0: i32, args: &[i32]) -> i32 {
+        let to = self.location_position(arg(args, 1));
+        if let Some(entity) = self.entity_of(self.player_element(a0)).map(|i| i as u32) {
+            self.vm_teleport(entity, to);
+        }
+        0
+    }
+
+    fn native_banner(&mut self, id: u32, a0: i32) -> i32 {
+        let active = self.vm.as_ref().is_some_and(|vm| vm.element_active(a0));
+        if (id == 178) != active {
+            self.record_error();
+            return 0;
+        }
+        self.set_element_active(a0, id == 179);
+        if let Some(vm) = self.vm.as_mut() {
+            vm.banner_count = if id == 178 {
+                vm.banner_count.saturating_add(1)
+            } else {
+                vm.banner_count.saturating_sub(1)
+            };
+        }
+        0
+    }
+
+    fn native_door_byte(&mut self, id: u32, a0: i32) -> i32 {
+        if a0 == NONE_HANDLE {
+            self.record_read_fault(id);
+            return 0;
+        }
+        self.vm.as_ref().map_or(0, |vm| {
+            crate::vm::VmState::pair_table(&vm.door_bytes, a0, id as i32 - 182, 0)
+        })
+    }
+
+    fn native_set_door_byte(&mut self, id: u32, a0: i32, args: &[i32]) -> Result<i32, Fault> {
+        if a0 == NONE_HANDLE {
+            return Err(Fault::UncheckedAccess(id));
+        }
+        let b = arg(args, 1);
+        if let Some(vm) = self.vm.as_mut() {
+            crate::vm::VmState::set_pair_table(
+                &mut vm.door_bytes,
+                a0,
+                id as i32 - 186,
+                b,
+                MAX_QUEUE * 16,
+            );
+        }
+        Ok(0)
+    }
+
+    fn native_door_leaf(&mut self, a0: i32, args: &[i32]) -> i32 {
+        let door = arg(args, 1);
+        if door == NONE_HANDLE {
+            self.record_error();
+            return 0;
+        }
+        if let Some(vm) = self.vm.as_mut() {
+            crate::vm::VmState::set_pair_table(&mut vm.door_bytes, door, 4, a0, MAX_QUEUE * 16);
+        }
+        0
+    }
+
+    fn native_scroll_status(&mut self, a0: i32) -> i32 {
+        if self.vm.as_ref().and_then(|vm| vm.scroll(a0)).is_none() {
+            self.record_error();
+            return 0;
+        }
+        self.vm
+            .as_ref()
+            .map_or(0, |vm| vm.states.get(&a0).copied().unwrap_or(0))
+    }
+
+    fn native_set_scroll_status(&mut self, a0: i32, args: &[i32]) -> i32 {
+        let s = arg(args, 1);
+        if !(0..4).contains(&s) || self.vm.as_ref().and_then(|vm| vm.scroll(a0)).is_none() {
+            self.record_error();
+            return 0;
+        }
+        if let Some(vm) = self.vm.as_mut()
+            && (vm.states.contains_key(&a0) || vm.states.len() < MAX_QUEUE * 16)
+        {
+            vm.states.insert(a0, s);
+        }
+        self.set_element_active(a0, s == 1 || s == 3);
+        0
+    }
+
+    fn native_campaign_value(&mut self, id: u32, a0: i32, args: &[i32]) -> i32 {
+        if !(0..CAMPAIGN_VALUES as i32).contains(&a0) {
+            self.record_error();
+            return 0;
+        }
+        let Some(vm) = self.vm.as_mut() else {
+            return 0;
+        };
+        if id == 195 {
+            vm.campaign_values[a0 as usize]
+        } else {
+            vm.campaign_values[a0 as usize] = arg(args, 1);
+            0
+        }
+    }
+
+    fn native_npc_value(&mut self, id: u32, a0: i32, args: &[i32]) -> i32 {
+        let k = arg(args, 1);
+        if !(0..NPC_VALUES as i32).contains(&k) || self.entity_of(a0).is_none() {
+            self.record_error();
+            return if id == 197 { -1 } else { 0 };
+        }
+        let Some(vm) = self.vm.as_mut() else {
+            return 0;
+        };
+        if id == 197 {
+            crate::vm::VmState::pair_table(&vm.npc_values, a0, k, 0)
+        } else {
+            crate::vm::VmState::set_pair_table(
+                &mut vm.npc_values,
+                a0,
+                k,
+                arg(args, 2),
+                MAX_QUEUE * 16,
+            );
+            0
+        }
+    }
+
+    fn native_popup(&mut self, a0: i32) -> i32 {
+        if let Some(vm) = self.vm.as_mut() {
+            let _ = vm.show_text(a0, false);
+        }
+        0
+    }
+
+    fn native_actors_in_zone(&mut self, id: u32, a0: i32, args: &[i32]) -> i32 {
+        let Some(vm) = self.vm.as_mut() else {
+            return 0;
+        };
+        let Some(poly) = polygon_in(&vm.program, a0) else {
+            self.record_error();
+            return if id == 204 { 0 } else { NONE_HANDLE };
+        };
+        if poly.len() < 3 {
+            return if id == 204 { 0 } else { NONE_HANDLE };
+        }
+        let edges = poly.len() as u64;
+        let poly: Vec<(i32, i32)> = poly.to_vec();
+        let want = arg(args, 1);
+        let Some((count, found)) = self.native_scan_zone(&poly, edges, want) else {
+            return 0;
+        };
+        if id == 204 {
+            return count;
+        }
+        if let Some(i) = found {
+            self.vm
+                .as_ref()
+                .map_or(NONE_HANDLE, |vm| vm.program.element_of_entity(i as u32))
+        } else {
+            self.record_error();
+            NONE_HANDLE
+        }
+    }
+
+    fn native_scan_zone(
+        &mut self,
+        poly: &[(i32, i32)],
+        edges: u64,
+        want: i32,
+    ) -> Option<(i32, Option<usize>)> {
+        let mut count = 0;
+        let mut found = None;
+        for (i, e) in self.entities.iter().enumerate() {
+            let live = e.alive && e.active;
+            let cost = if live { 1 + edges } else { 1 };
+            let vm = self.vm.as_mut()?;
+            if !charge_budget(&mut vm.budget, cost) {
+                vm.counters.budget_aborts = vm.counters.budget_aborts.saturating_add(1);
+                return None;
+            }
+            if live && point_in_polygon(e.x.round(), e.y.round(), poly) {
+                if count == want {
+                    found = Some(i);
+                }
+                count += 1;
+            }
+        }
+        Some((count, found))
+    }
+
+    fn native_interpolate_location(&mut self, a0: i32, args: &[i32]) -> i32 {
+        if let (Some(a), Some(b)) = (
+            self.location_position(a0),
+            self.location_position(arg(args, 1)),
+        ) {
+            let t = f64::from(f32::from_bits(arg(args, 2) as u32));
+            let lerp = |p: i32, q: i32| {
+                let v = f64::from(p) + (f64::from(q) - f64::from(p)) * t;
+                if v.is_finite() {
+                    v.trunc().clamp(0.0, 32767.0) as i32
+                } else {
+                    0
+                }
+            };
+            location_of_point(lerp(a.0, b.0), lerp(a.1, b.1))
+        } else {
+            self.record_error();
+            NONE_HANDLE
+        }
+    }
+
+    fn native_confiscate(&mut self, a0: i32) -> i32 {
+        if self.entity_of(a0).is_none() {
+            self.record_error();
+        }
+        0
+    }
+
+    fn native_players_in_zone(&mut self, id: u32, a0: i32) -> i32 {
+        let Some(vm) = self.vm.as_ref() else {
+            return 0;
+        };
+        let Some(poly) = polygon_in(&vm.program, a0) else {
+            return 0;
+        };
+        let poly: Vec<(i32, i32)> = poly.to_vec();
+        i32::from(
+            poly.len() >= 3
+                && self
+                    .entities
+                    .iter()
+                    .filter(|e| e.kind == EntityKind::Player && (id == 230 || e.alive))
+                    .all(|e| point_in_polygon(e.x.round(), e.y.round(), &poly)),
+        )
+    }
+
+    fn native_zone_cleared(&mut self, a0: i32) -> i32 {
+        let Some(vm) = self.vm.as_ref() else {
+            return 0;
+        };
+        let Some(poly) = polygon_in(&vm.program, a0) else {
+            self.record_error();
+            return 0;
+        };
+        let poly: Vec<(i32, i32)> = poly.to_vec();
+        i32::from(!self.entities.iter().any(|e| {
+            e.kind == EntityKind::Guard
+                && ActorStatus::of(e).can_act
+                && point_in_polygon(e.x.round(), e.y.round(), &poly)
+        }))
+    }
+
+    fn native_item_taken(&mut self, a0: i32) -> i32 {
+        if !matches!(
+            self.vm.as_ref().and_then(|vm| vm.element(a0)),
+            Some(Element::Item { .. })
+        ) {
+            self.record_error();
+            return 0;
+        }
+        i32::from(
+            self.vm
+                .as_ref()
+                .is_some_and(|vm| vm.taken_items.contains(&a0)),
+        )
+    }
+
+    fn native_set_money(&mut self, a0: i32) -> i32 {
+        if let Some(vm) = self.vm.as_mut() {
+            vm.money = a0;
+        }
+        0
+    }
+
+    fn native_active(&mut self, a0: i32) -> i32 {
+        match self.entity_of(a0) {
+            Some(i) => i32::from(ActorStatus::of(&self.entities[i]).present),
+            None => i32::from(self.vm.as_ref().is_some_and(|vm| vm.element_active(a0))),
+        }
+    }
+
+    fn native_selected(&mut self, a0: i32) -> i32 {
+        if a0 == NONE_HANDLE {
+            return i32::from(self.selected.is_some());
+        }
+        let Some(i) = self.entity_of(a0) else {
+            self.record_error();
+            return 1;
+        };
+        i32::from(self.selected == Some(self.entities[i].id))
+    }
+
+    fn native_selected_player(&mut self, a0: i32) -> i32 {
+        let selected = self.selected;
+        let Some(sel) = selected else {
+            self.record_error();
+            return NONE_HANDLE;
+        };
+        if a0 != 0 {
+            self.record_error();
+            return NONE_HANDLE;
+        }
+        let idx = self.entities.iter().position(|e| e.id == sel);
+        match idx {
+            Some(i) => self
+                .vm
+                .as_ref()
+                .map_or(NONE_HANDLE, |vm| vm.program.element_of_entity(i as u32)),
+            None => NONE_HANDLE,
+        }
+    }
+
+    fn native_crouch(&mut self, a0: i32) -> i32 {
+        match self.entity_of(a0) {
+            Some(i) if self.entities[i].kind == EntityKind::Player => {
+                self.vm_touch_entity(i);
+                self.entities[i].posture = crate::world::Posture::Crouched;
+            }
+            _ => self.record_error(),
+        }
+        0
+    }
+
+    fn native_select_player(&mut self, a0: i32, args: &[i32]) -> i32 {
+        let b = arg(args, 1);
+        if a0 == NONE_HANDLE {
+            if b == 0 {
+                self.selected = None;
+            }
+            return 0;
+        }
+        match self.entity_of(a0) {
+            Some(i) if self.entities[i].kind == EntityKind::Player => {
+                let eid = self.entities[i].id;
+                if b != 0 {
+                    self.selected = Some(eid);
+                } else if self.selected == Some(eid) {
+                    self.selected = None;
+                }
+            }
+            _ => self.record_error(),
+        }
+        0
     }
 
     /// Count an error of the failure class E (reported, the row's failure value returned, the

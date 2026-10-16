@@ -42,22 +42,10 @@ public class DecompileList extends GhidraScript {
             if (s.startsWith("0x")) s = s.substring(2);
             Address a = currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(Long.parseLong(s, 16));
             Function f = fm.getFunctionContaining(a);
-            if (f == null) { println("no function at " + s); continue; }
-            DecompileResults res = di.decompileFunction(f, 120, monitor);
-            try (PrintWriter w = new PrintWriter(new FileWriter(new File(dir, f.getEntryPoint() + ".c")))) {
-                w.println("// " + f.getName() + " at " + f.getEntryPoint() + " size " + f.getBody().getNumAddresses());
-                Set<String> callers = new TreeSet<>();
-                for (Function c : f.getCallingFunctions(monitor)) callers.add(c.getEntryPoint().toString());
-                Set<String> callees = new TreeSet<>();
-                for (Function c : f.getCalledFunctions(monitor)) callees.add(c.getEntryPoint().toString());
-                w.println("// callers: " + String.join(",", callers));
-                w.println("// callees: " + String.join(",", callees));
-                if (res.decompileCompleted() && res.getDecompiledFunction() != null) {
-                    w.println(res.getDecompiledFunction().getC());
-                } else {
-                    failed++;
-                    w.println("// decompilation failed: " + res.getErrorMessage());
-                }
+            if (f == null) {
+                println("no function at " + s);
+            } else {
+                failed += writeFunction(di, f, dir);
             }
         }
         } finally {
@@ -66,5 +54,26 @@ public class DecompileList extends GhidraScript {
         if (monitor.isCancelled()) throw new IOException("cancelled: the output is incomplete");
         println("decompilation failures: " + failed);
         println("decompilation written to " + dir);
+    }
+
+    private int writeFunction(DecompInterface di, Function f, File dir) throws Exception {
+        int failed = 0;
+        DecompileResults res = di.decompileFunction(f, 120, monitor);
+        try (PrintWriter w = new PrintWriter(new FileWriter(new File(dir, f.getEntryPoint() + ".c")))) {
+            w.println("// " + f.getName() + " at " + f.getEntryPoint() + " size " + f.getBody().getNumAddresses());
+            Set<String> callers = new TreeSet<>();
+            for (Function c : f.getCallingFunctions(monitor)) callers.add(c.getEntryPoint().toString());
+            Set<String> callees = new TreeSet<>();
+            for (Function c : f.getCalledFunctions(monitor)) callees.add(c.getEntryPoint().toString());
+            w.println("// callers: " + String.join(",", callers));
+            w.println("// callees: " + String.join(",", callees));
+            if (res.decompileCompleted() && res.getDecompiledFunction() != null) {
+                w.println(res.getDecompiledFunction().getC());
+            } else {
+                failed++;
+                w.println("// decompilation failed: " + res.getErrorMessage());
+            }
+        }
+        return failed;
     }
 }

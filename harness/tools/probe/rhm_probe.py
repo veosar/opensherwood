@@ -2,6 +2,7 @@
 
 Usage: python rhm_probe.py <dir-or-file> [--dump TAG] [--verbose]
 """
+
 import collections
 import glob
 import os
@@ -52,7 +53,7 @@ class R:
 
 def header(r):
     """Common element header: x, y, dir, flags, P, Q, R."""
-    return dict(x=r.u16(), y=r.u16(), dir=r.u32(), flags=r.u32(), P=r.i16(), Q=r.u16(), R=r.u16())
+    return {"x": r.u16(), "y": r.u16(), "dir": r.u32(), "flags": r.u32(), "P": r.i16(), "Q": r.u16(), "R": r.u16()}
 
 
 def opt_name(r):
@@ -107,7 +108,17 @@ def polygon(r):
 
 
 def rec_boom(r):
-    d = dict(x=r.u16(), y=r.u16(), i16a=r.i16(), u16b=r.u16(), u32c=r.u32(), u16d=r.u16(), P=r.i16(), Q=r.u16(), R=r.u16())
+    d = {
+        "x": r.u16(),
+        "y": r.u16(),
+        "i16a": r.i16(),
+        "u16b": r.u16(),
+        "u32c": r.u32(),
+        "u16d": r.u16(),
+        "P": r.i16(),
+        "Q": r.u16(),
+        "R": r.u16(),
+    }
     d["sprite"] = r.pstr()
     d["label"] = r.pstr()
     d["X"] = r.u32()
@@ -137,10 +148,31 @@ def parse_group(tag, body, verbose):
             if verbose:
                 print("   ", tag, i, d)
     except Exception as e:  # noqa: BLE001
-        return recs, f"error {e} after {len(recs)} records at {r.p:#x}: {body[r.p:r.p+48].hex()}"
+        return recs, f"error {e} after {len(recs)} records at {r.p:#x}: {body[r.p : r.p + 48].hex()}"
     if r.p != len(body):
-        return recs, f"left {len(body)-r.p} bytes after {n} records at {r.p:#x}: {body[r.p:r.p+64].hex()}"
+        return recs, f"left {len(body) - r.p} bytes after {n} records at {r.p:#x}: {body[r.p : r.p + 64].hex()}"
     return recs, "OK"
+
+
+def _count_records(ct, recs, stats):
+    for d in recs or []:
+        for k, v in d.items():
+            if k in ("x", "y", "_off", "name", "list", "extra32", "sprite", "label", "x2", "y2", "poly"):
+                continue
+            stats[(ct, k)][v] += 1
+
+
+def _probe_boyz(boyz, f, verbose, dump, stats):
+    pos = 2
+    while pos < len(boyz):
+        ct, cs, _ = struct.unpack_from("<4sII", boyz, pos)
+        ct = ct.decode("latin-1")
+        gb = boyz[pos + 12 : pos + 8 + cs]
+        pos += 8 + cs
+        recs, status = parse_group(ct, gb, verbose or dump == ct)
+        if status != "OK" and recs is not None:
+            print(os.path.basename(f), ct, status)
+        _count_records(ct, recs, stats)
 
 
 def main():
@@ -153,20 +185,7 @@ def main():
         data = open(f, "rb").read()
         _, _, ch = children(data)
         boyz = next(b for t, v, o, b in ch if t == "BOYZ")
-        pos = 2
-        while pos < len(boyz):
-            ct, cs, cv = struct.unpack_from("<4sII", boyz, pos)
-            ct = ct.decode("latin-1")
-            gb = boyz[pos + 12 : pos + 8 + cs]
-            pos += 8 + cs
-            recs, status = parse_group(ct, gb, verbose or dump == ct)
-            if status != "OK" and recs is not None:
-                print(os.path.basename(f), ct, status)
-            for d in recs or []:
-                for k, v in d.items():
-                    if k in ("x", "y", "_off", "name", "list", "extra32", "sprite", "label", "x2", "y2", "poly"):
-                        continue
-                    stats[(ct, k)][v] += 1
+        _probe_boyz(boyz, f, verbose, dump, stats)
     for k in sorted(stats):
         vals = stats[k]
         print(k, len(vals), "distinct:", sorted(vals.items(), key=lambda kv: -kv[1])[:12])

@@ -862,6 +862,51 @@ pub(crate) struct SimIndex {
 }
 
 impl SimIndex {
+    fn insert_entity(&mut self, i: usize, e: &Entity) {
+        self.by_id.push((e.id, i));
+        if e.kind == EntityKind::Player && self.first_player.is_none() {
+            self.first_player = Some(i);
+        }
+        if e.kind == EntityKind::Obstacle
+            && let Some(&(hw, hh)) = e.patrol.first()
+        {
+            self.obstacles.push((e.x, e.y, hw, hh));
+        }
+        self.insert_active(i, e);
+        if perceivable(e) {
+            self.players.push(i);
+        }
+        if perceives(e) {
+            self.perceivers.push(i);
+        }
+        if stepped(e) {
+            self.humans.push(i);
+        }
+        if e.attack_target.is_some() && e.kind == EntityKind::Player {
+            self.attackers.push(i);
+        }
+        if e.alive
+            && e.active
+            && e.kind == EntityKind::Guard
+            && e.target.is_none()
+            && e.ai_state == AiState::Patrol
+        {
+            self.idle_guards.push(i);
+        }
+    }
+
+    fn insert_active(&mut self, i: usize, e: &Entity) {
+        if e.active {
+            self.active.push(i);
+            if e.kind != EntityKind::Obstacle {
+                self.present.push(i);
+                if e.alive {
+                    self.actors.push(i);
+                }
+            }
+        }
+    }
+
     /// The slot of an entity by id (binary search in `by_id`).
     fn slot(&self, id: EntityId) -> Option<usize> {
         self.by_id
@@ -951,44 +996,7 @@ impl World {
             by_id: Vec::with_capacity(n),
         };
         for (i, e) in self.entities.iter().enumerate() {
-            index.by_id.push((e.id, i));
-            if e.kind == EntityKind::Player && index.first_player.is_none() {
-                index.first_player = Some(i);
-            }
-            if e.kind == EntityKind::Obstacle
-                && let Some(&(hw, hh)) = e.patrol.first()
-            {
-                index.obstacles.push((e.x, e.y, hw, hh));
-            }
-            if e.active {
-                index.active.push(i);
-                if e.kind != EntityKind::Obstacle {
-                    index.present.push(i);
-                    if e.alive {
-                        index.actors.push(i);
-                    }
-                }
-            }
-            if perceivable(e) {
-                index.players.push(i);
-            }
-            if perceives(e) {
-                index.perceivers.push(i);
-            }
-            if stepped(e) {
-                index.humans.push(i);
-            }
-            if e.attack_target.is_some() && e.kind == EntityKind::Player {
-                index.attackers.push(i);
-            }
-            if e.alive
-                && e.active
-                && e.kind == EntityKind::Guard
-                && e.target.is_none()
-                && e.ai_state == AiState::Patrol
-            {
-                index.idle_guards.push(i);
-            }
+            index.insert_entity(i, e);
         }
         index.by_id.sort_unstable();
         Some(index)
@@ -1255,28 +1263,7 @@ impl World {
         let seen = stimulus.map(|(p, _)| p);
         self.regain_energy(i);
         let state = self.entities[i].ai_state;
-        if matches!(
-            state,
-            AiState::Patrol
-                | AiState::Returning
-                | AiState::ReturnPending
-                | AiState::Noticed
-                | AiState::Alarm
-                | AiState::Alerted
-        ) {
-            match stimulus {
-                Some((_, Channel::Sight { hypothetical: true })) => {
-                    self.record_assumption(Assumption::SightCone);
-                }
-                Some((
-                    _,
-                    Channel::Noise {
-                        beyond_measured: true,
-                    },
-                )) => self.record_assumption(Assumption::NoiseRadius),
-                _ => {}
-            }
-        }
+        self.record_stimulus_assumptions(state, stimulus);
         match state {
             AiState::Fighting => self.fight_tick(i, index, budget),
             AiState::Dying => {
@@ -1285,85 +1272,12 @@ impl World {
                 }
                 true
             }
-            AiState::Patrol | AiState::Returning | AiState::ReturnPending => match stimulus {
-                Some((p, Channel::Sight { .. })) => {
-                    self.notice(i, p);
-                    true
-                }
-                Some((p, Channel::Noise { .. })) => self.charge(i, p, budget),
-                None => match state {
-                    AiState::Returning if self.entities[i].target.is_none() => {
-                        self.resume_patrol(i);
-                        true
-                    }
-                    // The return whose search was not paid: searched again, first in the
-                    // walk when it stays unpaid.
-                    AiState::ReturnPending => self.return_to_post(i, budget),
-                    _ => true,
-                },
-            },
-            AiState::Noticed => {
-                if seen.is_some() {
-                    self.entities[i].last_seen = seen;
-                }
-                if countdown(&mut self.entities[i]) {
-                    self.record_assumption(Assumption::AlertPolicy);
-                    self.enter_timed(i, AiState::Alarm, |s| &s.alarm, ALARM_TICKS);
-                }
-                true
+            AiState::Patrol | AiState::Returning | AiState::ReturnPending => {
+                self.advance_patrol_state(i, state, stimulus, budget)
             }
-            AiState::Alarm => {
-                if seen.is_some() {
-                    self.entities[i].last_seen = seen;
-                }
-                if countdown(&mut self.entities[i]) {
-                    // The search, then the state: the sequence is the alert policy, the
-                    // timer it starts the timeout; unpaid, the alarm keeps one more tick.
-                    self.record_assumption(Assumption::AlertPolicy);
-                    self.record_assumption(Assumption::AlertTimeout);
-                    let walk = match self.entities[i].last_seen {
-                        Some(p) => self.walk_to(i, p, Gait::Run, budget),
-                        None => Walk::Unreachable,
-                    };
-                    if walk == Walk::Exhausted {
-                        self.entities[i].state_ticks = 1;
-                        return false;
-                    }
-                    let e = &mut self.entities[i];
-                    e.ai_state = AiState::Alerted;
-                    e.state_ticks = ALERT_TIMEOUT_TICKS;
-                }
-                true
-            }
-            AiState::Alerted => match seen {
-                Some(p) => {
-                    let e = &self.entities[i];
-                    let stale = e.target.is_none_or(|(tx, ty)| {
-                        Fixed::length(tx - p.0, ty - p.1) > Fixed::from_int(REPLAN_DISTANCE)
-                    });
-                    if stale && Fixed::length(e.x - p.0, e.y - p.1) > Fixed::from_int(PUNCH_REACH) {
-                        // The re-plan distance and the search's target are the alert policy;
-                        // unpaid, nothing changes and the sighting is consumed again next tick.
-                        self.record_assumption(Assumption::AlertPolicy);
-                        if self.walk_to(i, p, Gait::Run, budget) == Walk::Exhausted {
-                            return false;
-                        }
-                    }
-                    // The sighting restarts the timeout.
-                    self.record_assumption(Assumption::AlertTimeout);
-                    let e = &mut self.entities[i];
-                    e.last_seen = Some(p);
-                    e.state_ticks = ALERT_TIMEOUT_TICKS;
-                    true
-                }
-                None => {
-                    if countdown(&mut self.entities[i]) {
-                        self.go_back(i, budget)
-                    } else {
-                        true
-                    }
-                }
-            },
+            AiState::Noticed => self.advance_noticed_state(i, seen),
+            AiState::Alarm => self.advance_alarm_state(i, seen, budget),
+            AiState::Alerted => self.advance_alerted_state(i, seen, budget),
             AiState::Punching => {
                 if countdown(&mut self.entities[i]) {
                     let e = &mut self.entities[i];
@@ -1396,6 +1310,138 @@ impl World {
         }
     }
 
+    fn record_stimulus_assumptions(
+        &mut self,
+        state: AiState,
+        stimulus: Option<((Fixed, Fixed), Channel)>,
+    ) {
+        if matches!(
+            state,
+            AiState::Patrol
+                | AiState::Returning
+                | AiState::ReturnPending
+                | AiState::Noticed
+                | AiState::Alarm
+                | AiState::Alerted
+        ) {
+            match stimulus {
+                Some((_, Channel::Sight { hypothetical: true })) => {
+                    self.record_assumption(Assumption::SightCone);
+                }
+                Some((
+                    _,
+                    Channel::Noise {
+                        beyond_measured: true,
+                    },
+                )) => self.record_assumption(Assumption::NoiseRadius),
+                _ => {}
+            }
+        }
+    }
+
+    fn advance_patrol_state(
+        &mut self,
+        i: usize,
+        state: AiState,
+        stimulus: Option<((Fixed, Fixed), Channel)>,
+        budget: &mut u64,
+    ) -> bool {
+        match stimulus {
+            Some((p, Channel::Sight { .. })) => {
+                self.notice(i, p);
+                true
+            }
+            Some((p, Channel::Noise { .. })) => self.charge(i, p, budget),
+            None => match state {
+                AiState::Returning if self.entities[i].target.is_none() => {
+                    self.resume_patrol(i);
+                    true
+                }
+                // The return whose search was not paid: searched again, first in the
+                // walk when it stays unpaid.
+                AiState::ReturnPending => self.return_to_post(i, budget),
+                _ => true,
+            },
+        }
+    }
+
+    fn advance_noticed_state(&mut self, i: usize, seen: Option<(Fixed, Fixed)>) -> bool {
+        if seen.is_some() {
+            self.entities[i].last_seen = seen;
+        }
+        if countdown(&mut self.entities[i]) {
+            self.record_assumption(Assumption::AlertPolicy);
+            self.enter_timed(i, AiState::Alarm, |s| &s.alarm, ALARM_TICKS);
+        }
+        true
+    }
+
+    fn advance_alarm_state(
+        &mut self,
+        i: usize,
+        seen: Option<(Fixed, Fixed)>,
+        budget: &mut u64,
+    ) -> bool {
+        if seen.is_some() {
+            self.entities[i].last_seen = seen;
+        }
+        if countdown(&mut self.entities[i]) {
+            // The search, then the state: the sequence is the alert policy, the
+            // timer it starts the timeout; unpaid, the alarm keeps one more tick.
+            self.record_assumption(Assumption::AlertPolicy);
+            self.record_assumption(Assumption::AlertTimeout);
+            let walk = match self.entities[i].last_seen {
+                Some(p) => self.walk_to(i, p, Gait::Run, budget),
+                None => Walk::Unreachable,
+            };
+            if walk == Walk::Exhausted {
+                self.entities[i].state_ticks = 1;
+                return false;
+            }
+            let e = &mut self.entities[i];
+            e.ai_state = AiState::Alerted;
+            e.state_ticks = ALERT_TIMEOUT_TICKS;
+        }
+        true
+    }
+
+    fn advance_alerted_state(
+        &mut self,
+        i: usize,
+        seen: Option<(Fixed, Fixed)>,
+        budget: &mut u64,
+    ) -> bool {
+        match seen {
+            Some(p) => {
+                let e = &self.entities[i];
+                let stale = e.target.is_none_or(|(tx, ty)| {
+                    Fixed::length(tx - p.0, ty - p.1) > Fixed::from_int(REPLAN_DISTANCE)
+                });
+                if stale && Fixed::length(e.x - p.0, e.y - p.1) > Fixed::from_int(PUNCH_REACH) {
+                    // The re-plan distance and the search's target are the alert policy;
+                    // unpaid, nothing changes and the sighting is consumed again next tick.
+                    self.record_assumption(Assumption::AlertPolicy);
+                    if self.walk_to(i, p, Gait::Run, budget) == Walk::Exhausted {
+                        return false;
+                    }
+                }
+                // The sighting restarts the timeout.
+                self.record_assumption(Assumption::AlertTimeout);
+                let e = &mut self.entities[i];
+                e.last_seen = Some(p);
+                e.state_ticks = ALERT_TIMEOUT_TICKS;
+                true
+            }
+            None => {
+                if countdown(&mut self.entities[i]) {
+                    self.go_back(i, budget)
+                } else {
+                    true
+                }
+            }
+        }
+    }
+
     /// The player characters' attack orders (`combat-measurements.md` 1.1, measured: a left
     /// click on the enemy is the attack order, the character walks up, stops at the fighting
     /// distance and the sword fight begins; the knock-out blow from behind of
@@ -1412,77 +1458,98 @@ impl World {
                 cursor = resume_at(&order, k, full);
                 break;
             }
-            let e = &self.entities[i];
-            let Some(target) = e.attack_target else {
-                continue;
-            };
-            if !(e.alive && e.active && e.kind == EntityKind::Player)
-                || e.ai_state != AiState::Patrol
-            {
-                continue;
-            }
-            let victim = index.slot(target);
-            let Some(t) = victim.filter(|&t| fightable(&self.entities[t])) else {
-                let e = &mut self.entities[i];
-                e.attack_target = None;
-                e.figure = None;
-                continue;
-            };
-            let (vx, vy) = (self.entities[t].x, self.entities[t].y);
-            let attacker_pos = (self.entities[i].x, self.entities[i].y);
-            let (dx, dy) = (vx - attacker_pos.0, vy - attacker_pos.1);
-            // An unseen approach from behind ends in the knock-out blow at its shorter reach;
-            // a drawn figure or a victim who faces the attacker means the sword fight.
-            let behind = is_behind((vx, vy), self.entities[t].facing256, attacker_pos);
-            let punching =
-                self.entities[i].figure.is_none() && behind && can_punch(self, &self.entities[i]);
-            let reach = if punching { PUNCH_REACH } else { FIGHT_RANGE };
-            if Fixed::length(dx, dy) > Fixed::from_int(reach) {
-                if self.entities[i].target.is_none() {
-                    match self.walk_to(i, (vx, vy), Gait::Walk, budget) {
-                        Walk::Planned => {}
-                        // Unreachable: the order is dropped.
-                        Walk::Unreachable => self.entities[i].attack_target = None,
-                        // Unpaid: the order is kept and planned first next tick.
-                        Walk::Exhausted => {
-                            cursor = resume_at(&order, k, full);
-                            break;
-                        }
-                    }
-                }
-                continue;
-            }
-            // In reach. A victim engaged with another player character fights one at a
-            // time: this attacker waits at reach with his order until the victim is free,
-            // whatever his approach (the multi-party policy, a hypothesis: the measurements
-            // were one-on-one; Codex review 11, finding 5: a blow from behind on an engaged
-            // victim waits too, until a multi-attacker model is measured).
-            let attacker_id = self.entities[i].id;
-            if self.engaged_with_another(t, attacker_id, index) {
-                self.record_assumption(Assumption::AttackPolicy(AttackRule::MultiParty));
-                stop(&mut self.entities[i]);
-                continue;
-            }
-            // Stop, face the victim, then the blow from behind or the fight. The frontal
-            // fight at the fighting distance is measured; what an approach from behind ends
-            // in is the reach-band hypothesis.
-            if behind {
-                self.record_assumption(Assumption::AttackPolicy(AttackRule::Reach));
-            }
-            let e = &mut self.entities[i];
-            stop(e);
-            e.attack_target = None;
-            if dx.raw() != 0 || dy.raw() != 0 {
-                e.facing256 = facing_of(dx, dy);
-            }
-            if punching {
-                self.enter_timed(i, AiState::Punching, |s| &s.punch, PUNCH_TICKS);
-                self.knock_down(t, attacker_pos);
-            } else {
-                self.start_fight(i, t, index, budget);
+            if !self.attack_order(i, index, budget) {
+                cursor = resume_at(&order, k, full);
+                break;
             }
         }
         self.cursors.attacks = cursor;
+    }
+
+    fn attack_order(&mut self, i: usize, index: &SimIndex, budget: &mut u64) -> bool {
+        let e = &self.entities[i];
+        let Some(target) = e.attack_target else {
+            return true;
+        };
+        if !(e.alive && e.active && e.kind == EntityKind::Player) || e.ai_state != AiState::Patrol {
+            return true;
+        }
+        let victim = index.slot(target);
+        let Some(t) = victim.filter(|&t| fightable(&self.entities[t])) else {
+            let e = &mut self.entities[i];
+            e.attack_target = None;
+            e.figure = None;
+            return true;
+        };
+        let (vx, vy) = (self.entities[t].x, self.entities[t].y);
+        let attacker_pos = (self.entities[i].x, self.entities[i].y);
+        let (dx, dy) = (vx - attacker_pos.0, vy - attacker_pos.1);
+        // An unseen approach from behind ends in the knock-out blow at its shorter reach;
+        // a drawn figure or a victim who faces the attacker means the sword fight.
+        let behind = is_behind((vx, vy), self.entities[t].facing256, attacker_pos);
+        let punching =
+            self.entities[i].figure.is_none() && behind && can_punch(self, &self.entities[i]);
+        let reach = if punching { PUNCH_REACH } else { FIGHT_RANGE };
+        if Fixed::length(dx, dy) > Fixed::from_int(reach) {
+            if self.entities[i].target.is_none() {
+                match self.walk_to(i, (vx, vy), Gait::Walk, budget) {
+                    Walk::Planned => {}
+                    // Unreachable: the order is dropped.
+                    Walk::Unreachable => self.entities[i].attack_target = None,
+                    // Unpaid: the order is kept and planned first next tick.
+                    Walk::Exhausted => {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        self.attack_in_reach(i, t, index, budget, (behind, punching));
+        true
+    }
+
+    fn attack_in_reach(
+        &mut self,
+        i: usize,
+        t: usize,
+        index: &SimIndex,
+        budget: &mut u64,
+        (behind, punching): (bool, bool),
+    ) {
+        let attacker_pos = (self.entities[i].x, self.entities[i].y);
+        let (dx, dy) = (
+            self.entities[t].x - attacker_pos.0,
+            self.entities[t].y - attacker_pos.1,
+        );
+        // In reach. A victim engaged with another player character fights one at a
+        // time: this attacker waits at reach with his order until the victim is free,
+        // whatever his approach (the multi-party policy, a hypothesis: the measurements
+        // were one-on-one; Codex review 11, finding 5: a blow from behind on an engaged
+        // victim waits too, until a multi-attacker model is measured).
+        let attacker_id = self.entities[i].id;
+        if self.engaged_with_another(t, attacker_id, index) {
+            self.record_assumption(Assumption::AttackPolicy(AttackRule::MultiParty));
+            stop(&mut self.entities[i]);
+            return;
+        }
+        // Stop, face the victim, then the blow from behind or the fight. The frontal
+        // fight at the fighting distance is measured; what an approach from behind ends
+        // in is the reach-band hypothesis.
+        if behind {
+            self.record_assumption(Assumption::AttackPolicy(AttackRule::Reach));
+        }
+        let e = &mut self.entities[i];
+        stop(e);
+        e.attack_target = None;
+        if dx.raw() != 0 || dy.raw() != 0 {
+            e.facing256 = facing_of(dx, dy);
+        }
+        if punching {
+            self.enter_timed(i, AiState::Punching, |s| &s.punch, PUNCH_TICKS);
+            self.knock_down(t, attacker_pos);
+        } else {
+            self.start_fight(i, t, index, budget);
+        }
     }
 
     /// Whether soldier `t` is engaged in a reciprocal fight with a living, present player
@@ -2870,39 +2937,7 @@ mod tests {
             if killed {
                 continue;
             }
-            // Strokes until he dies (each one in the fight: the figure is delivered in the
-            // next idle pose).
-            'strokes: for _ in 0..40 {
-                forward_stroke(&mut w, 520, 260);
-                assert!(w.entities[0].ai_state == AiState::Fighting);
-                for _ in 0..(POWERFUL_BLOW_TICKS + STRIKE_TICKS + FLINCH_TICKS + 4) {
-                    w.step(&[]);
-                    if !w.entities[1].alive {
-                        break 'strokes;
-                    }
-                }
-            }
-            let g = &w.entities[1];
-            assert!(!g.alive && g.hp == 0, "{} hp", g.hp);
-            assert_eq!(g.ai_state, AiState::Dying);
-            assert!(g.fell_backward, "struck from the front");
-            assert_eq!(g.action, actions::KNOCKED_DOWN_BACK);
-            let s = ActorStatus::of(g);
-            assert!(s.dead && s.out_of_action && !s.knocked_out && !s.can_act);
-            assert!(!w.hero_dead);
-            w.step(&[]);
-            assert_eq!(w.entities[0].ai_state, AiState::Patrol, "the fight is over");
-            assert!(w.entities[0].foe.is_none());
-            for _ in 0..KNOCKED_DOWN_TICKS {
-                w.step(&[]);
-            }
-            let g = &w.entities[1];
-            assert_eq!(g.ai_state, AiState::Dead);
-            assert_eq!(g.action, actions::LYING_BACK);
-            w.validate().unwrap();
-            // A dead soldier takes no orders and is not picked.
-            click(&mut w, 400, 240, Button::Left);
-            assert!(w.entities[0].attack_target.is_none());
+            finish_soldier_with_strokes(&mut w);
             killed = true;
         }
         assert!(
@@ -2910,6 +2945,42 @@ mod tests {
             "{landed} landed, {missed} missed of 12"
         );
         assert!(killed);
+    }
+
+    fn finish_soldier_with_strokes(w: &mut World) {
+        // Strokes until he dies (each one in the fight: the figure is delivered in the
+        // next idle pose).
+        'strokes: for _ in 0..40 {
+            forward_stroke(w, 520, 260);
+            assert!(w.entities[0].ai_state == AiState::Fighting);
+            for _ in 0..(POWERFUL_BLOW_TICKS + STRIKE_TICKS + FLINCH_TICKS + 4) {
+                w.step(&[]);
+                if !w.entities[1].alive {
+                    break 'strokes;
+                }
+            }
+        }
+        let g = &w.entities[1];
+        assert!(!g.alive && g.hp == 0, "{} hp", g.hp);
+        assert_eq!(g.ai_state, AiState::Dying);
+        assert!(g.fell_backward, "struck from the front");
+        assert_eq!(g.action, actions::KNOCKED_DOWN_BACK);
+        let s = ActorStatus::of(g);
+        assert!(s.dead && s.out_of_action && !s.knocked_out && !s.can_act);
+        assert!(!w.hero_dead);
+        w.step(&[]);
+        assert_eq!(w.entities[0].ai_state, AiState::Patrol, "the fight is over");
+        assert!(w.entities[0].foe.is_none());
+        for _ in 0..KNOCKED_DOWN_TICKS {
+            w.step(&[]);
+        }
+        let g = &w.entities[1];
+        assert_eq!(g.ai_state, AiState::Dead);
+        assert_eq!(g.action, actions::LYING_BACK);
+        w.validate().unwrap();
+        // A dead soldier takes no orders and is not picked.
+        click(w, 400, 240, Button::Left);
+        assert!(w.entities[0].attack_target.is_none());
     }
 
     /// A ground order while fighting leaves the fight: the hero walks off and the soldier

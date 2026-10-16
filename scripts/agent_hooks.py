@@ -38,8 +38,7 @@ def fingerprint(root: Path) -> str:
     for name in sorted(set(files)):
         path = Path(name)
         relevant = (
-            name
-            in {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"}
+            name in {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"}
             or (path.parts and path.parts[0] == "crates")
             or name in {".cargo/config", ".cargo/config.toml"}
         )
@@ -66,9 +65,7 @@ def fingerprint(root: Path) -> str:
 
 
 def state_path(root: Path, data: dict) -> Path:
-    sid = hashlib.sha256(str(data.get("session_id") or "manual").encode()).hexdigest()[
-        :24
-    ]
+    sid = hashlib.sha256(str(data.get("session_id") or "manual").encode()).hexdigest()[:24]
     return root / ".local" / "agent-hooks" / f"{sid}.json"
 
 
@@ -88,10 +85,7 @@ def write_state(path: Path, state: dict) -> None:
 
 def mirror_problem(root: Path) -> str:
     source, target = root / ".agents" / "skills", root / ".claude" / "skills"
-    if (
-        sync_skills.file_map(source) != sync_skills.file_map(target)
-        or not (target / sync_skills.MARKER).is_file()
-    ):
+    if sync_skills.file_map(source) != sync_skills.file_map(target) or not (target / sync_skills.MARKER).is_file():
         return "Skills differ: run python scripts/sync_skills.py --write, then --check."
     return ""
 

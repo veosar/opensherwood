@@ -244,30 +244,35 @@ impl NavGrid {
             return Some(c);
         }
         for r in 1..=radius {
-            let mut best: Option<(RankedCell, (i32, i32))> = None;
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    if dx.abs() != r && dy.abs() != r {
-                        continue;
-                    }
-                    let p = (c.0.saturating_add(dx), c.1.saturating_add(dy));
-                    if self.walkable(p) {
-                        let d = (
-                            i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy),
-                            p.1,
-                            p.0,
-                        );
-                        if best.is_none_or(|(bd, _)| d < bd) {
-                            best = Some((d, p));
-                        }
-                    }
-                }
-            }
-            if let Some((_, p)) = best {
+            if let Some(p) = self.nearest_on_ring(c, r) {
                 return Some(p);
             }
         }
         None
+    }
+
+    fn nearest_on_ring(&self, c: (i32, i32), r: i32) -> Option<(i32, i32)> {
+        let mut best: Option<(RankedCell, (i32, i32))> = None;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dy.abs() != r {
+                    continue;
+                }
+                let p = (c.0.saturating_add(dx), c.1.saturating_add(dy));
+                if !self.walkable(p) {
+                    continue;
+                }
+                let d = (
+                    i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy),
+                    p.1,
+                    p.0,
+                );
+                if best.is_none_or(|(bd, _)| d < bd) {
+                    best = Some((d, p));
+                }
+            }
+        }
+        best.map(|(_, p)| p)
     }
 
     /// A* from cell `from` to cell `to` (8-connected, no corner cutting). Returns the cell path
@@ -352,23 +357,6 @@ impl NavGrid {
         heap_push(&mut open, Reverse((h(from), 0, idx(from) as u32)))?;
         let mut best = (h(from), idx(from));
         // Unwinding charges one unit per path cell before it is pushed (fallibly).
-        let unwind =
-            |end: usize, parent: &[u32], budget: &mut u64| -> Result<Vec<(i32, i32)>, NavError> {
-                let mut path = Vec::new();
-                let mut cur = end;
-                while cur != idx(from) {
-                    if *budget == 0 {
-                        return Err(NavError::WorkExhausted);
-                    }
-                    *budget -= 1;
-                    path.try_reserve(1)
-                        .map_err(|_| NavError::Allocation { cells: n })?;
-                    path.push(((cur as i32) % self.width, (cur as i32) / self.width));
-                    cur = parent[cur] as usize;
-                }
-                path.reverse();
-                Ok(path)
-            };
         while let Some(Reverse((_, gc, ci))) = open.pop() {
             if *budget == 0 {
                 return Err(NavError::WorkExhausted);
@@ -381,40 +369,74 @@ impl NavGrid {
             closed[ci] = true;
             let c = ((ci as i32) % self.width, (ci as i32) / self.width);
             if c == to {
-                return unwind(ci, &parent, budget).map(Some);
+                return self.unwind_path(ci, idx(from), &parent, budget).map(Some);
             }
             let hc = h(c);
             if hc < best.0 {
                 best = (hc, ci);
             }
-            for &(dx, dy, cost) in &DIRS {
-                let nb = (c.0 + dx, c.1 + dy);
-                if !self.walkable(nb) {
-                    continue;
-                }
-                // No diagonal squeezing between two blocked orthogonal neighbours.
-                if dx != 0
-                    && dy != 0
-                    && (!self.walkable((c.0 + dx, c.1)) || !self.walkable((c.0, c.1 + dy)))
-                {
-                    continue;
-                }
-                let ni = idx(nb);
-                let ng = gc.saturating_add(cost);
-                if ng < g[ni] {
-                    g[ni] = ng;
-                    parent[ni] = ci as u32;
-                    heap_push(
-                        &mut open,
-                        Reverse((ng.saturating_add(h(nb)), ng, ni as u32)),
-                    )?;
-                }
-            }
+            self.search_neighbors((c, gc, ci), (&mut g, &mut parent), &mut open, &h)?;
         }
         if nearest && best.1 != idx(from) {
-            return unwind(best.1, &parent, budget).map(Some);
+            return self
+                .unwind_path(best.1, idx(from), &parent, budget)
+                .map(Some);
         }
         Ok(None)
+    }
+
+    fn unwind_path(
+        &self,
+        end: usize,
+        from: usize,
+        parent: &[u32],
+        budget: &mut u64,
+    ) -> Result<Vec<(i32, i32)>, NavError> {
+        let mut path = Vec::new();
+        let mut cur = end;
+        while cur != from {
+            if *budget == 0 {
+                return Err(NavError::WorkExhausted);
+            }
+            *budget -= 1;
+            path.try_reserve(1).map_err(|_| NavError::Allocation {
+                cells: parent.len(),
+            })?;
+            path.push(((cur as i32) % self.width, (cur as i32) / self.width));
+            cur = parent[cur] as usize;
+        }
+        path.reverse();
+        Ok(path)
+    }
+
+    fn search_neighbors(
+        &self,
+        (c, gc, ci): ((i32, i32), u32, usize),
+        (g, parent): (&mut [u32], &mut [u32]),
+        open: &mut BinaryHeap<Reverse<(u32, u32, u32)>>,
+        h: &impl Fn((i32, i32)) -> u32,
+    ) -> Result<(), NavError> {
+        for &(dx, dy, cost) in &DIRS {
+            let nb = (c.0 + dx, c.1 + dy);
+            if !self.walkable(nb) {
+                continue;
+            }
+            // No diagonal squeezing between two blocked orthogonal neighbours.
+            if dx != 0
+                && dy != 0
+                && (!self.walkable((c.0 + dx, c.1)) || !self.walkable((c.0, c.1 + dy)))
+            {
+                continue;
+            }
+            let ni = (nb.1 * self.width + nb.0) as usize;
+            let ng = gc.saturating_add(cost);
+            if ng < g[ni] {
+                g[ni] = ng;
+                parent[ni] = ci as u32;
+                heap_push(open, Reverse((ng.saturating_add(h(nb)), ng, ni as u32)))?;
+            }
+        }
+        Ok(())
     }
 
     /// Whether every cell on the segment between two cells is walkable (supercover line). The
@@ -434,10 +456,6 @@ impl NavGrid {
         b: (i32, i32),
         budget: &mut u64,
     ) -> Result<bool, NavError> {
-        let walkable = |x: i64, y: i64| match (i32::try_from(x), i32::try_from(y)) {
-            (Ok(x), Ok(y)) => self.walkable((x, y)),
-            _ => false,
-        };
         let (bx, by) = (i64::from(b.0), i64::from(b.1));
         let (mut x, mut y) = (i64::from(a.0), i64::from(a.1));
         let dx = (bx - x).abs();
@@ -450,29 +468,49 @@ impl NavGrid {
                 return Err(NavError::WorkExhausted);
             }
             *budget -= 1;
-            if !walkable(x, y) {
+            if !self.walkable_wide(x, y) {
                 return Ok(false);
             }
             if (x, y) == (bx, by) {
                 return Ok(true);
             }
-            let e2 = 2 * err;
-            if e2 >= dy {
-                // Moving horizontally: also require the vertical neighbour to avoid corner clipping.
-                if e2 <= dx && !walkable(x + sx, y) {
-                    return Ok(false);
-                }
-                err += dy;
-                x += sx;
-            }
-            if e2 <= dx {
-                if e2 >= dy && !walkable(x, y + sy) {
-                    return Ok(false);
-                }
-                err += dx;
-                y += sy;
+            if !self.line_step((&mut x, &mut y), (dx, dy), (sx, sy), &mut err) {
+                return Ok(false);
             }
         }
+    }
+
+    fn walkable_wide(&self, x: i64, y: i64) -> bool {
+        match (i32::try_from(x), i32::try_from(y)) {
+            (Ok(x), Ok(y)) => self.walkable((x, y)),
+            _ => false,
+        }
+    }
+
+    fn line_step(
+        &self,
+        (x, y): (&mut i64, &mut i64),
+        (dx, dy): (i64, i64),
+        (sx, sy): (i64, i64),
+        err: &mut i64,
+    ) -> bool {
+        let e2 = 2 * *err;
+        if e2 >= dy {
+            // Moving horizontally: also require the vertical neighbour to avoid corner clipping.
+            if e2 <= dx && !self.walkable_wide(*x + sx, *y) {
+                return false;
+            }
+            *err += dy;
+            *x += sx;
+        }
+        if e2 <= dx {
+            if e2 >= dy && !self.walkable_wide(*x, *y + sy) {
+                return false;
+            }
+            *err += dx;
+            *y += sy;
+        }
+        true
     }
 
     /// Drop intermediate cells that can be skipped with a clear line (greedy string pulling),

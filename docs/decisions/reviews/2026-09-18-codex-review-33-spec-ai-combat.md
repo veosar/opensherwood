@@ -80,17 +80,17 @@ The automated asset check passes. The rewritten behavioural event wording and co
 
 **Implementation clearance is limited to individual contracts:**
 
-| Area | Cleared | Still waiting |
-|---|---|---|
-| Perception | Category lifetimes, caching/staggering, corrected observer-ID fixture and fixed-value accumulation | General rounding contract, callback corrections and excluded geometry details |
-| Hearing | Previously cleared noise, margin, deafness and staggering rules | Explicitly excluded oracle discrepancies |
-| State machine | Reviewed individual transitions, reaction delays, fit-again order-state guard, corrected pause/pre-hook/door ordering | Corrected event/native contracts and section 9.2 exclusions |
-| Rails | Reviewed cursor/opcode rules and cached-roll semantics; native 140 styles 0/1 | Snapshot ordering, excluded behaviour and ratification of invalid-style deviation |
-| Orders | AI-185’s bounded movement-order contract | Context dispatch, cancellation, Ctrl queueing and gesture recognition |
-| Combat rolls | Standing-victim attempt indications and conditional decision counts; class-less and lying-victim draw counts | Scoring, lying-effect description and integrated delivery/draw ordering |
-| Energy | Costs, block recovery, recovery amount and cadence | Correct stationary guard and unresolved oracle timing |
-| Knock-out | Punch scaling, resistance bypass, thresholds and residual decay phase | Coma/out restrictions, body effects and excluded scripted phase |
-| Bow | Same-height equality fixture, ordinary penetration comparison and zero-draw principal-enemy immunity | Correct general aim rounding, exact interpolation boundaries and excluded target behaviour |
+| Area          | Cleared                                                                                                               | Still waiting                                                                              |
+| ------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Perception    | Category lifetimes, caching/staggering, corrected observer-ID fixture and fixed-value accumulation                    | General rounding contract, callback corrections and excluded geometry details              |
+| Hearing       | Previously cleared noise, margin, deafness and staggering rules                                                       | Explicitly excluded oracle discrepancies                                                   |
+| State machine | Reviewed individual transitions, reaction delays, fit-again order-state guard, corrected pause/pre-hook/door ordering | Corrected event/native contracts and section 9.2 exclusions                                |
+| Rails         | Reviewed cursor/opcode rules and cached-roll semantics; native 140 styles 0/1                                         | Snapshot ordering, excluded behaviour and ratification of invalid-style deviation          |
+| Orders        | AI-185’s bounded movement-order contract                                                                              | Context dispatch, cancellation, Ctrl queueing and gesture recognition                      |
+| Combat rolls  | Standing-victim attempt indications and conditional decision counts; class-less and lying-victim draw counts          | Scoring, lying-effect description and integrated delivery/draw ordering                    |
+| Energy        | Costs, block recovery, recovery amount and cadence                                                                    | Correct stationary guard and unresolved oracle timing                                      |
+| Knock-out     | Punch scaling, resistance bypass, thresholds and residual decay phase                                                 | Coma/out restrictions, body effects and excluded scripted phase                            |
+| Bow           | Same-height equality fixture, ordinary penetration comparison and zero-draw principal-enemy immunity                  | Correct general aim rounding, exact interpolation boundaries and excluded target behaviour |
 
 The ten natives **85, 87, 88, 90, 99, 128, 130, 228, 235 and 240** remain excluded from complete contract clearance. No clearance is granted for integrated snapshot/replay/hash expectations, exact figure admissibility or mission readiness.
 

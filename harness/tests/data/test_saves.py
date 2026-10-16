@@ -33,7 +33,8 @@ def test_quick_save_and_load_restore_the_world(binary, game_dir, tmp_path):
         after = e.observe()
         back = next(x for x in after["entities"] if x["kind"] == "player")
         assert (back["x"] // 256, back["y"] // 256) == (rx, ry)
-        assert after["tick"] == saved_tick and after["hashes"]["total"] == saved
+        assert after["tick"] == saved_tick
+        assert after["hashes"]["total"] == saved
 
 
 def test_auto_saves_roll_over_five_slots(binary, game_dir, tmp_path):
@@ -79,11 +80,12 @@ def test_save_and_load_screens_round_trip(binary, game_dir, tmp_path):
         ui = e.observe(entities=False)["ui"]
         assert ui["screen"] == "load", ui
         rows = [it for it in ui["items"] if it["action"].startswith("row:")]
-        assert rows and rows[0]["action"] == "row:save-1"
+        assert rows
+        assert rows[0]["action"] == "row:save-1"
         e.step(1, pointer_click(300, 185, "left"))  # first row
         e.step(1, pointer_click(748, 522, "left"))  # Load button
         obs = e.observe(entities=False)
         assert obs.get("ui") is None, obs.get("ui")
         assert obs["scenario"] == {"mission": "H01_Lin_VL"}
-        assert obs["tick"] == tick0 and obs["hashes"]["total"] == total0
-
+        assert obs["tick"] == tick0
+        assert obs["hashes"]["total"] == total0

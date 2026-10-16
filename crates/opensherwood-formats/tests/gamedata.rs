@@ -371,6 +371,67 @@ fn every_truetype_descriptor_and_manager_cfg_parse() {
     }
 }
 
+fn check_mission_actors(m: &opensherwood_formats::rhm::Mission, f: &Path) {
+    use opensherwood_formats::rhm;
+    // Actor groups always come in the same order with the same versions.
+    let groups: Vec<(&str, u32)> = m
+        .actor_groups
+        .iter()
+        .map(|g| match g {
+            rhm::ActorGroup::Meow { version, .. } => ("MEOW", *version),
+            rhm::ActorGroup::PlayerCharacters { version, .. } => ("SCOT", *version),
+            rhm::ActorGroup::Civilians { version, .. } => ("OILE", *version),
+            rhm::ActorGroup::Vips { version, .. } => ("TOTO", *version),
+            rhm::ActorGroup::Npcs { version, .. } => ("BORG", *version),
+            rhm::ActorGroup::Objects { version, .. } => ("BOOM", *version),
+            rhm::ActorGroup::Unknown { .. } => ("?", 0),
+        })
+        .collect();
+    assert_eq!(
+        groups,
+        [
+            ("MEOW", 2),
+            ("SCOT", 4),
+            ("OILE", 3),
+            ("TOTO", 2),
+            ("BORG", 4),
+            ("BOOM", 5)
+        ],
+        "{}",
+        f.display()
+    );
+    let npcs = m.npcs();
+    for n in npcs {
+        assert!(n.placement.direction < 16);
+        assert!(
+            n.rail == -1 || (n.rail as usize) < m.rails.len(),
+            "{}",
+            f.display()
+        );
+        assert!(n.members.iter().all(|&i| usize::from(i) < npcs.len()));
+    }
+    for pc in m.player_characters() {
+        assert!(pc.placement.direction < 16);
+    }
+    for s in &m.scrolls {
+        assert_eq!(s.placement.unknown_0x08, 190);
+    }
+    for z in &m.zorg {
+        assert_eq!(z.placement.unknown_0x08, 189 + u32::from(z.unknown_b));
+    }
+}
+
+fn check_mission_rails(m: &opensherwood_formats::rhm::Mission, f: &Path) {
+    for rail in &m.rails {
+        for p in rail {
+            for t in &p.tables {
+                let sum: u32 = t.blocks.iter().map(|b| u32::from(b.percent)).sum();
+                assert!(sum <= 100, "{}", f.display());
+            }
+        }
+    }
+}
+
 #[test]
 fn every_mission_parses_and_its_references_resolve() {
     use opensherwood_formats::rhm;
@@ -394,61 +455,9 @@ fn every_mission_parses_and_its_references_resolve() {
             "{}",
             f.display()
         );
-        // Actor groups always come in the same order with the same versions.
-        let groups: Vec<(&str, u32)> = m
-            .actor_groups
-            .iter()
-            .map(|g| match g {
-                rhm::ActorGroup::Meow { version, .. } => ("MEOW", *version),
-                rhm::ActorGroup::PlayerCharacters { version, .. } => ("SCOT", *version),
-                rhm::ActorGroup::Civilians { version, .. } => ("OILE", *version),
-                rhm::ActorGroup::Vips { version, .. } => ("TOTO", *version),
-                rhm::ActorGroup::Npcs { version, .. } => ("BORG", *version),
-                rhm::ActorGroup::Objects { version, .. } => ("BOOM", *version),
-                rhm::ActorGroup::Unknown { .. } => ("?", 0),
-            })
-            .collect();
-        assert_eq!(
-            groups,
-            [
-                ("MEOW", 2),
-                ("SCOT", 4),
-                ("OILE", 3),
-                ("TOTO", 2),
-                ("BORG", 4),
-                ("BOOM", 5)
-            ],
-            "{}",
-            f.display()
-        );
-        let npcs = m.npcs();
-        npcs_total += npcs.len();
-        for n in npcs {
-            assert!(n.placement.direction < 16);
-            assert!(
-                n.rail == -1 || (n.rail as usize) < m.rails.len(),
-                "{}",
-                f.display()
-            );
-            assert!(n.members.iter().all(|&i| usize::from(i) < npcs.len()));
-        }
-        for pc in m.player_characters() {
-            assert!(pc.placement.direction < 16);
-        }
-        for s in &m.scrolls {
-            assert_eq!(s.placement.unknown_0x08, 190);
-        }
-        for z in &m.zorg {
-            assert_eq!(z.placement.unknown_0x08, 189 + u32::from(z.unknown_b));
-        }
-        for rail in &m.rails {
-            for p in rail {
-                for t in &p.tables {
-                    let sum: u32 = t.blocks.iter().map(|b| u32::from(b.percent)).sum();
-                    assert!(sum <= 100, "{}", f.display());
-                }
-            }
-        }
+        check_mission_actors(&m, f);
+        npcs_total += m.npcs().len();
+        check_mission_rails(&m, f);
         // Every script class (except the level's StartUp) is a mission element and vice versa.
         let stem = f.file_stem().unwrap().to_str().unwrap();
         let scb_path = ["scb", "SCB"]
@@ -572,6 +581,153 @@ fn day_map_size(dir: &Path, stem: &str) -> Option<(u16, u16)> {
     None
 }
 
+fn check_rhp_ground(m: &opensherwood_formats::rhp::Rhp, w: u16, h: u16, name: &str) {
+    use opensherwood_formats::rhp;
+    let inside = |p: &rhp::Point| p.x <= w && p.y <= h;
+    // STAT: boundary of the walkable ground, segments and obstacle outlines.
+    assert_eq!(m.stat.boundary_id, 0x5a, "{name}");
+    assert_eq!(m.stat.segments_id, 0x82, "{name}");
+    assert!(m.stat.boundary.len() >= 3, "{name}");
+    assert!(m.stat.boundary.iter().all(inside), "{name}: boundary");
+    assert!(!m.stat.obstacles.is_empty(), "{name}");
+    for o in &m.stat.obstacles {
+        assert!(o.polygon.points.len() >= 3, "{name}");
+        assert!(o.polygon.points.iter().all(inside), "{name}: obstacle");
+    }
+    for s in &m.stat.segments {
+        assert!(inside(&s.a) && inside(&s.b), "{name}: segment");
+    }
+    assert!(!m.stat.rest.is_empty(), "{name}");
+
+    // TEXT and DARK zones.
+    for z in &m.text {
+        assert!(
+            z.polygon.points.len() >= 3 && z.polygon.points.iter().all(inside),
+            "{name}"
+        );
+    }
+    for d in &m.dark {
+        assert!(
+            d.polygon.points.len() >= 3 && d.polygon.points.iter().all(inside),
+            "{name}"
+        );
+        assert!(matches!(d.unknown_value, 2 | 4 | 6), "{name}");
+    }
+}
+
+fn check_rhp_projection(m: &opensherwood_formats::rhp::Rhp, w: u16, h: u16, name: &str) {
+    use opensherwood_formats::rhp;
+    // WOAW: projection areas with a consistent bounding box.
+    assert!(
+        !m.woaw.layers.is_empty() && !m.woaw.areas.is_empty(),
+        "{name}"
+    );
+    for a in &m.woaw.areas {
+        assert!(a.points.len() >= 3, "{name}");
+        let (mut minx, mut miny, mut maxx, mut maxy) = (
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        );
+        for p in &a.points {
+            minx = minx.min(p.x);
+            miny = miny.min(p.y);
+            maxx = maxx.max(p.x);
+            maxy = maxy.max(p.y);
+        }
+        assert!(
+            (minx - a.min[0]).abs() < 0.01 && (miny - a.min[1]).abs() < 0.01,
+            "{name}"
+        );
+        assert!(
+            (maxx - a.max[0]).abs() < 0.01 && (maxy - a.max[1]).abs() < 0.01,
+            "{name}"
+        );
+    }
+    // 007: bonds reference areas.
+    assert!(!m.bonds.is_empty(), "{name}");
+    for b in &m.bonds {
+        assert!(
+            usize::from(b.area_a) < m.woaw.areas.len(),
+            "{name}: bond {b:?}"
+        );
+        assert!(
+            b.area_b == rhp::NO_AREA || usize::from(b.area_b) < m.woaw.areas.len(),
+            "{name}: bond {b:?}"
+        );
+        for (x, y) in [(b.x1, b.y1), (b.x2, b.y2)] {
+            assert!(
+                x >= -64 && y >= -64 && x <= w as i16 + 64 && y <= h as i16 + 64,
+                "{name}"
+            );
+        }
+    }
+}
+
+fn check_rhp_faces(m: &opensherwood_formats::rhp::Rhp, w: u16, h: u16, name: &str) {
+    use opensherwood_formats::rhp;
+    // FACE: occluder masks inside the background.
+    assert!(!m.faces.is_empty(), "{name}");
+    for fc in &m.faces {
+        assert!(fc.width > 0 && fc.height > 0, "{name}");
+        assert!(
+            u32::from(fc.x) + u32::from(fc.width) <= u32::from(w)
+                && u32::from(fc.y) + u32::from(fc.height) <= u32::from(h),
+            "{name}: mask {}x{} at {},{}",
+            fc.width,
+            fc.height,
+            fc.x,
+            fc.y
+        );
+        assert_eq!(
+            fc.mask.len(),
+            fc.stride() * usize::from(fc.height),
+            "{name}"
+        );
+        assert_eq!(
+            fc.lines.len(),
+            (fc.kind & 3).count_ones() as usize,
+            "{name}"
+        );
+        assert!(
+            fc.refs.is_empty() || fc.kind & rhp::FACE_HAS_REFS != 0,
+            "{name}"
+        );
+        assert!(fc.unknown_0x00 <= 12, "{name}");
+        for r in &fc.refs {
+            assert!(usize::from(*r) < m.woaw.areas.len(), "{name}: face ref {r}");
+        }
+    }
+}
+
+fn check_rhp_zones(m: &opensherwood_formats::rhp::Rhp, w: u16, h: u16, name: &str) {
+    use opensherwood_formats::rhp;
+    let inside = |p: &rhp::Point| p.x <= w && p.y <= h;
+    // PPPP: zones and jump lines.
+    for z in &m.pppp.zones {
+        assert!(
+            z.polygon.points.len() >= 3 && z.polygon.points.iter().all(inside),
+            "{name}"
+        );
+    }
+    for j in &m.pppp.jump_lines {
+        for p in j.from.iter().chain(j.to.iter()) {
+            assert!(p.x <= w && p.y <= h, "{name}: jump line {p:?}");
+        }
+    }
+
+    // FLIM: animated elements.
+    for fl in &m.flims {
+        assert!(!fl.sprite.is_empty(), "{name}");
+        assert!(
+            fl.line.points.is_empty() || fl.line.points.len() == 2,
+            "{name}"
+        );
+        assert!(fl.unknown_flags.iter().all(|&b| b <= 1), "{name}");
+    }
+}
+
 #[test]
 fn every_rhp_decodes_and_its_geometry_lies_inside_the_background() {
     use opensherwood_formats::rhp;
@@ -584,144 +740,18 @@ fn every_rhp_decodes_and_its_geometry_lies_inside_the_background() {
         let stem = f.file_stem().unwrap().to_str().unwrap();
         let (w, h) = day_map_size(&dir, stem).unwrap_or_else(|| panic!("no Day map for {stem}"));
         let name = f.display().to_string();
-        let inside = |p: &rhp::Point| p.x <= w && p.y <= h;
 
         assert_eq!(m.version, rhp::VERSION, "{name}");
         assert!(m.spok.unknown_0x04 <= 1, "{name}");
         assert_eq!(m.spok.unknown_0x08, 0, "{name}");
 
-        // STAT: boundary of the walkable ground, segments and obstacle outlines.
-        assert_eq!(m.stat.boundary_id, 0x5a, "{name}");
-        assert_eq!(m.stat.segments_id, 0x82, "{name}");
-        assert!(m.stat.boundary.len() >= 3, "{name}");
-        assert!(m.stat.boundary.iter().all(inside), "{name}: boundary");
-        assert!(!m.stat.obstacles.is_empty(), "{name}");
-        for o in &m.stat.obstacles {
-            assert!(o.polygon.points.len() >= 3, "{name}");
-            assert!(o.polygon.points.iter().all(inside), "{name}: obstacle");
-        }
-        for s in &m.stat.segments {
-            assert!(inside(&s.a) && inside(&s.b), "{name}: segment");
-        }
-        assert!(!m.stat.rest.is_empty(), "{name}");
+        check_rhp_ground(&m, w, h, &name);
 
-        // TEXT and DARK zones.
-        for z in &m.text {
-            assert!(
-                z.polygon.points.len() >= 3 && z.polygon.points.iter().all(inside),
-                "{name}"
-            );
-        }
-        for d in &m.dark {
-            assert!(
-                d.polygon.points.len() >= 3 && d.polygon.points.iter().all(inside),
-                "{name}"
-            );
-            assert!(matches!(d.unknown_value, 2 | 4 | 6), "{name}");
-        }
+        check_rhp_projection(&m, w, h, &name);
 
-        // WOAW: projection areas with a consistent bounding box.
-        assert!(
-            !m.woaw.layers.is_empty() && !m.woaw.areas.is_empty(),
-            "{name}"
-        );
-        for a in &m.woaw.areas {
-            assert!(a.points.len() >= 3, "{name}");
-            let (mut minx, mut miny, mut maxx, mut maxy) = (
-                f32::INFINITY,
-                f32::INFINITY,
-                f32::NEG_INFINITY,
-                f32::NEG_INFINITY,
-            );
-            for p in &a.points {
-                minx = minx.min(p.x);
-                miny = miny.min(p.y);
-                maxx = maxx.max(p.x);
-                maxy = maxy.max(p.y);
-            }
-            assert!(
-                (minx - a.min[0]).abs() < 0.01 && (miny - a.min[1]).abs() < 0.01,
-                "{name}"
-            );
-            assert!(
-                (maxx - a.max[0]).abs() < 0.01 && (maxy - a.max[1]).abs() < 0.01,
-                "{name}"
-            );
-        }
-        // 007: bonds reference areas.
-        assert!(!m.bonds.is_empty(), "{name}");
-        for b in &m.bonds {
-            assert!(
-                usize::from(b.area_a) < m.woaw.areas.len(),
-                "{name}: bond {b:?}"
-            );
-            assert!(
-                b.area_b == rhp::NO_AREA || usize::from(b.area_b) < m.woaw.areas.len(),
-                "{name}: bond {b:?}"
-            );
-            for (x, y) in [(b.x1, b.y1), (b.x2, b.y2)] {
-                assert!(
-                    x >= -64 && y >= -64 && x <= w as i16 + 64 && y <= h as i16 + 64,
-                    "{name}"
-                );
-            }
-        }
+        check_rhp_faces(&m, w, h, &name);
 
-        // FACE: occluder masks inside the background.
-        assert!(!m.faces.is_empty(), "{name}");
-        for fc in &m.faces {
-            assert!(fc.width > 0 && fc.height > 0, "{name}");
-            assert!(
-                u32::from(fc.x) + u32::from(fc.width) <= u32::from(w)
-                    && u32::from(fc.y) + u32::from(fc.height) <= u32::from(h),
-                "{name}: mask {}x{} at {},{}",
-                fc.width,
-                fc.height,
-                fc.x,
-                fc.y
-            );
-            assert_eq!(
-                fc.mask.len(),
-                fc.stride() * usize::from(fc.height),
-                "{name}"
-            );
-            assert_eq!(
-                fc.lines.len(),
-                (fc.kind & 3).count_ones() as usize,
-                "{name}"
-            );
-            assert!(
-                fc.refs.is_empty() || fc.kind & rhp::FACE_HAS_REFS != 0,
-                "{name}"
-            );
-            assert!(fc.unknown_0x00 <= 12, "{name}");
-            for r in &fc.refs {
-                assert!(usize::from(*r) < m.woaw.areas.len(), "{name}: face ref {r}");
-            }
-        }
-
-        // PPPP: zones and jump lines.
-        for z in &m.pppp.zones {
-            assert!(
-                z.polygon.points.len() >= 3 && z.polygon.points.iter().all(inside),
-                "{name}"
-            );
-        }
-        for j in &m.pppp.jump_lines {
-            for p in j.from.iter().chain(j.to.iter()) {
-                assert!(p.x <= w && p.y <= h, "{name}: jump line {p:?}");
-            }
-        }
-
-        // FLIM: animated elements.
-        for fl in &m.flims {
-            assert!(!fl.sprite.is_empty(), "{name}");
-            assert!(
-                fl.line.points.is_empty() || fl.line.points.len() == 2,
-                "{name}"
-            );
-            assert!(fl.unknown_flags.iter().all(|&b| b <= 1), "{name}");
-        }
+        check_rhp_zones(&m, w, h, &name);
 
         if stem.eq_ignore_ascii_case("Croisement01") {
             assert_eq!((w, h), (1408, 960));

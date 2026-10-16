@@ -14,13 +14,15 @@ def test_robin_can_walk_from_the_first_mission_start(binary, game_dir):
         cam = obs["camera"]
         sx, sy = robin["x"] // 256 - cam[0], robin["y"] // 256 - cam[1]
         nav = e.call("debug.nav", {"x": robin["x"] // 256, "y": robin["y"] // 256})
-        assert nav["geometry_walkable"] and nav["cell_walkable"], nav
+        assert nav["geometry_walkable"], nav
+        assert nav["cell_walkable"], nav
         assert nav["areas"] > 100, "Lincoln's projection areas must be loaded"
         e.step(2, pointer_click(sx, sy, "left"))
         assert e.observe(entities=False)["selected"] is not None
         e.step(2, pointer_click(sx - 150, sy + 30, "left"))
         p = next(x for x in e.observe()["entities"] if x["kind"] == "player")
-        assert p["target"] is not None and len(p["path"]) >= 1
+        assert p["target"] is not None
+        assert len(p["path"]) >= 1
         e.step(300)
         p2 = next(x for x in e.observe()["entities"] if x["kind"] == "player")
         assert abs(p2["x"] - robin["x"]) > 50 * 256, "Robin did not move"

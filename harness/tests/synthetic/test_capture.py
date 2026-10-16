@@ -24,7 +24,8 @@ def test_capture_is_deterministic_across_processes(binary):
 def test_capture_writes_png_and_changes_with_state(engine):
     engine.reset("corridor", seed=3)
     a = engine.capture("cap_a.png")
-    assert a["width"] == 640 and a["height"] == 480
+    assert a["width"] == 640
+    assert a["height"] == 480
     p = Path(a["path"])
     assert p.exists()
     img = Image.open(p)

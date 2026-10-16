@@ -53,15 +53,8 @@ impl Geometry {
     /// answer was known (nothing was decided; the caller retries with a fresh budget).
     #[must_use]
     pub fn is_walkable_within(&self, x: i32, y: i32, budget: &mut u64) -> Option<bool> {
-        let mut test = |poly: &[(i32, i32)]| -> Option<bool> {
-            let edges = poly.len() as u64;
-            if *budget < edges {
-                *budget = 0;
-                return None;
-            }
-            *budget -= edges;
-            Some(poly.len() >= 3 && point_in_polygon(x, y, poly))
-        };
+        let mut test =
+            |poly: &[(i32, i32)]| -> Option<bool> { point_in_polygon_within(x, y, poly, budget) };
         let bounded = self.boundary.len() >= 3 || !self.areas.is_empty();
         let mut inside = !bounded;
         if !inside && self.boundary.len() >= 3 {
@@ -114,6 +107,16 @@ impl Geometry {
         }
         Ok(())
     }
+}
+
+fn point_in_polygon_within(x: i32, y: i32, poly: &[(i32, i32)], budget: &mut u64) -> Option<bool> {
+    let edges = poly.len() as u64;
+    if *budget < edges {
+        *budget = 0;
+        return None;
+    }
+    *budget -= edges;
+    Some(poly.len() >= 3 && point_in_polygon(x, y, poly))
 }
 
 /// Even-odd rule point-in-polygon; points on an edge count as inside. Differences of `i32`
