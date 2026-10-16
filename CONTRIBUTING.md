@@ -14,7 +14,8 @@ Thank you for helping. Three rules come before everything else:
 - Small, reviewable commits. Commit messages: imperative subject line, a body that says _why_.
 - Keep `docs/` truthful: if you learn something about a file format, update the spec and its `Provenance` section;
   if you change a command-line flag or RPC method, update `docs/harness.md` / `docs/build.md`.
-- Rust: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`. Python: `ruff`.
+- Rust: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`. Python: `ruff format`
+  (`ruff.toml`). Markdown: `oxfmt`. Formatting-only commits are listed in `.git-blame-ignore-revs`.
 - AI agents follow [AGENTS.md](AGENTS.md) and the skills in `.agents/skills/`; humans can use the same procedures.
 
 ## Reporting format discoveries
