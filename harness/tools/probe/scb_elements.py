@@ -67,7 +67,7 @@ def rhm_records(tool, path):
         if not line.startswith("  ") or section is None:
             continue
         if section == "RAIL":
-            m = re.match(r"^  rail (\d+):", line)
+            m = re.match(r"^ {2}rail (\d+):", line)
             if m:
                 for pt_i, name in enumerate(re.findall(r'"([^"]+__\d+___8[0-9a-f]{7})"', line)):
                     names[name] = ("RAILPT", int(m.group(1)))
@@ -77,7 +77,7 @@ def rhm_records(tool, path):
             names[m.group(1)] = (section, idx)
         if section in ("SCOT", "OILE", "TOTO", "BORG", "BOOM", "SKRO", "MEOW"):
             idx += 1
-        elif section == "GULP" and re.match(r"^  \d+ pts", line):
+        elif section == "GULP" and re.match(r"^ {2}\d+ pts", line):
             idx += 1
     return names, counts
 
