@@ -1,7 +1,7 @@
 """Characterize the Win32 POINT adapter without moving the real cursor."""
 
 import ctypes
-from ctypes.wintypes import POINT
+from ctypes.wintypes import BOOL, POINT
 import importlib.util
 from pathlib import Path
 import sys
@@ -37,6 +37,17 @@ class CursorPositionTests(unittest.TestCase):
 
     def test_failed_call_leaves_zero_coordinates(self):
         self.assertEqual(self.call_phys(lambda _pointer: 0), (0, 0))
+
+    def test_native_pointer_writes_survive_failed_result(self):
+        callback_type = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(BOOL, ctypes.POINTER(POINT))
+
+        @callback_type
+        def get_cursor(pointer):
+            pointer.contents.x = -2147483648
+            pointer.contents.y = 2147483647
+            return 0
+
+        self.assertEqual(self.call_phys(get_cursor), (-2147483648, 2147483647))
 
     def test_exception_is_propagated(self):
         def get_cursor(_pointer):
