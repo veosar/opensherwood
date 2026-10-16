@@ -33,7 +33,7 @@ u = ctypes.windll.user32
 
 
 def phys():
-    pt = ctypes.wintypes.POINT()
+    pt: ctypes.Structure = ctypes.wintypes.POINT()
     u.GetCursorPos(ctypes.byref(pt))
     return pt.x, pt.y
 
